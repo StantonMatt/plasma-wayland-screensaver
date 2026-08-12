@@ -1,0 +1,8 @@
+<RCC>
+    <qresource prefix="/qml">
+        <file alias="Screensaver.qml">../qml/Screensaver.qml</file>
+        <file alias="Settings.qml">../qml/Settings.qml</file>
+        <file alias="visuals/Aurora.qml">../qml/visuals/Aurora.qml</file>
+        <file alias="visuals/Orbs.qml">../qml/visuals/Orbs.qml</file>
+    </qresource>
+</RCC>

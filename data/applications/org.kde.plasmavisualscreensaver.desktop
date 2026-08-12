@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Plasma Visual Screensaver
+GenericName=Visual Screensaver
+Comment=Configure a non-locking visual screensaver for Plasma Wayland
+Exec=plasma-visual-screensaver --settings
+Icon=org.kde.plasmavisualscreensaver
+Terminal=false
+Categories=Qt;KDE;Settings;DesktopSettings;
+Keywords=screensaver;idle;display;wayland;
+StartupNotify=true
+X-KDE-Wayland-VirtualKeyboard=false

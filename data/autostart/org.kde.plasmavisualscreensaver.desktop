@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Plasma Visual Screensaver
+Comment=Start the visual screensaver idle service
+Exec=plasma-visual-screensaver --background
+Icon=org.kde.plasmavisualscreensaver
+Terminal=false
+OnlyShowIn=KDE;
+X-KDE-autostart-phase=2
+X-KDE-StartupNotify=false

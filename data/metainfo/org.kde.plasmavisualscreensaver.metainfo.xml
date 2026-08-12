@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.kde.plasmavisualscreensaver</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Plasma Visual Screensaver</name>
+  <summary>A non-locking visual screensaver for Plasma Wayland</summary>
+  <description>
+    <p>Displays low-resource animated visuals and a clock across every monitor after a configurable idle interval.</p>
+    <p>This application is decorative and is not a security boundary.</p>
+  </description>
+  <launchable type="desktop-id">org.kde.plasmavisualscreensaver.desktop</launchable>
+  <provides>
+    <binary>plasma-visual-screensaver</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-08-12"/>
+  </releases>
+</component>
