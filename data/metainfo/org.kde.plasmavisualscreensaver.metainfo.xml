@@ -14,6 +14,7 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.2.0" date="2026-08-12"/>
     <release version="0.1.0" date="2026-08-12"/>
   </releases>
 </component>

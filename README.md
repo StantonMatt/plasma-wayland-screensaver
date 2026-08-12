@@ -29,13 +29,18 @@ event.
 - `ApplicationController` ties those components together and exports
   single-instance D-Bus commands for settings, preview, and quit.
 - Animation and background are independent. Replaceable animation modules
-  provide None, Aurora Drift, Floating Orbs, and Bouncing Orb; backgrounds
-  provide Pure Black and several dark gradients. All modules honor the selected
-  15/30/60 fps or static reduced-motion setting.
+  provide None, Aurora Drift, Floating Orbs, Bouncing Balls, Hyperspace,
+  Digital Rain, Kaleidoscope, Fireflies, Neon Ribbons, and Constellations;
+  backgrounds provide Pure Black and several dark gradients. Every module has
+  contextual controls for motion speed, population/detail, scale, palette, and
+  trails or glow, and honors the selected 15/30/60 fps or static
+  reduced-motion setting.
 - `AnimationState` advances seamless moving objects once per frame and collides
   them against the union of the actual `QScreen` geometries. Different output
   sizes, vertical offsets, and gaps therefore form real boundaries while an
-  object can still cross a physically connected monitor seam.
+  object can still cross a physically connected monitor seam. Bouncing Balls
+  supports 1–20 independently sized bodies, bidirectional gravity, physics
+  speed, elasticity, trails, and optional ball-to-ball collisions.
 - `KConfig` stores settings in
   `~/.config/plasma-visual-screensaverrc` (or the configured XDG equivalent).
 
@@ -137,12 +142,15 @@ session:
 5. Toggle panel coverage. When enabled, no taskbar or panel pixels should remain
    visible; disabling it should leave panel-reserved areas uncovered.
 6. Select independent, synchronized, and seamless monitor behavior. With
-   Bouncing Orb and seamless mode, verify the orb crosses a connected monitor
-   boundary, bounces from unequal outer edges, and never disappears into a
+   Bouncing Balls and seamless mode, verify balls cross a connected monitor
+   boundary, bounce from unequal outer edges, and never disappear into a
    non-existent part of a stepped or gapped layout.
-7. Combine every animation with each background. Test moving and centered clock
-   modes, slow/normal/fast clock speeds, the clock toggle, all frame rates, and
-   reduced motion. Moving items must freeze under reduced motion.
+7. Combine every animation with each background and palette. Exercise each
+   contextual speed, density/detail, scale, and trail/glow control. For Bouncing
+   Balls, test counts 1 and 20, upward/zero/downward gravity, low/high
+   elasticity, and collisions on/off. Test moving and centered clock modes,
+   slow/normal/fast clock speeds, the clock toggle, all frame rates, and reduced
+   motion. Moving items must freeze under reduced motion.
 8. Let the configured idle interval expire naturally. Confirm activity dismisses
    it and that another complete idle interval activates it again.
 9. Suspend and resume both while waiting and while preview is active. Confirm no

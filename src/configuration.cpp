@@ -21,6 +21,15 @@ Configuration::~Configuration() = default;
 int Configuration::idleMinutes() const { return m_idleMinutes; }
 QString Configuration::visualModule() const { return m_visualModule; }
 QString Configuration::backgroundStyle() const { return m_backgroundStyle; }
+int Configuration::animationSpeed() const { return m_animationSpeed; }
+int Configuration::animationDensity() const { return m_animationDensity; }
+int Configuration::animationScale() const { return m_animationScale; }
+QString Configuration::animationPalette() const { return m_animationPalette; }
+int Configuration::trailAmount() const { return m_trailAmount; }
+int Configuration::ballCount() const { return m_ballCount; }
+int Configuration::ballGravity() const { return m_ballGravity; }
+int Configuration::ballElasticity() const { return m_ballElasticity; }
+bool Configuration::ballCollisions() const { return m_ballCollisions; }
 bool Configuration::showClock() const { return m_showClock; }
 QString Configuration::clockMovement() const { return m_clockMovement; }
 QString Configuration::clockSpeed() const { return m_clockSpeed; }
@@ -47,6 +56,12 @@ void Configuration::setVisualModule(const QString &value)
         QStringLiteral("orbs"),
         QStringLiteral("none"),
         QStringLiteral("bounce"),
+        QStringLiteral("starfield"),
+        QStringLiteral("matrix"),
+        QStringLiteral("kaleidoscope"),
+        QStringLiteral("fireflies"),
+        QStringLiteral("ribbons"),
+        QStringLiteral("constellation"),
     };
     update(m_visualModule, modules.contains(value) ? value : QStringLiteral("aurora"));
 }
@@ -60,6 +75,26 @@ void Configuration::setBackgroundStyle(const QString &value)
     };
     update(m_backgroundStyle, backgrounds.contains(value) ? value : QStringLiteral("midnight"));
 }
+void Configuration::setAnimationSpeed(int value) { update(m_animationSpeed, std::clamp(value, 10, 300)); }
+void Configuration::setAnimationDensity(int value) { update(m_animationDensity, std::clamp(value, 10, 100)); }
+void Configuration::setAnimationScale(int value) { update(m_animationScale, std::clamp(value, 25, 200)); }
+void Configuration::setAnimationPalette(const QString &value)
+{
+    static const QStringList palettes = {
+        QStringLiteral("ocean"),
+        QStringLiteral("spectrum"),
+        QStringLiteral("ember"),
+        QStringLiteral("forest"),
+        QStringLiteral("mono"),
+        QStringLiteral("pastel"),
+    };
+    update(m_animationPalette, palettes.contains(value) ? value : QStringLiteral("ocean"));
+}
+void Configuration::setTrailAmount(int value) { update(m_trailAmount, std::clamp(value, 0, 100)); }
+void Configuration::setBallCount(int value) { update(m_ballCount, std::clamp(value, 1, 20)); }
+void Configuration::setBallGravity(int value) { update(m_ballGravity, std::clamp(value, -100, 100)); }
+void Configuration::setBallElasticity(int value) { update(m_ballElasticity, std::clamp(value, 50, 100)); }
+void Configuration::setBallCollisions(bool value) { update(m_ballCollisions, value); }
 void Configuration::setShowClock(bool value) { update(m_showClock, value); }
 void Configuration::setClockMovement(const QString &value)
 {
@@ -96,6 +131,15 @@ void Configuration::assignDefaults()
     setIdleMinutes(10);
     setVisualModule(QStringLiteral("aurora"));
     setBackgroundStyle(QStringLiteral("midnight"));
+    setAnimationSpeed(100);
+    setAnimationDensity(50);
+    setAnimationScale(100);
+    setAnimationPalette(QStringLiteral("ocean"));
+    setTrailAmount(35);
+    setBallCount(5);
+    setBallGravity(35);
+    setBallElasticity(92);
+    setBallCollisions(true);
     setShowClock(true);
     setClockMovement(QStringLiteral("bounce"));
     setClockSpeed(QStringLiteral("normal"));
@@ -118,6 +162,15 @@ void Configuration::reload()
     }
     setVisualModule(visual);
     setBackgroundStyle(general.readEntry("BackgroundStyle", legacyBackground));
+    setAnimationSpeed(general.readEntry("AnimationSpeed", 100));
+    setAnimationDensity(general.readEntry("AnimationDensity", 50));
+    setAnimationScale(general.readEntry("AnimationScale", 100));
+    setAnimationPalette(general.readEntry("AnimationPalette", QStringLiteral("ocean")));
+    setTrailAmount(general.readEntry("TrailAmount", 35));
+    setBallCount(general.readEntry("BallCount", 5));
+    setBallGravity(general.readEntry("BallGravity", 35));
+    setBallElasticity(general.readEntry("BallElasticity", 92));
+    setBallCollisions(general.readEntry("BallCollisions", true));
     setShowClock(general.readEntry("ShowClock", true));
     setClockMovement(general.readEntry("ClockMovement", QStringLiteral("bounce")));
     setClockSpeed(general.readEntry("ClockSpeed", QStringLiteral("normal")));
@@ -133,6 +186,15 @@ void Configuration::save()
     general.writeEntry("IdleMinutes", m_idleMinutes);
     general.writeEntry("VisualModule", m_visualModule);
     general.writeEntry("BackgroundStyle", m_backgroundStyle);
+    general.writeEntry("AnimationSpeed", m_animationSpeed);
+    general.writeEntry("AnimationDensity", m_animationDensity);
+    general.writeEntry("AnimationScale", m_animationScale);
+    general.writeEntry("AnimationPalette", m_animationPalette);
+    general.writeEntry("TrailAmount", m_trailAmount);
+    general.writeEntry("BallCount", m_ballCount);
+    general.writeEntry("BallGravity", m_ballGravity);
+    general.writeEntry("BallElasticity", m_ballElasticity);
+    general.writeEntry("BallCollisions", m_ballCollisions);
     general.writeEntry("ShowClock", m_showClock);
     general.writeEntry("ClockMovement", m_clockMovement);
     general.writeEntry("ClockSpeed", m_clockSpeed);

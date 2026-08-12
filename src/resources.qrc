@@ -5,5 +5,12 @@
         <file alias="visuals/Aurora.qml">../qml/visuals/Aurora.qml</file>
         <file alias="visuals/Orbs.qml">../qml/visuals/Orbs.qml</file>
         <file alias="visuals/Bounce.qml">../qml/visuals/Bounce.qml</file>
+        <file alias="visuals/VisualUtils.js">../qml/visuals/VisualUtils.js</file>
+        <file alias="visuals/Starfield.qml">../qml/visuals/Starfield.qml</file>
+        <file alias="visuals/Matrix.qml">../qml/visuals/Matrix.qml</file>
+        <file alias="visuals/Kaleidoscope.qml">../qml/visuals/Kaleidoscope.qml</file>
+        <file alias="visuals/Fireflies.qml">../qml/visuals/Fireflies.qml</file>
+        <file alias="visuals/Ribbons.qml">../qml/visuals/Ribbons.qml</file>
+        <file alias="visuals/Constellation.qml">../qml/visuals/Constellation.qml</file>
     </qresource>
 </RCC>

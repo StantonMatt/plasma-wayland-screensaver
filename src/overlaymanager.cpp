@@ -105,6 +105,15 @@ bool OverlayManager::addScreen(QScreen *screen)
     view->setInitialProperties({
         {QStringLiteral("visualModule"), m_configuration->visualModule()},
         {QStringLiteral("backgroundStyle"), m_configuration->backgroundStyle()},
+        {QStringLiteral("animationSpeed"), m_configuration->animationSpeed()},
+        {QStringLiteral("animationDensity"), m_configuration->animationDensity()},
+        {QStringLiteral("animationScale"), m_configuration->animationScale()},
+        {QStringLiteral("animationPalette"), m_configuration->animationPalette()},
+        {QStringLiteral("trailAmount"), m_configuration->trailAmount()},
+        {QStringLiteral("ballCount"), m_configuration->ballCount()},
+        {QStringLiteral("ballGravity"), m_configuration->ballGravity()},
+        {QStringLiteral("ballElasticity"), m_configuration->ballElasticity()},
+        {QStringLiteral("ballCollisions"), m_configuration->ballCollisions()},
         {QStringLiteral("showClock"), m_configuration->showClock()},
         {QStringLiteral("clockMovement"), m_configuration->clockMovement()},
         {QStringLiteral("clockSpeed"), m_configuration->clockSpeed()},
@@ -189,7 +198,10 @@ void OverlayManager::updateAnimationState()
     const bool animateClock = seamless && motionAllowed && m_configuration->showClock()
         && m_configuration->clockMovement() == QStringLiteral("bounce");
     m_animationState.configure(QGuiApplication::screens(), animateBall, animateClock,
-                               m_configuration->clockSpeed(), m_configuration->frameRate());
+                               m_configuration->clockSpeed(), m_configuration->frameRate(),
+                               m_configuration->ballCount(), m_configuration->animationSpeed(),
+                               m_configuration->animationScale(), m_configuration->ballGravity(),
+                               m_configuration->ballElasticity(), m_configuration->ballCollisions());
 }
 
 void OverlayManager::updateViewGeometry(QScreen *screen)

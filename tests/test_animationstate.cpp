@@ -2,6 +2,7 @@
 #include "../src/animationstate.h"
 
 #include <QTest>
+#include <QVariantMap>
 
 class AnimationStateTest final : public QObject
 {
@@ -27,6 +28,40 @@ private Q_SLOTS:
         const qreal lowMonitorBottom = 166 + 1080;
         QVERIFY(state.containsRect(QRectF(3500, lowMonitorBottom - size, size, size)));
         QVERIFY(!state.containsRect(QRectF(3500, lowMonitorBottom - size + 2, size, size)));
+    }
+
+    void buildsConfiguredBallSet()
+    {
+        AnimationState state;
+        state.configureGeometries({QRect(0, 0, 1920, 1080)}, false, false,
+                                  QStringLiteral("normal"), 30, 12, 180, 140,
+                                  -35, 78, true);
+        QCOMPARE(state.balls().size(), 12);
+        QVERIFY(state.ballSize() > 80);
+        for (const QVariant &entry : state.balls()) {
+            const QVariantMap ball = entry.toMap();
+            QVERIFY(state.containsRect(QRectF(ball.value(QStringLiteral("x")).toReal(),
+                                              ball.value(QStringLiteral("y")).toReal(),
+                                              ball.value(QStringLiteral("size")).toReal(),
+                                              ball.value(QStringLiteral("size")).toReal())));
+        }
+    }
+
+    void activePhysicsStaysInsideSteppedDesktop()
+    {
+        AnimationState state;
+        state.configureGeometries({QRect(0, 0, 3440, 1440), QRect(3440, 166, 1920, 1080)},
+                                  true, false, QStringLiteral("normal"), 60,
+                                  20, 300, 160, 100, 65, true);
+        QTest::qWait(250);
+        QCOMPARE(state.balls().size(), 20);
+        for (const QVariant &entry : state.balls()) {
+            const QVariantMap ball = entry.toMap();
+            const qreal size = ball.value(QStringLiteral("size")).toReal();
+            QVERIFY(state.containsRect(QRectF(ball.value(QStringLiteral("x")).toReal(),
+                                              ball.value(QStringLiteral("y")).toReal(),
+                                              size, size)));
+        }
     }
 };
 

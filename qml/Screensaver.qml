@@ -7,6 +7,15 @@ Item {
 
     required property string visualModule
     required property string backgroundStyle
+    required property int animationSpeed
+    required property int animationDensity
+    required property int animationScale
+    required property string animationPalette
+    required property int trailAmount
+    required property int ballCount
+    required property int ballGravity
+    required property int ballElasticity
+    required property bool ballCollisions
     required property bool showClock
     required property string clockMovement
     required property string clockSpeed
@@ -29,6 +38,12 @@ Item {
         switch (root.visualModule) {
         case "orbs": return "visuals/Orbs.qml"
         case "bounce": return "visuals/Bounce.qml"
+        case "starfield": return "visuals/Starfield.qml"
+        case "matrix": return "visuals/Matrix.qml"
+        case "kaleidoscope": return "visuals/Kaleidoscope.qml"
+        case "fireflies": return "visuals/Fireflies.qml"
+        case "ribbons": return "visuals/Ribbons.qml"
+        case "constellation": return "visuals/Constellation.qml"
         case "none": return ""
         default: return "visuals/Aurora.qml"
         }
