@@ -37,7 +37,8 @@ Item {
         running: !root.reducedMotion
         onTick: function(deltaSeconds) {
             const speed = root.context ? root.context.animationSpeed / 100 : 1
-            root.phase += deltaSeconds * 0.36 * speed
+            root.phase = (root.seed % 997) / 137.0
+                         + (Date.now() - root.animationEpochMs) * 0.00036 * speed
         }
     }
 }

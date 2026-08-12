@@ -185,7 +185,13 @@ Item {
         presentationClock: root.context ? root.context.presentationClock : null
         running: !root.reducedMotion && !root.seamless
         onTick: function(deltaSeconds) {
-            root.stepPhysics(deltaSeconds)
+            if (root.context && root.context.monitorBehavior === "synchronized") {
+                root.stepPhysics(deltaSeconds)
+            } else {
+                const now = Date.now()
+                root.stepPhysics((now - root.previousMs) / 1000)
+                root.previousMs = now
+            }
             localCanvas.requestPaint()
         }
     }

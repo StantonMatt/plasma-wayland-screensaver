@@ -37,8 +37,9 @@ event.
   automatic mode that follows each output's presentation rate independently.
   Every module also honors the static reduced-motion setting.
 - `PresentationClock` gives each overlay window its own frame cadence. It uses
-  `QQuickWindow::frameSwapped()` for measured animation time and schedules
-  `QWindow::requestUpdate()` with sub-millisecond `QChronoTimer` precision.
+  the output refresh rate and sub-millisecond `QChronoTimer` precision to
+  schedule `QWindow::requestUpdate()`, advancing motion from measured elapsed
+  time rather than assuming an ideal interval.
   This avoids Qt Quick's approximately 60 Hz global animation timer fallback
   when multiple windows are visible, while fixed caps still reduce GPU use.
 - Digital Rain builds each glyph stream once as cached Qt Quick text and only

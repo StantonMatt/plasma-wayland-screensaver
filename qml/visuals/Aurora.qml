@@ -56,7 +56,8 @@ Canvas {
         running: !canvas.reducedMotion
         onTick: function(deltaSeconds) {
             const speed = canvas.context ? canvas.context.animationSpeed / 100 : 1
-            canvas.phase += deltaSeconds * 0.54 * speed
+            canvas.phase = (canvas.seed % 1000) / 159.0
+                           + (Date.now() - canvas.animationEpochMs) * 0.00054 * speed
             canvas.requestPaint()
         }
     }

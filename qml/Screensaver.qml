@@ -179,7 +179,7 @@ Item {
         presentationClock: root.presentationClock
         running: root.showClock && root.clockMovement === "bounce" && !root.reducedMotion
                  && root.monitorBehavior !== "seamless"
-        onTick: function(deltaSeconds) { root.clockMotionNowMs += deltaSeconds * 1000 }
+        onTick: function(deltaSeconds) { root.clockMotionNowMs = Date.now() }
     }
 
     Timer {

@@ -2,6 +2,7 @@
 #include "../src/animationstate.h"
 
 #include <QTest>
+#include <QSignalSpy>
 #include <QVariantMap>
 
 class AnimationStateTest final : public QObject
@@ -62,6 +63,25 @@ private Q_SLOTS:
                                               ball.value(QStringLiteral("y")).toReal(),
                                               size, size)));
         }
+    }
+
+    void externalClockDrivesSeamlessPhysicsExclusively()
+    {
+        AnimationState state;
+        state.configureGeometries({QRect(0, 0, 1920, 1080)}, true, false,
+                                  QStringLiteral("normal"), 240,
+                                  3, 100, 100, 0, 100, false, true);
+        const QVariantMap before = state.balls().constFirst().toMap();
+        QSignalSpy frames(&state, &AnimationState::frameChanged);
+        QTest::qWait(30);
+        QCOMPARE(frames.count(), 0);
+        QCOMPARE(state.balls().constFirst().toMap().value(QStringLiteral("x")),
+                 before.value(QStringLiteral("x")));
+
+        state.advance(1.0 / 240.0);
+        QCOMPARE(frames.count(), 1);
+        QVERIFY(state.balls().constFirst().toMap().value(QStringLiteral("x")).toReal()
+                != before.value(QStringLiteral("x")).toReal());
     }
 };
 

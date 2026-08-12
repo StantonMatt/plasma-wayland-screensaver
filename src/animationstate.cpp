@@ -20,7 +20,7 @@ AnimationState::AnimationState(QObject *parent)
 void AnimationState::configure(const QList<QScreen *> &screens, bool animateBall,
                                bool animateClock, const QString &clockSpeed, int frameRate,
                                int ballCount, int ballSpeed, int ballScale, int ballGravity,
-                               int ballElasticity, bool ballCollisions)
+                               int ballElasticity, bool ballCollisions, bool externallyDriven)
 {
     QList<QRect> geometries;
     for (QScreen *screen : screens) {
@@ -31,13 +31,14 @@ void AnimationState::configure(const QList<QScreen *> &screens, bool animateBall
     }
     configureGeometries(geometries, animateBall, animateClock, clockSpeed, frameRate,
                         ballCount, ballSpeed, ballScale, ballGravity, ballElasticity,
-                        ballCollisions);
+                        ballCollisions, externallyDriven);
 }
 
 void AnimationState::configureGeometries(const QList<QRect> &geometries, bool animateBall,
                                          bool animateClock, const QString &clockSpeed, int frameRate,
                                          int ballCount, int ballSpeed, int ballScale,
-                                         int ballGravity, int ballElasticity, bool ballCollisions)
+                                         int ballGravity, int ballElasticity, bool ballCollisions,
+                                         bool externallyDriven)
 {
     QRegion region;
     int shortestEdge = 1080;
@@ -69,6 +70,7 @@ void AnimationState::configureGeometries(const QList<QRect> &geometries, bool an
     m_gravity = std::clamp(ballGravity, -100, 100) * 8.0;
     m_elasticity = std::clamp(ballElasticity, 50, 100) / 100.0;
     m_ballCollisions = ballCollisions;
+    m_externallyDriven = externallyDriven;
 
     const qreal speedMultiplier = clockSpeed == QStringLiteral("slow") ? 0.55
         : (clockSpeed == QStringLiteral("fast") ? 1.8 : 1.0);
@@ -260,6 +262,15 @@ void AnimationState::advanceFrame()
     }
     const qreal seconds = std::min(m_elapsed.nsecsElapsed() / 1'000'000'000.0, 0.05);
     m_elapsed.restart();
+    advance(seconds);
+}
+
+void AnimationState::advance(qreal seconds)
+{
+    seconds = std::clamp(seconds, 0.0, 0.05);
+    if (seconds <= 0.0) {
+        return;
+    }
     if (m_animateBall) {
         for (Body &ball : m_balls) {
             advanceBody(ball, seconds * m_motionSpeed, true);
@@ -276,7 +287,7 @@ void AnimationState::advanceFrame()
 
 void AnimationState::updateTimer()
 {
-    if (!m_animateBall && !m_animateClock) {
+    if ((!m_animateBall && !m_animateClock) || m_externallyDriven) {
         m_timer.stop();
         m_elapsed.invalidate();
         return;

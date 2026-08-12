@@ -71,6 +71,9 @@ void OverlayManager::hide()
     }
     m_visible = false;
     m_animationState.stop();
+    m_sharedAnimationActive = false;
+    m_animationDriverScreen = nullptr;
+    m_presentationClocks.clear();
     qApp->removeEventFilter(this);
     const auto views = m_views;
     m_views.clear();
@@ -100,6 +103,12 @@ bool OverlayManager::addScreen(QScreen *screen)
     view->setGeometry(screen->geometry());
 
     auto *presentationClock = new PresentationClock(view, m_configuration->frameRate(), view);
+    connect(presentationClock, &PresentationClock::frameTick, this,
+            [this, screen](qreal deltaSeconds) {
+                if (m_sharedAnimationActive && screen == m_animationDriverScreen) {
+                    m_animationState.advance(deltaSeconds);
+                }
+            });
 
     const uint seed = m_configuration->monitorBehavior() == QStringLiteral("synchronized")
         || m_configuration->monitorBehavior() == QStringLiteral("seamless")
@@ -170,18 +179,18 @@ bool OverlayManager::addScreen(QScreen *screen)
         updateAnimationState();
     });
     m_views.insert(screen, view);
+    m_presentationClocks.insert(screen, presentationClock);
     view->show();
-    const bool hasMotion = !m_configuration->reducedMotion()
-        && (m_configuration->visualModule() != QStringLiteral("none")
-            || (m_configuration->showClock()
-                && m_configuration->clockMovement() == QStringLiteral("bounce")));
-    presentationClock->setRunning(hasMotion);
     updateAllViewGeometry();
     return true;
 }
 
 void OverlayManager::removeScreen(QScreen *screen)
 {
+    m_presentationClocks.remove(screen);
+    if (m_animationDriverScreen == screen) {
+        m_animationDriverScreen = nullptr;
+    }
     QQuickView *view = m_views.take(screen);
     if (view) {
         view->hide();
@@ -213,18 +222,65 @@ void OverlayManager::updateAnimationState()
         && m_configuration->clockMovement() == QStringLiteral("bounce");
     int simulationRate = m_configuration->frameRate();
     if (simulationRate == 0) {
-        simulationRate = 60;
+        simulationRate = 0;
         for (QScreen *screen : QGuiApplication::screens()) {
             if (screen) {
                 simulationRate = std::max(simulationRate, qRound(screen->refreshRate()));
             }
+        }
+        if (simulationRate <= 0) {
+            simulationRate = 60;
         }
     }
     m_animationState.configure(QGuiApplication::screens(), animateBall, animateClock,
                                m_configuration->clockSpeed(), simulationRate,
                                m_configuration->ballCount(), m_configuration->animationSpeed(),
                                m_configuration->animationScale(), m_configuration->ballGravity(),
-                               m_configuration->ballElasticity(), m_configuration->ballCollisions());
+                               m_configuration->ballElasticity(), m_configuration->ballCollisions(),
+                               animateBall || animateClock);
+    m_sharedAnimationActive = animateBall || animateClock;
+    updatePresentationClocks();
+}
+
+void OverlayManager::updatePresentationClocks()
+{
+    m_animationDriverScreen = nullptr;
+    qreal fastestRefreshRate = 0.0;
+    for (QScreen *screen : m_presentationClocks.keys()) {
+        if (!screen) {
+            continue;
+        }
+        if (!m_animationDriverScreen) {
+            m_animationDriverScreen = screen;
+        }
+        if (screen->refreshRate() > fastestRefreshRate) {
+            fastestRefreshRate = screen->refreshRate();
+            m_animationDriverScreen = screen;
+        }
+    }
+
+    const bool seamless = m_configuration->monitorBehavior() == QStringLiteral("seamless");
+    const bool visualUsesClock = m_configuration->visualModule() != QStringLiteral("none")
+        && !(seamless && m_configuration->visualModule() == QStringLiteral("bounce"));
+    const bool clockUsesClock = !seamless && m_configuration->showClock()
+        && m_configuration->clockMovement() == QStringLiteral("bounce");
+    const bool perWindowMotion = !m_configuration->reducedMotion()
+        && (visualUsesClock || clockUsesClock);
+    PresentationClock *sharedClock = m_presentationClocks.value(m_animationDriverScreen);
+    const bool synchronized = m_configuration->monitorBehavior() == QStringLiteral("synchronized");
+    for (auto it = m_presentationClocks.cbegin(); it != m_presentationClocks.cend(); ++it) {
+        const bool drivesPerWindowMotion = perWindowMotion
+            && (!synchronized || it.key() == m_animationDriverScreen);
+        it.value()->setRunning(drivesPerWindowMotion
+                               || (m_sharedAnimationActive && it.key() == m_animationDriverScreen));
+        if (QQuickView *view = m_views.value(it.key())) {
+            if (QObject *root = view->rootObject()) {
+                PresentationClock *clock = synchronized && sharedClock ? sharedClock : it.value();
+                root->setProperty("presentationClock",
+                                  QVariant::fromValue(static_cast<QObject *>(clock)));
+            }
+        }
+    }
 }
 
 void OverlayManager::updateViewGeometry(QScreen *screen)

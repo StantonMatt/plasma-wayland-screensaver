@@ -12,7 +12,7 @@ Item {
     Connections {
         target: root.presentationClock
         enabled: root.running && root.presentationClock !== null
-        function onFramePresented(deltaSeconds) {
+        function onFrameTick(deltaSeconds) {
             root.tick(deltaSeconds)
         }
     }

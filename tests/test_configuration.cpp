@@ -6,6 +6,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include <limits>
+
 class ConfigurationTest final : public QObject
 {
     Q_OBJECT
@@ -142,6 +144,12 @@ private Q_SLOTS:
         }
         config.setFrameRate(239);
         QCOMPARE(config.frameRate(), 240);
+        config.setFrameRate(-1);
+        QCOMPARE(config.frameRate(), 15);
+        config.setFrameRate(std::numeric_limits<int>::min());
+        QCOMPARE(config.frameRate(), 15);
+        config.setFrameRate(5);
+        QCOMPARE(config.frameRate(), 15);
     }
 
     void migratesCombinedBlackVisual()

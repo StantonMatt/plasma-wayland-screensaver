@@ -11,6 +11,7 @@
 class Configuration;
 class QQuickView;
 class QScreen;
+class PresentationClock;
 
 class OverlayManager final : public QObject
 {
@@ -36,11 +37,15 @@ private:
     void updateAllViewGeometry();
     void updateViewGeometry(QScreen *screen);
     void updateAnimationState();
+    void updatePresentationClocks();
     bool isDismissEvent(const QEvent *event) const;
 
     Configuration *m_configuration;
     AnimationState m_animationState;
     QHash<QScreen *, QQuickView *> m_views;
+    QHash<QScreen *, PresentationClock *> m_presentationClocks;
+    QScreen *m_animationDriverScreen = nullptr;
     qint64 m_animationEpochMs = 0;
     bool m_visible = false;
+    bool m_sharedAnimationActive = false;
 };

@@ -15,8 +15,6 @@ PresentationClock::PresentationClock(QQuickWindow *window, int targetFrameRate, 
     m_wakeTimer.setSingleShot(true);
     m_wakeTimer.setTimerType(Qt::PreciseTimer);
     connect(&m_wakeTimer, &QChronoTimer::timeout, this, &PresentationClock::presentNextFrame);
-    // frameSwapped can originate from a render thread. Queue the update to the
-    // GUI thread where QML properties and QWindow::requestUpdate belong.
     connect(m_window, &QQuickWindow::frameSwapped, this,
             &PresentationClock::handleFrameSwapped, Qt::QueuedConnection);
 }
@@ -31,16 +29,25 @@ void PresentationClock::setRunning(bool running)
     m_elapsed.invalidate();
     if (m_running) {
         m_elapsed.start();
-        m_window->requestUpdate();
+        if (m_targetFrameRate <= 0) {
+            // Bootstrap by dirtying animated state once. Subsequent automatic
+            // ticks are chained exclusively from completed presentations.
+            QMetaObject::invokeMethod(this, [this] {
+                const qreal refreshRate = m_window->screen()
+                    ? m_window->screen()->refreshRate() : 60.0;
+                tickAndRequestUpdate(1.0 / std::max(1.0, refreshRate));
+            }, Qt::QueuedConnection);
+        } else {
+            scheduleNextFrame();
+        }
     }
 }
 
 void PresentationClock::handleFrameSwapped()
 {
-    if (!m_running) {
-        return;
+    if (m_running && m_targetFrameRate <= 0) {
+        tickAndRequestUpdate();
     }
-    scheduleNextFrame();
 }
 
 void PresentationClock::presentNextFrame()
@@ -48,31 +55,33 @@ void PresentationClock::presentNextFrame()
     if (!m_running) {
         return;
     }
-    const qreal deltaSeconds = m_elapsed.isValid()
+    tickAndRequestUpdate();
+    scheduleNextFrame();
+}
+
+void PresentationClock::tickAndRequestUpdate(qreal fallbackSeconds)
+{
+    qreal deltaSeconds = m_elapsed.isValid()
         ? std::min(m_elapsed.nsecsElapsed() / 1'000'000'000.0, 0.10) : 0.0;
     m_elapsed.restart();
-    if (deltaSeconds > 0.0) {
-        Q_EMIT framePresented(deltaSeconds);
+    if (deltaSeconds <= 0.0001) {
+        deltaSeconds = fallbackSeconds;
     }
-    // Updating QML in framePresented normally schedules a frame itself, while
-    // requestUpdate() guarantees progress for animations with cached content.
+    if (deltaSeconds > 0.0) {
+        Q_EMIT frameTick(deltaSeconds);
+    }
     m_window->requestUpdate();
 }
 
 void PresentationClock::scheduleNextFrame()
 {
     const qreal refreshRate = m_window->screen() ? m_window->screen()->refreshRate() : 60.0;
-    const qreal requestedRate = m_targetFrameRate <= 0
-        ? refreshRate : std::min<qreal>(m_targetFrameRate, refreshRate);
+    const qreal requestedRate = std::min<qreal>(m_targetFrameRate, refreshRate);
     // QChronoTimer provides sub-millisecond scheduling for 144–240 Hz output.
-    // It only schedules requestUpdate(); animation time still comes from the
-    // actual frameSwapped cadence rather than from this timer.
+    // Fixed caps use a precise wakeup, but motion still advances from measured
+    // elapsed time so delayed frames do not slow the apparent motion.
     const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<qreal>(1.0 / std::max(1.0, requestedRate)));
-    const auto elapsed = m_elapsed.isValid()
-        ? std::chrono::nanoseconds(m_elapsed.nsecsElapsed()) : std::chrono::nanoseconds::zero();
-    // Subtract time already spent polishing/rendering/presenting this frame so
-    // those costs do not lower the requested cadence at high refresh rates.
-    m_wakeTimer.setInterval(std::max(std::chrono::nanoseconds::zero(), period - elapsed));
+    m_wakeTimer.setInterval(period);
     m_wakeTimer.start();
 }

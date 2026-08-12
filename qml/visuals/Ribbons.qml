@@ -53,7 +53,7 @@ Canvas {
         presentationClock: canvas.context ? canvas.context.presentationClock : null
         running: !canvas.reducedMotion
         onTick: function(deltaSeconds) {
-            canvas.phase += deltaSeconds * 0.55
+            canvas.phase = (Date.now() - canvas.animationEpochMs) * 0.00055
             canvas.requestPaint()
         }
     }

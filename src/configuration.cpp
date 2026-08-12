@@ -112,18 +112,26 @@ void Configuration::setClockSpeed(const QString &value)
 }
 void Configuration::setFrameRate(int value)
 {
-    static const QList<int> supportedRates = {
-        0, 15, 24, 30, 45, 60, 75, 90, 100, 120, 144, 165, 175, 200, 240,
+    if (value == 0) {
+        update(m_frameRate, 0);
+        return;
+    }
+    if (value < 0) {
+        update(m_frameRate, 15);
+        return;
+    }
+    static const QList<int> fixedRates = {
+        15, 24, 30, 45, 60, 75, 90, 100, 120, 144, 165, 175, 200, 240,
     };
-    if (supportedRates.contains(value)) {
+    if (fixedRates.contains(value)) {
         update(m_frameRate, value);
         return;
     }
-    const auto closest = std::min_element(supportedRates.cbegin(), supportedRates.cend(),
+    const auto closest = std::min_element(fixedRates.cbegin(), fixedRates.cend(),
                                           [value](int left, int right) {
                                               return std::abs(left - value) < std::abs(right - value);
                                           });
-    update(m_frameRate, closest == supportedRates.cend() ? 30 : *closest);
+    update(m_frameRate, closest == fixedRates.cend() ? 30 : *closest);
 }
 void Configuration::setReducedMotion(bool value) { update(m_reducedMotion, value); }
 void Configuration::setMonitorBehavior(const QString &value)

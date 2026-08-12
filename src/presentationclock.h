@@ -18,12 +18,13 @@ public:
     void setRunning(bool running);
 
 Q_SIGNALS:
-    void framePresented(qreal deltaSeconds);
+    void frameTick(qreal deltaSeconds);
 
 private:
     void handleFrameSwapped();
     void scheduleNextFrame();
     void presentNextFrame();
+    void tickAndRequestUpdate(qreal fallbackSeconds = 0.0);
 
     QQuickWindow *m_window;
     QChronoTimer m_wakeTimer;

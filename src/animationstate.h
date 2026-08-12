@@ -27,11 +27,13 @@ public:
     void configure(const QList<QScreen *> &screens, bool animateBall, bool animateClock,
                    const QString &clockSpeed, int frameRate, int ballCount = 1,
                    int ballSpeed = 100, int ballScale = 100, int ballGravity = 0,
-                   int ballElasticity = 100, bool ballCollisions = false);
+                   int ballElasticity = 100, bool ballCollisions = false,
+                   bool externallyDriven = false);
     void configureGeometries(const QList<QRect> &geometries, bool animateBall, bool animateClock,
                              const QString &clockSpeed, int frameRate, int ballCount = 1,
                              int ballSpeed = 100, int ballScale = 100, int ballGravity = 0,
-                             int ballElasticity = 100, bool ballCollisions = false);
+                             int ballElasticity = 100, bool ballCollisions = false,
+                             bool externallyDriven = false);
     void stop();
     bool containsRect(const QRectF &rect) const;
 
@@ -41,6 +43,7 @@ public:
     qreal clockY() const;
 
     Q_INVOKABLE void setClockSize(qreal width, qreal height);
+    void advance(qreal seconds);
 
 Q_SIGNALS:
     void frameChanged();
@@ -76,4 +79,5 @@ private:
     qreal m_elasticity = 1.0;
     qreal m_motionSpeed = 1.0;
     bool m_ballCollisions = false;
+    bool m_externallyDriven = false;
 };
