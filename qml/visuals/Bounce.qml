@@ -181,14 +181,11 @@ Item {
         }
     }
 
-    Timer {
-        interval: Math.round(1000 / Math.max(1, root.frameRate))
-        repeat: true
+    FrameClock {
+        presentationClock: root.context ? root.context.presentationClock : null
         running: !root.reducedMotion && !root.seamless
-        onTriggered: {
-            const now = Date.now()
-            root.stepPhysics((now - root.previousMs) / 1000)
-            root.previousMs = now
+        onTick: function(deltaSeconds) {
+            root.stepPhysics(deltaSeconds)
             localCanvas.requestPaint()
         }
     }

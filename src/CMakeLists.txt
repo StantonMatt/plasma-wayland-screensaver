@@ -12,6 +12,8 @@ set(screensaver_sources
     inhibitor.h
     overlaymanager.cpp
     overlaymanager.h
+    presentationclock.cpp
+    presentationclock.h
     screensaverstatemachine.cpp
     screensaverstatemachine.h
     resources.qrc

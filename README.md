@@ -33,8 +33,17 @@ event.
   Digital Rain, Kaleidoscope, Fireflies, Neon Ribbons, and Constellations;
   backgrounds provide Pure Black and several dark gradients. Every module has
   contextual controls for motion speed, population/detail, scale, palette, and
-  trails or glow, and honors the selected 15/30/60 fps or static
-  reduced-motion setting.
+  trails or glow. Frame-rate choices range from 15 through 240 fps, with an
+  automatic mode that follows each output's presentation rate independently.
+  Every module also honors the static reduced-motion setting.
+- `PresentationClock` gives each overlay window its own frame cadence. It uses
+  `QQuickWindow::frameSwapped()` for measured animation time and schedules
+  `QWindow::requestUpdate()` with sub-millisecond `QChronoTimer` precision.
+  This avoids Qt Quick's approximately 60 Hz global animation timer fallback
+  when multiple windows are visible, while fixed caps still reduce GPU use.
+- Digital Rain builds each glyph stream once as cached Qt Quick text and only
+  changes column transforms per frame. It avoids repainting thousands of glyphs
+  through JavaScript Canvas on every update.
 - `AnimationState` advances seamless moving objects once per frame and collides
   them against the union of the actual `QScreen` geometries. Different output
   sizes, vertical offsets, and gaps therefore form real boundaries while an
@@ -150,7 +159,8 @@ session:
    Balls, test counts 1 and 20, upward/zero/downward gravity, low/high
    elasticity, and collisions on/off. Test moving and centered clock modes,
    slow/normal/fast clock speeds, the clock toggle, all frame rates, and reduced
-   motion. Moving items must freeze under reduced motion.
+   motion. Test automatic refresh and several fixed caps, including 15, 60,
+   144, and 240 fps. Moving items must freeze under reduced motion.
 8. Let the configured idle interval expire naturally. Confirm activity dismisses
    it and that another complete idle interval activates it again.
 9. Suspend and resume both while waiting and while preview is active. Confirm no
@@ -176,6 +186,10 @@ session:
 - **No idle activation:** use `qdbus6 org.kde.KIdleTime /KIdleTime` only for
   diagnostics if available, and check process logs. Do not disable Plasma's lock
   or power settings to diagnose this application.
+- **Animation looks uneven:** select “Match each monitor” and confirm Plasma is
+  actually using the expected modes with `kscreen-doctor -o`. For diagnostics,
+  run a preview with `QSG_RENDER_TIMING=1`; `perWindowFrameDelta` reports the
+  measured render cadence. Fixed caps intentionally trade smoothness for power.
 - **Autostart cannot find a user-local binary:** add `~/.local/bin` to the
   environment imported by the Plasma user session, or use a system-wide install.
 
@@ -185,4 +199,6 @@ session:
 - [LayerShellQt usage and CMake target](https://api.kde.org/legacy/plasma/layer-shell-qt/html/dir_f3eec1e9e98e02e34c8efeb863b66c5f.html)
 - [Qt `QGuiApplication` screen lifecycle](https://doc.qt.io/qt-6/qguiapplication.html)
 - [Qt `QScreen` geometry signals](https://doc.qt.io/qt-6/qscreen.html)
+- [Qt Quick scene graph and render loops](https://doc.qt.io/qt-6/qtquick-visualcanvas-scenegraph.html)
+- [Qt `QWindow::requestUpdate()`](https://doc.qt.io/qt-6/qwindow.html#requestUpdate)
 - [XDG Desktop Portal Inhibit API](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Inhibit.html)

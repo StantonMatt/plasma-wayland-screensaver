@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
+import "visuals"
 
 Item {
     id: root
@@ -31,6 +32,7 @@ Item {
     required property real virtualWidth
     required property real virtualHeight
     required property var animationState
+    required property var presentationClock
 
     property double clockMotionNowMs: animationEpochMs
 
@@ -173,12 +175,11 @@ Item {
         }
     }
 
-    Timer {
-        interval: Math.round(1000 / Math.max(1, root.frameRate))
+    FrameClock {
+        presentationClock: root.presentationClock
         running: root.showClock && root.clockMovement === "bounce" && !root.reducedMotion
                  && root.monitorBehavior !== "seamless"
-        repeat: true
-        onTriggered: root.clockMotionNowMs = Date.now()
+        onTick: function(deltaSeconds) { root.clockMotionNowMs += deltaSeconds * 1000 }
     }
 
     Timer {

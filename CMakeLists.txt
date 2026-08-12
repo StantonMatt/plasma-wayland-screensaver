@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(plasma-visual-screensaver VERSION 0.2.0 LANGUAGES CXX)
+project(plasma-visual-screensaver VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,7 +15,7 @@ include(KDECMakeSettings)
 include(KDECompilerSettings NO_POLICY_SCOPE)
 include(FeatureSummary)
 
-find_package(Qt6 6.6 REQUIRED COMPONENTS Core DBus Gui Qml Quick QuickControls2)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core DBus Gui Qml Quick QuickControls2)
 find_package(KF6 6.0 REQUIRED COMPONENTS Config IdleTime)
 find_package(LayerShellQt REQUIRED)
 
@@ -23,7 +23,7 @@ add_subdirectory(src)
 
 include(CTest)
 if(BUILD_TESTING)
-    find_package(Qt6 6.6 REQUIRED COMPONENTS Test)
+    find_package(Qt6 6.8 REQUIRED COMPONENTS Test)
     add_subdirectory(tests)
 endif()
 

@@ -395,9 +395,21 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         textRole: "text"; valueRole: "value"
                         model: [
+                            { text: qsTr("Match each monitor — smoothest"), value: 0 },
                             { text: qsTr("15 fps — lowest power"), value: 15 },
-                            { text: qsTr("30 fps — balanced"), value: 30 },
-                            { text: qsTr("60 fps — smooth"), value: 60 }
+                            { text: qsTr("24 fps — cinematic"), value: 24 },
+                            { text: qsTr("30 fps — low power"), value: 30 },
+                            { text: qsTr("45 fps"), value: 45 },
+                            { text: qsTr("60 fps — balanced"), value: 60 },
+                            { text: qsTr("75 fps"), value: 75 },
+                            { text: qsTr("90 fps"), value: 90 },
+                            { text: qsTr("100 fps"), value: 100 },
+                            { text: qsTr("120 fps"), value: 120 },
+                            { text: qsTr("144 fps"), value: 144 },
+                            { text: qsTr("165 fps"), value: 165 },
+                            { text: qsTr("175 fps"), value: 175 },
+                            { text: qsTr("200 fps"), value: 200 },
+                            { text: qsTr("240 fps"), value: 240 }
                         ]
                         Component.onCompleted: currentIndex = indexOfValue(window.screensaverConfig.frameRate)
                         enabled: !reducedMotion.checked
@@ -411,7 +423,7 @@ ApplicationWindow {
                 Layout.rightMargin: 22
                 wrapMode: Text.WordWrap
                 color: palette.mid
-                text: qsTr("OLED tip: Pure Black, moving elements, a moving clock, seamless mode, and panel coverage minimize static pixels. Higher density, glow, and frame rates use more GPU power.")
+                text: qsTr("OLED tip: Pure Black, moving elements, a moving clock, seamless mode, and panel coverage minimize static pixels. Match each monitor removes timer jitter and follows every display's native refresh, while fixed caps save GPU power.")
             }
 
             RowLayout {

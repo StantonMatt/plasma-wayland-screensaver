@@ -12,7 +12,7 @@ Canvas {
     property real phase: 0
 
     renderTarget: Canvas.FramebufferObject
-    renderStrategy: Canvas.Cooperative
+    renderStrategy: Canvas.Threaded
     onWidthChanged: requestPaint()
     onHeightChanged: requestPaint()
     onPaint: {
@@ -49,12 +49,11 @@ Canvas {
             }
         }
     }
-    Timer {
-        interval: Math.round(1000 / Math.max(1, canvas.frameRate))
-        repeat: true
+    FrameClock {
+        presentationClock: canvas.context ? canvas.context.presentationClock : null
         running: !canvas.reducedMotion
-        onTriggered: {
-            canvas.phase = (Date.now() - canvas.animationEpochMs) * 0.00055
+        onTick: function(deltaSeconds) {
+            canvas.phase += deltaSeconds * 0.55
             canvas.requestPaint()
         }
     }

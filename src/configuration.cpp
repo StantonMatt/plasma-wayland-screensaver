@@ -6,6 +6,7 @@
 #include <QStringList>
 
 #include <algorithm>
+#include <cstdlib>
 
 Configuration::Configuration(const QString &filePath, QObject *parent)
     : QObject(parent)
@@ -111,8 +112,18 @@ void Configuration::setClockSpeed(const QString &value)
 }
 void Configuration::setFrameRate(int value)
 {
-    const int normalized = value <= 15 ? 15 : (value <= 30 ? 30 : 60);
-    update(m_frameRate, normalized);
+    static const QList<int> supportedRates = {
+        0, 15, 24, 30, 45, 60, 75, 90, 100, 120, 144, 165, 175, 200, 240,
+    };
+    if (supportedRates.contains(value)) {
+        update(m_frameRate, value);
+        return;
+    }
+    const auto closest = std::min_element(supportedRates.cbegin(), supportedRates.cend(),
+                                          [value](int left, int right) {
+                                              return std::abs(left - value) < std::abs(right - value);
+                                          });
+    update(m_frameRate, closest == supportedRates.cend() ? 30 : *closest);
 }
 void Configuration::setReducedMotion(bool value) { update(m_reducedMotion, value); }
 void Configuration::setMonitorBehavior(const QString &value)

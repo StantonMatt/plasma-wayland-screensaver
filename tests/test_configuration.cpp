@@ -48,7 +48,7 @@ private Q_SLOTS:
         config.setBallGravity(-999);
         config.setBallElasticity(2);
         QCOMPARE(config.idleMinutes(), 1);
-        QCOMPARE(config.frameRate(), 60);
+        QCOMPARE(config.frameRate(), 45);
         QCOMPARE(config.visualModule(), QStringLiteral("aurora"));
         QCOMPARE(config.backgroundStyle(), QStringLiteral("midnight"));
         QCOMPARE(config.clockMovement(), QStringLiteral("bounce"));
@@ -128,6 +128,20 @@ private Q_SLOTS:
             config.setVisualModule(module);
             QCOMPARE(config.visualModule(), module);
         }
+    }
+
+    void supportsExpandedAndAutomaticFrameRates()
+    {
+        QTemporaryDir directory;
+        Configuration config(directory.filePath(QStringLiteral("settingsrc")));
+        const QList<int> rates = {0, 15, 24, 30, 45, 60, 75, 90, 100,
+                                  120, 144, 165, 175, 200, 240};
+        for (int rate : rates) {
+            config.setFrameRate(rate);
+            QCOMPARE(config.frameRate(), rate);
+        }
+        config.setFrameRate(239);
+        QCOMPARE(config.frameRate(), 240);
     }
 
     void migratesCombinedBlackVisual()

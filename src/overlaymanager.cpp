@@ -2,6 +2,7 @@
 #include "overlaymanager.h"
 
 #include "configuration.h"
+#include "presentationclock.h"
 
 #include <LayerShellQt/Window>
 #include <QCoreApplication>
@@ -14,6 +15,8 @@
 #include <QScreen>
 #include <QUrl>
 #include <QVariant>
+
+#include <algorithm>
 
 OverlayManager::OverlayManager(Configuration *configuration, QObject *parent)
     : QObject(parent)
@@ -96,6 +99,8 @@ bool OverlayManager::addScreen(QScreen *screen)
     view->setScreen(screen);
     view->setGeometry(screen->geometry());
 
+    auto *presentationClock = new PresentationClock(view, m_configuration->frameRate(), view);
+
     const uint seed = m_configuration->monitorBehavior() == QStringLiteral("synchronized")
         || m_configuration->monitorBehavior() == QStringLiteral("seamless")
         ? 1U : qHash(screen->name());
@@ -131,6 +136,7 @@ bool OverlayManager::addScreen(QScreen *screen)
         {QStringLiteral("virtualWidth"), virtualGeometry.width()},
         {QStringLiteral("virtualHeight"), virtualGeometry.height()},
         {QStringLiteral("animationState"), QVariant::fromValue(static_cast<QObject *>(&m_animationState))},
+        {QStringLiteral("presentationClock"), QVariant::fromValue(static_cast<QObject *>(presentationClock))},
     });
     view->setSource(QUrl(QStringLiteral("qrc:/qml/Screensaver.qml")));
     if (view->status() == QQuickView::Error) {
@@ -160,8 +166,16 @@ bool OverlayManager::addScreen(QScreen *screen)
     connect(screen, &QScreen::virtualGeometryChanged, view, [this](const QRect &) {
         updateAllViewGeometry();
     });
+    connect(screen, &QScreen::refreshRateChanged, view, [this](qreal) {
+        updateAnimationState();
+    });
     m_views.insert(screen, view);
     view->show();
+    const bool hasMotion = !m_configuration->reducedMotion()
+        && (m_configuration->visualModule() != QStringLiteral("none")
+            || (m_configuration->showClock()
+                && m_configuration->clockMovement() == QStringLiteral("bounce")));
+    presentationClock->setRunning(hasMotion);
     updateAllViewGeometry();
     return true;
 }
@@ -197,8 +211,17 @@ void OverlayManager::updateAnimationState()
         && m_configuration->visualModule() == QStringLiteral("bounce");
     const bool animateClock = seamless && motionAllowed && m_configuration->showClock()
         && m_configuration->clockMovement() == QStringLiteral("bounce");
+    int simulationRate = m_configuration->frameRate();
+    if (simulationRate == 0) {
+        simulationRate = 60;
+        for (QScreen *screen : QGuiApplication::screens()) {
+            if (screen) {
+                simulationRate = std::max(simulationRate, qRound(screen->refreshRate()));
+            }
+        }
+    }
     m_animationState.configure(QGuiApplication::screens(), animateBall, animateClock,
-                               m_configuration->clockSpeed(), m_configuration->frameRate(),
+                               m_configuration->clockSpeed(), simulationRate,
                                m_configuration->ballCount(), m_configuration->animationSpeed(),
                                m_configuration->animationScale(), m_configuration->ballGravity(),
                                m_configuration->ballElasticity(), m_configuration->ballCollisions());

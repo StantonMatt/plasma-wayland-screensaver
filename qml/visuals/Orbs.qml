@@ -32,14 +32,12 @@ Item {
         }
     }
 
-    Timer {
-        interval: Math.round(1000 / Math.max(1, root.frameRate))
-        repeat: true
+    FrameClock {
+        presentationClock: root.context ? root.context.presentationClock : null
         running: !root.reducedMotion
-        onTriggered: {
+        onTick: function(deltaSeconds) {
             const speed = root.context ? root.context.animationSpeed / 100 : 1
-            root.phase = (root.seed % 997) / 137.0
-                         + (Date.now() - root.animationEpochMs) * 0.00036 * speed
+            root.phase += deltaSeconds * 0.36 * speed
         }
     }
 }

@@ -1,60 +1,95 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+pragma ComponentBehavior: Bound
 import QtQuick
 import "VisualUtils.js" as Utils
 
-Canvas {
-    id: canvas
+Item {
+    id: root
+    clip: true
+
     property var context
     property int frameRate: 30
     property bool reducedMotion: false
     property int seed: 1
     property double animationEpochMs: Date.now()
     property real phase: 0
-    readonly property string glyphs: "0123456789ABCDEF<>[]{}アイウエオカキクケコサシスセソ"
 
-    renderTarget: Canvas.FramebufferObject
-    renderStrategy: Canvas.Cooperative
-    onWidthChanged: requestPaint()
-    onHeightChanged: requestPaint()
-    onPaint: {
-        const painter = getContext("2d")
-        painter.reset()
-        painter.clearRect(0, 0, width, height)
-        const density = context ? context.animationDensity : 50
-        const scale = context ? context.animationScale / 100 : 1
-        const speed = context ? context.animationSpeed / 100 : 1
-        const glow = context ? context.trailAmount / 100 : 0.35
-        const palette = Utils.colors(context ? context.animationPalette : "forest")
-        const fontSize = Math.max(11, Math.round((29 - density * 0.15) * scale))
-        const columns = Math.ceil(width / fontSize)
-        painter.font = fontSize + "px monospace"
-        painter.textAlign = "center"
-        for (let column = 0; column < columns; ++column) {
-            const length = 5 + Math.floor(Utils.random(column * 7 + 1, seed) * 16 * (density / 50))
-            const rate = (0.35 + Utils.random(column * 7 + 2, seed) * 0.85) * speed
-            const head = Utils.positiveModulo(phase * rate * height
-                                               + Utils.random(column * 7 + 3, seed) * height,
-                                               height + length * fontSize)
-            for (let row = 0; row < length; ++row) {
-                const y = head - row * fontSize
-                if (y < -fontSize || y > height + fontSize)
-                    continue
-                const characterIndex = Math.floor(Utils.random(column * 31 + row * 13
-                                                                 + Math.floor(phase * 4), seed)
-                                                  * glyphs.length)
-                painter.globalAlpha = Math.max(0.04, (1 - row / length) * (0.35 + glow * 0.65))
-                painter.fillStyle = row === 0 ? "#ffffff" : palette[column % palette.length]
-                painter.fillText(glyphs.charAt(characterIndex), column * fontSize + fontSize / 2, y)
+    readonly property string glyphs: "0123456789ABCDEF<>[]{}アイウエオカキクケコサシスセソ"
+    readonly property real density: context ? context.animationDensity : 50
+    readonly property real glyphScale: context ? context.animationScale / 100 : 1
+    readonly property real glow: context ? context.trailAmount / 100 : 0.35
+    readonly property var visualPalette: Utils.colors(context ? context.animationPalette : "forest")
+    readonly property int glyphSize: Math.max(11, Math.round((30 - density * 0.12) * glyphScale))
+    readonly property real columnWidth: glyphSize * 1.18
+    readonly property int columnCount: Math.ceil(width / Math.max(1, columnWidth)) + 1
+
+    function glyphStream(column, length) {
+        let result = ""
+        for (let row = 0; row < length; ++row) {
+            const glyphIndex = Math.floor(Utils.random(column * 97 + row * 29, seed)
+                                          * glyphs.length)
+            if (row > 0)
+                result += "\n"
+            result += glyphs.charAt(glyphIndex)
+        }
+        return result
+    }
+
+    Repeater {
+        model: root.columnCount
+
+        Item {
+            id: rainColumn
+            required property int index
+            readonly property int streamLength: 6 + Math.floor(
+                                                    Utils.random(index * 7 + 1, root.seed)
+                                                    * (8 + root.density * 0.16))
+            readonly property real fallRate: 0.32 + Utils.random(index * 7 + 2, root.seed) * 0.82
+            readonly property real startOffset: Utils.random(index * 7 + 3, root.seed)
+            x: index * root.columnWidth
+            y: Utils.positiveModulo(root.phase * fallRate * root.height
+                                    + startOffset * (root.height + stream.contentHeight),
+                                    root.height + stream.contentHeight) - stream.contentHeight
+            width: root.columnWidth
+            height: stream.contentHeight
+
+            Text {
+                id: stream
+                width: parent.width
+                text: root.glyphStream(rainColumn.index, rainColumn.streamLength)
+                color: root.visualPalette[rainColumn.index % root.visualPalette.length]
+                opacity: 0.28 + root.glow * 0.52
+                horizontalAlignment: Text.AlignHCenter
+                font.family: "monospace"
+                font.pixelSize: root.glyphSize
+                lineHeightMode: Text.FixedHeight
+                lineHeight: root.glyphSize * 0.95
+                renderType: Text.QtRendering
+                layer.enabled: true
+                layer.smooth: true
+            }
+
+            Text {
+                x: 0
+                y: Math.max(0, stream.contentHeight - root.glyphSize * 1.05)
+                width: parent.width
+                text: stream.text.charAt(stream.text.length - 1)
+                color: "#ffffff"
+                opacity: 0.72 + root.glow * 0.28
+                horizontalAlignment: Text.AlignHCenter
+                font.family: "monospace"
+                font.pixelSize: root.glyphSize
+                renderType: Text.QtRendering
             }
         }
     }
-    Timer {
-        interval: Math.round(1000 / Math.max(1, canvas.frameRate))
-        repeat: true
-        running: !canvas.reducedMotion
-        onTriggered: {
-            canvas.phase = (Date.now() - canvas.animationEpochMs) * 0.00018
-            canvas.requestPaint()
+
+    FrameClock {
+        presentationClock: root.context ? root.context.presentationClock : null
+        running: !root.reducedMotion
+        onTick: function(deltaSeconds) {
+            const speed = root.context ? root.context.animationSpeed / 100 : 1
+            root.phase += deltaSeconds * speed
         }
     }
 }
