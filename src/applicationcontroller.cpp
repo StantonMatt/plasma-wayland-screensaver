@@ -6,6 +6,7 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQuickWindow>
+#include <QTimer>
 #include <QVariantMap>
 
 ApplicationController::ApplicationController(QObject *parent)
@@ -90,7 +91,13 @@ void ApplicationController::Preview()
 void ApplicationController::Quit()
 {
     m_stateMachine.stop();
-    QCoreApplication::quit();
+    // Defer destruction when invoked by the QML button so the current signal
+    // handler can unwind before its engine and window disappear. Destroying the
+    // settings window also prevents its hide-on-close handler from vetoing quit.
+    QTimer::singleShot(0, this, [this] {
+        m_settingsEngine.reset();
+        QCoreApplication::quit();
+    });
 }
 
 void ApplicationController::saveSettings()

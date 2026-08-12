@@ -19,7 +19,8 @@ event.
 - `OverlayManager` creates one `QQuickView` per `QScreen`. Each view is a
   LayerShellQt overlay-layer surface anchored to all four edges of its assigned
   output. Qt screen add/remove and geometry signals handle hot-plug, resizing,
-  rotation, and rearrangement.
+  rotation, and rearrangement. Optional exclusive zone `-1` coverage extends
+  surfaces beneath Plasma panels without changing panel configuration.
 - `Inhibitor` requests the XDG Desktop Portal `Inhibit` API with both idle and
   suspend flags. If the portal is unavailable it falls back to Plasma's
   `org.freedesktop.PowerManagement.Inhibit` service. Activation is refused if
@@ -27,9 +28,14 @@ event.
   an overlay that can be blanked or suspended underneath it.
 - `ApplicationController` ties those components together and exports
   single-instance D-Bus commands for settings, preview, and quit.
-- `qml/visuals/` contains replaceable visual modules. Both bundled modules use
-  a bounded number of elements and honor the selected 15/30/60 fps or static
-  reduced-motion setting.
+- Animation and background are independent. Replaceable animation modules
+  provide None, Aurora Drift, Floating Orbs, and Bouncing Orb; backgrounds
+  provide Pure Black and several dark gradients. All modules honor the selected
+  15/30/60 fps or static reduced-motion setting.
+- `AnimationState` advances seamless moving objects once per frame and collides
+  them against the union of the actual `QScreen` geometries. Different output
+  sizes, vertical offsets, and gaps therefore form real boundaries while an
+  object can still cross a physically connected monitor seam.
 - `KConfig` stores settings in
   `~/.config/plasma-visual-screensaverrc` (or the configured XDG equivalent).
 
@@ -58,15 +64,15 @@ Kubuntu Plasma installation already includes these.
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
-./build/src/plasma-visual-screensaver --settings
+./build/bin/plasma-visual-screensaver --settings
 ```
 
 Useful commands:
 
 ```bash
-./build/src/plasma-visual-screensaver --preview
-./build/src/plasma-visual-screensaver --background
-./build/src/plasma-visual-screensaver --quit
+./build/bin/plasma-visual-screensaver --preview
+./build/bin/plasma-visual-screensaver --background
+./build/bin/plasma-visual-screensaver --quit
 ```
 
 Only one instance runs per session. Subsequent commands are forwarded over the
@@ -128,17 +134,23 @@ session:
    gain a surface and a removed output must disappear without a crash.
 4. While active, change resolution, scale, rotation, and monitor arrangement in
    Plasma settings. Every output should remain completely covered.
-5. Select synchronized and independent monitor behavior and verify the expected
-   animation phase. Test both visuals, the clock toggle, all frame rates, and
-   reduced motion.
-6. Let the configured idle interval expire naturally. Confirm activity dismisses
+5. Toggle panel coverage. When enabled, no taskbar or panel pixels should remain
+   visible; disabling it should leave panel-reserved areas uncovered.
+6. Select independent, synchronized, and seamless monitor behavior. With
+   Bouncing Orb and seamless mode, verify the orb crosses a connected monitor
+   boundary, bounces from unequal outer edges, and never disappears into a
+   non-existent part of a stepped or gapped layout.
+7. Combine every animation with each background. Test moving and centered clock
+   modes, slow/normal/fast clock speeds, the clock toggle, all frame rates, and
+   reduced motion. Moving items must freeze under reduced motion.
+8. Let the configured idle interval expire naturally. Confirm activity dismisses
    it and that another complete idle interval activates it again.
-7. Suspend and resume both while waiting and while preview is active. Confirm no
+9. Suspend and resume both while waiting and while preview is active. Confirm no
    stale overlay or inhibitor remains after resume. (The active inhibitor may
    intentionally defer an automatic suspend until dismissal.)
-8. Run `plasma-visual-screensaver --quit` and verify the process exits. Start it
+10. Run `plasma-visual-screensaver --quit` and verify the process exits. Start it
    again and confirm settings persisted.
-9. Use `busctl --user list | grep -E 'portal|PowerManagement'` and PowerDevil's
+11. Use `busctl --user list | grep -E 'portal|PowerManagement'` and PowerDevil's
    battery/status UI to verify an inhibition appears only while the overlay is
    active and is released after every dismissal and failed activation.
 

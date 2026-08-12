@@ -9,13 +9,16 @@
 #include <QEvent>
 #include <QGuiApplication>
 #include <QPointer>
+#include <QQuickItem>
 #include <QQuickView>
 #include <QScreen>
 #include <QUrl>
+#include <QVariant>
 
 OverlayManager::OverlayManager(Configuration *configuration, QObject *parent)
     : QObject(parent)
     , m_configuration(configuration)
+    , m_animationState(this)
 {
     connect(qGuiApp, &QGuiApplication::screenAdded, this, [this](QScreen *screen) {
         const QPointer<QScreen> guardedScreen(screen);
@@ -42,6 +45,7 @@ bool OverlayManager::show()
 
     m_visible = true;
     m_animationEpochMs = QDateTime::currentMSecsSinceEpoch();
+    updateAnimationState();
     const QList<QScreen *> screens = QGuiApplication::screens();
     for (QScreen *screen : screens) {
         addScreen(screen);
@@ -63,6 +67,7 @@ void OverlayManager::hide()
         return;
     }
     m_visible = false;
+    m_animationState.stop();
     qApp->removeEventFilter(this);
     const auto views = m_views;
     m_views.clear();
@@ -92,18 +97,31 @@ bool OverlayManager::addScreen(QScreen *screen)
     view->setGeometry(screen->geometry());
 
     const uint seed = m_configuration->monitorBehavior() == QStringLiteral("synchronized")
+        || m_configuration->monitorBehavior() == QStringLiteral("seamless")
         ? 1U : qHash(screen->name());
-    const bool synchronized = m_configuration->monitorBehavior() == QStringLiteral("synchronized");
+    const bool sharedMotion = m_configuration->monitorBehavior() != QStringLiteral("independent");
+    const QRect screenGeometry = screen->geometry();
+    const QRect virtualGeometry = screen->virtualGeometry();
     view->setInitialProperties({
         {QStringLiteral("visualModule"), m_configuration->visualModule()},
+        {QStringLiteral("backgroundStyle"), m_configuration->backgroundStyle()},
         {QStringLiteral("showClock"), m_configuration->showClock()},
+        {QStringLiteral("clockMovement"), m_configuration->clockMovement()},
+        {QStringLiteral("clockSpeed"), m_configuration->clockSpeed()},
         {QStringLiteral("frameRate"), m_configuration->frameRate()},
         {QStringLiteral("reducedMotion"), m_configuration->reducedMotion()},
+        {QStringLiteral("monitorBehavior"), m_configuration->monitorBehavior()},
         {QStringLiteral("seed"), seed},
-        {QStringLiteral("animationEpochMs"), synchronized
+        {QStringLiteral("animationEpochMs"), sharedMotion
                                                 ? m_animationEpochMs
                                                 : QDateTime::currentMSecsSinceEpoch()},
-        {QStringLiteral("screenName"), screen->name()},
+        {QStringLiteral("screenX"), screenGeometry.x()},
+        {QStringLiteral("screenY"), screenGeometry.y()},
+        {QStringLiteral("virtualX"), virtualGeometry.x()},
+        {QStringLiteral("virtualY"), virtualGeometry.y()},
+        {QStringLiteral("virtualWidth"), virtualGeometry.width()},
+        {QStringLiteral("virtualHeight"), virtualGeometry.height()},
+        {QStringLiteral("animationState"), QVariant::fromValue(static_cast<QObject *>(&m_animationState))},
     });
     view->setSource(QUrl(QStringLiteral("qrc:/qml/Screensaver.qml")));
     if (view->status() == QQuickView::Error) {
@@ -121,16 +139,21 @@ bool OverlayManager::addScreen(QScreen *screen)
     anchors.setFlag(LayerShellQt::Window::AnchorLeft);
     anchors.setFlag(LayerShellQt::Window::AnchorRight);
     layer->setAnchors(anchors);
-    layer->setExclusiveZone(0);
+    // -1 tells layer-shell not to shrink around panel exclusive zones, so the
+    // overlay covers taskbars without changing their Plasma configuration.
+    layer->setExclusiveZone(m_configuration->coverPanels() ? -1 : 0);
     layer->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityExclusive);
     layer->setScope(QStringLiteral("plasma-visual-screensaver"));
 
-    connect(screen, &QScreen::geometryChanged, view, [view, screen](const QRect &) {
-        view->setScreen(screen);
-        view->setGeometry(screen->geometry());
+    connect(screen, &QScreen::geometryChanged, view, [this](const QRect &) {
+        updateAllViewGeometry();
+    });
+    connect(screen, &QScreen::virtualGeometryChanged, view, [this](const QRect &) {
+        updateAllViewGeometry();
     });
     m_views.insert(screen, view);
     view->show();
+    updateAllViewGeometry();
     return true;
 }
 
@@ -143,6 +166,49 @@ void OverlayManager::removeScreen(QScreen *screen)
     }
     if (m_visible && m_views.isEmpty()) {
         Q_EMIT inputDetected();
+    } else {
+        updateAllViewGeometry();
+    }
+}
+
+void OverlayManager::updateAllViewGeometry()
+{
+    updateAnimationState();
+    const auto screens = m_views.keys();
+    for (QScreen *screen : screens) {
+        updateViewGeometry(screen);
+    }
+}
+
+void OverlayManager::updateAnimationState()
+{
+    const bool seamless = m_configuration->monitorBehavior() == QStringLiteral("seamless");
+    const bool motionAllowed = !m_configuration->reducedMotion();
+    const bool animateBall = seamless && motionAllowed
+        && m_configuration->visualModule() == QStringLiteral("bounce");
+    const bool animateClock = seamless && motionAllowed && m_configuration->showClock()
+        && m_configuration->clockMovement() == QStringLiteral("bounce");
+    m_animationState.configure(QGuiApplication::screens(), animateBall, animateClock,
+                               m_configuration->clockSpeed(), m_configuration->frameRate());
+}
+
+void OverlayManager::updateViewGeometry(QScreen *screen)
+{
+    QQuickView *view = m_views.value(screen);
+    if (!view || !screen) {
+        return;
+    }
+    const QRect screenGeometry = screen->geometry();
+    const QRect virtualGeometry = screen->virtualGeometry();
+    view->setScreen(screen);
+    view->setGeometry(screenGeometry);
+    if (QObject *root = view->rootObject()) {
+        root->setProperty("screenX", screenGeometry.x());
+        root->setProperty("screenY", screenGeometry.y());
+        root->setProperty("virtualX", virtualGeometry.x());
+        root->setProperty("virtualY", virtualGeometry.y());
+        root->setProperty("virtualWidth", virtualGeometry.width());
+        root->setProperty("virtualHeight", virtualGeometry.height());
     }
 }
 

@@ -3,23 +3,111 @@ import QtQuick
 
 Item {
     id: root
+    clip: true
+
     required property string visualModule
+    required property string backgroundStyle
     required property bool showClock
+    required property string clockMovement
+    required property string clockSpeed
     required property int frameRate
     required property bool reducedMotion
+    required property string monitorBehavior
     required property int seed
     required property double animationEpochMs
-    required property string screenName
+    required property real screenX
+    required property real screenY
+    required property real virtualX
+    required property real virtualY
+    required property real virtualWidth
+    required property real virtualHeight
+    required property var animationState
+
+    property double clockMotionNowMs: animationEpochMs
+
+    function visualSource() {
+        switch (root.visualModule) {
+        case "orbs": return "visuals/Orbs.qml"
+        case "bounce": return "visuals/Bounce.qml"
+        case "none": return ""
+        default: return "visuals/Aurora.qml"
+        }
+    }
+
+    function backgroundTop() {
+        switch (root.backgroundStyle) {
+        case "black": return "#000000"
+        case "ocean": return "#02111d"
+        case "plum": return "#18091d"
+        default: return "#071329"
+        }
+    }
+
+    function backgroundBottom() {
+        switch (root.backgroundStyle) {
+        case "black": return "#000000"
+        case "ocean": return "#062f3c"
+        case "plum": return "#310d2c"
+        default: return "#13091e"
+        }
+    }
+
+    function clockSpeedMultiplier() {
+        if (root.clockSpeed === "slow") return 0.55
+        if (root.clockSpeed === "fast") return 1.8
+        return 1.0
+    }
+
+    function positiveModulo(value, modulus) {
+        if (modulus <= 0)
+            return 0
+        return ((value % modulus) + modulus) % modulus
+    }
+
+    function pingPong(distance, span) {
+        if (span <= 0)
+            return 0
+        const position = root.positiveModulo(distance, span * 2)
+        return position <= span ? position : span * 2 - position
+    }
+
+    function clockLocalX(itemWidth) {
+        if (root.clockMovement !== "bounce" || root.reducedMotion)
+            return (root.width - itemWidth) / 2
+        if (root.monitorBehavior === "seamless")
+            return root.animationState.clockX - root.screenX
+        const elapsed = Math.max(0, root.clockMotionNowMs - root.animationEpochMs) / 1000
+        const offset = root.seed * 19.37
+        return root.pingPong(elapsed * 31 * root.clockSpeedMultiplier() + offset,
+                             root.width - itemWidth)
+    }
+
+    function clockLocalY(itemHeight) {
+        if (root.clockMovement !== "bounce" || root.reducedMotion)
+            return (root.height - itemHeight) / 2
+        if (root.monitorBehavior === "seamless")
+            return root.animationState.clockY - root.screenY
+        const elapsed = Math.max(0, root.clockMotionNowMs - root.animationEpochMs) / 1000
+        const offset = root.seed * 11.83
+        return root.pingPong(elapsed * 23 * root.clockSpeedMultiplier() + offset,
+                             root.height - itemHeight)
+    }
 
     Rectangle {
         anchors.fill: parent
-        color: "#03050b"
+        gradient: Gradient {
+            GradientStop { position: 0; color: root.backgroundTop() }
+            GradientStop { position: 1; color: root.backgroundBottom() }
+        }
     }
 
     Loader {
+        id: visualLoader
         anchors.fill: parent
-        source: root.visualModule === "orbs" ? "visuals/Orbs.qml" : "visuals/Aurora.qml"
+        active: root.visualModule !== "none"
+        source: root.visualSource()
         onLoaded: {
+            item.context = root
             item.frameRate = root.frameRate
             item.reducedMotion = root.reducedMotion
             item.seed = root.seed
@@ -28,16 +116,28 @@ Item {
     }
 
     Column {
-        anchors.centerIn: parent
+        id: clockBox
+        x: root.clockLocalX(width)
+        y: root.clockLocalY(height)
         spacing: 10
         visible: root.showClock
+        onWidthChanged: {
+            if (root.monitorBehavior === "seamless")
+                root.animationState.setClockSize(width, height)
+        }
+        onHeightChanged: {
+            if (root.monitorBehavior === "seamless")
+                root.animationState.setClockSize(width, height)
+        }
 
         Text {
             id: clock
             anchors.horizontalCenter: parent.horizontalCenter
             color: "#f6f8ff"
             font.family: "Noto Sans"
-            font.pixelSize: Math.max(48, Math.min(root.width, root.height) * 0.115)
+            font.pixelSize: root.monitorBehavior === "seamless"
+                ? Math.max(48, Math.min(100, root.virtualHeight * 0.07))
+                : Math.max(48, Math.min(root.width, root.height) * 0.115)
             font.weight: Font.Light
             font.letterSpacing: 2
             style: Text.Raised
@@ -50,10 +150,20 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             color: "#c7d0e8"
             font.family: "Noto Sans"
-            font.pixelSize: Math.max(16, Math.min(root.width, root.height) * 0.025)
+            font.pixelSize: root.monitorBehavior === "seamless"
+                ? Math.max(16, Math.min(28, root.virtualHeight * 0.02))
+                : Math.max(16, Math.min(root.width, root.height) * 0.025)
             font.weight: Font.Normal
             text: Qt.formatDate(new Date(), "dddd, d MMMM")
         }
+    }
+
+    Timer {
+        interval: Math.round(1000 / Math.max(1, root.frameRate))
+        running: root.showClock && root.clockMovement === "bounce" && !root.reducedMotion
+                 && root.monitorBehavior !== "seamless"
+        repeat: true
+        onTriggered: root.clockMotionNowMs = Date.now()
     }
 
     Timer {
@@ -65,14 +175,5 @@ Item {
             clock.text = Qt.formatTime(now, "hh:mm")
             date.text = Qt.formatDate(now, "dddd, d MMMM")
         }
-    }
-
-    Text {
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 24
-        color: "#6697a3bd"
-        font.pixelSize: 12
-        text: root.screenName
     }
 }

@@ -1,5 +1,7 @@
 set(screensaver_sources
     main.cpp
+    animationstate.cpp
+    animationstate.h
     applicationcontroller.cpp
     applicationcontroller.h
     configuration.cpp

@@ -8,9 +8,9 @@ ApplicationWindow {
     required property var controller
     required property var screensaverConfig
     width: 620
-    height: 650
+    height: 840
     minimumWidth: 520
-    minimumHeight: 580
+    minimumHeight: 760
     visible: true
     title: qsTr("Plasma Visual Screensaver")
 
@@ -22,11 +22,35 @@ ApplicationWindow {
     function store() {
         window.screensaverConfig.idleMinutes = idleTimeout.value
         window.screensaverConfig.visualModule = visual.currentValue
+        window.screensaverConfig.backgroundStyle = background.currentValue
         window.screensaverConfig.showClock = showClock.checked
+        window.screensaverConfig.clockMovement = clockMovement.currentValue
+        window.screensaverConfig.clockSpeed = clockSpeed.currentValue
         window.screensaverConfig.frameRate = frameRate.currentValue
         window.screensaverConfig.reducedMotion = reducedMotion.checked
         window.screensaverConfig.monitorBehavior = monitors.currentValue
+        window.screensaverConfig.coverPanels = coverPanels.checked
         window.controller.saveSettings()
+    }
+
+    function visualIndex(value) {
+        if (value === "aurora") return 1
+        if (value === "orbs") return 2
+        if (value === "bounce") return 3
+        return 0
+    }
+
+    function backgroundIndex(value) {
+        if (value === "midnight") return 1
+        if (value === "ocean") return 2
+        if (value === "plum") return 3
+        return 0
+    }
+
+    function monitorIndex(value) {
+        if (value === "synchronized") return 1
+        if (value === "seamless") return 2
+        return 0
     }
 
     ColumnLayout {
@@ -64,17 +88,34 @@ ApplicationWindow {
                 Label { text: qsTr("minutes of inactivity") }
             }
 
-            Label { text: qsTr("Visual") }
+            Label { text: qsTr("Animation") }
             ComboBox {
                 id: visual
                 Layout.fillWidth: true
                 textRole: "text"
                 valueRole: "value"
                 model: [
+                    { text: qsTr("None"), value: "none" },
                     { text: qsTr("Aurora Drift"), value: "aurora" },
-                    { text: qsTr("Floating Orbs"), value: "orbs" }
+                    { text: qsTr("Floating Orbs"), value: "orbs" },
+                    { text: qsTr("Bouncing Orb"), value: "bounce" }
                 ]
-                Component.onCompleted: currentIndex = window.screensaverConfig.visualModule === "orbs" ? 1 : 0
+                Component.onCompleted: currentIndex = window.visualIndex(window.screensaverConfig.visualModule)
+            }
+
+            Label { text: qsTr("Background") }
+            ComboBox {
+                id: background
+                Layout.fillWidth: true
+                textRole: "text"
+                valueRole: "value"
+                model: [
+                    { text: qsTr("Pure Black"), value: "black" },
+                    { text: qsTr("Midnight Gradient"), value: "midnight" },
+                    { text: qsTr("Deep Ocean"), value: "ocean" },
+                    { text: qsTr("Dark Plum"), value: "plum" }
+                ]
+                Component.onCompleted: currentIndex = window.backgroundIndex(window.screensaverConfig.backgroundStyle)
             }
 
             Label { text: qsTr("Clock") }
@@ -82,6 +123,38 @@ ApplicationWindow {
                 id: showClock
                 text: qsTr("Show clock and date")
                 checked: window.screensaverConfig.showClock
+            }
+
+            Label { text: qsTr("Clock movement") }
+            ComboBox {
+                id: clockMovement
+                Layout.fillWidth: true
+                textRole: "text"
+                valueRole: "value"
+                model: [
+                    { text: qsTr("Move around the display"), value: "bounce" },
+                    { text: qsTr("Stay centered"), value: "center" }
+                ]
+                Component.onCompleted: currentIndex = window.screensaverConfig.clockMovement === "center" ? 1 : 0
+                enabled: showClock.checked
+            }
+
+            Label { text: qsTr("Clock speed") }
+            ComboBox {
+                id: clockSpeed
+                Layout.fillWidth: true
+                textRole: "text"
+                valueRole: "value"
+                model: [
+                    { text: qsTr("Slow"), value: "slow" },
+                    { text: qsTr("Normal"), value: "normal" },
+                    { text: qsTr("Fast"), value: "fast" }
+                ]
+                Component.onCompleted: {
+                    currentIndex = window.screensaverConfig.clockSpeed === "slow" ? 0
+                        : (window.screensaverConfig.clockSpeed === "fast" ? 2 : 1)
+                }
+                enabled: showClock.checked && clockMovement.currentValue === "bounce"
             }
 
             Label { text: qsTr("Motion") }
@@ -115,9 +188,17 @@ ApplicationWindow {
                 valueRole: "value"
                 model: [
                     { text: qsTr("Independent motion on every monitor"), value: "independent" },
-                    { text: qsTr("Synchronized motion on every monitor"), value: "synchronized" }
+                    { text: qsTr("Synchronized motion on every monitor"), value: "synchronized" },
+                    { text: qsTr("Seamless virtual desktop"), value: "seamless" }
                 ]
-                Component.onCompleted: currentIndex = window.screensaverConfig.monitorBehavior === "synchronized" ? 1 : 0
+                Component.onCompleted: currentIndex = window.monitorIndex(window.screensaverConfig.monitorBehavior)
+            }
+
+            Label { text: qsTr("Panels") }
+            CheckBox {
+                id: coverPanels
+                text: qsTr("Cover taskbars and panels")
+                checked: window.screensaverConfig.coverPanels
             }
         }
 
@@ -127,7 +208,7 @@ ApplicationWindow {
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             color: palette.mid
-            text: qsTr("Any keyboard, pointer, touch, or resume activity dismisses every overlay immediately. Plasma's normal lock-screen and power settings are unchanged.")
+            text: qsTr("OLED tip: combine Pure Black with None or Bouncing Orb, a moving clock, seamless mode, and panel coverage to minimize static pixels. Any input dismisses the overlay; Plasma's lock-screen and power settings are unchanged.")
         }
 
         RowLayout {
@@ -144,11 +225,15 @@ ApplicationWindow {
                 text: qsTr("Defaults")
                 onClicked: {
                     idleTimeout.value = 10
-                    visual.currentIndex = 0
+                    visual.currentIndex = 1
+                    background.currentIndex = 1
                     showClock.checked = true
+                    clockMovement.currentIndex = 0
+                    clockSpeed.currentIndex = 1
                     frameRate.currentIndex = 1
                     reducedMotion.checked = false
                     monitors.currentIndex = 0
+                    coverPanels.checked = true
                 }
             }
             Button {

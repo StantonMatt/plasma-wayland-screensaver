@@ -3,6 +3,7 @@ import QtQuick
 
 Canvas {
     id: canvas
+    property var context
     property int frameRate: 30
     property bool reducedMotion: false
     property int seed: 1
@@ -19,8 +20,7 @@ Canvas {
     onPaint: {
         const ctx = getContext("2d")
         ctx.reset()
-        ctx.fillStyle = "#03050b"
-        ctx.fillRect(0, 0, width, height)
+        ctx.clearRect(0, 0, width, height)
 
         const colors = ["#4d46d9a7", "#454e7fff", "#354ad9ce", "#2f995de8"]
         const middleColors = ["#1846d9a7", "#184e7fff", "#144ad9ce", "#14995de8"]

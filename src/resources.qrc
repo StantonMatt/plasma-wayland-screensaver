@@ -4,5 +4,6 @@
         <file alias="Settings.qml">../qml/Settings.qml</file>
         <file alias="visuals/Aurora.qml">../qml/visuals/Aurora.qml</file>
         <file alias="visuals/Orbs.qml">../qml/visuals/Orbs.qml</file>
+        <file alias="visuals/Bounce.qml">../qml/visuals/Bounce.qml</file>
     </qresource>
 </RCC>

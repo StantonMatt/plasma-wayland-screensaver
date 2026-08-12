@@ -4,19 +4,12 @@ import QtQuick
 
 Item {
     id: root
+    property var context
     property int frameRate: 30
     property bool reducedMotion: false
     property int seed: 1
     property double animationEpochMs: Date.now()
     property real phase: (seed % 997) / 137.0
-
-    Rectangle {
-        anchors.fill: parent
-        gradient: Gradient {
-            GradientStop { position: 0; color: "#071329" }
-            GradientStop { position: 1; color: "#13091e" }
-        }
-    }
 
     Repeater {
         model: 7
