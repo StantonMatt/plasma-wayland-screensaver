@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install build and validation dependencies
         run: |
@@ -33,7 +33,7 @@ jobs:
         run: ./scripts/build-deb.sh "$RUNNER_TEMP/build" "$RUNNER_TEMP/dist"
 
       - name: Upload installable package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: plasma-visual-screensaver-${{ github.sha }}
           path: |
