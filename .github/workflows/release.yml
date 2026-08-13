@@ -1,0 +1,52 @@
+name: Publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish Debian package
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Verify tag matches the project version
+        shell: bash
+        run: |
+          project_version=$(sed -nE 's/^[[:space:]]*VERSION[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+).*$/\1/p' CMakeLists.txt | head -1)
+          if [[ "${GITHUB_REF_NAME}" != "v${project_version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match CMake version ${project_version}" >&2
+            exit 1
+          fi
+
+      - name: Install build and validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            appstream build-essential cmake desktop-file-utils dpkg-dev \
+            extra-cmake-modules libkf6config-dev libkf6idletime-dev \
+            liblayershellqtinterface-dev lintian ninja-build qt6-base-dev \
+            qt6-declarative-dev qt6-tools-dev qml6-module-qtquick \
+            qml6-module-qtquick-controls qml6-module-qtquick-layouts shellcheck
+
+      - name: Build, test, validate, and package
+        run: ./scripts/build-deb.sh "$RUNNER_TEMP/build" "$RUNNER_TEMP/dist"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "$RUNNER_TEMP"/dist/*.deb \
+            "$RUNNER_TEMP"/dist/*.sha256 \
+            --generate-notes \
+            --title "Plasma Visual Screensaver ${GITHUB_REF_NAME#v}" \
+            --verify-tag

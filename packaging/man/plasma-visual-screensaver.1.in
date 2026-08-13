@@ -1,0 +1,38 @@
+.TH PLASMA-VISUAL-SCREENSAVER 1 "August 2026" "plasma-visual-screensaver @PROJECT_VERSION@" "User Commands"
+.SH NAME
+plasma-visual-screensaver \- non-locking visual screensaver for Plasma Wayland
+.SH SYNOPSIS
+.B plasma-visual-screensaver
+.RI [ options ]
+.SH DESCRIPTION
+.B plasma-visual-screensaver
+provides configurable visual overlays after user inactivity on KDE Plasma
+Wayland. It is decorative software, not a screen locker or security boundary.
+.SH OPTIONS
+.TP
+.B \-h, \-\-help
+Show command-line help.
+.TP
+.B \-v, \-\-version
+Show version information.
+.TP
+.B \-\-background
+Run only as a background idle service.
+.TP
+.B \-\-preview
+Show the screensaver immediately.
+.TP
+.B \-\-settings
+Open the settings window.
+.TP
+.B \-\-quit
+Stop the running background process.
+.SH FILES
+.TP
+.I ~/.config/plasma-visual-screensaverrc
+Per-user settings managed through KDE's configuration system.
+.SH SEE ALSO
+.BR systemsettings (1)
+.SH BUGS
+Report bugs at
+<https://github.com/StantonMatt/plasma-wayland-screensaver/issues>.

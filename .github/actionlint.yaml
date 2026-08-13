@@ -1,0 +1,5 @@
+# ubuntu-26.04 is a GitHub-hosted public-preview image. actionlint 1.7.12 does
+# not yet include it in the built-in hosted-runner label list.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04

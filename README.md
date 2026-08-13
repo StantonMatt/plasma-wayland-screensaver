@@ -5,6 +5,29 @@ It starts after a configurable idle interval, covers every connected output,
 and disappears on the first keyboard, pointer, touch, or compositor resume
 event.
 
+## Install on Kubuntu 26.04
+
+Download the `.deb` and its `.sha256` file from the
+[latest GitHub Release](https://github.com/StantonMatt/plasma-wayland-screensaver/releases/latest).
+In the download directory, verify and install it with:
+
+```bash
+sha256sum --check plasma-visual-screensaver_*.deb.sha256
+sudo apt install ./plasma-visual-screensaver_*.deb
+```
+
+You can also double-click the `.deb` to install it with Discover. The package
+adds the application launcher and KDE autostart integration. It starts in the
+background at the next Plasma login; to start it immediately, run:
+
+```bash
+plasma-visual-screensaver --background
+```
+
+Open **Plasma Visual Screensaver** from the application menu to configure it.
+Settings are retained across upgrades in
+`~/.config/plasma-visual-screensaverrc`.
+
 > **Security notice:** this is a decorative overlay on an **unlocked** session.
 > It does not authenticate, lock input, protect running applications, or replace
 > Plasma's lock screen. Anyone who dismisses it can use the session.
@@ -65,6 +88,7 @@ KDE Frameworks 6.24, and LayerShellQt 6.6.4. Install the build dependencies:
 ```bash
 sudo apt update
 sudo apt install build-essential cmake ninja-build extra-cmake-modules \
+  appstream desktop-file-utils lintian shellcheck \
   qt6-base-dev qt6-declarative-dev qt6-tools-dev \
   libkf6config-dev libkf6idletime-dev liblayershellqtinterface-dev
 ```
@@ -94,7 +118,7 @@ Only one instance runs per session. Subsequent commands are forwarded over the
 session D-Bus. Preview saves current UI values and then uses the same overlay and
 inhibition path as idle activation.
 
-## Install and uninstall
+## Install from source
 
 System-wide installation (including the application launcher and KDE autostart
 entry):
@@ -133,6 +157,44 @@ rm ~/.config/plasma-visual-screensaverrc
 
 Log out and back in after installing to exercise the autostart entry, or launch
 `plasma-visual-screensaver --background` immediately.
+
+## Build the distributable package
+
+The release helper performs a clean build, tests, shell and QML lint,
+AppStream and desktop-file validation, Debian packaging, Debian policy lint,
+package inspection, and checksum generation:
+
+```bash
+./scripts/build-deb.sh
+```
+
+Artifacts are written to `dist/`. Install the generated package with:
+
+```bash
+sudo apt install ./dist/plasma-visual-screensaver_*.deb
+```
+
+GitHub Actions runs this same process on every push and pull request. A tag
+matching the CMake project version, such as `v0.3.0`, publishes the verified
+`.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
+the complete maintainer checklist.
+
+## Updating and uninstalling the package
+
+Download a newer release and install it with the same `apt install ./file.deb`
+command. Your personal configuration is not part of the package and remains
+unchanged.
+
+```bash
+sudo apt remove plasma-visual-screensaver
+```
+
+Removal also leaves your settings available for a later reinstall. To remove
+those separately:
+
+```bash
+rm ~/.config/plasma-visual-screensaverrc
+```
 
 ## Manual Wayland test checklist
 

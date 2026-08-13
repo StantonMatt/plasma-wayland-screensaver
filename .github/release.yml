@@ -1,0 +1,10 @@
+changelog:
+  categories:
+    - title: New features
+      labels: [enhancement, feature]
+    - title: Fixes and performance
+      labels: [bug, performance]
+    - title: Documentation
+      labels: [documentation]
+    - title: Other changes
+      labels: ["*"]

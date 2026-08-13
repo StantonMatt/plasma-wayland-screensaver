@@ -1,0 +1,43 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kubuntu-package:
+    name: Kubuntu 26.04 package
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build and validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            appstream build-essential cmake desktop-file-utils dpkg-dev \
+            extra-cmake-modules libkf6config-dev libkf6idletime-dev \
+            liblayershellqtinterface-dev lintian ninja-build qt6-base-dev \
+            qt6-declarative-dev qt6-tools-dev qml6-module-qtquick \
+            qml6-module-qtquick-controls qml6-module-qtquick-layouts shellcheck
+
+      - name: Build, test, validate, and package
+        run: ./scripts/build-deb.sh "$RUNNER_TEMP/build" "$RUNNER_TEMP/dist"
+
+      - name: Upload installable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: plasma-visual-screensaver-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/dist/*.deb
+            ${{ runner.temp }}/dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
