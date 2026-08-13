@@ -186,10 +186,20 @@ command. Your personal configuration is not part of the package and remains
 unchanged.
 
 For automatic updates through Discover, Software Updater, and `apt upgrade`,
-use the project's Launchpad PPA once it is activated. The PPA package upgrades
-an existing standalone `.deb` installation without resetting preferences. See
-[PPA.md](PPA.md) for maintainer setup, installation, migration, and release
-instructions.
+use the project's
+[Launchpad PPA](https://launchpad.net/~stantonmatt/+archive/ubuntu/plasma-visual-screensaver).
+Once its package page reports the Resolute build as **Published**, install with:
+
+```bash
+sudo add-apt-repository ppa:stantonmatt/plasma-visual-screensaver
+sudo apt update
+sudo apt install plasma-visual-screensaver
+```
+
+The PPA package upgrades an existing standalone `.deb` installation without
+resetting preferences. Future releases arrive through the computer's normal
+update tools. See [PPA.md](PPA.md) for migration, removal, and maintainer
+release instructions.
 
 ```bash
 sudo apt remove plasma-visual-screensaver

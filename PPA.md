@@ -6,7 +6,15 @@ newer package versions arrive through Discover, Software Updater, or normal
 `apt upgrade` operations. Personal settings remain in the user's KDE config
 directory and are not replaced by package upgrades.
 
+The public stable archive is
+[`ppa:stantonmatt/plasma-visual-screensaver`](https://launchpad.net/~stantonmatt/+archive/ubuntu/plasma-visual-screensaver).
+For a newly initialized archive, wait until its package page reports the
+Resolute build as **Published** before using the installation commands below.
+
 ## One-time maintainer setup
+
+These steps are already complete for the public stable archive. They are kept
+here as recovery and maintainer-transfer documentation.
 
 1. Create or claim a Launchpad account at <https://launchpad.net/+login> and
    note its account name from the `launchpad.net/~ACCOUNT` profile URL.
@@ -78,7 +86,7 @@ users to migrate without a forced downgrade.
 Build, sign, lint, and upload with:
 
 ```bash
-export PPA_TARGET=ppa:LAUNCHPAD_ACCOUNT/plasma-visual-screensaver
+export PPA_TARGET=ppa:stantonmatt/plasma-visual-screensaver
 export PPA_SIGNING_KEY=F78C76E2C1BE76E07CF81202B4468B1BCFFD55F5
 ./scripts/publish-ppa.sh
 ```
@@ -95,10 +103,11 @@ until the Resolute build is successfully published.
 
 ## User installation and migration
 
-Once the live account name is known, users install with:
+After the archive reports the Resolute build as **Published**, users install
+with:
 
 ```bash
-sudo add-apt-repository ppa:LAUNCHPAD_ACCOUNT/plasma-visual-screensaver
+sudo add-apt-repository ppa:stantonmatt/plasma-visual-screensaver
 sudo apt update
 sudo apt install plasma-visual-screensaver
 ```
@@ -116,6 +125,6 @@ plasma-visual-screensaver --background
 To leave the update channel without uninstalling the application:
 
 ```bash
-sudo add-apt-repository --remove ppa:LAUNCHPAD_ACCOUNT/plasma-visual-screensaver
+sudo add-apt-repository --remove ppa:stantonmatt/plasma-visual-screensaver
 sudo apt update
 ```
