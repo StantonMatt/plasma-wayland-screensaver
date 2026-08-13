@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+export QT_QPA_PLATFORM=offscreen
+export QT_QUICK_BACKEND=software
+
+package_version=$(dpkg-query -W -f='${Version}' plasma-visual-screensaver)
+upstream_version=${package_version#*:}
+upstream_version=${upstream_version%%-*}
+plasma-visual-screensaver --version | grep -F "${upstream_version}"
+desktop-file-validate \
+    /usr/share/applications/org.kde.plasmavisualscreensaver.desktop \
+    /etc/xdg/autostart/org.kde.plasmavisualscreensaver.desktop
+appstreamcli validate --no-net \
+    /usr/share/metainfo/org.kde.plasmavisualscreensaver.metainfo.xml

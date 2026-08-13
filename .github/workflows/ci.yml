@@ -18,19 +18,27 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Install build and validation dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            appstream build-essential cmake desktop-file-utils dpkg-dev \
-            extra-cmake-modules libkf6config-dev libkf6idletime-dev \
-            liblayershellqtinterface-dev lintian ninja-build qt6-base-dev \
+            appstream build-essential cmake debhelper desktop-file-utils \
+            devscripts dpkg-dev extra-cmake-modules libkf6config-dev \
+            libkf6idletime-dev liblayershellqtinterface-dev lintian ninja-build qt6-base-dev \
             qt6-declarative-dev qt6-tools-dev qml6-module-qtquick \
             qml6-module-qtquick-controls qml6-module-qtquick-layouts shellcheck
 
       - name: Build, test, validate, and package
         run: ./scripts/build-deb.sh "$RUNNER_TEMP/build" "$RUNNER_TEMP/dist"
+
+      - name: Build and lint Launchpad source package
+        env:
+          PPA_BUILD_BINARY: 0
+          PPA_SOURCE_REF: HEAD
+        run: ./scripts/build-ppa-source.sh "$RUNNER_TEMP/ppa"
 
       - name: Upload installable package
         uses: actions/upload-artifact@v6
@@ -39,5 +47,18 @@ jobs:
           path: |
             ${{ runner.temp }}/dist/*.deb
             ${{ runner.temp }}/dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Launchpad source package
+        uses: actions/upload-artifact@v6
+        with:
+          name: plasma-visual-screensaver-ppa-source-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/ppa/*.dsc
+            ${{ runner.temp }}/ppa/*.tar.*
+            ${{ runner.temp }}/ppa/*_source.buildinfo
+            ${{ runner.temp }}/ppa/*_source.changes
+            ${{ runner.temp }}/ppa/*.SHA256SUMS
           if-no-files-found: error
           retention-days: 14

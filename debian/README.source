@@ -1,0 +1,12 @@
+Plasma Visual Screensaver source package
+========================================
+
+This is a non-native 3.0 (quilt) package. The upstream orig tarball must be
+generated from the matching signed-off Git tag while excluding the debian
+directory. The upstream Git repository's scripts/build-ppa-source.sh performs
+that export, overlays the current Debian packaging, builds the source package,
+and runs source linting.
+
+The PPA version has the form UPSTREAM-REVISIONppaN~resoluteN. It deliberately
+sorts later than the matching GitHub binary package so a user can migrate from
+the standalone .deb to the PPA without a downgrade.

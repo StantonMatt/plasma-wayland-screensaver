@@ -185,6 +185,12 @@ Download a newer release and install it with the same `apt install ./file.deb`
 command. Your personal configuration is not part of the package and remains
 unchanged.
 
+For automatic updates through Discover, Software Updater, and `apt upgrade`,
+use the project's Launchpad PPA once it is activated. The PPA package upgrades
+an existing standalone `.deb` installation without resetting preferences. See
+[PPA.md](PPA.md) for maintainer setup, installation, migration, and release
+instructions.
+
 ```bash
 sudo apt remove plasma-visual-screensaver
 ```

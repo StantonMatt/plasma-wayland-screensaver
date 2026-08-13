@@ -58,6 +58,12 @@ The **Publish release** workflow then:
 - generates the `.deb` and SHA-256 checksum; and
 - creates a GitHub Release with generated release notes and both files.
 
+After the GitHub release is verified, publish the matching signed source
+package to the automatic-update PPA using the process in [PPA.md](PPA.md).
+GitHub distributes a directly installable `.deb`; Launchpad independently
+rebuilds the source and provides the repository metadata used by automatic
+updates.
+
 If any step fails, no release is published. Fix the issue, delete the failed
 local and remote tag, complete review again, then recreate the tag on the fixed
 commit. Never move a tag for an already published release; increment the Debian

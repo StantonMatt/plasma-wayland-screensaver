@@ -23,6 +23,9 @@ fi
 
 shellcheck \
     "${project_root}/scripts/build-deb.sh" \
+    "${project_root}/scripts/build-ppa-source.sh" \
+    "${project_root}/scripts/publish-ppa.sh" \
+    "${project_root}/debian/tests/smoke" \
     "${project_root}/packaging/debian/postinst" \
     "${project_root}/packaging/debian/postrm"
 

@@ -1,0 +1,37 @@
+Source: plasma-visual-screensaver
+Section: kde
+Maintainer: Matthew Stanton <stantonmatthewj@gmail.com>
+Build-Depends:
+ appstream,
+ cmake (>= 3.22),
+ debhelper-compat (= 13),
+ extra-cmake-modules (>= 6.0),
+ libkf6config-dev (>= 6.0),
+ libkf6idletime-dev (>= 6.0),
+ liblayershellqtinterface-dev,
+ ninja-build,
+ qt6-base-dev (>= 6.8),
+ qt6-declarative-dev (>= 6.8)
+Standards-Version: 4.7.3
+Homepage: https://github.com/StantonMatt/plasma-wayland-screensaver
+Vcs-Browser: https://github.com/StantonMatt/plasma-wayland-screensaver
+Vcs-Git: https://github.com/StantonMatt/plasma-wayland-screensaver.git
+
+Package: plasma-visual-screensaver
+Architecture: any
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends},
+ qml6-module-qtquick,
+ qml6-module-qtquick-controls,
+ qml6-module-qtquick-layouts
+Recommends:
+ powerdevil,
+ xdg-desktop-portal-kde
+Description: Non-locking visual screensaver for KDE Plasma Wayland
+ Plasma Visual Screensaver provides configurable low-resource animations,
+ OLED-friendly backgrounds, a moving clock, multi-monitor support, and
+ automatic idle activation on KDE Plasma Wayland.
+ .
+ This application is a decorative overlay, not a screen locker or security
+ boundary.
