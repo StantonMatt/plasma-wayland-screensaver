@@ -3,10 +3,14 @@
 
 #include <QCoreApplication>
 #include <QDebug>
+#include <QDesktopServices>
 #include <QGuiApplication>
+#include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQuickWindow>
+#include <QStandardPaths>
 #include <QTimer>
+#include <QUrl>
 #include <QVariantMap>
 
 ApplicationController::ApplicationController(QObject *parent)
@@ -53,6 +57,11 @@ Configuration *ApplicationController::configuration()
 bool ApplicationController::screensaverActive() const
 {
     return m_stateMachine.isActive();
+}
+
+QString ApplicationController::applicationVersion() const
+{
+    return QCoreApplication::applicationVersion();
 }
 
 void ApplicationController::start()
@@ -104,6 +113,30 @@ void ApplicationController::saveSettings(const QVariantMap &settings)
 {
     m_configuration.apply(settings);
     m_configuration.save();
+}
+
+bool ApplicationController::openUpdateCenter() const
+{
+    const QString discover = QStandardPaths::findExecutable(QStringLiteral("plasma-discover"));
+    if (!discover.isEmpty()) {
+        const QStringList arguments = {
+            QStringLiteral("--application"),
+            QStringLiteral("appstream://org.kde.plasmavisualscreensaver"),
+        };
+        if (QProcess::startDetached(discover, arguments)) {
+            return true;
+        }
+        qWarning() << "Could not start KDE Discover from" << discover;
+    }
+
+    const QUrl releasesUrl(QStringLiteral(
+        "https://github.com/StantonMatt/plasma-wayland-screensaver/releases/latest"));
+    if (QDesktopServices::openUrl(releasesUrl)) {
+        return true;
+    }
+
+    qWarning() << "Could not open the Plasma Visual Screensaver update page";
+    return false;
 }
 
 void ApplicationController::activate(bool preview)

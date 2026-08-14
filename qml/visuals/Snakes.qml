@@ -32,7 +32,8 @@ Item {
     property int bodyDeathCount: 0
     property int selfDeathCount: 0
     property int brainCursor: 0
-    property var safetyCells: ({})
+    property var safetyCells: []
+    property var safetyUsedCells: []
     property int safetyCellColumns: 0
     property int safetyCellRows: 0
     property real safetyCellWidth: 1
@@ -40,7 +41,12 @@ Item {
     property int safetyCellSnakeCount: 0
     property var activeBrainPlan: null
     property int lastBrainWorkUnits: 0
-    readonly property int maximumBrainWorkUnits: 3
+    readonly property int maximumBrainWorkUnits: 6
+    // The native renderer interpolates 30 Hz physics at the presentation rate.
+    // Canvas is only a compatibility fallback and needs 60 Hz simulation
+    // because not all of its primitives retain a previous-frame position.
+    readonly property real physicsStepSeconds: nativeRenderer ? 1 / 30 : 1 / 60
+    readonly property bool canvasFallbackLoaded: fallbackCanvas.item !== null
 
     readonly property bool seamless: context && context.monitorBehavior === "seamless"
     readonly property real worldWidth: seamless && context ? context.virtualWidth : width
@@ -51,6 +57,13 @@ Item {
         ? Math.max(3, Math.min(14, Math.round(3 + context.animationDensity / 9))) : 8
     readonly property int desiredFoodCount: context
         ? Math.max(28, Math.min(190, Math.round(28 + context.trailAmount * 1.55))) : 82
+    // Death bursts temporarily exceed the ambient target, but an unbounded
+    // food population creates a feedback loop: more planning work, more GPU
+    // geometry, missed frames, then still more collisions and explosions.
+    // Nutritional value is folded into the available particles, so limiting
+    // their count does not make a large defeated snake less valuable.
+    readonly property int maximumFoodCount: Math.max(
+        desiredFoodCount, Math.min(480, desiredFoodCount + 260))
     readonly property real intelligence: context
         ? clamp(context.snakeIntelligence / 100, 0, 1) : 0.75
     readonly property bool selfCollisions: context ? context.snakeSelfCollisions : false
@@ -514,14 +527,17 @@ Item {
                 0, 0, 34 + random() * 12)
     }
 
-    function requestFrame() {
+    function requestFrame(synchronizeState) {
         if (nativeRenderer) {
-            nativeRenderer.syncFrame(snakes, food, palette, simulationTime,
-                                     renderAlpha, worldWidth, worldHeight,
-                                     drawOffsetX, drawOffsetY, deadlyWalls)
-        } else {
-            snakeCanvas.requestPaint()
-        }
+            if (synchronizeState === undefined || synchronizeState) {
+                nativeRenderer.syncFrame(snakes, food, palette, simulationTime,
+                                         renderAlpha, worldWidth, worldHeight,
+                                         drawOffsetX, drawOffsetY, deadlyWalls)
+            } else {
+                nativeRenderer.presentFrame(simulationTime, renderAlpha)
+            }
+        } else if (fallbackCanvas.item)
+            fallbackCanvas.item.requestPaint()
     }
 
     function simulationSnapshot(): string {
@@ -666,7 +682,8 @@ Item {
         brainCursor = 0
         activeBrainPlan = null
         lastBrainWorkUnits = 0
-        safetyCells = ({})
+        safetyCells = []
+        safetyUsedCells = []
         safetyCellColumns = 0
         safetyCellRows = 0
         safetyCellSnakeCount = 0
@@ -1112,8 +1129,8 @@ Item {
     function segmentMotion(segment, maximumSpeed) {
         const previousX = segment.previousX === undefined ? segment.x : segment.previousX
         const previousY = segment.previousY === undefined ? segment.y : segment.previousY
-        let velocityX = axisDelta(previousX, segment.x, worldWidth) * 60
-        let velocityY = axisDelta(previousY, segment.y, worldHeight) * 60
+        let velocityX = axisDelta(previousX, segment.x, worldWidth) / physicsStepSeconds
+        let velocityY = axisDelta(previousY, segment.y, worldHeight) / physicsStepSeconds
         const velocity = Math.sqrt(velocityX * velocityX + velocityY * velocityY)
         if (velocity > maximumSpeed && velocity > 0.001) {
             velocityX *= maximumSpeed / velocity
@@ -1672,8 +1689,9 @@ Item {
 
     // The frame budget is expressed in deterministic work units instead of
     // wall-clock milliseconds, making behavior stable across machines and
-    // tests. A unit is the smallest expensive planner operation; three units per
-    // 60 Hz simulation tick leave the GUI thread ample time to present frames.
+    // tests. A unit is the smallest expensive planner operation; six units per
+    // 30 Hz physics tick preserve the planner's original 180-unit-per-second
+    // decision throughput while leaving the presentation frames lightweight.
     function updateSnakeBrains(seconds) {
         lastBrainWorkUnits = 0
         for (let index = 0; index < snakes.length; ++index) {
@@ -2225,7 +2243,21 @@ Item {
         // nearby point two cell indices away across a wraparound seam.
         const cellWidth = worldWidth / columns
         const cellHeight = worldHeight / rows
-        const cells = {}
+        const cellCount = columns * rows
+        let cells = safetyCells
+        let usedCells = safetyUsedCells
+        if (!Array.isArray(cells) || cells.length !== cellCount) {
+            cells = new Array(cellCount)
+            for (let cellIndex = 0; cellIndex < cellCount; ++cellIndex)
+                cells[cellIndex] = []
+            usedCells = []
+            safetyCells = cells
+            safetyUsedCells = usedCells
+        } else {
+            for (let usedIndex = 0; usedIndex < usedCells.length; ++usedIndex)
+                cells[usedCells[usedIndex]].length = 0
+            usedCells.length = 0
+        }
         const snakeCount = snakes.length
         for (let ownerIndex = 0; ownerIndex < snakeCount; ++ownerIndex) {
             const owner = snakes[ownerIndex]
@@ -2237,12 +2269,11 @@ Item {
                 const cellX = collisionCell(segment.x, cellWidth, columns, worldWidth)
                 const cellY = collisionCell(segment.y, cellHeight, rows, worldHeight)
                 const key = cellY * columns + cellX
-                if (!cells[key])
-                    cells[key] = []
+                if (cells[key].length === 0)
+                    usedCells.push(key)
                 cells[key].push(segmentIndex * snakeCount + ownerIndex)
             }
         }
-        safetyCells = cells
         safetyCellColumns = columns
         safetyCellRows = rows
         safetyCellWidth = cellWidth
@@ -2330,13 +2361,33 @@ Item {
             return 0
         const thickness = snake.baseRadius > 0 ? snake.radius / snake.baseRadius : 1
         return Math.round(clamp(snake.segments.length * (0.78 + thickness * 0.22),
-                                8, 720))
+                                8, 360))
+    }
+
+    function makeRoomForDeathFood(minimumSlots) {
+        let needed = Math.max(0, food.length + minimumSlots - maximumFoodCount)
+        // Reclaim ordinary ambient particles before older corpse trails. Never
+        // break a particle that is already visibly locked to a snake's head.
+        for (let pass = 0; pass < 2 && needed > 0; ++pass) {
+            for (let index = food.length - 1; index >= 0 && needed > 0; --index) {
+                const particle = food[index]
+                if (particle.vacuumOwner !== undefined
+                        && particle.vacuumOwner >= 0)
+                    continue
+                if (pass === 0 && (particle.feastId || 0) > 0)
+                    continue
+                food.splice(index, 1)
+                --needed
+            }
+        }
     }
 
     function explodeSnake(snake) {
         const segments = snake.segments
         const intendedCount = deathParticleCount(snake)
-        const emittedCount = Math.min(intendedCount, Math.max(0, 900 - food.length))
+        makeRoomForDeathFood(Math.min(intendedCount, 48))
+        const emittedCount = Math.min(
+            intendedCount, Math.max(0, maximumFoodCount - food.length))
         const foodValue = emittedCount > 0
             ? Math.max(0.65, segments.length / emittedCount) : 0
         const feastId = nextFeastId++
@@ -2420,7 +2471,13 @@ Item {
         foodAnalysisCooldown -= seconds
         if (foodAnalysisCooldown <= 0) {
             analyzeFoodClusters()
-            foodAnalysisCooldown = 0.32
+            const foodLoad = clamp((food.length - desiredFoodCount)
+                                   / Math.max(1, maximumFoodCount - desiredFoodCount),
+                                   0, 1)
+            // Cluster topology changes slowly. Analyze it less often during a
+            // feast instead of spending the recovered render budget rescoring
+            // hundreds of almost stationary particles every few frames.
+            foodAnalysisCooldown = 0.32 + foodLoad * 0.28
         }
         growthSlots = Math.max(0, maximumWorldSegments() - totalLiveSegments())
         updateSnakeBrains(seconds)
@@ -2449,17 +2506,23 @@ Item {
             synchronizeWorldGeometry()
         }
         accumulator += Math.min(0.1, Math.max(0, deltaSeconds))
-        const fixedStep = 1 / 60
+        // Collision and steering logic run at 30 Hz with the native renderer,
+        // which presents at up to 60 Hz and interpolates physics snapshots.
+        // The Canvas compatibility path retains 60 Hz physics because it does
+        // not have previous-frame positions for every rendered primitive.
+        const fixedStep = physicsStepSeconds
+        const maximumCatchUpSteps = nativeRenderer ? 3 : 6
         let steps = 0
-        while (accumulator >= fixedStep && steps < 6) {
+        while (accumulator >= fixedStep && steps < maximumCatchUpSteps) {
             stepSimulation(fixedStep)
             accumulator -= fixedStep
             ++steps
         }
-        if (steps === 6 && accumulator > fixedStep * 6)
+        if (steps === maximumCatchUpSteps
+                && accumulator > fixedStep * maximumCatchUpSteps)
             accumulator = fixedStep
         renderAlpha = clamp(accumulator / fixedStep, 0, 1)
-        requestFrame()
+        requestFrame(steps > 0)
     }
 
     function drawParticles(painter) {
@@ -2691,35 +2754,43 @@ Item {
         }
     }
 
-    Canvas {
-        id: snakeCanvas
-        visible: root.nativeRenderer === null
-        width: Math.max(1, Math.ceil(root.width * root.canvasScale))
-        height: Math.max(1, Math.ceil(root.height * root.canvasScale))
-        transformOrigin: Item.TopLeft
-        scale: 1 / root.canvasScale
-        renderTarget: Canvas.FramebufferObject
-        renderStrategy: Canvas.Cooperative
-        onPaint: {
-            const painter = getContext("2d")
-            painter.reset()
-            painter.clearRect(0, 0, width, height)
-            painter.save()
-            painter.scale(root.canvasScale, root.canvasScale)
-            painter.translate(root.drawOffsetX, root.drawOffsetY)
-            root.drawParticles(painter)
+    Loader {
+        id: fallbackCanvas
+        anchors.fill: parent
+        active: root.nativeRenderer === null
 
-            let leaderLength = 0
-            for (let index = 0; index < root.snakes.length; ++index) {
-                if (root.snakes[index].alive)
-                    leaderLength = Math.max(leaderLength, root.snakes[index].segments.length)
+        sourceComponent: Component {
+            Canvas {
+                width: Math.max(1, Math.ceil(root.width * root.canvasScale))
+                height: Math.max(1, Math.ceil(root.height * root.canvasScale))
+                transformOrigin: Item.TopLeft
+                scale: 1 / root.canvasScale
+                renderTarget: Canvas.FramebufferObject
+                renderStrategy: Canvas.Cooperative
+                onPaint: {
+                    const painter = getContext("2d")
+                    painter.reset()
+                    painter.clearRect(0, 0, width, height)
+                    painter.save()
+                    painter.scale(root.canvasScale, root.canvasScale)
+                    painter.translate(root.drawOffsetX, root.drawOffsetY)
+                    root.drawParticles(painter)
+
+                    let leaderLength = 0
+                    for (let index = 0; index < root.snakes.length; ++index) {
+                        if (root.snakes[index].alive) {
+                            leaderLength = Math.max(
+                                leaderLength, root.snakes[index].segments.length)
+                        }
+                    }
+                    const ordered = root.snakes.slice().sort(function(left, right) {
+                        return left.segments.length - right.segments.length
+                    })
+                    for (let index = 0; index < ordered.length; ++index)
+                        root.drawSnake(painter, ordered[index], leaderLength)
+                    painter.restore()
+                }
             }
-            const ordered = root.snakes.slice().sort(function(left, right) {
-                return left.segments.length - right.segments.length
-            })
-            for (let index = 0; index < ordered.length; ++index)
-                root.drawSnake(painter, ordered[index], leaderLength)
-            painter.restore()
         }
     }
 
@@ -2733,11 +2804,18 @@ Item {
         id: initializeTimer
         interval: 1
         repeat: false
-        onTriggered: root.synchronizeWorldGeometry()
+        onTriggered: {
+            if (root.simulationDriver)
+                root.synchronizeWorldGeometry()
+        }
     }
 
     onContextChanged: initializeTimer.restart()
     onNativeRendererChanged: requestFrame()
+    onSimulationDriverChanged: {
+        if (simulationDriver)
+            initializeTimer.restart()
+    }
     onWorldWidthChanged: initializeTimer.restart()
     onWorldHeightChanged: initializeTimer.restart()
     Component.onCompleted: initializeTimer.restart()

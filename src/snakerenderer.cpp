@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace {
@@ -47,6 +48,11 @@ void appendVertex(QVector<Vertex> &vertices, const QPointF &point, const QColor 
     vertices.append(vertex);
 }
 
+bool finitePoint(const QPointF &point)
+{
+    return std::isfinite(point.x()) && std::isfinite(point.y());
+}
+
 bool visible(const QRectF &bounds, const QSizeF &viewport)
 {
     return bounds.intersects(QRectF(QPointF(0.0, 0.0), viewport));
@@ -55,6 +61,12 @@ bool visible(const QRectF &bounds, const QSizeF &viewport)
 void appendTriangle(QVector<Vertex> &vertices, const QPointF &a, const QPointF &b,
                     const QPointF &c, const QColor &color)
 {
+    // A single NaN sent to the graphics driver can invalidate the complete
+    // triangle batch on some hardware. Drop only the malformed primitive so
+    // the rest of the ecosystem keeps rendering while the simulation heals.
+    if (!finitePoint(a) || !finitePoint(b) || !finitePoint(c)) {
+        return;
+    }
     appendVertex(vertices, a, color);
     appendVertex(vertices, b, color);
     appendVertex(vertices, c, color);
@@ -63,7 +75,7 @@ void appendTriangle(QVector<Vertex> &vertices, const QPointF &a, const QPointF &
 void appendDisc(QVector<Vertex> &vertices, const QPointF &center, qreal radius,
                 const QColor &color, int sides, const QSizeF &viewport)
 {
-    if (radius <= 0.0
+    if (!finitePoint(center) || !std::isfinite(radius) || radius <= 0.0
             || !visible(QRectF(center.x() - radius, center.y() - radius,
                               radius * 2.0, radius * 2.0), viewport)) {
         return;
@@ -82,6 +94,9 @@ void appendDisc(QVector<Vertex> &vertices, const QPointF &center, qreal radius,
 void appendSegment(QVector<Vertex> &vertices, const QPointF &a, const QPointF &b,
                    qreal halfWidth, const QColor &color, const QSizeF &viewport)
 {
+    if (!finitePoint(a) || !finitePoint(b) || !std::isfinite(halfWidth)) {
+        return;
+    }
     const QPointF delta = b - a;
     const qreal length = std::hypot(delta.x(), delta.y());
     if (length < 0.001 || halfWidth <= 0.0) {
@@ -96,6 +111,60 @@ void appendSegment(QVector<Vertex> &vertices, const QPointF &a, const QPointF &b
     }
     appendTriangle(vertices, a + normal, a - normal, b + normal, color);
     appendTriangle(vertices, b + normal, a - normal, b - normal, color);
+}
+
+void appendRibbon(QVector<Vertex> &vertices, const QVector<QPointF> &points,
+                  qreal halfWidth, const QColor &color, const QSizeF &viewport)
+{
+    if (points.size() < 2 || !std::isfinite(halfWidth) || halfWidth <= 0.0) {
+        return;
+    }
+
+    QVector<QPointF> left(points.size());
+    QVector<QPointF> right(points.size());
+    QVector<bool> valid(points.size(), false);
+    for (int index = 0; index < points.size(); ++index) {
+        if (!finitePoint(points[index])) {
+            continue;
+        }
+        const bool hasPrevious = index > 0 && finitePoint(points[index - 1]);
+        const bool hasNext = index + 1 < points.size() && finitePoint(points[index + 1]);
+        QPointF tangent;
+        if (hasPrevious && hasNext) {
+            // A centred tangent gives both adjoining quads the exact same
+            // edge at the joint. This removes the wedge-shaped cracks that
+            // independent segment quads require many discs to cover.
+            tangent = points[index + 1] - points[index - 1];
+        } else if (hasNext) {
+            tangent = points[index + 1] - points[index];
+        } else if (hasPrevious) {
+            tangent = points[index] - points[index - 1];
+        } else {
+            continue;
+        }
+        const qreal length = std::hypot(tangent.x(), tangent.y());
+        if (!std::isfinite(length) || length < 0.001) {
+            continue;
+        }
+        const QPointF normal(-tangent.y() / length * halfWidth,
+                             tangent.x() / length * halfWidth);
+        left[index] = points[index] + normal;
+        right[index] = points[index] - normal;
+        valid[index] = true;
+    }
+
+    for (int index = 1; index < points.size(); ++index) {
+        if (!valid[index - 1] || !valid[index]) {
+            continue;
+        }
+        const QRectF bounds = QRectF(points[index - 1], points[index]).normalized()
+            .adjusted(-halfWidth, -halfWidth, halfWidth, halfWidth);
+        if (!visible(bounds, viewport)) {
+            continue;
+        }
+        appendTriangle(vertices, left[index - 1], right[index - 1], left[index], color);
+        appendTriangle(vertices, left[index], right[index - 1], right[index], color);
+    }
 }
 
 QColor withAlpha(QColor color, int alpha)
@@ -146,6 +215,10 @@ void SnakeRenderer::syncFrame(const QJSValue &snakeValues, const QJSValue &foodV
         return;
     }
 
+    const QVector<Snake> previousSnakes = m_snakes;
+    const qreal elapsedSimulationTime = simulationTime - m_simulationTime;
+    const bool onePhysicsStep = elapsedSimulationTime > 0.0
+        && elapsedSimulationTime < 0.05;
     QVector<Snake> snakes;
     const int snakeCount = snakeValues.property(QStringLiteral("length")).toInt();
     snakes.reserve(snakeCount);
@@ -162,18 +235,26 @@ void SnakeRenderer::syncFrame(const QJSValue &snakeValues, const QJSValue &foodV
         snake.colorIndex = value.property(QStringLiteral("colorIndex")).toInt();
         const QJSValue segmentValues = value.property(QStringLiteral("segments"));
         const int segmentCount = segmentValues.property(QStringLiteral("length")).toInt();
+        const Snake *previousSnake = onePhysicsStep && snakeIndex < previousSnakes.size()
+                && previousSnakes[snakeIndex].alive
+                && previousSnakes[snakeIndex].segments.size() == segmentCount
+            ? &previousSnakes[snakeIndex] : nullptr;
         snake.segments.reserve(segmentCount);
         for (int segmentIndex = 0; segmentIndex < segmentCount; ++segmentIndex) {
             const QJSValue segmentValue = segmentValues.property(segmentIndex);
             Segment segment;
             segment.position = QPointF(segmentValue.property(QStringLiteral("x")).toNumber(),
                                        segmentValue.property(QStringLiteral("y")).toNumber());
-            const QJSValue previousX = segmentValue.property(QStringLiteral("previousX"));
-            const QJSValue previousY = segmentValue.property(QStringLiteral("previousY"));
-            segment.previous = QPointF(previousX.isNumber() ? previousX.toNumber()
-                                                             : segment.position.x(),
-                                       previousY.isNumber() ? previousY.toNumber()
-                                                             : segment.position.y());
+            if (previousSnake) {
+                segment.previous = previousSnake->segments[segmentIndex].position;
+            } else {
+                const QJSValue previousX = segmentValue.property(QStringLiteral("previousX"));
+                const QJSValue previousY = segmentValue.property(QStringLiteral("previousY"));
+                segment.previous = QPointF(previousX.isNumber() ? previousX.toNumber()
+                                                                 : segment.position.x(),
+                                           previousY.isNumber() ? previousY.toNumber()
+                                                                 : segment.position.y());
+            }
             snake.segments.append(segment);
         }
         snakes.append(std::move(snake));
@@ -197,18 +278,20 @@ void SnakeRenderer::syncFrame(const QJSValue &snakeValues, const QJSValue &foodV
         food.append(particle);
     }
 
-    QVector<QColor> palette;
-    const int colorCount = paletteValues.property(QStringLiteral("length")).toInt();
-    palette.reserve(colorCount);
-    for (int colorIndex = 0; colorIndex < colorCount; ++colorIndex) {
-        const QColor color(paletteValues.property(colorIndex).toString());
-        if (color.isValid()) {
-            palette.append(color);
-        }
-    }
+    QVector<QColor> palette = m_palette;
     if (palette.isEmpty()) {
-        palette = {QColor(QStringLiteral("#4de6ff")), QColor(QStringLiteral("#b86cff")),
-                   QColor(QStringLiteral("#ff4f8b"))};
+        const int colorCount = paletteValues.property(QStringLiteral("length")).toInt();
+        palette.reserve(colorCount);
+        for (int colorIndex = 0; colorIndex < colorCount; ++colorIndex) {
+            const QColor color(paletteValues.property(colorIndex).toString());
+            if (color.isValid()) {
+                palette.append(color);
+            }
+        }
+        if (palette.isEmpty()) {
+            palette = {QColor(QStringLiteral("#4de6ff")), QColor(QStringLiteral("#b86cff")),
+                       QColor(QStringLiteral("#ff4f8b"))};
+        }
     }
 
     m_snakes = std::move(snakes);
@@ -223,6 +306,16 @@ void SnakeRenderer::syncFrame(const QJSValue &snakeValues, const QJSValue &foodV
     Q_EMIT frameSynchronized();
 }
 
+void SnakeRenderer::presentFrame(qreal simulationTime, qreal interpolation)
+{
+    if (!m_source) {
+        m_simulationTime = simulationTime;
+        m_interpolation = clamped(interpolation, 0.0, 1.0);
+    }
+    update();
+    Q_EMIT frameSynchronized();
+}
+
 void SnakeRenderer::setDrawOffset(qreal drawOffsetX, qreal drawOffsetY)
 {
     if (qFuzzyCompare(m_drawOffsetX, drawOffsetX)
@@ -231,6 +324,15 @@ void SnakeRenderer::setDrawOffset(qreal drawOffsetX, qreal drawOffsetY)
     }
     m_drawOffsetX = drawOffsetX;
     m_drawOffsetY = drawOffsetY;
+    update();
+}
+
+void SnakeRenderer::setScaleToViewport(bool scaleToViewport)
+{
+    if (m_scaleToViewport == scaleToViewport) {
+        return;
+    }
+    m_scaleToViewport = scaleToViewport;
     update();
 }
 
@@ -280,34 +382,59 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
         material->setFlag(QSGMaterial::Blending, true);
         node->setMaterial(material);
         node->setFlag(QSGNode::OwnsMaterial);
+        m_geometryCapacity = 0;
     }
 
     QVector<Vertex> vertices;
-    vertices.reserve(m_food.size() * 48 + m_snakes.size() * 600);
+    qsizetype liveSegmentCount = 0;
+    for (const Snake &snake : std::as_const(m_snakes)) {
+        if (snake.alive) {
+            liveSegmentCount += snake.segments.size();
+        }
+    }
+    // Body ribbons, join discs, markings, eyes and crowns average fewer than
+    // 42 vertices per segment. Reserving from actual segment count prevents
+    // repeated CPU-side reallocations as a champion grows.
+    const qsizetype estimatedVertices = m_food.size() * 72
+        + liveSegmentCount * 42 + m_snakes.size() * 180;
+    vertices.reserve(std::min<qsizetype>(estimatedVertices,
+                                         std::numeric_limits<int>::max()));
     const QSizeF viewport(width(), height());
     const QPointF drawOffset(m_drawOffsetX, m_drawOffsetY);
+    const qreal scaleX = m_scaleToViewport
+        ? viewport.width() / std::max(1.0, m_worldWidth) : 1.0;
+    const qreal scaleY = m_scaleToViewport
+        ? viewport.height() / std::max(1.0, m_worldHeight) : 1.0;
+    const qreal sizeScale = std::sqrt(scaleX * scaleY);
+    const auto mapPoint = [drawOffset, scaleX, scaleY](const QPointF &point) {
+        return QPointF((point.x() + drawOffset.x()) * scaleX,
+                       (point.y() + drawOffset.y()) * scaleY);
+    };
 
+    const bool denseFood = m_food.size() > 320;
     for (const Food &particle : std::as_const(m_food)) {
         const qreal pulse = 0.82 + std::sin(m_simulationTime * 3.0 + particle.phase) * 0.18;
-        const qreal size = particle.size * pulse;
+        const qreal worldSize = particle.size * pulse;
+        const qreal size = worldSize * sizeScale;
         const QColor color = m_palette.at(particle.colorIndex % m_palette.size());
         QVector<qreal> xOffsets{0.0};
         QVector<qreal> yOffsets{0.0};
         if (!m_deadlyWalls) {
-            if (particle.position.x() < size * 3.2) xOffsets.append(m_worldWidth);
-            if (particle.position.x() > m_worldWidth - size * 3.2) xOffsets.append(-m_worldWidth);
-            if (particle.position.y() < size * 3.2) yOffsets.append(m_worldHeight);
-            if (particle.position.y() > m_worldHeight - size * 3.2) yOffsets.append(-m_worldHeight);
+            if (particle.position.x() < worldSize * 3.2) xOffsets.append(m_worldWidth);
+            if (particle.position.x() > m_worldWidth - worldSize * 3.2) xOffsets.append(-m_worldWidth);
+            if (particle.position.y() < worldSize * 3.2) yOffsets.append(m_worldHeight);
+            if (particle.position.y() > m_worldHeight - worldSize * 3.2) yOffsets.append(-m_worldHeight);
         }
         for (qreal xOffset : std::as_const(xOffsets)) {
             for (qreal yOffset : std::as_const(yOffsets)) {
-                const QPointF center = particle.position + drawOffset + QPointF(xOffset, yOffset);
+                const QPointF center = mapPoint(particle.position + QPointF(xOffset, yOffset));
                 if (particle.attraction > 0.0) {
-                    const QPointF pull(
+                    const QPointF worldPull(
                         axisDelta(particle.position.x(), particle.attractionTarget.x(),
                                   m_worldWidth, m_deadlyWalls),
                         axisDelta(particle.position.y(), particle.attractionTarget.y(),
                                   m_worldHeight, m_deadlyWalls));
+                    const QPointF pull(worldPull.x() * scaleX, worldPull.y() * scaleY);
                     const qreal pullLength = std::hypot(pull.x(), pull.y());
                     if (pullLength > 0.001) {
                         const qreal trailLength = size * (2.0 + particle.attraction * 5.0);
@@ -317,10 +444,19 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
                                       withAlpha(color, 150), viewport);
                     }
                 }
-                appendDisc(vertices, center, size * 3.2, withAlpha(color, 30), 8, viewport);
-                appendDisc(vertices, center, size, withAlpha(color, 230), 8, viewport);
+                // Once several death trails overlap, the glow layer dominates
+                // vertex count without adding useful visual information. Keep
+                // the bright edible cores and magnetic trails intact while
+                // dropping only this overdraw-heavy decoration.
+                if (!denseFood) {
+                    appendDisc(vertices, center, size * 3.2,
+                               withAlpha(color, 30), 8, viewport);
+                }
+                appendDisc(vertices, center, size, withAlpha(color, 230),
+                           denseFood ? 6 : 8, viewport);
                 appendDisc(vertices, center - QPointF(size * 0.24, size * 0.24),
-                           std::max(0.7, size * 0.3), QColor(255, 255, 255, 215), 5, viewport);
+                           std::max(0.7, size * 0.3), QColor(255, 255, 255, 215),
+                           denseFood ? 4 : 5, viewport);
             }
         }
     }
@@ -379,78 +515,75 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
 
         const QColor color = m_palette.at(snake.colorIndex % m_palette.size());
         const QColor outline(5, 7, 16, 175);
-        const qreal bodyMargin = snake.radius * 1.4;
+        const qreal radius = snake.radius * sizeScale;
+        const qreal bodyMargin = radius * 1.4;
         for (qreal xOffset : std::as_const(xOffsets)) {
             for (qreal yOffset : std::as_const(yOffsets)) {
-                const QPointF offset = drawOffset + QPointF(xOffset, yOffset);
-                const QRectF copyBounds(minimumX + offset.x() - bodyMargin,
-                                        minimumY + offset.y() - bodyMargin,
-                                        maximumX - minimumX + bodyMargin * 2.0,
-                                        maximumY - minimumY + bodyMargin * 2.0);
+                const QPointF wrapOffset(xOffset, yOffset);
+                const QRectF copyBounds(
+                    (minimumX + xOffset + drawOffset.x()) * scaleX - bodyMargin,
+                    (minimumY + yOffset + drawOffset.y()) * scaleY - bodyMargin,
+                    (maximumX - minimumX) * scaleX + bodyMargin * 2.0,
+                    (maximumY - minimumY) * scaleY + bodyMargin * 2.0);
                 // In seamless mode most snakes are outside any one monitor.
                 // Reject a whole wrapped copy before walking its body and
                 // attempting to append/cull every individual primitive.
                 if (!visible(copyBounds, viewport)) {
                     continue;
                 }
-                for (int index = 1; index < points.size(); ++index) {
-                    appendSegment(vertices, points[index - 1] + offset, points[index] + offset,
-                                  snake.radius * 1.275, outline, viewport);
+                QVector<QPointF> renderedPoints;
+                renderedPoints.reserve(points.size());
+                for (const QPointF &point : std::as_const(points)) {
+                    renderedPoints.append(mapPoint(point + wrapOffset));
                 }
-                // The body samples overlap heavily and turn gradually. A disc
-                // at every second join keeps the silhouette continuous while
-                // halving the most expensive part of mature-snake geometry.
-                for (int index = 2; index < points.size(); index += 2) {
-                    appendDisc(vertices, points[index] + offset, snake.radius * 1.275,
-                               outline, 6, viewport);
-                }
-                appendDisc(vertices, points.constLast() + offset, snake.radius * 1.275,
+                appendRibbon(vertices, renderedPoints, radius * 1.275,
+                             outline, viewport);
+                appendDisc(vertices, renderedPoints.constLast(), radius * 1.275,
                            outline, 12, viewport);
-                for (int index = 1; index < points.size(); ++index) {
-                    appendSegment(vertices, points[index - 1] + offset, points[index] + offset,
-                                  snake.radius * 0.96, withAlpha(color, 245), viewport);
-                }
-                for (int index = 2; index < points.size(); index += 2) {
-                    appendDisc(vertices, points[index] + offset, snake.radius * 0.96,
-                               withAlpha(color, 245), 6, viewport);
-                }
-                appendDisc(vertices, points.constLast() + offset, snake.radius * 0.96,
+                appendRibbon(vertices, renderedPoints, radius * 0.96,
+                             withAlpha(color, 245), viewport);
+                appendDisc(vertices, renderedPoints.constLast(), radius * 0.96,
                            withAlpha(color, 245), 12, viewport);
                 for (int index = 5; index < points.size(); index += 6) {
-                    appendDisc(vertices, points[index] + offset, snake.radius * 0.34,
+                    appendDisc(vertices, renderedPoints[index], radius * 0.34,
                                QColor(255, 255, 255, 46), 6, viewport);
                 }
 
-                const QPointF head = points.constFirst() + offset;
-                appendDisc(vertices, head, snake.radius * 1.08,
+                const QPointF head = renderedPoints.constFirst();
+                appendDisc(vertices, head, radius * 1.08,
                            withAlpha(color, 255), 12, viewport);
-                const QPointF forward(std::cos(snake.angle), std::sin(snake.angle));
+                QPointF forward(std::cos(snake.angle) * scaleX,
+                                std::sin(snake.angle) * scaleY);
+                const qreal forwardLength = std::hypot(forward.x(), forward.y());
+                if (forwardLength > 0.001) {
+                    forward /= forwardLength;
+                }
                 const QPointF side(-forward.y(), forward.x());
-                const qreal eyeRadius = std::max(1.7, snake.radius * 0.31);
+                const qreal eyeRadius = std::max(1.7, radius * 0.31);
                 for (int direction : {-1, 1}) {
-                    const QPointF eye = head + forward * (snake.radius * 0.48)
-                        + side * (snake.radius * 0.46 * direction);
+                    const QPointF eye = head + forward * (radius * 0.48)
+                        + side * (radius * 0.46 * direction);
                     appendDisc(vertices, eye, eyeRadius, Qt::white, 8, viewport);
                     appendDisc(vertices, eye + forward * (eyeRadius * 0.34),
                                eyeRadius * 0.48, QColor(QStringLiteral("#11131a")),
                                7, viewport);
                 }
                 if (points.size() == leaderLength) {
-                    const QPointF crownCenter = head - forward * (snake.radius * 0.32);
+                    const QPointF crownCenter = head - forward * (radius * 0.32);
                     const QVector<QPointF> crown{
-                        crownCenter - side * (snake.radius * 0.82)
-                            - forward * (snake.radius * 0.42),
-                        crownCenter - side * (snake.radius * 0.82)
-                            + forward * (snake.radius * 0.58),
-                        crownCenter - side * (snake.radius * 0.34)
-                            + forward * (snake.radius * 0.18),
-                        crownCenter + forward * (snake.radius * 0.98),
-                        crownCenter + side * (snake.radius * 0.34)
-                            + forward * (snake.radius * 0.18),
-                        crownCenter + side * (snake.radius * 0.82)
-                            + forward * (snake.radius * 0.58),
-                        crownCenter + side * (snake.radius * 0.82)
-                            - forward * (snake.radius * 0.42)};
+                        crownCenter - side * (radius * 0.82)
+                            - forward * (radius * 0.42),
+                        crownCenter - side * (radius * 0.82)
+                            + forward * (radius * 0.58),
+                        crownCenter - side * (radius * 0.34)
+                            + forward * (radius * 0.18),
+                        crownCenter + forward * (radius * 0.98),
+                        crownCenter + side * (radius * 0.34)
+                            + forward * (radius * 0.18),
+                        crownCenter + side * (radius * 0.82)
+                            + forward * (radius * 0.58),
+                        crownCenter + side * (radius * 0.82)
+                            - forward * (radius * 0.42)};
                     const QColor gold(QStringLiteral("#ffd84a"));
                     for (int index = 0; index < crown.size(); ++index) {
                         appendTriangle(vertices, crownCenter, crown[index],
@@ -459,11 +592,11 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
                     for (int index = 0; index < crown.size(); ++index) {
                         appendSegment(vertices, crown[index],
                                       crown[(index + 1) % crown.size()],
-                                      std::max(0.65, snake.radius * 0.09),
+                                      std::max(0.65, radius * 0.09),
                                       QColor(QStringLiteral("#6d4300")), viewport);
                     }
-                    appendDisc(vertices, crownCenter + forward * (snake.radius * 0.04),
-                               std::max(0.8, snake.radius * 0.12),
+                    appendDisc(vertices, crownCenter + forward * (radius * 0.04),
+                               std::max(0.8, radius * 0.12),
                                QColor(QStringLiteral("#fff2a0")), 6, viewport);
                 }
             }
@@ -471,10 +604,30 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
     }
 
     QSGGeometry *geometry = node->geometry();
-    geometry->allocate(vertices.size());
+    const int vertexCount = vertices.size();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+    if (vertexCount > m_geometryCapacity) {
+        // Visible counts vary whenever food expires or a snake crosses a
+        // monitor edge. Keep spare GPU-buffer capacity so those routine
+        // changes do not destroy and recreate the scene-graph allocation,
+        // which can present as a one-frame blank/flicker on some drivers.
+        const int grownCapacity = m_geometryCapacity > 0
+            ? m_geometryCapacity + std::max(1024, m_geometryCapacity / 2)
+            : 4096;
+        m_geometryCapacity = std::max(vertexCount, grownCapacity);
+        geometry->allocate(m_geometryCapacity);
+    }
+    geometry->setVertexCount(vertexCount);
+#else
+    // setVertexCount() was introduced in Qt 6.10. Keep the project buildable
+    // with its Qt 6.8 baseline, albeit without retained-capacity optimization.
+    geometry->allocate(vertexCount);
+    m_geometryCapacity = vertexCount;
+#endif
     if (!vertices.isEmpty()) {
         std::copy(vertices.cbegin(), vertices.cend(), geometry->vertexDataAsColoredPoint2D());
     }
+    geometry->markVertexDataDirty();
     node->markDirty(QSGNode::DirtyGeometry);
     return node;
 }

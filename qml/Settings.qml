@@ -487,6 +487,51 @@ ApplicationWindow {
                 text: qsTr("OLED tip: Pure Black, moving elements, a moving clock, seamless mode, and panel coverage minimize static pixels. Match each monitor removes timer jitter and follows every display's native refresh, while fixed caps save GPU power.")
             }
 
+            GroupBox {
+                title: qsTr("About and updates")
+                Layout.fillWidth: true
+                Layout.leftMargin: 22
+                Layout.rightMargin: 22
+
+                RowLayout {
+                    anchors.fill: parent
+                    spacing: 16
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 3
+
+                        Label {
+                            text: qsTr("Plasma Visual Screensaver %1").arg(window.controller.applicationVersion)
+                            font.weight: Font.DemiBold
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            color: palette.mid
+                            text: qsTr("Updates are provided through KDE Discover and the project's Launchpad PPA.")
+                        }
+                        Label {
+                            id: updateStatus
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            visible: text.length > 0
+                        }
+                    }
+
+                    Button {
+                        text: qsTr("Check for Updates")
+                        onClicked: {
+                            const opened = window.controller.openUpdateCenter()
+                            updateStatus.color = opened ? palette.highlight : palette.brightText
+                            updateStatus.text = opened
+                                ? qsTr("Update information opened in your software manager.")
+                                : qsTr("Could not open the software manager or release page.")
+                        }
+                    }
+                }
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 Layout.leftMargin: 22

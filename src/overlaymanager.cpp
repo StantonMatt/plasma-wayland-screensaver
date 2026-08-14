@@ -123,12 +123,6 @@ bool OverlayManager::addScreen(QScreen *screen)
         return screen != nullptr;
     }
 
-    const bool synchronizeSnakes = m_configuration->visualModule() == QStringLiteral("snakes")
-        && m_configuration->monitorBehavior() == QStringLiteral("synchronized");
-    const QString synchronizedSnakeSnapshot = synchronizeSnakes && !m_snakeRenderers.isEmpty()
-        ? captureSnakeSimulation(m_snakeRenderers.cbegin().value()) : QString{};
-    SnakeRenderer *newSnakeRenderer = nullptr;
-
     auto *view = new QQuickView;
     view->setObjectName(QStringLiteral("screensaver-%1").arg(screen->name()));
     view->setColor(Qt::black);
@@ -138,10 +132,9 @@ bool OverlayManager::addScreen(QScreen *screen)
     view->setGeometry(screen->geometry());
 
     int presentationRate = m_configuration->frameRate();
-    // JavaScript Canvas repaints are substantially more expensive than scene
-    // graph transforms. Snakes simulate at 60 Hz, so presenting the same state
-    // 175--240 times per second only burns CPU/GPU bandwidth without adding
-    // motion detail. Other visual modules retain the user's selected rate.
+    // Snakes use 30 Hz physics with interpolated presentation at up to 60 Hz.
+    // Presenting the same interpolation more often only burns CPU/GPU bandwidth
+    // without adding motion detail. Other visual modules retain the user's rate.
     if (m_configuration->visualModule() == QStringLiteral("snakes")
             && (presentationRate == 0 || presentationRate > 60)) {
         presentationRate = 60;
@@ -215,7 +208,6 @@ bool OverlayManager::addScreen(QScreen *screen)
                 snakeRoot->setProperty("nativeRenderer",
                                        QVariant::fromValue(static_cast<QObject *>(renderer)));
                 m_snakeRenderers.insert(screen, renderer);
-                newSnakeRenderer = renderer;
             }
         }
     }
@@ -249,10 +241,6 @@ bool OverlayManager::addScreen(QScreen *screen)
     m_presentationClocks.insert(screen, presentationClock);
     view->show();
     updateAllViewGeometry();
-    if (!synchronizedSnakeSnapshot.isEmpty()
-            && !restoreSnakeSimulation(newSnakeRenderer, synchronizedSnakeSnapshot)) {
-        qWarning() << "Could not synchronize the snake simulation on the added monitor";
-    }
     return true;
 }
 
@@ -260,7 +248,7 @@ void OverlayManager::removeScreen(QScreen *screen)
 {
     SnakeRenderer *removedSnakeRenderer = m_snakeRenderers.value(screen);
     const bool preserveSnakeSimulation = m_configuration->visualModule() == QStringLiteral("snakes")
-        && m_configuration->monitorBehavior() == QStringLiteral("seamless")
+        && m_configuration->monitorBehavior() != QStringLiteral("independent")
         && m_snakeSimulationDriver;
     const QString snakeSnapshot = preserveSnakeSimulation
         ? captureSnakeSimulation(m_snakeSimulationDriver) : QString{};
@@ -382,8 +370,11 @@ void OverlayManager::configureSnakeRenderSharing()
 {
     const bool seamlessSnakes = m_configuration->visualModule() == QStringLiteral("snakes")
         && m_configuration->monitorBehavior() == QStringLiteral("seamless");
-    const bool share = seamlessSnakes && m_snakeRenderers.size() > 1;
-    if (!seamlessSnakes) {
+    const bool synchronizedSnakes = m_configuration->visualModule() == QStringLiteral("snakes")
+        && m_configuration->monitorBehavior() == QStringLiteral("synchronized");
+    const bool sharedSnakes = seamlessSnakes || synchronizedSnakes;
+    const bool share = sharedSnakes && m_snakeRenderers.size() > 1;
+    if (!sharedSnakes) {
         m_snakeSimulationDriver = nullptr;
     } else if (!m_snakeSimulationDriver
                || !m_snakeRenderers.values().contains(m_snakeSimulationDriver)) {
@@ -392,12 +383,13 @@ void OverlayManager::configureSnakeRenderSharing()
             m_snakeSimulationDriver = m_snakeRenderers.cbegin().value();
         }
     }
-    SnakeRenderer *driver = seamlessSnakes ? m_snakeSimulationDriver.data() : nullptr;
+    SnakeRenderer *driver = sharedSnakes ? m_snakeSimulationDriver.data() : nullptr;
     for (SnakeRenderer *renderer : std::as_const(m_snakeRenderers)) {
         if (!renderer) {
             continue;
         }
         const bool drivesSimulation = !share || renderer == driver;
+        renderer->setScaleToViewport(synchronizedSnakes && !drivesSimulation);
         renderer->follow(drivesSimulation ? nullptr : driver);
         if (QQuickItem *snakeRoot = renderer->parentItem()) {
             snakeRoot->setProperty("simulationDriver", drivesSimulation);

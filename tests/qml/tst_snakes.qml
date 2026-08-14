@@ -40,6 +40,8 @@ TestCase {
     }
 
     function init() {
+        visual.nativeRenderer = null
+        visual.simulationDriver = true
         visualContext.animationSpeed = 100
         visualContext.animationDensity = 50
         visualContext.animationScale = 100
@@ -54,6 +56,73 @@ TestCase {
         visual.initializeWorld()
     }
 
+    function test_nativeRendererUnloadsCanvasFallback() {
+        tryCompare(visual, "canvasFallbackLoaded", true)
+        visual.nativeRenderer = {
+            syncFrame: function() {},
+            presentFrame: function() {}
+        }
+        tryCompare(visual, "canvasFallbackLoaded", false)
+
+        visual.nativeRenderer = null
+        tryCompare(visual, "canvasFallbackLoaded", true)
+    }
+
+    function test_advanceInterpolatesThirtyHzPhysicsAtSixtyFps() {
+        visual.nativeRenderer = {
+            syncFrame: function() {},
+            presentFrame: function() {}
+        }
+        visual.accumulator = 0
+        visual.simulationTime = 0
+
+        visual.advance(1 / 60)
+        compare(visual.simulationTime, 0)
+        verify(Math.abs(visual.renderAlpha - 0.5) < 0.001)
+
+        visual.advance(1 / 60)
+        verify(Math.abs(visual.simulationTime - 1 / 30) < 0.001)
+        verify(visual.renderAlpha < 0.001)
+    }
+
+    function test_canvasFallbackRetainsSixtyHzPhysics() {
+        visual.nativeRenderer = null
+        visual.accumulator = 0
+        visual.simulationTime = 0
+
+        visual.advance(1 / 60)
+
+        verify(Math.abs(visual.simulationTime - 1 / 60) < 0.001)
+        verify(visual.renderAlpha < 0.001)
+    }
+
+    function test_canvasFallbackKeepsTimeAtFifteenFps() {
+        visual.nativeRenderer = null
+        visual.accumulator = 0
+        visual.simulationTime = 0
+
+        visual.advance(1 / 15)
+
+        verify(Math.abs(visual.simulationTime - 1 / 15) < 0.001)
+        verify(visual.renderAlpha < 0.001)
+    }
+
+    function test_segmentMotionUsesPhysicsStepDuration() {
+        visual.nativeRenderer = {
+            syncFrame: function() {},
+            presentFrame: function() {}
+        }
+        const motion = visual.segmentMotion({
+            x: 14,
+            y: 17,
+            previousX: 4,
+            previousY: 7
+        }, 1000)
+
+        verify(Math.abs(motion.x - 300) < 0.001)
+        verify(Math.abs(motion.y - 300) < 0.001)
+    }
+
     function test_initialPopulation() {
         compare(visual.snakes.length, 9)
         compare(visual.food.length, 82)
@@ -61,6 +130,63 @@ TestCase {
             verify(visual.snakes[index].alive)
             verify(visual.snakes[index].segments.length >= 14)
         }
+    }
+
+    function test_seamlessHighDensityPopulationRemainsFinite() {
+        visualContext.monitorBehavior = "seamless"
+        visualContext.virtualWidth = 8560
+        visualContext.virtualHeight = 1635
+        visualContext.animationDensity = 100
+        visualContext.animationScale = 25
+        visualContext.trailAmount = 100
+        visualContext.snakeIntelligence = 100
+        visualContext.snakeSelfCollisions = true
+        visualContext.snakeDeadlyWalls = true
+        visual.initializeWorld()
+
+        let minimumAlive = visual.snakes.length
+        let maximumSegments = 0
+        let maximumFood = visual.food.length
+        let longestEmptyRun = 0
+        let emptyRun = 0
+        for (let frame = 0; frame < 3600; ++frame) {
+            visual.stepSimulation(1 / 30)
+            let alive = 0
+            let segments = 0
+            for (let snakeIndex = 0; snakeIndex < visual.snakes.length; ++snakeIndex) {
+                const snake = visual.snakes[snakeIndex]
+                if (!snake.alive)
+                    continue
+                ++alive
+                segments += snake.segments.length
+                for (let segmentIndex = 0; segmentIndex < snake.segments.length;
+                        ++segmentIndex) {
+                    const segment = snake.segments[segmentIndex]
+                    verify(Number.isFinite(segment.x) && Number.isFinite(segment.y),
+                           "non-finite segment at frame " + frame)
+                }
+            }
+            if (frame % 30 === 0) {
+                for (let foodIndex = 0; foodIndex < visual.food.length; ++foodIndex) {
+                    const particle = visual.food[foodIndex]
+                    verify(Number.isFinite(particle.x)
+                           && Number.isFinite(particle.y)
+                           && Number.isFinite(particle.size),
+                           "non-finite food particle at frame " + frame)
+                }
+            }
+            minimumAlive = Math.min(minimumAlive, alive)
+            maximumSegments = Math.max(maximumSegments, segments)
+            maximumFood = Math.max(maximumFood, visual.food.length)
+            emptyRun = alive === 0 ? emptyRun + 1 : 0
+            longestEmptyRun = Math.max(longestEmptyRun, emptyRun)
+        }
+        console.log("seamless soak minAlive=" + minimumAlive
+                    + " maxSegments=" + maximumSegments
+                    + " maxFood=" + maximumFood
+                    + " longestEmptyRun=" + longestEmptyRun
+                    + " deaths=" + visual.deathCount)
+        verify(longestEmptyRun === 0, "the whole snake population disappeared")
     }
 
     function test_ambientFoodRelocatesAfterAboutFortySeconds() {
@@ -280,8 +406,8 @@ TestCase {
         snake.brainCooldown = 0
         visual.rebuildSnakeTrail(snake)
 
-        for (let frame = 0; frame < 240 && snake.alive; ++frame)
-            visual.stepSimulation(1 / 60)
+        for (let frame = 0; frame < 120 && snake.alive; ++frame)
+            visual.stepSimulation(1 / 30)
 
         verify(snake.alive, "intelligent snake drove through an unobstructed wall; x="
                + (snake.segments.length ? snake.segments[0].x : "exploded")
@@ -320,8 +446,8 @@ TestCase {
         visual.cancelActiveBrainPlan()
         visual.brainCursor = 0
 
-        for (let frame = 0; frame < 300 && left.alive && right.alive; ++frame)
-            visual.stepSimulation(1 / 60)
+        for (let frame = 0; frame < 150 && left.alive && right.alive; ++frame)
+            visual.stepSimulation(1 / 30)
 
         verify(left.alive && right.alive,
                "intelligent snakes failed to resolve a visible head-on approach")
@@ -760,6 +886,31 @@ TestCase {
         compare(visual.food.length, particleCount)
     }
 
+    function test_deathFoodIsBoundedAndFreshCorpseGetsVisibleBurst() {
+        visual.food = []
+        while (visual.food.length < visual.maximumFoodCount)
+            visual.addAmbientFood()
+
+        const snake = visual.makeSnake(1)
+        while (snake.segments.length < 240)
+            visual.appendGrowthSegment(snake)
+        const particleCount = visual.explodeSnake(snake)
+
+        verify(particleCount >= 48)
+        verify(visual.food.length <= visual.maximumFoodCount)
+        let corpseCount = 0
+        let corpseValue = 0
+        for (let index = 0; index < visual.food.length; ++index) {
+            if (visual.food[index].feastId > 0) {
+                ++corpseCount
+                corpseValue += visual.food[index].value
+            }
+        }
+        compare(corpseCount, particleCount)
+        verify(corpseValue > snake.birthLength * 4,
+               "bounded particles lost most of the defeated snake's value")
+    }
+
     function test_continuousCapsulesCloseSamplingGaps() {
         visualContext.snakeIntelligence = 100
         const snake = visual.snakes[0]
@@ -993,7 +1144,8 @@ TestCase {
         compare(visual.activeBrainPlan.snake, firstSnake)
         compare(visual.brainCursor, 1)
         verify(visual.lastBrainWorkUnits <= visual.maximumBrainWorkUnits)
-        verify(visual.activeBrainPlan.candidateIndex <= 2)
+        verify(visual.activeBrainPlan.candidateIndex
+               <= visual.maximumBrainWorkUnits - 1)
 
         let ticks = 1
         while (firstSnake.brainPlanning && ticks < 30) {
@@ -1036,8 +1188,8 @@ TestCase {
         visual.initializeWorld()
         const started = Date.now()
 
-        for (let step = 0; step < 600; ++step)
-            visual.stepSimulation(1 / 60)
+        for (let step = 0; step < 300; ++step)
+            visual.stepSimulation(1 / 30)
 
         const elapsed = Date.now() - started
         verify(elapsed < 5000,
@@ -1060,8 +1212,8 @@ TestCase {
         visual.food = []
         const started = Date.now()
 
-        for (let step = 0; step < 300; ++step)
-            visual.stepSimulation(1 / 60)
+        for (let step = 0; step < 150; ++step)
+            visual.stepSimulation(1 / 30)
 
         const elapsed = Date.now() - started
         verify(elapsed < 2000,
@@ -1083,8 +1235,8 @@ TestCase {
         }
         const started = Date.now()
 
-        for (let step = 0; step < 300; ++step)
-            visual.stepSimulation(1 / 60)
+        for (let step = 0; step < 150; ++step)
+            visual.stepSimulation(1 / 30)
 
         const elapsed = Date.now() - started
         verify(elapsed < 4000,

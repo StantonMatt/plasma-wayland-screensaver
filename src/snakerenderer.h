@@ -13,6 +13,8 @@ class SnakeRenderer final : public QQuickItem
 {
     Q_OBJECT
 
+    friend class SnakeRendererTest;
+
 public:
     explicit SnakeRenderer(QQuickItem *parent = nullptr);
 
@@ -20,7 +22,9 @@ public:
                                const QJSValue &palette, qreal simulationTime,
                                qreal interpolation, qreal worldWidth, qreal worldHeight,
                                qreal drawOffsetX, qreal drawOffsetY, bool deadlyWalls);
+    Q_INVOKABLE void presentFrame(qreal simulationTime, qreal interpolation);
     void setDrawOffset(qreal drawOffsetX, qreal drawOffsetY);
+    void setScaleToViewport(bool scaleToViewport);
     void follow(SnakeRenderer *source);
 
 Q_SIGNALS:
@@ -61,6 +65,8 @@ private:
     qreal m_drawOffsetX = 0.0;
     qreal m_drawOffsetY = 0.0;
     bool m_deadlyWalls = true;
+    bool m_scaleToViewport = false;
+    int m_geometryCapacity = 0;
     QPointer<SnakeRenderer> m_source;
     QMetaObject::Connection m_sourceConnection;
 };

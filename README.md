@@ -27,6 +27,10 @@ plasma-visual-screensaver --background
 Open **Plasma Visual Screensaver** from the application menu to configure it.
 Settings are retained across upgrades in
 `~/.config/plasma-visual-screensaverrc`.
+The **About and updates** section shows the installed application version. Its
+**Check for Updates** button opens this application in KDE Discover, where PPA
+updates can be reviewed and installed. If Discover is unavailable, the button
+opens the latest GitHub release instead.
 
 > **Security notice:** this is a decorative overlay on an **unlocked** session.
 > It does not authenticate, lock input, protect running applications, or replace
@@ -81,9 +85,17 @@ Settings are retained across upgrades in
   through JavaScript Canvas on every update.
 - Slithering Snakes uses a native Qt Quick scene-graph renderer instead of a
   full-screen JavaScript Canvas. It batches the ecosystem into compact GPU
-  triangle geometry, caps this particular visual at 60 fps, and shares one
-  simulation snapshot across all outputs in seamless mode. This avoids
-  recomputing identical AI or redrawing multi-megapixel textures at 175–240 Hz.
+  triangle geometry, runs physics at 30 Hz with smooth 60 Hz interpolation, and
+  shares one simulation across all outputs in synchronized and seamless modes.
+  Its scene-graph geometry retains grow-only buffer capacity as the visible
+  vertex count changes, uses continuous joined body ribbons, and isolates
+  malformed primitives instead of allowing one to invalidate a complete frame.
+  Mature death-food populations are bounded while folding the defeated snake's
+  edible value into the available particles; dense feasts also use simplified
+  particle glow and less frequent cluster rescoring. The JavaScript Canvas
+  fallback is unloaded whenever native rendering is available. This avoids
+  recomputing identical AI, reallocating the GPU stream on routine growth, or
+  redrawing multi-megapixel textures at 175–240 Hz.
 - `AnimationState` advances seamless moving objects once per frame and collides
   them against the union of the actual `QScreen` geometries. Different output
   sizes, vertical offsets, and gaps therefore form real boundaries while an
@@ -256,14 +268,17 @@ session:
    slow/normal/fast clock speeds, the clock toggle, all frame rates, and reduced
    motion. Test automatic refresh and several fixed caps, including 15, 60,
    144, and 240 fps. Moving items must freeze under reduced motion.
-8. Let the configured idle interval expire naturally. Confirm activity dismisses
+8. Confirm that Settings shows the same version as
+   `plasma-visual-screensaver --version`, then select **Check for Updates** and
+   verify that KDE Discover opens the application's update page.
+9. Let the configured idle interval expire naturally. Confirm activity dismisses
    it and that another complete idle interval activates it again.
-9. Suspend and resume both while waiting and while preview is active. Confirm no
+10. Suspend and resume both while waiting and while preview is active. Confirm no
    stale overlay or inhibitor remains after resume. (The active inhibitor may
    intentionally defer an automatic suspend until dismissal.)
-10. Run `plasma-visual-screensaver --quit` and verify the process exits. Start it
+11. Run `plasma-visual-screensaver --quit` and verify the process exits. Start it
    again and confirm settings persisted.
-11. Use `busctl --user list | grep -E 'portal|PowerManagement'` and PowerDevil's
+12. Use `busctl --user list | grep -E 'portal|PowerManagement'` and PowerDevil's
    battery/status UI to verify an inhibition appears only while the overlay is
    active and is released after every dismissal and failed activation.
 
@@ -295,5 +310,6 @@ session:
 - [Qt `QGuiApplication` screen lifecycle](https://doc.qt.io/qt-6/qguiapplication.html)
 - [Qt `QScreen` geometry signals](https://doc.qt.io/qt-6/qscreen.html)
 - [Qt Quick scene graph and render loops](https://doc.qt.io/qt-6/qtquick-visualcanvas-scenegraph.html)
+- [Qt `QSGGeometry` allocation and retained vertex counts](https://doc.qt.io/qt-6/qsggeometry.html)
 - [Qt `QWindow::requestUpdate()`](https://doc.qt.io/qt-6/qwindow.html#requestUpdate)
 - [XDG Desktop Portal Inhibit API](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.Inhibit.html)

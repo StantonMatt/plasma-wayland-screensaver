@@ -2,6 +2,7 @@
 #pragma once
 
 #include <QObject>
+#include <QString>
 #include <QVariantMap>
 #include <memory>
 
@@ -19,6 +20,7 @@ class ApplicationController final : public QObject
     Q_CLASSINFO("D-Bus Interface", "org.kde.PlasmaVisualScreensaver")
     Q_PROPERTY(Configuration *configuration READ configuration CONSTANT)
     Q_PROPERTY(bool screensaverActive READ screensaverActive NOTIFY screensaverActiveChanged)
+    Q_PROPERTY(QString applicationVersion READ applicationVersion CONSTANT)
 
 public:
     explicit ApplicationController(QObject *parent = nullptr);
@@ -26,6 +28,7 @@ public:
 
     Configuration *configuration();
     bool screensaverActive() const;
+    QString applicationVersion() const;
     void start();
 
 public Q_SLOTS:
@@ -33,6 +36,7 @@ public Q_SLOTS:
     Q_SCRIPTABLE void Preview();
     Q_SCRIPTABLE void Quit();
     Q_INVOKABLE void saveSettings(const QVariantMap &settings);
+    Q_INVOKABLE bool openUpdateCenter() const;
 
 Q_SIGNALS:
     void screensaverActiveChanged();
