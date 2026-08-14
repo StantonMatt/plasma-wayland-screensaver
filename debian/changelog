@@ -1,3 +1,10 @@
+plasma-visual-screensaver (0.4.0-1ppa2~resolute1) resolute; urgency=medium
+
+  * Allow the real-time performance test sufficient headroom on shared PPA
+    builders while retaining a faster-than-real-time requirement.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Fri, 14 Aug 2026 04:03:42 -0400
+
 plasma-visual-screensaver (0.4.0-1ppa1~resolute1) resolute; urgency=medium
 
   * Add the optimized Slithering Snakes ecosystem visual.

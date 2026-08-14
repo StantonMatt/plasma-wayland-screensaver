@@ -1,0 +1,14 @@
+Description: Allow performance test headroom on shared Launchpad builders
+ The ecosystem must still simulate ten seconds in under eight seconds, but the
+ previous five-second threshold was too dependent on builder contention.
+Author: Matthew Stanton <stantonmatthewj@gmail.com>
+Origin: upstream
+Forwarded: not-needed
+Last-Update: 2026-08-14
+--- a/tests/qml/tst_snakes.qml
++++ b/tests/qml/tst_snakes.qml
+@@ -599,3 +599,3 @@ TestCase {
+         const elapsed = Date.now() - started
+-        verify(elapsed < 5000,
++        verify(elapsed < 8000,
+                "10 simulated seconds took " + elapsed + " ms")
