@@ -100,8 +100,9 @@ void ApplicationController::Quit()
     });
 }
 
-void ApplicationController::saveSettings()
+void ApplicationController::saveSettings(const QVariantMap &settings)
 {
+    m_configuration.apply(settings);
     m_configuration.save();
 }
 

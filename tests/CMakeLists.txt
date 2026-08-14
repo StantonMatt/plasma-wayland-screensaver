@@ -21,3 +21,12 @@ add_executable(test-animationstate
 )
 target_link_libraries(test-animationstate PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME animation-state COMMAND test-animationstate)
+
+if(TARGET Qt6::qmltestrunner)
+    add_test(NAME snakes-qml
+        COMMAND Qt6::qmltestrunner -input "${CMAKE_CURRENT_SOURCE_DIR}/qml")
+    set_tests_properties(snakes-qml PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+else()
+    message(FATAL_ERROR "Qt6 qmltestrunner is required for visual module tests")
+endif()

@@ -3,6 +3,7 @@
 
 #include "configuration.h"
 #include "presentationclock.h"
+#include "snakerenderer.h"
 
 #include <LayerShellQt/Window>
 #include <QCoreApplication>
@@ -13,10 +14,36 @@
 #include <QQuickItem>
 #include <QQuickView>
 #include <QScreen>
+#include <QString>
 #include <QUrl>
 #include <QVariant>
 
 #include <algorithm>
+#include <utility>
+
+namespace {
+QString captureSnakeSimulation(SnakeRenderer *renderer)
+{
+    QString snapshot;
+    QQuickItem *root = renderer ? renderer->parentItem() : nullptr;
+    if (!root || !QMetaObject::invokeMethod(root, "simulationSnapshot",
+                                            Q_RETURN_ARG(QString, snapshot))) {
+        return {};
+    }
+    return snapshot;
+}
+
+bool restoreSnakeSimulation(SnakeRenderer *renderer, const QString &snapshot)
+{
+    bool restored = false;
+    QQuickItem *root = renderer ? renderer->parentItem() : nullptr;
+    return root && !snapshot.isEmpty()
+        && QMetaObject::invokeMethod(root, "restoreSimulationSnapshot",
+                                     Q_RETURN_ARG(bool, restored),
+                                     Q_ARG(QString, snapshot))
+        && restored;
+}
+}
 
 OverlayManager::OverlayManager(Configuration *configuration, QObject *parent)
     : QObject(parent)
@@ -73,7 +100,9 @@ void OverlayManager::hide()
     m_animationState.stop();
     m_sharedAnimationActive = false;
     m_animationDriverScreen = nullptr;
+    m_snakeSimulationDriver = nullptr;
     m_presentationClocks.clear();
+    m_snakeRenderers.clear();
     qApp->removeEventFilter(this);
     const auto views = m_views;
     m_views.clear();
@@ -94,6 +123,12 @@ bool OverlayManager::addScreen(QScreen *screen)
         return screen != nullptr;
     }
 
+    const bool synchronizeSnakes = m_configuration->visualModule() == QStringLiteral("snakes")
+        && m_configuration->monitorBehavior() == QStringLiteral("synchronized");
+    const QString synchronizedSnakeSnapshot = synchronizeSnakes && !m_snakeRenderers.isEmpty()
+        ? captureSnakeSimulation(m_snakeRenderers.cbegin().value()) : QString{};
+    SnakeRenderer *newSnakeRenderer = nullptr;
+
     auto *view = new QQuickView;
     view->setObjectName(QStringLiteral("screensaver-%1").arg(screen->name()));
     view->setColor(Qt::black);
@@ -102,7 +137,16 @@ bool OverlayManager::addScreen(QScreen *screen)
     view->setScreen(screen);
     view->setGeometry(screen->geometry());
 
-    auto *presentationClock = new PresentationClock(view, m_configuration->frameRate(), view);
+    int presentationRate = m_configuration->frameRate();
+    // JavaScript Canvas repaints are substantially more expensive than scene
+    // graph transforms. Snakes simulate at 60 Hz, so presenting the same state
+    // 175--240 times per second only burns CPU/GPU bandwidth without adding
+    // motion detail. Other visual modules retain the user's selected rate.
+    if (m_configuration->visualModule() == QStringLiteral("snakes")
+            && (presentationRate == 0 || presentationRate > 60)) {
+        presentationRate = 60;
+    }
+    auto *presentationClock = new PresentationClock(view, presentationRate, view);
     connect(presentationClock, &PresentationClock::frameTick, this,
             [this, screen](qreal deltaSeconds) {
                 if (m_sharedAnimationActive && screen == m_animationDriverScreen) {
@@ -128,6 +172,9 @@ bool OverlayManager::addScreen(QScreen *screen)
         {QStringLiteral("ballGravity"), m_configuration->ballGravity()},
         {QStringLiteral("ballElasticity"), m_configuration->ballElasticity()},
         {QStringLiteral("ballCollisions"), m_configuration->ballCollisions()},
+        {QStringLiteral("snakeIntelligence"), m_configuration->snakeIntelligence()},
+        {QStringLiteral("snakeSelfCollisions"), m_configuration->snakeSelfCollisions()},
+        {QStringLiteral("snakeDeadlyWalls"), m_configuration->snakeDeadlyWalls()},
         {QStringLiteral("showClock"), m_configuration->showClock()},
         {QStringLiteral("clockMovement"), m_configuration->clockMovement()},
         {QStringLiteral("clockSpeed"), m_configuration->clockSpeed()},
@@ -151,6 +198,26 @@ bool OverlayManager::addScreen(QScreen *screen)
     if (view->status() == QQuickView::Error) {
         delete view;
         return false;
+    }
+
+    if (m_configuration->visualModule() == QStringLiteral("snakes")) {
+        if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
+            if (auto *snakeRoot = rootItem->findChild<QQuickItem *>(
+                    QStringLiteral("snakeVisualRoot"), Qt::FindChildrenRecursively)) {
+                auto *renderer = new SnakeRenderer(snakeRoot);
+                renderer->setParentItem(snakeRoot);
+                renderer->setSize(snakeRoot->size());
+                renderer->setZ(1.0);
+                connect(snakeRoot, &QQuickItem::widthChanged, renderer,
+                        [snakeRoot, renderer] { renderer->setWidth(snakeRoot->width()); });
+                connect(snakeRoot, &QQuickItem::heightChanged, renderer,
+                        [snakeRoot, renderer] { renderer->setHeight(snakeRoot->height()); });
+                snakeRoot->setProperty("nativeRenderer",
+                                       QVariant::fromValue(static_cast<QObject *>(renderer)));
+                m_snakeRenderers.insert(screen, renderer);
+                newSnakeRenderer = renderer;
+            }
+        }
     }
 
     auto *layer = LayerShellQt::Window::get(view);
@@ -182,12 +249,26 @@ bool OverlayManager::addScreen(QScreen *screen)
     m_presentationClocks.insert(screen, presentationClock);
     view->show();
     updateAllViewGeometry();
+    if (!synchronizedSnakeSnapshot.isEmpty()
+            && !restoreSnakeSimulation(newSnakeRenderer, synchronizedSnakeSnapshot)) {
+        qWarning() << "Could not synchronize the snake simulation on the added monitor";
+    }
     return true;
 }
 
 void OverlayManager::removeScreen(QScreen *screen)
 {
+    SnakeRenderer *removedSnakeRenderer = m_snakeRenderers.value(screen);
+    const bool preserveSnakeSimulation = m_configuration->visualModule() == QStringLiteral("snakes")
+        && m_configuration->monitorBehavior() == QStringLiteral("seamless")
+        && m_snakeSimulationDriver;
+    const QString snakeSnapshot = preserveSnakeSimulation
+        ? captureSnakeSimulation(m_snakeSimulationDriver) : QString{};
+    if (removedSnakeRenderer == m_snakeSimulationDriver) {
+        m_snakeSimulationDriver = nullptr;
+    }
     m_presentationClocks.remove(screen);
+    m_snakeRenderers.remove(screen);
     if (m_animationDriverScreen == screen) {
         m_animationDriverScreen = nullptr;
     }
@@ -200,6 +281,17 @@ void OverlayManager::removeScreen(QScreen *screen)
         Q_EMIT inputDetected();
     } else {
         updateAllViewGeometry();
+        SnakeRenderer *restoreTarget = m_snakeSimulationDriver;
+        if (!restoreTarget && !m_snakeRenderers.isEmpty()) {
+            restoreTarget = m_snakeRenderers.value(m_animationDriverScreen);
+            if (!restoreTarget) {
+                restoreTarget = m_snakeRenderers.cbegin().value();
+            }
+        }
+        if (!snakeSnapshot.isEmpty()
+                && !restoreSnakeSimulation(restoreTarget, snakeSnapshot)) {
+            qWarning() << "Could not preserve the seamless snake simulation after monitor removal";
+        }
     }
 }
 
@@ -268,17 +360,47 @@ void OverlayManager::updatePresentationClocks()
         && (visualUsesClock || clockUsesClock);
     PresentationClock *sharedClock = m_presentationClocks.value(m_animationDriverScreen);
     const bool synchronized = m_configuration->monitorBehavior() == QStringLiteral("synchronized");
+    const bool sharedQmlMotion = synchronized
+        || (seamless && m_configuration->visualModule() == QStringLiteral("snakes"));
     for (auto it = m_presentationClocks.cbegin(); it != m_presentationClocks.cend(); ++it) {
         const bool drivesPerWindowMotion = perWindowMotion
-            && (!synchronized || it.key() == m_animationDriverScreen);
+            && (!sharedQmlMotion || it.key() == m_animationDriverScreen);
         it.value()->setRunning(drivesPerWindowMotion
                                || (m_sharedAnimationActive && it.key() == m_animationDriverScreen));
         if (QQuickView *view = m_views.value(it.key())) {
             if (QObject *root = view->rootObject()) {
-                PresentationClock *clock = synchronized && sharedClock ? sharedClock : it.value();
+                PresentationClock *clock = sharedQmlMotion && sharedClock ? sharedClock : it.value();
                 root->setProperty("presentationClock",
                                   QVariant::fromValue(static_cast<QObject *>(clock)));
             }
+        }
+    }
+    configureSnakeRenderSharing();
+}
+
+void OverlayManager::configureSnakeRenderSharing()
+{
+    const bool seamlessSnakes = m_configuration->visualModule() == QStringLiteral("snakes")
+        && m_configuration->monitorBehavior() == QStringLiteral("seamless");
+    const bool share = seamlessSnakes && m_snakeRenderers.size() > 1;
+    if (!seamlessSnakes) {
+        m_snakeSimulationDriver = nullptr;
+    } else if (!m_snakeSimulationDriver
+               || !m_snakeRenderers.values().contains(m_snakeSimulationDriver)) {
+        m_snakeSimulationDriver = m_snakeRenderers.value(m_animationDriverScreen);
+        if (!m_snakeSimulationDriver && !m_snakeRenderers.isEmpty()) {
+            m_snakeSimulationDriver = m_snakeRenderers.cbegin().value();
+        }
+    }
+    SnakeRenderer *driver = seamlessSnakes ? m_snakeSimulationDriver.data() : nullptr;
+    for (SnakeRenderer *renderer : std::as_const(m_snakeRenderers)) {
+        if (!renderer) {
+            continue;
+        }
+        const bool drivesSimulation = !share || renderer == driver;
+        renderer->follow(drivesSimulation ? nullptr : driver);
+        if (QQuickItem *snakeRoot = renderer->parentItem()) {
+            snakeRoot->setProperty("simulationDriver", drivesSimulation);
         }
     }
 }
@@ -300,6 +422,11 @@ void OverlayManager::updateViewGeometry(QScreen *screen)
         root->setProperty("virtualY", virtualGeometry.y());
         root->setProperty("virtualWidth", virtualGeometry.width());
         root->setProperty("virtualHeight", virtualGeometry.height());
+    }
+    if (SnakeRenderer *renderer = m_snakeRenderers.value(screen)) {
+        const bool seamless = m_configuration->monitorBehavior() == QStringLiteral("seamless");
+        renderer->setDrawOffset(seamless ? virtualGeometry.x() - screenGeometry.x() : 0,
+                                seamless ? virtualGeometry.y() - screenGeometry.y() : 0);
     }
 }
 

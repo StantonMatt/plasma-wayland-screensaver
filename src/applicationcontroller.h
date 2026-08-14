@@ -2,6 +2,7 @@
 #pragma once
 
 #include <QObject>
+#include <QVariantMap>
 #include <memory>
 
 #include "configuration.h"
@@ -31,7 +32,7 @@ public Q_SLOTS:
     Q_SCRIPTABLE void ShowSettings();
     Q_SCRIPTABLE void Preview();
     Q_SCRIPTABLE void Quit();
-    Q_INVOKABLE void saveSettings();
+    Q_INVOKABLE void saveSettings(const QVariantMap &settings);
 
 Q_SIGNALS:
     void screensaverActiveChanged();

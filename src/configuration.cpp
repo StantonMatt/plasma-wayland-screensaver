@@ -31,6 +31,9 @@ int Configuration::ballCount() const { return m_ballCount; }
 int Configuration::ballGravity() const { return m_ballGravity; }
 int Configuration::ballElasticity() const { return m_ballElasticity; }
 bool Configuration::ballCollisions() const { return m_ballCollisions; }
+int Configuration::snakeIntelligence() const { return m_snakeIntelligence; }
+bool Configuration::snakeSelfCollisions() const { return m_snakeSelfCollisions; }
+bool Configuration::snakeDeadlyWalls() const { return m_snakeDeadlyWalls; }
 bool Configuration::showClock() const { return m_showClock; }
 QString Configuration::clockMovement() const { return m_clockMovement; }
 QString Configuration::clockSpeed() const { return m_clockSpeed; }
@@ -46,7 +49,26 @@ void Configuration::update(T &member, const T &value)
         return;
     }
     member = value;
-    Q_EMIT changed();
+    if (m_updateDepth > 0) {
+        m_changedPending = true;
+    } else {
+        Q_EMIT changed();
+    }
+}
+
+void Configuration::beginUpdate()
+{
+    ++m_updateDepth;
+}
+
+void Configuration::endUpdate()
+{
+    Q_ASSERT(m_updateDepth > 0);
+    --m_updateDepth;
+    if (m_updateDepth == 0 && m_changedPending) {
+        m_changedPending = false;
+        Q_EMIT changed();
+    }
 }
 
 void Configuration::setIdleMinutes(int value) { update(m_idleMinutes, std::clamp(value, 1, 240)); }
@@ -63,6 +85,7 @@ void Configuration::setVisualModule(const QString &value)
         QStringLiteral("fireflies"),
         QStringLiteral("ribbons"),
         QStringLiteral("constellation"),
+        QStringLiteral("snakes"),
     };
     update(m_visualModule, modules.contains(value) ? value : QStringLiteral("aurora"));
 }
@@ -96,6 +119,12 @@ void Configuration::setBallCount(int value) { update(m_ballCount, std::clamp(val
 void Configuration::setBallGravity(int value) { update(m_ballGravity, std::clamp(value, -100, 100)); }
 void Configuration::setBallElasticity(int value) { update(m_ballElasticity, std::clamp(value, 50, 100)); }
 void Configuration::setBallCollisions(bool value) { update(m_ballCollisions, value); }
+void Configuration::setSnakeIntelligence(int value)
+{
+    update(m_snakeIntelligence, std::clamp(value, 0, 100));
+}
+void Configuration::setSnakeSelfCollisions(bool value) { update(m_snakeSelfCollisions, value); }
+void Configuration::setSnakeDeadlyWalls(bool value) { update(m_snakeDeadlyWalls, value); }
 void Configuration::setShowClock(bool value) { update(m_showClock, value); }
 void Configuration::setClockMovement(const QString &value)
 {
@@ -145,8 +174,81 @@ void Configuration::setMonitorBehavior(const QString &value)
 }
 void Configuration::setCoverPanels(bool value) { update(m_coverPanels, value); }
 
+void Configuration::apply(const QVariantMap &settings)
+{
+    beginUpdate();
+    if (settings.contains(QStringLiteral("idleMinutes"))) {
+        setIdleMinutes(settings.value(QStringLiteral("idleMinutes")).toInt());
+    }
+    if (settings.contains(QStringLiteral("visualModule"))) {
+        setVisualModule(settings.value(QStringLiteral("visualModule")).toString());
+    }
+    if (settings.contains(QStringLiteral("backgroundStyle"))) {
+        setBackgroundStyle(settings.value(QStringLiteral("backgroundStyle")).toString());
+    }
+    if (settings.contains(QStringLiteral("animationSpeed"))) {
+        setAnimationSpeed(settings.value(QStringLiteral("animationSpeed")).toInt());
+    }
+    if (settings.contains(QStringLiteral("animationDensity"))) {
+        setAnimationDensity(settings.value(QStringLiteral("animationDensity")).toInt());
+    }
+    if (settings.contains(QStringLiteral("animationScale"))) {
+        setAnimationScale(settings.value(QStringLiteral("animationScale")).toInt());
+    }
+    if (settings.contains(QStringLiteral("animationPalette"))) {
+        setAnimationPalette(settings.value(QStringLiteral("animationPalette")).toString());
+    }
+    if (settings.contains(QStringLiteral("trailAmount"))) {
+        setTrailAmount(settings.value(QStringLiteral("trailAmount")).toInt());
+    }
+    if (settings.contains(QStringLiteral("ballCount"))) {
+        setBallCount(settings.value(QStringLiteral("ballCount")).toInt());
+    }
+    if (settings.contains(QStringLiteral("ballGravity"))) {
+        setBallGravity(settings.value(QStringLiteral("ballGravity")).toInt());
+    }
+    if (settings.contains(QStringLiteral("ballElasticity"))) {
+        setBallElasticity(settings.value(QStringLiteral("ballElasticity")).toInt());
+    }
+    if (settings.contains(QStringLiteral("ballCollisions"))) {
+        setBallCollisions(settings.value(QStringLiteral("ballCollisions")).toBool());
+    }
+    if (settings.contains(QStringLiteral("snakeIntelligence"))) {
+        setSnakeIntelligence(settings.value(QStringLiteral("snakeIntelligence")).toInt());
+    }
+    if (settings.contains(QStringLiteral("snakeSelfCollisions"))) {
+        setSnakeSelfCollisions(settings.value(QStringLiteral("snakeSelfCollisions")).toBool());
+    }
+    if (settings.contains(QStringLiteral("snakeDeadlyWalls"))) {
+        setSnakeDeadlyWalls(settings.value(QStringLiteral("snakeDeadlyWalls")).toBool());
+    }
+    if (settings.contains(QStringLiteral("showClock"))) {
+        setShowClock(settings.value(QStringLiteral("showClock")).toBool());
+    }
+    if (settings.contains(QStringLiteral("clockMovement"))) {
+        setClockMovement(settings.value(QStringLiteral("clockMovement")).toString());
+    }
+    if (settings.contains(QStringLiteral("clockSpeed"))) {
+        setClockSpeed(settings.value(QStringLiteral("clockSpeed")).toString());
+    }
+    if (settings.contains(QStringLiteral("frameRate"))) {
+        setFrameRate(settings.value(QStringLiteral("frameRate")).toInt());
+    }
+    if (settings.contains(QStringLiteral("reducedMotion"))) {
+        setReducedMotion(settings.value(QStringLiteral("reducedMotion")).toBool());
+    }
+    if (settings.contains(QStringLiteral("monitorBehavior"))) {
+        setMonitorBehavior(settings.value(QStringLiteral("monitorBehavior")).toString());
+    }
+    if (settings.contains(QStringLiteral("coverPanels"))) {
+        setCoverPanels(settings.value(QStringLiteral("coverPanels")).toBool());
+    }
+    endUpdate();
+}
+
 void Configuration::assignDefaults()
 {
+    beginUpdate();
     setIdleMinutes(10);
     setVisualModule(QStringLiteral("aurora"));
     setBackgroundStyle(QStringLiteral("midnight"));
@@ -159,6 +261,9 @@ void Configuration::assignDefaults()
     setBallGravity(35);
     setBallElasticity(92);
     setBallCollisions(true);
+    setSnakeIntelligence(75);
+    setSnakeSelfCollisions(false);
+    setSnakeDeadlyWalls(true);
     setShowClock(true);
     setClockMovement(QStringLiteral("bounce"));
     setClockSpeed(QStringLiteral("normal"));
@@ -166,12 +271,14 @@ void Configuration::assignDefaults()
     setReducedMotion(false);
     setMonitorBehavior(QStringLiteral("independent"));
     setCoverPanels(true);
+    endUpdate();
 }
 
 void Configuration::reload()
 {
     m_config->reparseConfiguration();
     const KConfigGroup general(m_config.get(), QStringLiteral("General"));
+    beginUpdate();
     setIdleMinutes(general.readEntry("IdleMinutes", 10));
     QString visual = general.readEntry("VisualModule", QStringLiteral("aurora"));
     const QString legacyBackground = visual == QStringLiteral("black") || visual == QStringLiteral("bounce")
@@ -190,6 +297,9 @@ void Configuration::reload()
     setBallGravity(general.readEntry("BallGravity", 35));
     setBallElasticity(general.readEntry("BallElasticity", 92));
     setBallCollisions(general.readEntry("BallCollisions", true));
+    setSnakeIntelligence(general.readEntry("SnakeIntelligence", 75));
+    setSnakeSelfCollisions(general.readEntry("SnakeSelfCollisions", false));
+    setSnakeDeadlyWalls(general.readEntry("SnakeDeadlyWalls", true));
     setShowClock(general.readEntry("ShowClock", true));
     setClockMovement(general.readEntry("ClockMovement", QStringLiteral("bounce")));
     setClockSpeed(general.readEntry("ClockSpeed", QStringLiteral("normal")));
@@ -197,6 +307,7 @@ void Configuration::reload()
     setReducedMotion(general.readEntry("ReducedMotion", false));
     setMonitorBehavior(general.readEntry("MonitorBehavior", QStringLiteral("independent")));
     setCoverPanels(general.readEntry("CoverPanels", true));
+    endUpdate();
 }
 
 void Configuration::save()
@@ -214,6 +325,9 @@ void Configuration::save()
     general.writeEntry("BallGravity", m_ballGravity);
     general.writeEntry("BallElasticity", m_ballElasticity);
     general.writeEntry("BallCollisions", m_ballCollisions);
+    general.writeEntry("SnakeIntelligence", m_snakeIntelligence);
+    general.writeEntry("SnakeSelfCollisions", m_snakeSelfCollisions);
+    general.writeEntry("SnakeDeadlyWalls", m_snakeDeadlyWalls);
     general.writeEntry("ShowClock", m_showClock);
     general.writeEntry("ClockMovement", m_clockMovement);
     general.writeEntry("ClockSpeed", m_clockSpeed);

@@ -20,26 +20,30 @@ ApplicationWindow {
     }
 
     function store() {
-        screensaverConfig.idleMinutes = idleTimeout.value
-        screensaverConfig.visualModule = visual.currentValue
-        screensaverConfig.backgroundStyle = background.currentValue
-        screensaverConfig.animationSpeed = Math.round(animationSpeed.value)
-        screensaverConfig.animationDensity = Math.round(animationDensity.value)
-        screensaverConfig.animationScale = Math.round(animationScale.value)
-        screensaverConfig.animationPalette = paletteChoice.currentValue
-        screensaverConfig.trailAmount = Math.round(trailAmount.value)
-        screensaverConfig.ballCount = ballCount.value
-        screensaverConfig.ballGravity = Math.round(ballGravity.value)
-        screensaverConfig.ballElasticity = Math.round(ballElasticity.value)
-        screensaverConfig.ballCollisions = ballCollisions.checked
-        screensaverConfig.showClock = showClock.checked
-        screensaverConfig.clockMovement = clockMovement.currentValue
-        screensaverConfig.clockSpeed = clockSpeed.currentValue
-        screensaverConfig.frameRate = frameRate.currentValue
-        screensaverConfig.reducedMotion = reducedMotion.checked
-        screensaverConfig.monitorBehavior = monitors.currentValue
-        screensaverConfig.coverPanels = coverPanels.checked
-        controller.saveSettings()
+        controller.saveSettings({
+            idleMinutes: idleTimeout.value,
+            visualModule: visual.currentValue,
+            backgroundStyle: background.currentValue,
+            animationSpeed: Math.round(animationSpeed.value),
+            animationDensity: Math.round(animationDensity.value),
+            animationScale: Math.round(animationScale.value),
+            animationPalette: paletteChoice.currentValue,
+            trailAmount: Math.round(trailAmount.value),
+            ballCount: ballCount.value,
+            ballGravity: Math.round(ballGravity.value),
+            ballElasticity: Math.round(ballElasticity.value),
+            ballCollisions: ballCollisions.checked,
+            snakeIntelligence: Math.round(snakeIntelligence.value),
+            snakeSelfCollisions: snakeSelfCollisions.checked,
+            snakeDeadlyWalls: snakeDeadlyWalls.checked,
+            showClock: showClock.checked,
+            clockMovement: clockMovement.currentValue,
+            clockSpeed: clockSpeed.currentValue,
+            frameRate: frameRate.currentValue,
+            reducedMotion: reducedMotion.checked,
+            monitorBehavior: monitors.currentValue,
+            coverPanels: coverPanels.checked
+        })
     }
 
     function optionTitle() {
@@ -51,6 +55,7 @@ ApplicationWindow {
         case "fireflies": return qsTr("Firefly swarm controls")
         case "ribbons": return qsTr("Neon Ribbon controls")
         case "constellation": return qsTr("Constellation controls")
+        case "snakes": return qsTr("Slithering Snakes ecosystem")
         case "orbs": return qsTr("Floating Orb controls")
         default: return qsTr("Aurora controls")
         }
@@ -61,6 +66,7 @@ ApplicationWindow {
         if (visual.currentValue === "starfield") return qsTr("Warp speed")
         if (visual.currentValue === "matrix") return qsTr("Fall speed")
         if (visual.currentValue === "fireflies") return qsTr("Swarm speed")
+        if (visual.currentValue === "snakes") return qsTr("Slither speed")
         return qsTr("Motion speed")
     }
 
@@ -74,6 +80,7 @@ ApplicationWindow {
         case "fireflies": return qsTr("Swarm size")
         case "ribbons": return qsTr("Ribbon count")
         case "constellation": return qsTr("Star count")
+        case "snakes": return qsTr("Snake population")
         default: return qsTr("Density")
         }
     }
@@ -85,6 +92,7 @@ ApplicationWindow {
         case "kaleidoscope": return qsTr("Pattern spread")
         case "ribbons": return qsTr("Ribbon thickness")
         case "constellation": return qsTr("Star size")
+        case "snakes": return qsTr("Snake thickness")
         default: return qsTr("Element size")
         }
     }
@@ -94,6 +102,8 @@ ApplicationWindow {
             return qsTr("Trail length")
         if (visual.currentValue === "constellation")
             return qsTr("Link brightness")
+        if (visual.currentValue === "snakes")
+            return qsTr("Food abundance")
         return qsTr("Glow intensity")
     }
 
@@ -174,7 +184,8 @@ ApplicationWindow {
                             { text: qsTr("Kaleidoscope"), value: "kaleidoscope" },
                             { text: qsTr("Fireflies"), value: "fireflies" },
                             { text: qsTr("Neon Ribbons"), value: "ribbons" },
-                            { text: qsTr("Constellation"), value: "constellation" }
+                            { text: qsTr("Constellation"), value: "constellation" },
+                            { text: qsTr("Slithering Snakes"), value: "snakes" }
                         ]
                         Component.onCompleted: currentIndex = indexOfValue(window.screensaverConfig.visualModule)
                     }
@@ -299,6 +310,56 @@ ApplicationWindow {
                         visible: visual.currentValue === "bounce"
                     }
                     Label { text: Math.round(ballElasticity.value) + "%"; visible: visual.currentValue === "bounce" }
+
+                    Label {
+                        text: qsTr("Intelligence")
+                        visible: visual.currentValue === "snakes"
+                    }
+                    Slider {
+                        id: snakeIntelligence
+                        Layout.fillWidth: true
+                        from: 0; to: 100; stepSize: 5
+                        value: window.screensaverConfig.snakeIntelligence
+                        visible: visual.currentValue === "snakes"
+                    }
+                    Label {
+                        text: Math.round(snakeIntelligence.value) + "%"
+                        visible: visual.currentValue === "snakes"
+                        horizontalAlignment: Text.AlignRight
+                    }
+
+                    Label {
+                        text: qsTr("Self collision")
+                        visible: visual.currentValue === "snakes"
+                    }
+                    CheckBox {
+                        id: snakeSelfCollisions
+                        Layout.columnSpan: 2
+                        text: qsTr("Snakes can crash into their own bodies")
+                        checked: window.screensaverConfig.snakeSelfCollisions
+                        visible: visual.currentValue === "snakes"
+                    }
+
+                    Label {
+                        text: qsTr("Screen edges")
+                        visible: visual.currentValue === "snakes"
+                    }
+                    CheckBox {
+                        id: snakeDeadlyWalls
+                        Layout.columnSpan: 2
+                        text: qsTr("Edges are deadly walls")
+                        checked: window.screensaverConfig.snakeDeadlyWalls
+                        visible: visual.currentValue === "snakes"
+                    }
+
+                    Label {
+                        Layout.columnSpan: 3
+                        Layout.fillWidth: true
+                        visible: visual.currentValue === "snakes"
+                        wrapMode: Text.WordWrap
+                        color: palette.mid
+                        text: qsTr("Snakes trace nearest-neighbor paths through valuable food regions using their full vacuum and turning radii, prioritize rich clusters, and sweep along defeated rivals' particle trails. Champions can become very long, but adaptive screen-area and ecosystem budgets prevent one snake from filling the display. The optimized renderer caps this animation at 60 fps to avoid wasting power on duplicate high-refresh frames.")
+                    }
 
                     Label { text: qsTr("Ball interaction"); visible: visual.currentValue === "bounce" }
                     CheckBox {
@@ -449,6 +510,9 @@ ApplicationWindow {
                         ballGravity.value = 35
                         ballElasticity.value = 92
                         ballCollisions.checked = true
+                        snakeIntelligence.value = 75
+                        snakeSelfCollisions.checked = false
+                        snakeDeadlyWalls.checked = true
                         showClock.checked = true
                         clockMovement.currentIndex = clockMovement.indexOfValue("bounce")
                         clockSpeed.currentIndex = clockSpeed.indexOfValue("normal")

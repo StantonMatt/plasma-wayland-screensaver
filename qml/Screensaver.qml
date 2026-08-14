@@ -17,6 +17,9 @@ Item {
     required property int ballGravity
     required property int ballElasticity
     required property bool ballCollisions
+    required property int snakeIntelligence
+    required property bool snakeSelfCollisions
+    required property bool snakeDeadlyWalls
     required property bool showClock
     required property string clockMovement
     required property string clockSpeed
@@ -46,6 +49,7 @@ Item {
         case "fireflies": return "visuals/Fireflies.qml"
         case "ribbons": return "visuals/Ribbons.qml"
         case "constellation": return "visuals/Constellation.qml"
+        case "snakes": return "visuals/Snakes.qml"
         case "none": return ""
         default: return "visuals/Aurora.qml"
         }

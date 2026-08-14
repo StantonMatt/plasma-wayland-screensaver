@@ -1,3 +1,11 @@
+plasma-visual-screensaver (0.4.0-1) resolute; urgency=medium
+
+  * Add the optimized Slithering Snakes ecosystem visual.
+  * Preserve seamless animation state across display topology changes.
+  * Save settings atomically from the settings window.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Fri, 14 Aug 2026 03:24:31 -0400
+
 plasma-visual-screensaver (0.3.0-1) resolute; urgency=medium
 
   * Initial public release for Kubuntu 26.04 LTS.

@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QVariantMap>
 #include <memory>
 
 class KConfig;
@@ -22,6 +23,9 @@ class Configuration final : public QObject
     Q_PROPERTY(int ballGravity READ ballGravity WRITE setBallGravity NOTIFY changed)
     Q_PROPERTY(int ballElasticity READ ballElasticity WRITE setBallElasticity NOTIFY changed)
     Q_PROPERTY(bool ballCollisions READ ballCollisions WRITE setBallCollisions NOTIFY changed)
+    Q_PROPERTY(int snakeIntelligence READ snakeIntelligence WRITE setSnakeIntelligence NOTIFY changed)
+    Q_PROPERTY(bool snakeSelfCollisions READ snakeSelfCollisions WRITE setSnakeSelfCollisions NOTIFY changed)
+    Q_PROPERTY(bool snakeDeadlyWalls READ snakeDeadlyWalls WRITE setSnakeDeadlyWalls NOTIFY changed)
     Q_PROPERTY(bool showClock READ showClock WRITE setShowClock NOTIFY changed)
     Q_PROPERTY(QString clockMovement READ clockMovement WRITE setClockMovement NOTIFY changed)
     Q_PROPERTY(QString clockSpeed READ clockSpeed WRITE setClockSpeed NOTIFY changed)
@@ -46,6 +50,9 @@ public:
     int ballGravity() const;
     int ballElasticity() const;
     bool ballCollisions() const;
+    int snakeIntelligence() const;
+    bool snakeSelfCollisions() const;
+    bool snakeDeadlyWalls() const;
     bool showClock() const;
     QString clockMovement() const;
     QString clockSpeed() const;
@@ -66,6 +73,9 @@ public:
     void setBallGravity(int value);
     void setBallElasticity(int value);
     void setBallCollisions(bool value);
+    void setSnakeIntelligence(int value);
+    void setSnakeSelfCollisions(bool value);
+    void setSnakeDeadlyWalls(bool value);
     void setShowClock(bool value);
     void setClockMovement(const QString &value);
     void setClockSpeed(const QString &value);
@@ -73,6 +83,7 @@ public:
     void setReducedMotion(bool value);
     void setMonitorBehavior(const QString &value);
     void setCoverPanels(bool value);
+    void apply(const QVariantMap &settings);
 
     Q_INVOKABLE void reload();
     Q_INVOKABLE void save();
@@ -83,10 +94,14 @@ Q_SIGNALS:
     void saved();
 
 private:
+    void beginUpdate();
+    void endUpdate();
     void assignDefaults();
     template<typename T> void update(T &member, const T &value);
 
     std::unique_ptr<KConfig> m_config;
+    int m_updateDepth = 0;
+    bool m_changedPending = false;
     int m_idleMinutes = 10;
     QString m_visualModule = QStringLiteral("aurora");
     QString m_backgroundStyle = QStringLiteral("midnight");
@@ -99,6 +114,9 @@ private:
     int m_ballGravity = 35;
     int m_ballElasticity = 92;
     bool m_ballCollisions = true;
+    int m_snakeIntelligence = 75;
+    bool m_snakeSelfCollisions = false;
+    bool m_snakeDeadlyWalls = true;
     bool m_showClock = true;
     QString m_clockMovement = QStringLiteral("bounce");
     QString m_clockSpeed = QStringLiteral("normal");

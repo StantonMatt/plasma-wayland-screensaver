@@ -16,6 +16,8 @@ set(screensaver_sources
     presentationclock.h
     screensaverstatemachine.cpp
     screensaverstatemachine.h
+    snakerenderer.cpp
+    snakerenderer.h
     resources.qrc
 )
 

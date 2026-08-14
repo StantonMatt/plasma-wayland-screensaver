@@ -3,6 +3,7 @@
 
 #include <KConfig>
 #include <KConfigGroup>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -30,6 +31,9 @@ private Q_SLOTS:
         QCOMPARE(config.ballGravity(), 35);
         QCOMPARE(config.ballElasticity(), 92);
         QCOMPARE(config.ballCollisions(), true);
+        QCOMPARE(config.snakeIntelligence(), 75);
+        QCOMPARE(config.snakeSelfCollisions(), false);
+        QCOMPARE(config.snakeDeadlyWalls(), true);
         QCOMPARE(config.clockMovement(), QStringLiteral("bounce"));
         QCOMPARE(config.clockSpeed(), QStringLiteral("normal"));
         QCOMPARE(config.coverPanels(), true);
@@ -49,6 +53,7 @@ private Q_SLOTS:
         config.setBallCount(99);
         config.setBallGravity(-999);
         config.setBallElasticity(2);
+        config.setSnakeIntelligence(999);
         QCOMPARE(config.idleMinutes(), 1);
         QCOMPARE(config.frameRate(), 45);
         QCOMPARE(config.visualModule(), QStringLiteral("aurora"));
@@ -64,6 +69,7 @@ private Q_SLOTS:
         QCOMPARE(config.ballCount(), 20);
         QCOMPARE(config.ballGravity(), -100);
         QCOMPARE(config.ballElasticity(), 50);
+        QCOMPARE(config.snakeIntelligence(), 100);
     }
 
     void roundTrip()
@@ -84,6 +90,9 @@ private Q_SLOTS:
             config.setBallGravity(-40);
             config.setBallElasticity(76);
             config.setBallCollisions(false);
+            config.setSnakeIntelligence(90);
+            config.setSnakeSelfCollisions(true);
+            config.setSnakeDeadlyWalls(false);
             config.setShowClock(false);
             config.setClockMovement(QStringLiteral("center"));
             config.setClockSpeed(QStringLiteral("fast"));
@@ -106,6 +115,9 @@ private Q_SLOTS:
         QCOMPARE(loaded.ballGravity(), -40);
         QCOMPARE(loaded.ballElasticity(), 76);
         QCOMPARE(loaded.ballCollisions(), false);
+        QCOMPARE(loaded.snakeIntelligence(), 90);
+        QCOMPARE(loaded.snakeSelfCollisions(), true);
+        QCOMPARE(loaded.snakeDeadlyWalls(), false);
         QCOMPARE(loaded.showClock(), false);
         QCOMPARE(loaded.clockMovement(), QStringLiteral("center"));
         QCOMPARE(loaded.clockSpeed(), QStringLiteral("fast"));
@@ -113,6 +125,53 @@ private Q_SLOTS:
         QCOMPARE(loaded.reducedMotion(), true);
         QCOMPARE(loaded.monitorBehavior(), QStringLiteral("seamless"));
         QCOMPARE(loaded.coverPanels(), false);
+    }
+
+    void appliesSettingsAtomically()
+    {
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        Configuration config(directory.filePath(QStringLiteral("settingsrc")));
+        QSignalSpy changed(&config, &Configuration::changed);
+
+        config.apply({
+            {QStringLiteral("idleMinutes"), 42},
+            {QStringLiteral("visualModule"), QStringLiteral("bounce")},
+            {QStringLiteral("backgroundStyle"), QStringLiteral("black")},
+            {QStringLiteral("animationSpeed"), 170},
+            {QStringLiteral("ballCount"), 11},
+            {QStringLiteral("snakeIntelligence"), 85},
+            {QStringLiteral("snakeSelfCollisions"), true},
+            {QStringLiteral("snakeDeadlyWalls"), false},
+            {QStringLiteral("showClock"), false},
+            {QStringLiteral("clockSpeed"), QStringLiteral("fast")},
+            {QStringLiteral("frameRate"), 120},
+            {QStringLiteral("monitorBehavior"), QStringLiteral("seamless")},
+            {QStringLiteral("coverPanels"), false},
+        });
+
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(config.idleMinutes(), 42);
+        QCOMPARE(config.visualModule(), QStringLiteral("bounce"));
+        QCOMPARE(config.backgroundStyle(), QStringLiteral("black"));
+        QCOMPARE(config.animationSpeed(), 170);
+        QCOMPARE(config.ballCount(), 11);
+        QCOMPARE(config.snakeIntelligence(), 85);
+        QCOMPARE(config.snakeSelfCollisions(), true);
+        QCOMPARE(config.snakeDeadlyWalls(), false);
+        QCOMPARE(config.showClock(), false);
+        QCOMPARE(config.clockSpeed(), QStringLiteral("fast"));
+        QCOMPARE(config.frameRate(), 120);
+        QCOMPARE(config.monitorBehavior(), QStringLiteral("seamless"));
+        QCOMPARE(config.coverPanels(), false);
+
+        changed.clear();
+        config.apply({
+            {QStringLiteral("idleMinutes"), 42},
+            {QStringLiteral("ballCount"), 11},
+        });
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(config.visualModule(), QStringLiteral("bounce"));
     }
 
     void acceptsAllBundledVisualModules()
@@ -125,6 +184,7 @@ private Q_SLOTS:
             QStringLiteral("starfield"), QStringLiteral("matrix"),
             QStringLiteral("kaleidoscope"), QStringLiteral("fireflies"),
             QStringLiteral("ribbons"), QStringLiteral("constellation"),
+            QStringLiteral("snakes"),
         };
         for (const QString &module : modules) {
             config.setVisualModule(module);

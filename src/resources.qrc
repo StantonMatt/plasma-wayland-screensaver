@@ -13,5 +13,6 @@
         <file alias="visuals/Fireflies.qml">../qml/visuals/Fireflies.qml</file>
         <file alias="visuals/Ribbons.qml">../qml/visuals/Ribbons.qml</file>
         <file alias="visuals/Constellation.qml">../qml/visuals/Constellation.qml</file>
+        <file alias="visuals/Snakes.qml">../qml/visuals/Snakes.qml</file>
     </qresource>
 </RCC>

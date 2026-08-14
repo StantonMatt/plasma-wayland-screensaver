@@ -53,7 +53,17 @@ Settings are retained across upgrades in
   single-instance D-Bus commands for settings, preview, and quit.
 - Animation and background are independent. Replaceable animation modules
   provide None, Aurora Drift, Floating Orbs, Bouncing Balls, Hyperspace,
-  Digital Rain, Kaleidoscope, Fireflies, Neon Ribbons, and Constellations;
+  Digital Rain, Kaleidoscope, Fireflies, Neon Ribbons, Constellations, and
+  Slithering Snakes (with adjustable predictive AI, visibly magnetic food,
+  persistent nearest-neighbor food paths, vacuum-corridor route planning,
+  turning-radius-aware approaches, cluster and death-trail pursuit,
+  collision-safe spawning, strengthened self-body prediction, forward growth,
+  optional self-collision, deadly or wraparound edges, and size-proportional
+  edible death particles). Snake length uses adaptive individual and arena-wide
+  painted-area budgets rather than a small fixed cap, with progressively more
+  food required for extreme late-game growth. Ambient food expires after a
+  randomized 34–46 seconds and is replenished elsewhere to avoid persistent
+  bright points on OLED panels;
   backgrounds provide Pure Black and several dark gradients. Every module has
   contextual controls for motion speed, population/detail, scale, palette, and
   trails or glow. Frame-rate choices range from 15 through 240 fps, with an
@@ -68,6 +78,11 @@ Settings are retained across upgrades in
 - Digital Rain builds each glyph stream once as cached Qt Quick text and only
   changes column transforms per frame. It avoids repainting thousands of glyphs
   through JavaScript Canvas on every update.
+- Slithering Snakes uses a native Qt Quick scene-graph renderer instead of a
+  full-screen JavaScript Canvas. It batches the ecosystem into compact GPU
+  triangle geometry, caps this particular visual at 60 fps, and shares one
+  simulation snapshot across all outputs in seamless mode. This avoids
+  recomputing identical AI or redrawing multi-megapixel textures at 175–240 Hz.
 - `AnimationState` advances seamless moving objects once per frame and collides
   them against the union of the actual `QScreen` geometries. Different output
   sizes, vertical offsets, and gaps therefore form real boundaries while an
@@ -175,7 +190,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.3.0`, publishes the verified
+matching the CMake project version, such as `v0.4.0`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 
