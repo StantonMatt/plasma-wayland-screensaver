@@ -1,6 +1,7 @@
 /build/
 /build-*/
 /dist/
+/benchmark-results/
 /.cache/
 /.idea/
 /.vscode/

@@ -1155,8 +1155,26 @@ TestCase {
         }
         verify(!firstSnake.brainPlanning)
         verify(firstSnake.brainCooldown > 0)
-        verify(ticks > 2)
+        // A safe direct route can discard the extreme escape candidates after
+        // its first rollout, but planning must still remain incremental.
+        verify(ticks >= 2)
         verify(ticks < 20)
+    }
+
+    function test_safeDirectPlanSkipsExtremeEscapeRollouts() {
+        const snake = visual.snakes[0]
+        const plan = visual.createSteeringPlan(snake, 0)
+        verify(plan.candidates.length > 6)
+
+        // Isolate the candidate-budget decision from the random world state;
+        // candidate zero still goes through the real rollout implementation.
+        plan.hazards = []
+        plan.goal.x = snake.segments[0].x + Math.cos(snake.angle) * 180
+        plan.goal.y = snake.segments[0].y + Math.sin(snake.angle) * 180
+        plan.candidates[0].angle = snake.angle
+        visual.evaluateNextPlanCandidate(plan)
+
+        compare(plan.candidates.length, 6)
     }
 
     function test_incrementalPlanUsesOneImmutableSnakeState() {

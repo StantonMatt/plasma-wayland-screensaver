@@ -14,30 +14,36 @@ class SnakeRendererTest final : public QObject
 
 private:
     static QJSValue makeSnakes(QJSEngine &engine, int segmentCount,
-                               bool malformedSegment = false, qreal coordinateScale = 1.0)
+                               bool malformedSegment = false, qreal coordinateScale = 1.0,
+                               int snakeCount = 1)
     {
-        QJSValue snakes = engine.newArray(1);
-        QJSValue snake = engine.newObject();
-        snake.setProperty(QStringLiteral("alive"), true);
-        snake.setProperty(QStringLiteral("radius"), 8.0);
-        snake.setProperty(QStringLiteral("angle"), 0.0);
-        snake.setProperty(QStringLiteral("colorIndex"), 0);
+        QJSValue snakes = engine.newArray(snakeCount);
+        for (int snakeIndex = 0; snakeIndex < snakeCount; ++snakeIndex) {
+            QJSValue snake = engine.newObject();
+            snake.setProperty(QStringLiteral("alive"), true);
+            snake.setProperty(QStringLiteral("radius"), 8.0);
+            snake.setProperty(QStringLiteral("angle"), 0.0);
+            snake.setProperty(QStringLiteral("colorIndex"), 0);
 
-        QJSValue segments = engine.newArray(segmentCount);
-        for (int index = 0; index < segmentCount; ++index) {
-            QJSValue segment = engine.newObject();
-            const qreal x = (250.0 - index * 4.5) * coordinateScale;
-            const qreal y = (120.0 + std::sin(index * 0.08) * 18.0) * coordinateScale;
-            segment.setProperty(QStringLiteral("x"),
-                                malformedSegment && index == 7
-                                    ? std::numeric_limits<qreal>::quiet_NaN() : x);
-            segment.setProperty(QStringLiteral("y"), y);
-            segment.setProperty(QStringLiteral("previousX"), x - 1.0);
-            segment.setProperty(QStringLiteral("previousY"), y);
-            segments.setProperty(index, segment);
+            QJSValue segments = engine.newArray(segmentCount);
+            const qreal offsetX = (snakeIndex % 4) * 780.0;
+            const qreal offsetY = (snakeIndex / 4) * 340.0;
+            for (int index = 0; index < segmentCount; ++index) {
+                QJSValue segment = engine.newObject();
+                const qreal x = (250.0 - index * 4.5 + offsetX) * coordinateScale;
+                const qreal y = (120.0 + std::sin(index * 0.08) * 18.0 + offsetY)
+                    * coordinateScale;
+                segment.setProperty(QStringLiteral("x"),
+                                    malformedSegment && index == 7
+                                        ? std::numeric_limits<qreal>::quiet_NaN() : x);
+                segment.setProperty(QStringLiteral("y"), y);
+                segment.setProperty(QStringLiteral("previousX"), x - 1.0);
+                segment.setProperty(QStringLiteral("previousY"), y);
+                segments.setProperty(index, segment);
+            }
+            snake.setProperty(QStringLiteral("segments"), segments);
+            snakes.setProperty(snakeIndex, snake);
         }
-        snake.setProperty(QStringLiteral("segments"), segments);
-        snakes.setProperty(0, snake);
         return snakes;
     }
 
@@ -143,6 +149,43 @@ private Q_SLOTS:
         renderFoodCount(279);
         QVERIFY(!renderer.m_denseFoodRendering);
         delete node;
+    }
+
+    void benchmarkMatureGeometry()
+    {
+        SnakeRenderer renderer;
+        renderer.setSize(QSizeF(3440, 1440));
+        QJSEngine engine;
+        QJSValue palette = engine.newArray(1);
+        palette.setProperty(0, QStringLiteral("#4de6ff"));
+        renderer.syncFrame(makeSnakes(engine, 120, false, 1.0, 14),
+                           makeFood(engine, 400), palette,
+                           20.0, 0.5, 3440, 1440, 0, 0, true);
+
+        QSGNode *node = nullptr;
+        QBENCHMARK {
+            renderer.presentFrame(20.0, 0.5);
+            node = renderer.updatePaintNode(node, nullptr);
+        }
+        delete node;
+    }
+
+    void benchmarkMatureSyncFrame()
+    {
+        SnakeRenderer renderer;
+        renderer.setSize(QSizeF(3440, 1440));
+        QJSEngine engine;
+        QJSValue palette = engine.newArray(1);
+        palette.setProperty(0, QStringLiteral("#4de6ff"));
+        const QJSValue snakes = makeSnakes(engine, 120, false, 1.0, 14);
+        const QJSValue food = makeFood(engine, 400);
+        qreal simulationTime = 20.0;
+
+        QBENCHMARK {
+            simulationTime += 1.0 / 30.0;
+            renderer.syncFrame(snakes, food, palette,
+                               simulationTime, 0.5, 3440, 1440, 0, 0, true);
+        }
     }
 };
 

@@ -58,6 +58,40 @@ bool visible(const QRectF &bounds, const QSizeF &viewport)
     return bounds.intersects(QRectF(QPointF(0.0, 0.0), viewport));
 }
 
+QVector<QPointF> makeUnitCircle(int sides)
+{
+    constexpr qreal tau = 6.28318530717958647692;
+    QVector<QPointF> points;
+    points.reserve(sides + 1);
+    for (int side = 0; side <= sides; ++side) {
+        const qreal angle = tau * side / sides;
+        points.append(QPointF(std::cos(angle), std::sin(angle)));
+    }
+    return points;
+}
+
+const QVector<QPointF> *cachedUnitCircle(int sides)
+{
+    // Every disc in the renderer uses one of these detail levels. Cache their
+    // unit vertices once instead of evaluating thousands of identical sine
+    // and cosine pairs on every presentation frame.
+    static const QVector<QPointF> four = makeUnitCircle(4);
+    static const QVector<QPointF> five = makeUnitCircle(5);
+    static const QVector<QPointF> six = makeUnitCircle(6);
+    static const QVector<QPointF> seven = makeUnitCircle(7);
+    static const QVector<QPointF> eight = makeUnitCircle(8);
+    static const QVector<QPointF> twelve = makeUnitCircle(12);
+    switch (sides) {
+    case 4: return &four;
+    case 5: return &five;
+    case 6: return &six;
+    case 7: return &seven;
+    case 8: return &eight;
+    case 12: return &twelve;
+    default: return nullptr;
+    }
+}
+
 void appendTriangle(QVector<Vertex> &vertices, const QPointF &a, const QPointF &b,
                     const QPointF &c, const QColor &color)
 {
@@ -80,14 +114,22 @@ void appendDisc(QVector<Vertex> &vertices, const QPointF &center, qreal radius,
                               radius * 2.0, radius * 2.0), viewport)) {
         return;
     }
-    constexpr qreal tau = 6.28318530717958647692;
+    const QVector<QPointF> *unitPoints = cachedUnitCircle(sides);
     for (int side = 0; side < sides; ++side) {
-        const qreal first = tau * side / sides;
-        const qreal second = tau * (side + 1) / sides;
-        appendTriangle(vertices, center,
-                       center + QPointF(std::cos(first) * radius, std::sin(first) * radius),
-                       center + QPointF(std::cos(second) * radius, std::sin(second) * radius),
-                       color);
+        if (unitPoints) {
+            appendVertex(vertices, center, color);
+            appendVertex(vertices, center + unitPoints->at(side) * radius, color);
+            appendVertex(vertices, center + unitPoints->at(side + 1) * radius, color);
+        } else {
+            constexpr qreal tau = 6.28318530717958647692;
+            const qreal first = tau * side / sides;
+            const qreal second = tau * (side + 1) / sides;
+            appendVertex(vertices, center, color);
+            appendVertex(vertices, center + QPointF(std::cos(first) * radius,
+                                                     std::sin(first) * radius), color);
+            appendVertex(vertices, center + QPointF(std::cos(second) * radius,
+                                                     std::sin(second) * radius), color);
+        }
     }
 }
 
@@ -109,8 +151,12 @@ void appendSegment(QVector<Vertex> &vertices, const QPointF &a, const QPointF &b
     if (!visible(bounds, viewport)) {
         return;
     }
-    appendTriangle(vertices, a + normal, a - normal, b + normal, color);
-    appendTriangle(vertices, b + normal, a - normal, b - normal, color);
+    appendVertex(vertices, a + normal, color);
+    appendVertex(vertices, a - normal, color);
+    appendVertex(vertices, b + normal, color);
+    appendVertex(vertices, b + normal, color);
+    appendVertex(vertices, a - normal, color);
+    appendVertex(vertices, b - normal, color);
 }
 
 void appendRibbon(QVector<Vertex> &vertices, const QVector<QPointF> &points,
@@ -162,8 +208,12 @@ void appendRibbon(QVector<Vertex> &vertices, const QVector<QPointF> &points,
         if (!visible(bounds, viewport)) {
             continue;
         }
-        appendTriangle(vertices, left[index - 1], right[index - 1], left[index], color);
-        appendTriangle(vertices, left[index], right[index - 1], right[index], color);
+        appendVertex(vertices, left[index - 1], color);
+        appendVertex(vertices, right[index - 1], color);
+        appendVertex(vertices, left[index], color);
+        appendVertex(vertices, left[index], color);
+        appendVertex(vertices, right[index - 1], color);
+        appendVertex(vertices, right[index], color);
     }
 }
 

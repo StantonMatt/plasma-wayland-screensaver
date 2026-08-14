@@ -240,6 +240,38 @@ those separately:
 rm ~/.config/plasma-visual-screensaverrc
 ```
 
+## Long-run Slithering Snakes benchmark
+
+Use the deterministic soak benchmark when investigating performance that
+changes as snakes grow, die, and create food. It simulates eight minutes at
+30 Hz using the largest monitor's 3440x1440 geometry and the maximum density,
+trail, intelligence, and self-collision settings:
+
+```bash
+./scripts/benchmark-snakes.sh
+```
+
+Each simulated minute reports wall-clock cost alongside live segment, food,
+trail-storage, death, and estimated renderer-vertex counts. The command saves
+the complete Qt Test log, a machine-readable window CSV, a mature-state phase
+profile, fixed-fixture planner and feeding CSVs, and a renderer CSV under the ignored
+`benchmark-results/` directory. Compare the
+per-window `ms_per_step` and `realtime_ratio` columns rather than only the total
+runtime; a rising curve reveals long-session degradation that a short
+throughput test can hide. The profile divides a final 30 seconds between food
+analysis, AI planning, movement, food capture, and collisions/explosions.
+The fixed planner fixture repeats identical plans for fourteen 120-segment
+snakes among 400 food particles, so its `ms_per_plan` is the less noisy metric
+for comparing AI implementation changes that alter the evolving ecosystem.
+The feeding fixture measures a stable 400-particle by 14-snake capture search;
+body-placement and collision-grid fixtures track length-sensitive movement and
+collision work for fourteen 120-segment snakes. A near-field safety fixture
+tracks the predictive guard that runs between full AI plans.
+When a configured `build/` directory is available, the command also builds and
+runs three-sample CPU scene-graph geometry and QML-to-C++ synchronization
+benchmarks for a mature 14-snake, 400-particle frame. These renderer metrics do
+not include GPU driver or compositor time.
+
 ## Manual Wayland test checklist
 
 Automated tests cover configuration validation/persistence and controller state

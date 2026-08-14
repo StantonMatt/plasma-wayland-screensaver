@@ -124,6 +124,11 @@ Item {
     }
 
     function worldDistanceSquared(ax, ay, bx, by) {
+        if (deadlyWalls) {
+            const dx = bx - ax
+            const dy = by - ay
+            return dx * dx + dy * dy
+        }
         const dx = axisDelta(ax, bx, worldWidth)
         const dy = axisDelta(ay, by, worldHeight)
         return dx * dx + dy * dy
@@ -133,6 +138,8 @@ Item {
     // unfolded around the point first, so the same calculation is correct for
     // both deadly walls and wraparound arenas.
     function worldSegmentDistanceSquared(px, py, ax, ay, bx, by) {
+        if (deadlyWalls)
+            return planarPointSegmentDistanceSquared(px, py, ax, ay, bx, by)
         const localAx = px + axisDelta(px, ax, worldWidth)
         const localAy = py + axisDelta(py, ay, worldHeight)
         const segmentX = axisDelta(ax, bx, worldWidth)
@@ -151,13 +158,19 @@ Item {
         const segmentX = bx - ax
         const segmentY = by - ay
         const lengthSquared = segmentX * segmentX + segmentY * segmentY
-        if (lengthSquared < 0.0001)
-            return distanceSquared(px, py, ax, ay)
-        const projection = clamp(((px - ax) * segmentX + (py - ay) * segmentY)
-                                 / lengthSquared, 0, 1)
-        return distanceSquared(px, py,
-                               ax + segmentX * projection,
-                               ay + segmentY * projection)
+        if (lengthSquared < 0.0001) {
+            const pointDeltaX = px - ax
+            const pointDeltaY = py - ay
+            return pointDeltaX * pointDeltaX + pointDeltaY * pointDeltaY
+        }
+        const rawProjection = ((px - ax) * segmentX + (py - ay) * segmentY)
+            / lengthSquared
+        const projection = Math.max(0, Math.min(1, rawProjection))
+        const closestX = ax + segmentX * projection
+        const closestY = ay + segmentY * projection
+        const pointDeltaX = px - closestX
+        const pointDeltaY = py - closestY
+        return pointDeltaX * pointDeltaX + pointDeltaY * pointDeltaY
     }
 
     function crossProduct(ax, ay, bx, by, cx, cy) {
@@ -174,12 +187,12 @@ Item {
     // what prevents a fast projected head from tunnelling between rollout
     // samples or through a coalesced body capsule.
     function worldSegmentsDistanceSquared(ax, ay, bx, by, cx, cy, dx, dy) {
-        const localBx = ax + axisDelta(ax, bx, worldWidth)
-        const localBy = ay + axisDelta(ay, by, worldHeight)
-        const localCx = ax + axisDelta(ax, cx, worldWidth)
-        const localCy = ay + axisDelta(ay, cy, worldHeight)
-        const localDx = localCx + axisDelta(cx, dx, worldWidth)
-        const localDy = localCy + axisDelta(cy, dy, worldHeight)
+        const localBx = deadlyWalls ? bx : ax + axisDelta(ax, bx, worldWidth)
+        const localBy = deadlyWalls ? by : ay + axisDelta(ay, by, worldHeight)
+        const localCx = deadlyWalls ? cx : ax + axisDelta(ax, cx, worldWidth)
+        const localCy = deadlyWalls ? cy : ay + axisDelta(ay, cy, worldHeight)
+        const localDx = deadlyWalls ? dx : localCx + axisDelta(cx, dx, worldWidth)
+        const localDy = deadlyWalls ? dy : localCy + axisDelta(cy, dy, worldHeight)
         const firstCross = crossProduct(ax, ay, localBx, localBy, localCx, localCy)
         const secondCross = crossProduct(ax, ay, localBx, localBy, localDx, localDy)
         const thirdCross = crossProduct(localCx, localCy, localDx, localDy, ax, ay)
@@ -443,8 +456,10 @@ Item {
         const head = snake.segments[0]
         const latestWrappedX = deadlyWalls ? latest.x : wrapCoordinate(latest.x, worldWidth)
         const latestWrappedY = deadlyWalls ? latest.y : wrapCoordinate(latest.y, worldHeight)
-        const x = latest.x + axisDelta(latestWrappedX, head.x, worldWidth)
-        const y = latest.y + axisDelta(latestWrappedY, head.y, worldHeight)
+        const x = deadlyWalls ? head.x
+            : latest.x + axisDelta(latestWrappedX, head.x, worldWidth)
+        const y = deadlyWalls ? head.y
+            : latest.y + axisDelta(latestWrappedY, head.y, worldHeight)
         const dx = x - latest.x
         const dy = y - latest.y
         const travelled = Math.sqrt(dx * dx + dy * dy)
@@ -470,7 +485,8 @@ Item {
             const older = points[cursor]
             const newer = points[Math.min(cursor + 1, points.length - 1)]
             const span = Math.max(0.0001, newer.distance - older.distance)
-            const amount = clamp((targetDistance - older.distance) / span, 0, 1)
+            const rawAmount = (targetDistance - older.distance) / span
+            const amount = Math.max(0, Math.min(1, rawAmount))
             const x = older.x + (newer.x - older.x) * amount
             const y = older.y + (newer.y - older.y) * amount
             const segment = snake.segments[segmentIndex]
@@ -484,7 +500,11 @@ Item {
                && points[snake.trailStart + 1].distance < keepAfter) {
             ++snake.trailStart
         }
-        if (snake.trailStart > 512 && snake.trailStart > points.length / 2) {
+        // trailStart is a logical prefix removal, but keeping thousands of
+        // unreachable point objects alive creates progressively more GC work
+        // in long sessions. Compact once the dead prefix is both meaningful
+        // and at least half of the array; slicing remains amortized linear.
+        if (snake.trailStart > 128 && snake.trailStart > points.length / 2) {
             snake.trailPoints = points.slice(snake.trailStart)
             snake.trailStart = 0
         }
@@ -767,18 +787,22 @@ Item {
     // route, so a line through a clump beats merely aiming at its nearest edge.
     function routeHarvestValue(snake, target) {
         const head = snake.segments[0]
-        const routeX = axisDelta(head.x, target.x, worldWidth)
-        const routeY = axisDelta(head.y, target.y, worldHeight)
+        const routeX = deadlyWalls ? target.x - head.x
+            : axisDelta(head.x, target.x, worldWidth)
+        const routeY = deadlyWalls ? target.y - head.y
+            : axisDelta(head.y, target.y, worldHeight)
         const routeLength = Math.max(0.001, Math.sqrt(routeX * routeX + routeY * routeY))
         const directionX = routeX / routeLength
         const directionY = routeY / routeLength
         let harvest = 0
         for (let index = 0; index < food.length; ++index) {
             const particle = food[index]
-            const particleX = axisDelta(head.x, particle.x, worldWidth)
-            const particleY = axisDelta(head.y, particle.y, worldHeight)
+            const particleX = deadlyWalls ? particle.x - head.x
+                : axisDelta(head.x, particle.x, worldWidth)
+            const particleY = deadlyWalls ? particle.y - head.y
+                : axisDelta(head.y, particle.y, worldHeight)
             const projection = particleX * directionX + particleY * directionY
-            const captureRadius = foodCaptureRadius(snake, particle)
+            const captureRadius = snake.radius * 3 + particle.size
             if (projection < -captureRadius * 0.25
                     || projection > routeLength + captureRadius * 1.5)
                 continue
@@ -811,8 +835,10 @@ Item {
     }
 
     function turnReachabilityPenaltyFrom(snake, fromX, fromY, heading, particle) {
-        const dx = axisDelta(fromX, particle.x, worldWidth)
-        const dy = axisDelta(fromY, particle.y, worldHeight)
+        const dx = deadlyWalls ? particle.x - fromX
+            : axisDelta(fromX, particle.x, worldWidth)
+        const dy = deadlyWalls ? particle.y - fromY
+            : axisDelta(fromY, particle.y, worldHeight)
         const distance = Math.max(0.001, Math.sqrt(dx * dx + dy * dy))
         const difference = Math.abs(normalizeAngle(Math.atan2(dy, dx) - heading))
         const turnRadius = snakeSpeed(snake) / Math.max(0.1, snakeTurnRate(snake))
@@ -836,8 +862,10 @@ Item {
         if (penalty <= 1.15)
             return { x: particle.x, y: particle.y, direct: true }
         const head = snake.segments[0]
-        const dx = axisDelta(head.x, particle.x, worldWidth)
-        const dy = axisDelta(head.y, particle.y, worldHeight)
+        const dx = deadlyWalls ? particle.x - head.x
+            : axisDelta(head.x, particle.x, worldWidth)
+        const dy = deadlyWalls ? particle.y - head.y
+            : axisDelta(head.y, particle.y, worldHeight)
         const difference = normalizeAngle(Math.atan2(dy, dx) - snake.angle)
         let direction = difference >= 0 ? 1 : -1
         if (Math.abs(Math.abs(difference) - Math.PI) < 0.08)
@@ -947,8 +975,10 @@ Item {
                 break
             path.push(best.id)
             selected[best.id] = true
-            const dx = axisDelta(fromX, best.x, worldWidth)
-            const dy = axisDelta(fromY, best.y, worldHeight)
+            const dx = deadlyWalls ? best.x - fromX
+                : axisDelta(fromX, best.x, worldWidth)
+            const dy = deadlyWalls ? best.y - fromY
+                : axisDelta(fromY, best.y, worldHeight)
             if (Math.abs(dx) + Math.abs(dy) > 0.001)
                 heading = Math.atan2(dy, dx)
             fromX = best.x
@@ -1129,8 +1159,10 @@ Item {
     function segmentMotion(segment, maximumSpeed) {
         const previousX = segment.previousX === undefined ? segment.x : segment.previousX
         const previousY = segment.previousY === undefined ? segment.y : segment.previousY
-        let velocityX = axisDelta(previousX, segment.x, worldWidth) / physicsStepSeconds
-        let velocityY = axisDelta(previousY, segment.y, worldHeight) / physicsStepSeconds
+        let velocityX = (deadlyWalls ? segment.x - previousX
+            : axisDelta(previousX, segment.x, worldWidth)) / physicsStepSeconds
+        let velocityY = (deadlyWalls ? segment.y - previousY
+            : axisDelta(previousY, segment.y, worldHeight)) / physicsStepSeconds
         const velocity = Math.sqrt(velocityX * velocityX + velocityY * velocityY)
         if (velocity > maximumSpeed && velocity > 0.001) {
             velocityX *= maximumSpeed / velocity
@@ -1182,6 +1214,9 @@ Item {
                         vy: motion.y * 0.15 + predictedY * 0.85,
                         vx2: motion.x * 0.15 + predictedX * 0.85,
                         vy2: motion.y * 0.15 + predictedY * 0.85,
+                        midX: otherHead.x, midY: otherHead.y,
+                        midVx: motion.x * 0.15 + predictedX * 0.85,
+                        midVy: motion.y * 0.15 + predictedY * 0.85,
                         radius: other.radius,
                         self: false,
                         head: true,
@@ -1216,8 +1251,10 @@ Item {
                                          : segmentMotion(segment, maximumMotion)
                 const endpointMotion = sameSnake ? { x: 0, y: 0 }
                     : segmentMotion(endpoint, maximumMotion)
-                const spanX = axisDelta(segment.x, endpoint.x, worldWidth)
-                const spanY = axisDelta(segment.y, endpoint.y, worldHeight)
+                const spanX = deadlyWalls ? endpoint.x - segment.x
+                    : axisDelta(segment.x, endpoint.x, worldWidth)
+                const spanY = deadlyWalls ? endpoint.y - segment.y
+                    : axisDelta(segment.y, endpoint.y, worldHeight)
                 const stretchX = endpointMotion.x - motion.x
                 const stretchY = endpointMotion.y - motion.y
                 hazards.push({
@@ -1225,6 +1262,10 @@ Item {
                     x2: endpoint.x, y2: endpoint.y,
                     vx: motion.x, vy: motion.y,
                     vx2: endpointMotion.x, vy2: endpointMotion.y,
+                    midX: segment.x + spanX * 0.5,
+                    midY: segment.y + spanY * 0.5,
+                    midVx: (motion.x + endpointMotion.x) * 0.5,
+                    midVy: (motion.y + endpointMotion.y) * 0.5,
                     radius: other.radius * (1 + Math.min(5, stride - 1) * 0.08),
                     self: sameSnake,
                     head: false,
@@ -1261,8 +1302,11 @@ Item {
             const progress = sample / samples
             let desired = targetAngle
             if (progress >= recoveryFraction) {
-                desired = Math.atan2(axisDelta(projectedY, goalY, worldHeight),
-                                     axisDelta(projectedX, goalX, worldWidth))
+                const goalDeltaX = deadlyWalls ? goalX - projectedX
+                    : axisDelta(projectedX, goalX, worldWidth)
+                const goalDeltaY = deadlyWalls ? goalY - projectedY
+                    : axisDelta(projectedY, goalY, worldHeight)
+                desired = Math.atan2(goalDeltaY, goalDeltaX)
             }
             const difference = normalizeAngle(desired - projectedAngle)
             projectedAngle = normalizeAngle(projectedAngle
@@ -1286,11 +1330,27 @@ Item {
         let harvest = 0
         for (let foodIndex = 0; foodIndex < food.length; ++foodIndex) {
             const particle = food[foodIndex]
-            const captureRadius = foodCaptureRadius(snake, particle)
+            const captureRadius = snake.radius * 3 + particle.size
             const captureSquared = captureRadius * captureRadius
             for (let pointIndex = 1; pointIndex < points.length; ++pointIndex) {
                 const previous = points[pointIndex - 1]
                 const point = points[pointIndex]
+                if (deadlyWalls) {
+                    // A particle close enough to touch this corridor segment
+                    // must lie inside its capture-radius-expanded bounds.
+                    // Reject the overwhelmingly common distant case before
+                    // invoking exact point-to-segment geometry.
+                    const minimumX = previous.x < point.x ? previous.x : point.x
+                    const maximumX = previous.x > point.x ? previous.x : point.x
+                    if (particle.x < minimumX - captureRadius
+                            || particle.x > maximumX + captureRadius)
+                        continue
+                    const minimumY = previous.y < point.y ? previous.y : point.y
+                    const maximumY = previous.y > point.y ? previous.y : point.y
+                    if (particle.y < minimumY - captureRadius
+                            || particle.y > maximumY + captureRadius)
+                        continue
+                }
                 const distanceSquared = worldSegmentDistanceSquared(
                     particle.x, particle.y, previous.x, previous.y, point.x, point.y)
                 if (distanceSquared > captureSquared)
@@ -1313,13 +1373,14 @@ Item {
         let risk = 0
         let collides = false
         let collisionTime = Number.MAX_VALUE
-        let minimumClearance = Number.MAX_VALUE
         for (let pointIndex = 1; pointIndex < points.length; ++pointIndex) {
             const previousPoint = points[pointIndex - 1]
             const point = points[pointIndex]
             const urgency = points.length - pointIndex
-            const routeX = axisDelta(previousPoint.x, point.x, worldWidth)
-            const routeY = axisDelta(previousPoint.y, point.y, worldHeight)
+            const routeX = deadlyWalls ? point.x - previousPoint.x
+                : axisDelta(previousPoint.x, point.x, worldWidth)
+            const routeY = deadlyWalls ? point.y - previousPoint.y
+                : axisDelta(previousPoint.y, point.y, worldHeight)
             const routeMidX = previousPoint.x + routeX * 0.5
             const routeMidY = previousPoint.y + routeY * 0.5
             const routeHalfLength = Math.sqrt(routeX * routeX + routeY * routeY) * 0.5
@@ -1330,8 +1391,6 @@ Item {
                 const collisionDistance = snake.radius * 1.05
                 const softDistance = collisionDistance
                     + snake.radius * (2.2 + intelligence * 2.4)
-                minimumClearance = Math.min(minimumClearance,
-                                            wallDistance - collisionDistance)
                 if (wallDistance <= collisionDistance) {
                     collides = true
                     collisionTime = Math.min(collisionTime, point.time)
@@ -1352,15 +1411,31 @@ Item {
                     ? Math.min((previousPoint.time + point.time) * 0.5,
                                hazard.releaseTime)
                     : (previousPoint.time + point.time) * 0.5
-                let hazardX = hazard.x + hazard.vx * predictionTime
-                let hazardY = hazard.y + hazard.vy * predictionTime
-                let hazardX2 = hazard.x2 + hazard.vx2 * predictionTime
-                let hazardY2 = hazard.y2 + hazard.vy2 * predictionTime
-                if (!deadlyWalls) {
+                let hazardX
+                let hazardY
+                let hazardX2
+                let hazardY2
+                let hazardMidX
+                let hazardMidY
+                if (deadlyWalls) {
+                    // Most hazards are rejected by their bounding circles.
+                    // Their precomputed midpoint trajectory avoids projecting
+                    // both capsule endpoints until exact geometry is needed.
+                    hazardMidX = hazard.midX + hazard.midVx * predictionTime
+                    hazardMidY = hazard.midY + hazard.midVy * predictionTime
+                } else {
+                    hazardX = hazard.x + hazard.vx * predictionTime
+                    hazardY = hazard.y + hazard.vy * predictionTime
+                    hazardX2 = hazard.x2 + hazard.vx2 * predictionTime
+                    hazardY2 = hazard.y2 + hazard.vy2 * predictionTime
                     hazardX = wrapCoordinate(hazardX, worldWidth)
                     hazardY = wrapCoordinate(hazardY, worldHeight)
                     hazardX2 = wrapCoordinate(hazardX2, worldWidth)
                     hazardY2 = wrapCoordinate(hazardY2, worldHeight)
+                    const hazardSpanX = axisDelta(hazardX, hazardX2, worldWidth)
+                    const hazardSpanY = axisDelta(hazardY, hazardY2, worldHeight)
+                    hazardMidX = hazardX + hazardSpanX * 0.5
+                    hazardMidY = hazardY + hazardSpanY * 0.5
                 }
                 const collisionDistance = hazard.self
                     ? (snake.radius + hazard.radius) * 0.74
@@ -1373,27 +1448,36 @@ Item {
                     + snake.radius * (1.35 + intelligence * (hazard.self ? 2.8 : 2.1))
                 // Cheap bounding-circle rejection avoids running the exact
                 // segment/segment calculation for distant capsule pairs.
-                const hazardSpanX = axisDelta(hazardX, hazardX2, worldWidth)
-                const hazardSpanY = axisDelta(hazardY, hazardY2, worldHeight)
-                const hazardMidX = hazardX + hazardSpanX * 0.5
-                const hazardMidY = hazardY + hazardSpanY * 0.5
                 const boundingDistance = routeHalfLength + hazard.halfLength
                     + hazard.halfStretchSpeed * predictionTime + softDistance
-                if (worldDistanceSquared(routeMidX, routeMidY,
-                                         hazardMidX, hazardMidY)
-                        > boundingDistance * boundingDistance)
+                let midpointDistanceSquared
+                if (deadlyWalls) {
+                    const midpointDeltaX = hazardMidX - routeMidX
+                    const midpointDeltaY = hazardMidY - routeMidY
+                    midpointDistanceSquared = midpointDeltaX * midpointDeltaX
+                        + midpointDeltaY * midpointDeltaY
+                } else {
+                    midpointDistanceSquared = worldDistanceSquared(
+                        routeMidX, routeMidY, hazardMidX, hazardMidY)
+                }
+                if (midpointDistanceSquared > boundingDistance * boundingDistance)
                     continue
-                const distance = Math.sqrt(worldSegmentsDistanceSquared(
+                if (deadlyWalls) {
+                    hazardX = hazard.x + hazard.vx * predictionTime
+                    hazardY = hazard.y + hazard.vy * predictionTime
+                    hazardX2 = hazard.x2 + hazard.vx2 * predictionTime
+                    hazardY2 = hazard.y2 + hazard.vy2 * predictionTime
+                }
+                const distanceSquared = worldSegmentsDistanceSquared(
                     previousPoint.x, previousPoint.y, point.x, point.y,
-                    hazardX, hazardY, hazardX2, hazardY2))
-                minimumClearance = Math.min(minimumClearance,
-                                            distance - collisionDistance)
-                if (distance <= collisionDistance) {
+                    hazardX, hazardY, hazardX2, hazardY2)
+                if (distanceSquared <= collisionDistance * collisionDistance) {
                     collides = true
                     collisionTime = Math.min(collisionTime, point.time)
                     risk += 100000 * (1 + urgency)
                             * (hazard.self ? 1.5 : 1)
-                } else if (distance < softDistance) {
+                } else if (distanceSquared < softDistance * softDistance) {
+                    const distance = Math.sqrt(distanceSquared)
                     const proximity = (softDistance - distance)
                                       / Math.max(1, softDistance - collisionDistance)
                     risk += proximity * proximity * (1 + urgency)
@@ -1412,7 +1496,6 @@ Item {
             risk: risk,
             collides: collides,
             collisionTime: collisionTime,
-            minimumClearance: minimumClearance,
             progress: initialDistance - finalDistance,
             finalDistance: finalDistance,
             harvest: 0,
@@ -1482,8 +1565,11 @@ Item {
         } else {
             goal = { x: snake.plannedGoalX, y: snake.plannedGoalY }
         }
-        const goalAngle = Math.atan2(axisDelta(head.y, goal.y, worldHeight),
-                                     axisDelta(head.x, goal.x, worldWidth))
+        const goalDeltaX = deadlyWalls ? goal.x - head.x
+            : axisDelta(head.x, goal.x, worldWidth)
+        const goalDeltaY = deadlyWalls ? goal.y - head.y
+            : axisDelta(head.y, goal.y, worldHeight)
+        const goalAngle = Math.atan2(goalDeltaY, goalDeltaX)
         const horizon = Math.max(120 + intelligence * 280,
                                  snake.radius * (14 + intelligence * 24))
         const samples = Math.round(7 + intelligence)
@@ -1557,6 +1643,15 @@ Item {
                    && !plan.provisionalPublished) {
             plan.snake.desiredAngle = candidate.angle
             plan.provisionalPublished = true
+        }
+        // The first six candidates cover the food heading, current heading,
+        // a food-centred sweep, and a modest escape on either side. Once any
+        // of them proves clearly safe, extreme reversals add no useful safety
+        // information. Keep the full fan only when all ordinary routes remain
+        // pressured or colliding.
+        if (plan.candidateIndex < 6 && !result.collides && result.risk < 3
+                && plan.candidates.length > 6) {
+            plan.candidates = plan.candidates.slice(0, 6)
         }
         ++plan.candidateIndex
     }
@@ -1816,6 +1911,9 @@ Item {
                                    + turnRadius * 1.2)
         const futureX = head.x + Math.cos(snake.angle) * lookAhead
         const futureY = head.y + Math.sin(snake.angle) * lookAhead
+        const routeMidX = (head.x + futureX) * 0.5
+        const routeMidY = (head.y + futureY) * 0.5
+        const routeHalfLength = lookAhead * 0.5
         let bestDistanceSquared = Number.MAX_VALUE
         let threatX = 0
         let threatY = 0
@@ -1836,6 +1934,18 @@ Item {
                 const otherFutureY = otherHead.y + Math.sin(other.angle) * otherTravel
                 const headClearance = (snake.radius + other.radius)
                     * (1.35 + intelligence * 0.45)
+                if (deadlyWalls) {
+                    const otherMidX = (otherHead.x + otherFutureX) * 0.5
+                    const otherMidY = (otherHead.y + otherFutureY) * 0.5
+                    const midpointDeltaX = otherMidX - routeMidX
+                    const midpointDeltaY = otherMidY - routeMidY
+                    const boundingDistance = routeHalfLength
+                        + otherTravel * 0.5 + headClearance
+                    if (midpointDeltaX * midpointDeltaX
+                            + midpointDeltaY * midpointDeltaY
+                            > boundingDistance * boundingDistance)
+                        continue
+                }
                 const crossingDistance = worldSegmentsDistanceSquared(
                     head.x, head.y, futureX, futureY,
                     otherHead.x, otherHead.y, otherFutureX, otherFutureY)
@@ -2079,7 +2189,7 @@ Item {
             const particle = food[index]
             let eater = null
             let eaterIndex = -1
-            let closestDistance = Number.MAX_VALUE
+            let closestDistanceSquared = Number.MAX_VALUE
             const lockedIndex = particle.vacuumOwner === undefined
                 ? -1 : particle.vacuumOwner
             if (lockedIndex >= 0 && lockedIndex < snakes.length) {
@@ -2087,9 +2197,9 @@ Item {
                 if (lockedSnake.alive && (!onlySnake || lockedSnake === onlySnake)) {
                     eater = lockedSnake
                     eaterIndex = lockedIndex
-                    closestDistance = Math.sqrt(worldDistanceSquared(
+                    closestDistanceSquared = worldDistanceSquared(
                         particle.x, particle.y,
-                        eater.segments[0].x, eater.segments[0].y))
+                        eater.segments[0].x, eater.segments[0].y)
                 } else {
                     particle.vacuumOwner = -1
                     particle.life = particle.vacuumOriginalLife === undefined
@@ -2102,11 +2212,26 @@ Item {
                     if (!snake.alive || (onlySnake && snake !== onlySnake))
                         continue
                     const head = snake.segments[0]
-                    const distance = Math.sqrt(worldDistanceSquared(
-                        particle.x, particle.y, head.x, head.y))
-                    const reach = foodCaptureRadius(snake, particle)
-                    if (distance <= reach && distance < closestDistance) {
-                        closestDistance = distance
+                    const reach = snake.radius * 3 + particle.size
+                    let distanceSquared
+                    if (deadlyWalls) {
+                        // Almost every food/head pair is far apart. Reject it
+                        // by the capture square before doing the full radial
+                        // comparison or calling wrap-aware helpers.
+                        const dx = head.x - particle.x
+                        if (Math.abs(dx) > reach)
+                            continue
+                        const dy = head.y - particle.y
+                        if (Math.abs(dy) > reach)
+                            continue
+                        distanceSquared = dx * dx + dy * dy
+                    } else {
+                        distanceSquared = worldDistanceSquared(
+                            particle.x, particle.y, head.x, head.y)
+                    }
+                    if (distanceSquared <= reach * reach
+                            && distanceSquared < closestDistanceSquared) {
+                        closestDistanceSquared = distanceSquared
                         eater = snake
                         eaterIndex = snakeIndex
                     }
@@ -2114,6 +2239,7 @@ Item {
             }
             if (!eater)
                 continue
+            const closestDistance = Math.sqrt(closestDistanceSquared)
             if (particle.vacuumOwner !== eaterIndex) {
                 particle.vacuumOwner = eaterIndex
                 particle.vacuumOriginalLife = particle.life
@@ -2156,9 +2282,10 @@ Item {
     }
 
     function collisionCell(value, cellSize, count, extent) {
-        const coordinate = deadlyWalls ? clamp(value, 0, Math.max(0, extent - 0.001))
-                                       : wrapCoordinate(value, extent)
-        return clamp(Math.floor(coordinate / cellSize), 0, count - 1)
+        const coordinate = deadlyWalls
+            ? Math.max(0, Math.min(Math.max(0, extent - 0.001), value))
+            : wrapCoordinate(value, extent)
+        return Math.max(0, Math.min(count - 1, Math.floor(coordinate / cellSize)))
     }
 
     function markCollisions() {
