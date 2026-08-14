@@ -509,7 +509,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             color: palette.mid
-                            text: qsTr("Updates are provided through KDE Discover and the project's Launchpad PPA.")
+                            text: qsTr("Updates are delivered through the system update page when the app is installed from the project's Launchpad PPA.")
                         }
                         Label {
                             id: updateStatus
@@ -525,7 +525,7 @@ ApplicationWindow {
                             const opened = window.controller.openUpdateCenter()
                             updateStatus.color = opened ? palette.highlight : palette.brightText
                             updateStatus.text = opened
-                                ? qsTr("Update information opened in your software manager.")
+                                ? qsTr("System updates opened. Available Plasma Visual Screensaver updates will appear there.")
                                 : qsTr("Could not open the software manager or release page.")
                         }
                     }

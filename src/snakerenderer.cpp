@@ -411,7 +411,14 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
                        (point.y() + drawOffset.y()) * scaleY);
     };
 
-    const bool denseFood = m_food.size() > 320;
+    // Avoid switching the complete food field between detail levels whenever
+    // consumption and respawns hover around one exact particle count.
+    if (m_denseFoodRendering) {
+        m_denseFoodRendering = m_food.size() >= 280;
+    } else {
+        m_denseFoodRendering = m_food.size() > 340;
+    }
+    const bool denseFood = m_denseFoodRendering;
     for (const Food &particle : std::as_const(m_food)) {
         const qreal pulse = 0.82 + std::sin(m_simulationTime * 3.0 + particle.phase) * 0.18;
         const qreal worldSize = particle.size * pulse;
@@ -444,14 +451,12 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
                                       withAlpha(color, 150), viewport);
                     }
                 }
-                // Once several death trails overlap, the glow layer dominates
-                // vertex count without adding useful visual information. Keep
-                // the bright edible cores and magnetic trails intact while
-                // dropping only this overdraw-heavy decoration.
-                if (!denseFood) {
-                    appendDisc(vertices, center, size * 3.2,
-                               withAlpha(color, 30), 8, viewport);
-                }
+                // At high density, retain the halo's apparent radius while
+                // reducing only its tessellation. Removing the halo entirely
+                // made every particle appear to shrink whenever a death burst
+                // crossed the LOD threshold.
+                appendDisc(vertices, center, size * 3.2,
+                           withAlpha(color, 30), denseFood ? 6 : 8, viewport);
                 appendDisc(vertices, center, size, withAlpha(color, 230),
                            denseFood ? 6 : 8, viewport);
                 appendDisc(vertices, center - QPointF(size * 0.24, size * 0.24),

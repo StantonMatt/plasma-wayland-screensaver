@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(plasma-visual-screensaver
-        VERSION 0.5.0
+        VERSION 0.5.1
         DESCRIPTION "Non-locking visual screensaver for KDE Plasma Wayland"
         HOMEPAGE_URL "https://github.com/StantonMatt/plasma-wayland-screensaver"
         LANGUAGES CXX)

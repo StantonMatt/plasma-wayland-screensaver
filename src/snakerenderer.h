@@ -66,6 +66,7 @@ private:
     qreal m_drawOffsetY = 0.0;
     bool m_deadlyWalls = true;
     bool m_scaleToViewport = false;
+    bool m_denseFoodRendering = false;
     int m_geometryCapacity = 0;
     QPointer<SnakeRenderer> m_source;
     QMetaObject::Connection m_sourceConnection;

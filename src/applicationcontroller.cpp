@@ -120,8 +120,8 @@ bool ApplicationController::openUpdateCenter() const
     const QString discover = QStandardPaths::findExecutable(QStringLiteral("plasma-discover"));
     if (!discover.isEmpty()) {
         const QStringList arguments = {
-            QStringLiteral("--application"),
-            QStringLiteral("appstream://org.kde.plasmavisualscreensaver"),
+            QStringLiteral("--mode"),
+            QStringLiteral("Update"),
         };
         if (QProcess::startDetached(discover, arguments)) {
             return true;

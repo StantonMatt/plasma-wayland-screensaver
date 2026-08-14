@@ -20,6 +20,11 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.5.1" date="2026-08-14">
+      <description>
+        <p>Greatly reduces Slithering Snakes CPU and GPU load, keeps mature ecosystems stable, fixes food detail-size changes, and adds reliable version and update controls.</p>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-08-14">
       <description>
         <p>Improves Slithering Snakes with exact path-following bodies, faster predictive safety decisions, persistent food vacuuming, and continuous swept collision detection.</p>

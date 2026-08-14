@@ -28,7 +28,7 @@ Open **Plasma Visual Screensaver** from the application menu to configure it.
 Settings are retained across upgrades in
 `~/.config/plasma-visual-screensaverrc`.
 The **About and updates** section shows the installed application version. Its
-**Check for Updates** button opens this application in KDE Discover, where PPA
+**Check for Updates** button opens KDE Discover's system update page, where PPA
 updates can be reviewed and installed. If Discover is unavailable, the button
 opens the latest GitHub release instead.
 
@@ -270,7 +270,7 @@ session:
    144, and 240 fps. Moving items must freeze under reduced motion.
 8. Confirm that Settings shows the same version as
    `plasma-visual-screensaver --version`, then select **Check for Updates** and
-   verify that KDE Discover opens the application's update page.
+   verify that KDE Discover opens its system update page.
 9. Let the configured idle interval expire naturally. Confirm activity dismisses
    it and that another complete idle interval activates it again.
 10. Suspend and resume both while waiting and while preview is active. Confirm no

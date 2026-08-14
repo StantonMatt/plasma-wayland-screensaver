@@ -41,19 +41,23 @@ private:
         return snakes;
     }
 
-    static QJSValue makeFood(QJSEngine &engine)
+    static QJSValue makeFood(QJSEngine &engine, int count = 1)
     {
-        QJSValue food = engine.newArray(1);
-        QJSValue particle = engine.newObject();
-        particle.setProperty(QStringLiteral("x"), 120.0);
-        particle.setProperty(QStringLiteral("y"), 70.0);
-        particle.setProperty(QStringLiteral("size"), 4.0);
-        particle.setProperty(QStringLiteral("phase"), 0.0);
-        particle.setProperty(QStringLiteral("attraction"), 0.0);
-        particle.setProperty(QStringLiteral("attractionX"), 120.0);
-        particle.setProperty(QStringLiteral("attractionY"), 70.0);
-        particle.setProperty(QStringLiteral("colorIndex"), 0);
-        food.setProperty(0, particle);
+        QJSValue food = engine.newArray(count);
+        for (int index = 0; index < count; ++index) {
+            QJSValue particle = engine.newObject();
+            const qreal x = 12.0 + (index % 32) * 9.0;
+            const qreal y = 12.0 + (index / 32) * 9.0;
+            particle.setProperty(QStringLiteral("x"), x);
+            particle.setProperty(QStringLiteral("y"), y);
+            particle.setProperty(QStringLiteral("size"), 4.0);
+            particle.setProperty(QStringLiteral("phase"), 0.0);
+            particle.setProperty(QStringLiteral("attraction"), 0.0);
+            particle.setProperty(QStringLiteral("attractionX"), x);
+            particle.setProperty(QStringLiteral("attractionY"), y);
+            particle.setProperty(QStringLiteral("colorIndex"), 0);
+            food.setProperty(index, particle);
+        }
         return food;
     }
 
@@ -114,6 +118,31 @@ private Q_SLOTS:
         QCOMPARE(renderer.m_snakes[0].segments.size(), 12);
         QCOMPARE(renderer.m_snakes[0].segments[0].position, QPointF(500.0, 240.0));
         QCOMPARE(renderer.m_snakes[0].segments[0].previous, QPointF(499.0, 240.0));
+    }
+
+    void denseFoodDetailUsesHysteresis()
+    {
+        SnakeRenderer renderer;
+        renderer.setSize(QSizeF(320, 240));
+        QJSEngine engine;
+        QJSValue palette = engine.newArray(1);
+        palette.setProperty(0, QStringLiteral("#4de6ff"));
+        const QJSValue noSnakes = engine.newArray();
+        QSGNode *node = nullptr;
+
+        const auto renderFoodCount = [&](int count) {
+            renderer.syncFrame(noSnakes, makeFood(engine, count), palette,
+                               1.0, 0.0, 320, 240, 0, 0, true);
+            node = renderer.updatePaintNode(node, nullptr);
+        };
+
+        renderFoodCount(341);
+        QVERIFY(renderer.m_denseFoodRendering);
+        renderFoodCount(300);
+        QVERIFY(renderer.m_denseFoodRendering);
+        renderFoodCount(279);
+        QVERIFY(!renderer.m_denseFoodRendering);
+        delete node;
     }
 };
 

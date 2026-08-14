@@ -1,3 +1,13 @@
+plasma-visual-screensaver (0.5.1-1) resolute; urgency=medium
+
+  * Reduce Slithering Snakes simulation and rendering overhead.
+  * Bound mature death-food populations and prevent intermittent snake flicker.
+  * Preserve food size across dense-renderer detail changes.
+  * Add version display and a reliable system update action.
+  * Fix monitor-resync interpolation and Canvas fallback timing.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Fri, 14 Aug 2026 17:21:08 -0400
+
 plasma-visual-screensaver (0.5.0-1) resolute; urgency=medium
 
   * Make snake bodies follow the head's exact path through turns and growth.
