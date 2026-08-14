@@ -358,7 +358,7 @@ ApplicationWindow {
                         visible: visual.currentValue === "snakes"
                         wrapMode: Text.WordWrap
                         color: palette.mid
-                        text: qsTr("Snakes trace nearest-neighbor paths through valuable food regions using their full vacuum and turning radii, prioritize rich clusters, and sweep along defeated rivals' particle trails. Champions can become very long, but adaptive screen-area and ecosystem budgets prevent one snake from filling the display. The optimized renderer caps this animation at 60 fps to avoid wasting power on duplicate high-refresh frames.")
+                        text: qsTr("At high intelligence, snakes predict moving rivals, plan around continuous body shapes and their own turning radius, remember an escape direction, and weave curved vacuum paths through the richest food regions. They also understand when their own tail will vacate a route and sweep efficiently along defeated rivals' particle trails. Champions can become very long, but adaptive screen-area and ecosystem budgets prevent one snake from filling the display. The optimized renderer caps this animation at 60 fps to avoid wasting power on duplicate high-refresh frames.")
                     }
 
                     Label { text: qsTr("Ball interaction"); visible: visual.currentValue === "bounce" }

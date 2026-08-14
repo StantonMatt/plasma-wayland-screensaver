@@ -426,6 +426,58 @@ TestCase {
         verify(!snake.dying)
     }
 
+    function test_wraparoundCollisionAcrossNarrowFinalBin() {
+        visualContext.snakeDeadlyWalls = false
+        const victim = visual.snakes[0]
+        const rival = visual.snakes[1]
+        victim.radius = 10
+        rival.radius = 10
+        for (let index = 0; index < victim.segments.length; ++index) {
+            victim.segments[index].x = 300
+            victim.segments[index].y = 1
+        }
+        for (let index = 0; index < rival.segments.length; ++index) {
+            rival.segments[index].x = 900
+            rival.segments[index].y = 360
+        }
+        // With the former target-sized bins this point occupied the
+        // penultimate row, even though it is only ten pixels from row zero in
+        // toroidal space. A row-zero head never queried that bin.
+        rival.segments[5].x = 300
+        rival.segments[5].y = visual.worldHeight - 9
+        visual.snakes = [victim, rival]
+
+        visual.markCollisions()
+
+        verify(victim.dying)
+    }
+
+    function test_extrapolatedHazardWrapsMoreThanOneWorldExtent() {
+        visualContext.snakeDeadlyWalls = false
+        visualContext.monitorBehavior = "seamless"
+        visualContext.virtualWidth = 120
+        visualContext.virtualHeight = 100
+        const snake = visual.snakes[0]
+        snake.radius = 10
+        snake.segments[0].x = 80
+        snake.segments[0].y = 50
+        const points = [
+            { x: 79, y: 50, angle: 0, time: 0 },
+            { x: 81, y: 50, angle: 0, time: 1 }
+        ]
+        const hazards = [{
+            x: 20, y: 50, x2: 20, y2: 50,
+            vx: 600, vy: 0, vx2: 600, vy2: 0,
+            radius: 10, self: false, head: true,
+            halfLength: 0, halfStretchSpeed: 0,
+            releaseTime: Number.MAX_VALUE
+        }]
+
+        const result = visual.evaluateTrajectory(snake, 0, points, hazards, 81, 50)
+
+        verify(result.collides)
+    }
+
     function test_longWraparoundBodiesGenerateEveryVisibleCopy() {
         const offsets = visual.wrappingOffsets(-2600, 400, 1000, 20)
 
@@ -484,6 +536,108 @@ TestCase {
         compare(visual.food.length, particleCount)
     }
 
+    function test_continuousCapsulesCloseSamplingGaps() {
+        visualContext.snakeIntelligence = 100
+        const snake = visual.snakes[0]
+        const rival = visual.snakes[1]
+        const spacing = snake.radius * 1.18
+        for (let index = 0; index < snake.segments.length; ++index) {
+            snake.segments[index].x = 300 - spacing * index
+            snake.segments[index].y = 360
+        }
+        for (let index = 0; index < rival.segments.length; ++index) {
+            rival.segments[index].x = 1050 + spacing * index
+            rival.segments[index].y = 100
+        }
+        // Only the centreline between sampled body points intersects the
+        // route. A point-cloud planner would see an inviting fake gap.
+        rival.segments[3].x = 420
+        rival.segments[3].y = 300
+        rival.segments[4].x = 420
+        rival.segments[4].y = 360
+        rival.segments[5].x = 420
+        rival.segments[5].y = 420
+        snake.angle = 0
+        snake.desiredAngle = 0
+        visual.snakes = [snake, rival]
+
+        const directRisk = visual.headingRisk(snake, 0, 0, 260)
+        const plannedAngle = visual.planSteering(snake, 0)
+        const plannedRisk = visual.headingRisk(snake, 0, plannedAngle, 260)
+
+        verify(directRisk > 0)
+        verify(plannedRisk < directRisk,
+               "capsule route risk=" + plannedRisk + ", direct=" + directRisk)
+    }
+
+    function test_predictsRivalHeadCrossing() {
+        visualContext.snakeIntelligence = 100
+        const snake = visual.snakes[0]
+        const rival = visual.snakes[1]
+        const spacing = snake.radius * 1.18
+        for (let index = 0; index < snake.segments.length; ++index) {
+            snake.segments[index].x = 300 - spacing * index
+            snake.segments[index].y = 360
+        }
+        for (let index = 0; index < rival.segments.length; ++index) {
+            rival.segments[index].x = 420
+            rival.segments[index].y = 235 - spacing * index
+            rival.segments[index].previousX = rival.segments[index].x
+            rival.segments[index].previousY = rival.segments[index].y
+        }
+        snake.angle = 0
+        snake.desiredAngle = 0
+        rival.angle = Math.PI / 2
+        rival.desiredAngle = Math.PI / 2
+        visual.snakes = [snake, rival]
+        visual.food = []
+        visual.addFood(700, 360, 1, 0, 0, 0, -1)
+
+        const directRisk = visual.headingRisk(snake, 0, 0, 300)
+        const plannedAngle = visual.planSteering(snake, 0)
+
+        verify(directRisk > 0)
+        verify(Math.abs(plannedAngle) > 0.1,
+               "planner held the collision course: " + plannedAngle)
+        verify(!snake.lastPlanCollision)
+    }
+
+    function test_plannerWeavesThroughVacuumCorridor() {
+        visualContext.snakeIntelligence = 100
+        const snake = visual.snakes[0]
+        const spacing = snake.radius * 1.18
+        for (let index = 0; index < snake.segments.length; ++index) {
+            snake.segments[index].x = 300 - spacing * index
+            snake.segments[index].y = 360
+        }
+        snake.angle = 0
+        snake.desiredAngle = 0
+        snake.foodPlanUntil = 100
+        snake.plannedGoalX = 700
+        snake.plannedGoalY = 360
+        visual.snakes = [snake]
+        visual.food = []
+        const harvestPath = visual.projectTrajectory(snake, 0.46, 0.28,
+                                                     700, 360, 400, 8)
+        for (let index = 1; index <= 4; ++index) {
+            const point = harvestPath[index]
+            visual.addFood(point.x, point.y, 1, 1, 0, 0, -1)
+            visual.addFood(point.x + 5, point.y + 4, 1, 1, 0, 0, -1)
+        }
+
+        const directPath = visual.projectTrajectory(snake, 0, 0,
+                                                    700, 360, 400, 8)
+        const directHarvest = visual.trajectoryHarvestValue(snake, 0, directPath)
+        const plannedAngle = visual.planSteering(snake, 0)
+        const plannedPath = visual.projectTrajectory(snake, plannedAngle, 0.3,
+                                                     700, 360, 400, 8)
+        const plannedHarvest = visual.trajectoryHarvestValue(snake, 0, plannedPath)
+
+        verify(plannedAngle > 0.12, "planned angle=" + plannedAngle)
+        verify(plannedHarvest > directHarvest * 1.5,
+               "planned harvest=" + plannedHarvest + ", direct=" + directHarvest)
+    }
+
     function test_intelligenceExpandsHazardAwareness() {
         const snake = visual.snakes[0]
         const rival = visual.snakes[1]
@@ -537,15 +691,30 @@ TestCase {
         visualContext.snakeSelfCollisions = true
         const snake = visual.snakes[0]
         const spacing = snake.radius * 1.18
-        while (snake.segments.length < 28)
+        while (snake.segments.length < 200)
             visual.appendGrowthSegment(snake)
-        for (let index = 0; index < 8; ++index) {
+        for (let index = 0; index <= 20; ++index) {
             snake.segments[index].x = 300 - spacing * index
             snake.segments[index].y = 360
         }
-        for (let index = 8; index < snake.segments.length; ++index) {
-            snake.segments[index].x = 390
-            snake.segments[index].y = 250 + (index - 8) * spacing
+        for (let index = 21; index <= 50; ++index) {
+            snake.segments[index].x = 300 - spacing * 20
+            snake.segments[index].y = 360 - (index - 20) * spacing
+        }
+        for (let index = 51; index <= 90; ++index) {
+            snake.segments[index].x = 300 - spacing * 20
+                                      + (index - 50) * spacing
+            snake.segments[index].y = 360 - spacing * 30
+        }
+        for (let index = 91; index <= 141; ++index) {
+            snake.segments[index].x = 300 - spacing * 20 + spacing * 40
+            snake.segments[index].y = 360 - spacing * 30
+                                      + (index - 90) * spacing
+        }
+        for (let index = 142; index < snake.segments.length; ++index) {
+            snake.segments[index].x = 300 - spacing * 20 + spacing * 40
+                                      - (index - 141) * spacing
+            snake.segments[index].y = 360 - spacing * 30 + spacing * 51
         }
         snake.angle = 0
         snake.desiredAngle = 0
@@ -585,6 +754,31 @@ TestCase {
         fuzzyCompare(visual.snakeSpeed(snake), speedBefore, 0.01)
     }
 
+    function test_predictiveBrainsAreStaggeredAcrossFrames() {
+        visualContext.snakeIntelligence = 100
+        visual.brainCursor = 0
+        for (let index = 0; index < visual.snakes.length; ++index)
+            visual.snakes[index].brainCooldown = 0
+
+        visual.updateSnakeBrains(0)
+        let planned = 0
+        for (let index = 0; index < visual.snakes.length; ++index) {
+            if (visual.snakes[index].brainCooldown > 0)
+                ++planned
+        }
+        compare(planned, 1)
+        compare(visual.brainCursor, 1)
+
+        visual.updateSnakeBrains(0)
+        planned = 0
+        for (let index = 0; index < visual.snakes.length; ++index) {
+            if (visual.snakes[index].brainCooldown > 0)
+                ++planned
+        }
+        compare(planned, 2)
+        compare(visual.brainCursor, 2)
+    }
+
     function test_maxDensitySimulationHasRealtimeHeadroom() {
         visualContext.animationDensity = 100
         visualContext.trailAmount = 100
@@ -599,6 +793,9 @@ TestCase {
         const elapsed = Date.now() - started
         verify(elapsed < 5000,
                "10 simulated seconds took " + elapsed + " ms")
+        verify(visual.deathCount < visual.desiredSnakeCount,
+               visual.deathCount + " deaths for " + visual.desiredSnakeCount
+               + " intelligent snakes in 10 seconds")
     }
 
     function test_longSnakeSimulationHasRealtimeHeadroom() {
@@ -618,6 +815,28 @@ TestCase {
         verify(elapsed < 2000,
                "5 seconds with a " + targetLength + "-segment snake took "
                + elapsed + " ms")
+    }
+
+    function test_matureEcosystemHasRealtimeHeadroom() {
+        visualContext.animationDensity = 55
+        visualContext.trailAmount = 100
+        visualContext.snakeIntelligence = 100
+        visualContext.snakeSelfCollisions = true
+        visualContext.snakeDeadlyWalls = false
+        visual.initializeWorld()
+        for (let snakeIndex = 0; snakeIndex < visual.snakes.length; ++snakeIndex) {
+            const snake = visual.snakes[snakeIndex]
+            while (snake.segments.length < 200)
+                visual.appendGrowthSegment(snake)
+        }
+        const started = Date.now()
+
+        for (let step = 0; step < 300; ++step)
+            visual.stepSimulation(1 / 60)
+
+        const elapsed = Date.now() - started
+        verify(elapsed < 4000,
+               "5 mature ecosystem seconds took " + elapsed + " ms")
     }
 
     function test_seamlessVirtualDesktopCoordinates() {

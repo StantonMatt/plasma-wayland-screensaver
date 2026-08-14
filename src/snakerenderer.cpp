@@ -379,14 +379,28 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
 
         const QColor color = m_palette.at(snake.colorIndex % m_palette.size());
         const QColor outline(5, 7, 16, 175);
+        const qreal bodyMargin = snake.radius * 1.4;
         for (qreal xOffset : std::as_const(xOffsets)) {
             for (qreal yOffset : std::as_const(yOffsets)) {
                 const QPointF offset = drawOffset + QPointF(xOffset, yOffset);
+                const QRectF copyBounds(minimumX + offset.x() - bodyMargin,
+                                        minimumY + offset.y() - bodyMargin,
+                                        maximumX - minimumX + bodyMargin * 2.0,
+                                        maximumY - minimumY + bodyMargin * 2.0);
+                // In seamless mode most snakes are outside any one monitor.
+                // Reject a whole wrapped copy before walking its body and
+                // attempting to append/cull every individual primitive.
+                if (!visible(copyBounds, viewport)) {
+                    continue;
+                }
                 for (int index = 1; index < points.size(); ++index) {
                     appendSegment(vertices, points[index - 1] + offset, points[index] + offset,
                                   snake.radius * 1.275, outline, viewport);
                 }
-                for (int index = 1; index < points.size(); ++index) {
+                // The body samples overlap heavily and turn gradually. A disc
+                // at every second join keeps the silhouette continuous while
+                // halving the most expensive part of mature-snake geometry.
+                for (int index = 2; index < points.size(); index += 2) {
                     appendDisc(vertices, points[index] + offset, snake.radius * 1.275,
                                outline, 6, viewport);
                 }
@@ -396,7 +410,7 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
                     appendSegment(vertices, points[index - 1] + offset, points[index] + offset,
                                   snake.radius * 0.96, withAlpha(color, 245), viewport);
                 }
-                for (int index = 1; index < points.size(); ++index) {
+                for (int index = 2; index < points.size(); index += 2) {
                     appendDisc(vertices, points[index] + offset, snake.radius * 0.96,
                                withAlpha(color, 245), 6, viewport);
                 }
