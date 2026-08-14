@@ -1,3 +1,13 @@
+plasma-visual-screensaver (0.5.0-1ppa1~resolute1) resolute; urgency=medium
+
+  * Make snake bodies follow the head's exact path through turns and growth.
+  * Improve predictive planning, wall safety, and self/rival collision
+    avoidance.
+  * Close neck and between-frame collision gaps with swept collision checks.
+  * Keep magnetized food locked to its snake until it is consumed.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Fri, 14 Aug 2026 13:41:34 -0400
+
 plasma-visual-screensaver (0.4.0-1ppa3~resolute1) resolute; urgency=medium
 
   * Keep the wall-clock performance benchmark in controlled upstream CI rather

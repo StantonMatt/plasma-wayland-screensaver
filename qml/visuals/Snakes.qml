@@ -27,7 +27,20 @@ Item {
     property real foodAnalysisCooldown: 0
     property int growthSlots: 0
     property int deathCount: 0
+    property int wallDeathCount: 0
+    property int headDeathCount: 0
+    property int bodyDeathCount: 0
+    property int selfDeathCount: 0
     property int brainCursor: 0
+    property var safetyCells: ({})
+    property int safetyCellColumns: 0
+    property int safetyCellRows: 0
+    property real safetyCellWidth: 1
+    property real safetyCellHeight: 1
+    property int safetyCellSnakeCount: 0
+    property var activeBrainPlan: null
+    property int lastBrainWorkUnits: 0
+    readonly property int maximumBrainWorkUnits: 3
 
     readonly property bool seamless: context && context.monitorBehavior === "seamless"
     readonly property real worldWidth: seamless && context ? context.virtualWidth : width
@@ -296,7 +309,7 @@ Item {
                 previousY: y - Math.sin(angle) * spacing * segment
             })
         }
-        return {
+        const snake = {
             alive: true,
             respawn: 0,
             segments: segments,
@@ -325,9 +338,142 @@ Item {
             foodPathUntil: 0,
             desiredAngle: angle,
             brainCooldown: random() * 0.06,
+            brainPlanning: false,
+            nextSafetyCheck: 0,
+            safetyActiveUntil: 0,
+            safetyDesiredAngle: angle,
             avoidanceSide: 0,
             avoidanceCommitUntil: 0,
             score: length
+        }
+        rebuildSnakeTrail(snake)
+        return snake
+    }
+
+    // Keep an arc-length history of the route travelled by the head. Body
+    // points are sampled from this history rather than pulled directly toward
+    // their neighbours; the latter makes the whole tail slide sideways as a
+    // turn propagates through the constraint chain.
+    function rebuildSnakeTrail(snake) {
+        const segments = snake.segments
+        if (!segments || segments.length === 0) {
+            snake.trailPoints = []
+            snake.trailStart = 0
+            return
+        }
+
+        const headToTail = [{ x: segments[0].x, y: segments[0].y }]
+        for (let index = 1; index < segments.length; ++index) {
+            const previous = segments[index - 1]
+            const point = headToTail[index - 1]
+            headToTail.push({
+                x: point.x + axisDelta(previous.x, segments[index].x, worldWidth),
+                y: point.y + axisDelta(previous.y, segments[index].y, worldHeight)
+            })
+        }
+
+        const tail = headToTail[headToTail.length - 1]
+        const beforeTail = headToTail.length > 1
+            ? headToTail[headToTail.length - 2] : null
+        let tailDirectionX = beforeTail ? tail.x - beforeTail.x : -Math.cos(snake.angle)
+        let tailDirectionY = beforeTail ? tail.y - beforeTail.y : -Math.sin(snake.angle)
+        const directionLength = Math.sqrt(tailDirectionX * tailDirectionX
+                                          + tailDirectionY * tailDirectionY)
+        if (directionLength > 0.001) {
+            tailDirectionX /= directionLength
+            tailDirectionY /= directionLength
+        } else {
+            tailDirectionX = -Math.cos(snake.angle)
+            tailDirectionY = -Math.sin(snake.angle)
+        }
+
+        // A short reserve behind the tail lets forward growth stretch the
+        // neck without ever running beyond the recorded route.
+        const spacing = snake.radius * 1.18
+        for (let reserve = 1; reserve <= 4; ++reserve) {
+            headToTail.push({
+                x: tail.x + tailDirectionX * spacing * reserve,
+                y: tail.y + tailDirectionY * spacing * reserve
+            })
+        }
+        headToTail.reverse()
+        let distance = 0
+        for (let index = 0; index < headToTail.length; ++index) {
+            if (index > 0) {
+                const dx = headToTail[index].x - headToTail[index - 1].x
+                const dy = headToTail[index].y - headToTail[index - 1].y
+                distance += Math.sqrt(dx * dx + dy * dy)
+            }
+            headToTail[index].distance = distance
+        }
+        snake.trailPoints = headToTail
+        snake.trailStart = 0
+    }
+
+    function ensureSnakeTrail(snake) {
+        const points = snake.trailPoints
+        if (!points || points.length < 2) {
+            rebuildSnakeTrail(snake)
+            return
+        }
+        const latest = points[points.length - 1]
+        const head = snake.segments[0]
+        const latestX = deadlyWalls ? latest.x : wrapCoordinate(latest.x, worldWidth)
+        const latestY = deadlyWalls ? latest.y : wrapCoordinate(latest.y, worldHeight)
+        if (worldDistanceSquared(latestX, latestY, head.x, head.y) > 0.01)
+            rebuildSnakeTrail(snake)
+    }
+
+    function appendHeadTrailPoint(snake) {
+        const points = snake.trailPoints
+        const latest = points[points.length - 1]
+        const head = snake.segments[0]
+        const latestWrappedX = deadlyWalls ? latest.x : wrapCoordinate(latest.x, worldWidth)
+        const latestWrappedY = deadlyWalls ? latest.y : wrapCoordinate(latest.y, worldHeight)
+        const x = latest.x + axisDelta(latestWrappedX, head.x, worldWidth)
+        const y = latest.y + axisDelta(latestWrappedY, head.y, worldHeight)
+        const dx = x - latest.x
+        const dy = y - latest.y
+        const travelled = Math.sqrt(dx * dx + dy * dy)
+        if (travelled > 0.0001)
+            points.push({ x: x, y: y, distance: latest.distance + travelled })
+    }
+
+    function placeSegmentsOnTrail(snake) {
+        const points = snake.trailPoints
+        if (!points || points.length < 2 || snake.segments.length < 2)
+            return
+        const newest = points[points.length - 1]
+        const spacing = snake.radius * 1.18
+        const stretch = snake.growthStretch || 0
+        let cursor = points.length - 2
+        const start = snake.trailStart || 0
+
+        for (let segmentIndex = 1; segmentIndex < snake.segments.length; ++segmentIndex) {
+            const targetDistance = newest.distance
+                - spacing * (segmentIndex + stretch)
+            while (cursor > start && points[cursor].distance > targetDistance)
+                --cursor
+            const older = points[cursor]
+            const newer = points[Math.min(cursor + 1, points.length - 1)]
+            const span = Math.max(0.0001, newer.distance - older.distance)
+            const amount = clamp((targetDistance - older.distance) / span, 0, 1)
+            const x = older.x + (newer.x - older.x) * amount
+            const y = older.y + (newer.y - older.y) * amount
+            const segment = snake.segments[segmentIndex]
+            segment.x = deadlyWalls ? x : wrapCoordinate(x, worldWidth)
+            segment.y = deadlyWalls ? y : wrapCoordinate(y, worldHeight)
+        }
+
+        const keepAfter = newest.distance
+            - spacing * (snake.segments.length + 4)
+        while (snake.trailStart + 1 < points.length
+               && points[snake.trailStart + 1].distance < keepAfter) {
+            ++snake.trailStart
+        }
+        if (snake.trailStart > 512 && snake.trailStart > points.length / 2) {
+            snake.trailPoints = points.slice(snake.trailStart)
+            snake.trailStart = 0
         }
     }
 
@@ -354,7 +500,9 @@ Item {
             claimedUntil: 0,
             attraction: 0,
             attractionX: x,
-            attractionY: y
+            attractionY: y,
+            vacuumOwner: -1,
+            vacuumOriginalLife: life
         })
     }
 
@@ -396,11 +544,18 @@ Item {
         })
     }
 
+    function cancelActiveBrainPlan() {
+        if (activeBrainPlan && activeBrainPlan.snake)
+            activeBrainPlan.snake.brainPlanning = false
+        activeBrainPlan = null
+    }
+
     function resizeSimulationWorld(sourceWidth, sourceHeight) {
         if (sourceWidth <= 0 || sourceHeight <= 0 || worldWidth <= 0 || worldHeight <= 0) {
             initializeWorld()
             return
         }
+        cancelActiveBrainPlan()
         const scaleX = worldWidth / sourceWidth
         const scaleY = worldHeight / sourceHeight
         for (let snakeIndex = 0; snakeIndex < snakes.length; ++snakeIndex) {
@@ -411,6 +566,22 @@ Item {
                 segment.y *= scaleY
                 segment.previousX *= scaleX
                 segment.previousY *= scaleY
+            }
+            if (snake.trailPoints) {
+                let trailDistance = 0
+                for (let trailIndex = 0; trailIndex < snake.trailPoints.length;
+                        ++trailIndex) {
+                    const point = snake.trailPoints[trailIndex]
+                    point.x *= scaleX
+                    point.y *= scaleY
+                    if (trailIndex > 0) {
+                        const previousPoint = snake.trailPoints[trailIndex - 1]
+                        const dx = point.x - previousPoint.x
+                        const dy = point.y - previousPoint.y
+                        trailDistance += Math.sqrt(dx * dx + dy * dy)
+                    }
+                    point.distance = trailDistance
+                }
             }
             snake.plannedGoalX *= scaleX
             snake.plannedGoalY *= scaleY
@@ -453,6 +624,12 @@ Item {
 
         initializeTimer.stop()
         snakes = state.snakes
+        activeBrainPlan = null
+        for (let snakeIndex = 0; snakeIndex < snakes.length; ++snakeIndex) {
+            snakes[snakeIndex].brainPlanning = false
+            if (!snakes[snakeIndex].trailPoints)
+                rebuildSnakeTrail(snakes[snakeIndex])
+        }
         food = state.food
         accumulator = state.accumulator
         renderAlpha = state.renderAlpha
@@ -482,7 +659,17 @@ Item {
         nextFoodId = 1
         foodAnalysisCooldown = 0
         deathCount = 0
+        wallDeathCount = 0
+        headDeathCount = 0
+        bodyDeathCount = 0
+        selfDeathCount = 0
         brainCursor = 0
+        activeBrainPlan = null
+        lastBrainWorkUnits = 0
+        safetyCells = ({})
+        safetyCellColumns = 0
+        safetyCellRows = 0
+        safetyCellSnakeCount = 0
         snakes = []
         food = []
         for (let i = 0; i < desiredSnakeCount; ++i)
@@ -1241,11 +1428,33 @@ Item {
         candidates.push({ angle: normalized, recovery: recoveryFraction })
     }
 
-    // Receding-horizon planner: roll out a family of direct, harvesting, and
-    // escape trajectories; discard every predicted collision when any safe
-    // route exists; then optimize clearance, food swept by the vacuum, progress
-    // toward the selected food region, and steering stability in that order.
-    function planSteering(snake, snakeIndex) {
+    function planningSnakeSnapshot(snake) {
+        // Rollouts only need the head plus the body length used by speed and
+        // turn-rate calculations. Keeping a sparse array avoids copying a
+        // champion's entire body for every plan.
+        const segments = new Array(snake.segments.length)
+        segments[0] = {
+            x: snake.segments[0].x,
+            y: snake.segments[0].y
+        }
+        return {
+            segments: segments,
+            angle: snake.angle,
+            desiredAngle: snake.desiredAngle,
+            radius: snake.radius,
+            speedBias: snake.speedBias,
+            rush: snake.rush,
+            growthBlocked: snake.growthBlocked,
+            growth: snake.growth,
+            avoidanceSide: snake.avoidanceSide,
+            avoidanceCommitUntil: snake.avoidanceCommitUntil
+        }
+    }
+
+    // Constructing the hazard snapshot is one bounded planner work unit. The
+    // candidate rollouts and food-corridor integrations are advanced separately
+    // so no frame has to solve an entire receding-horizon search at once.
+    function createSteeringPlan(snake, snakeIndex) {
         const head = snake.segments[0]
         let goal
         if (snake.foodPlanUntil <= simulationTime) {
@@ -1262,6 +1471,7 @@ Item {
                                  snake.radius * (14 + intelligence * 24))
         const samples = Math.round(7 + intelligence)
         const hazards = collectHazards(snake, snakeIndex, horizon)
+        const planningSnake = planningSnakeSnapshot(snake)
         const candidates = []
         addTrajectoryCandidate(candidates, goalAngle, 0)
         addTrajectoryCandidate(candidates, snake.angle, 0.24)
@@ -1278,25 +1488,69 @@ Item {
             addTrajectoryCandidate(candidates, snake.angle + offset, recovery)
         }
 
-        const evaluated = []
-        let hasSafeRoute = false
-        for (let index = 0; index < candidates.length; ++index) {
-            const candidate = candidates[index]
-            const points = projectTrajectory(snake, candidate.angle,
-                                             candidate.recovery,
-                                             goal.x, goal.y, horizon, samples)
-            const result = evaluateTrajectory(snake, snakeIndex, points, hazards,
-                                              goal.x, goal.y)
-            result.candidate = candidate
-            evaluated.push(result)
-            if (!result.collides)
-                hasSafeRoute = true
+        return {
+            snake: snake,
+            planningSnake: planningSnake,
+            snakeIndex: snakeIndex,
+            goal: goal,
+            goalAngle: goalAngle,
+            horizon: horizon,
+            samples: samples,
+            hazards: hazards,
+            candidates: candidates,
+            candidateIndex: 0,
+            evaluated: [],
+            hasSafeRoute: false,
+            harvestCandidates: [],
+            harvestIndex: 0,
+            harvestLimit: 0,
+            stage: "evaluate",
+            complete: false,
+            selectedAngle: goalAngle,
+            commitActive: snake.avoidanceCommitUntil > simulationTime
         }
+    }
 
-        const commitActive = snake.avoidanceCommitUntil > simulationTime
-        for (let index = 0; index < evaluated.length; ++index) {
-            const result = evaluated[index]
-            const candidateTurn = normalizeAngle(result.candidate.angle - snake.angle)
+    function evaluateNextPlanCandidate(plan) {
+        const candidate = plan.candidates[plan.candidateIndex]
+        const points = projectTrajectory(plan.planningSnake, candidate.angle,
+                                             candidate.recovery,
+                                             plan.goal.x, plan.goal.y,
+                                             plan.horizon, plan.samples)
+        const result = evaluateTrajectory(plan.planningSnake, plan.snakeIndex, points,
+                                          plan.hazards,
+                                          plan.goal.x, plan.goal.y)
+        result.candidate = candidate
+        plan.evaluated.push(result)
+        if (!result.collides)
+            plan.hasSafeRoute = true
+
+        // Safety must not wait for food scoring and every distant escape
+        // rollout. Publish a viable direction as soon as it is known. The
+        // completed plan may refine this a few frames later, but the live snake
+        // has already begun the turn instead of continuing along a doomed,
+        // stale heading.
+        if (plan.candidateIndex === 0) {
+            plan.directCollides = result.collides
+            if (!result.collides) {
+                plan.snake.desiredAngle = candidate.angle
+                plan.provisionalPublished = true
+            }
+        } else if (plan.directCollides && !result.collides
+                   && !plan.provisionalPublished) {
+            plan.snake.desiredAngle = candidate.angle
+            plan.provisionalPublished = true
+        }
+        ++plan.candidateIndex
+    }
+
+    function preparePlanHarvest(plan) {
+        const snake = plan.planningSnake
+        const commitActive = plan.commitActive
+        for (let index = 0; index < plan.evaluated.length; ++index) {
+            const result = plan.evaluated[index]
+            const candidateTurn = normalizeAngle(result.candidate.angle
+                                                 - snake.angle)
             const side = candidateTurn < -0.04 ? -1 : (candidateTurn > 0.04 ? 1 : 0)
             const commitmentCost = commitActive && side !== 0
                 && side !== snake.avoidanceSide ? intelligence * 9 : 0
@@ -1304,9 +1558,9 @@ Item {
                 ? 1000000 / Math.max(0.05, result.collisionTime) : 0
             result.baseScore = collisionCost
                 + result.risk * (1.5 + intelligence * 8.5)
-                + result.finalDistance / Math.max(1, horizon)
+                + result.finalDistance / Math.max(1, plan.horizon)
                   * (1.4 + intelligence * 2.4)
-                - result.progress / Math.max(1, horizon)
+                - result.progress / Math.max(1, plan.horizon)
                   * (1.1 + intelligence * 2.8)
                 + Math.abs(candidateTurn) * (0.12 + intelligence * 0.08)
                 + Math.abs(normalizeAngle(result.candidate.angle
@@ -1319,23 +1573,33 @@ Item {
         // corridor integral is needed only for the most promising safe routes.
         // This retains deliberate weaving without multiplying dense-food work
         // by every emergency escape trajectory.
-        const harvestCandidates = evaluated.filter(function(result) {
-            return !hasSafeRoute || !result.collides
+        plan.harvestCandidates = plan.evaluated.filter(function(result) {
+            return !plan.hasSafeRoute || !result.collides
         }).sort(function(left, right) {
             return left.baseScore - right.baseScore
         })
-        const harvestLimit = Math.min(harvestCandidates.length,
-                                      Math.round(4 + intelligence))
-        for (let index = 0; index < harvestLimit; ++index) {
-            const result = harvestCandidates[index]
-            result.harvest = trajectoryHarvestValue(snake, snakeIndex, result.points)
-        }
+        plan.harvestLimit = Math.min(plan.harvestCandidates.length,
+                                     Math.round(2 + intelligence))
+        plan.harvestIndex = 0
+        plan.stage = plan.harvestLimit > 0 ? "harvest" : "finish"
+    }
 
+    function evaluateNextPlanHarvest(plan) {
+        const result = plan.harvestCandidates[plan.harvestIndex]
+        result.harvest = trajectoryHarvestValue(plan.planningSnake, plan.snakeIndex,
+                                                result.points)
+        ++plan.harvestIndex
+        if (plan.harvestIndex >= plan.harvestLimit)
+            plan.stage = "finish"
+    }
+
+    function finishSteeringPlan(plan) {
+        const snake = plan.snake
         let best = null
         let bestScore = Number.MAX_VALUE
-        for (let index = 0; index < evaluated.length; ++index) {
-            const result = evaluated[index]
-            if (hasSafeRoute && result.collides)
+        for (let index = 0; index < plan.evaluated.length; ++index) {
+            const result = plan.evaluated[index]
+            if (plan.hasSafeRoute && result.collides)
                 continue
             const score = result.baseScore
                 - result.harvest * (0.55 + intelligence * 3.1)
@@ -1345,9 +1609,12 @@ Item {
             }
         }
 
-        if (!best)
-            return goalAngle
-        const direct = evaluated.length > 0 ? evaluated[0] : best
+        if (!best) {
+            plan.selectedAngle = plan.goalAngle
+            plan.complete = true
+            return
+        }
+        const direct = plan.evaluated.length > 0 ? plan.evaluated[0] : best
         const selectedTurn = normalizeAngle(best.candidate.angle - snake.angle)
         if (Math.abs(selectedTurn) > 0.22
                 && (direct.collides || direct.risk > 18)) {
@@ -1360,33 +1627,99 @@ Item {
         snake.lastPlanRisk = best.risk
         snake.lastPlanCollision = best.collides
         snake.lastPlanHarvest = best.harvest
-        return best.candidate.angle
+        plan.selectedAngle = best.candidate.angle
+        plan.complete = true
     }
 
-    // Replanning is intentionally serialized: at most one snake performs the
-    // expensive predictive rollout in a simulation tick. Steering itself
-    // remains 60 Hz, so this removes main-thread spikes without reducing
-    // motion smoothness or each snake's long-range awareness.
-    function updateSnakeBrains(seconds) {
-        for (let index = 0; index < snakes.length; ++index) {
-            if (snakes[index].alive)
-                snakes[index].brainCooldown -= seconds
+    // Advance exactly one expensive unit: one trajectory collision rollout or
+    // one food-corridor integration. Bookkeeping at stage boundaries is cheap
+    // and remains attached to the unit that completed the preceding stage.
+    function advanceSteeringPlan(plan) {
+        if (!plan || plan.complete)
+            return true
+        if (plan.stage === "evaluate") {
+            evaluateNextPlanCandidate(plan)
+            if (plan.candidateIndex >= plan.candidates.length)
+                preparePlanHarvest(plan)
+        } else if (plan.stage === "harvest") {
+            evaluateNextPlanHarvest(plan)
         }
+        if (plan.stage === "finish")
+            finishSteeringPlan(plan)
+        return plan.complete
+    }
+
+    // Synchronous compatibility entry point for focused tests and diagnostics.
+    // Runtime scheduling uses the incremental functions below.
+    function planSteering(snake, snakeIndex) {
+        const plan = createSteeringPlan(snake, snakeIndex)
+        while (!advanceSteeringPlan(plan)) {
+            // Intentionally empty: tests require the completed decision.
+        }
+        return plan.selectedAngle
+    }
+
+    function nextSnakeNeedingPlan() {
         for (let attempt = 0; attempt < snakes.length; ++attempt) {
             const index = (brainCursor + attempt) % snakes.length
             const snake = snakes[index]
-            if (!snake.alive || snake.brainCooldown > 0)
+            if (!snake.alive || snake.brainPlanning || snake.brainCooldown > 0)
                 continue
-            snake.desiredAngle = planSteering(snake, index)
+            return index
+        }
+        return -1
+    }
+
+    // The frame budget is expressed in deterministic work units instead of
+    // wall-clock milliseconds, making behavior stable across machines and
+    // tests. A unit is the smallest expensive planner operation; three units per
+    // 60 Hz simulation tick leave the GUI thread ample time to present frames.
+    function updateSnakeBrains(seconds) {
+        lastBrainWorkUnits = 0
+        for (let index = 0; index < snakes.length; ++index) {
+            if (snakes[index].alive && !snakes[index].brainPlanning)
+                snakes[index].brainCooldown -= seconds
+        }
+
+        while (lastBrainWorkUnits < maximumBrainWorkUnits) {
+            if (activeBrainPlan
+                    && (activeBrainPlan.snakeIndex >= snakes.length
+                        || snakes[activeBrainPlan.snakeIndex] !== activeBrainPlan.snake
+                        || !activeBrainPlan.snake.alive)) {
+                activeBrainPlan.snake.brainPlanning = false
+                activeBrainPlan = null
+            }
+
+            if (!activeBrainPlan) {
+                const index = nextSnakeNeedingPlan()
+                if (index < 0)
+                    return
+                const snake = snakes[index]
+                snake.brainPlanning = true
+                activeBrainPlan = createSteeringPlan(snake, index)
+                brainCursor = (index + 1) % snakes.length
+                ++lastBrainWorkUnits
+                continue
+            }
+
+            const plan = activeBrainPlan
+            const complete = advanceSteeringPlan(plan)
+            ++lastBrainWorkUnits
+            if (!complete)
+                continue
+
+            const snake = plan.snake
+            snake.desiredAngle = plan.selectedAngle
+            snake.brainPlanning = false
             // A predictive route remains useful for several tenths of a
             // second. Replan rapidly only while the selected route is
             // genuinely hazardous; open-space snakes spend that time moving
             // rather than repeatedly proving the same path safe.
             const urgent = snake.lastPlanCollision
             snake.brainCooldown = urgent ? 0.20
-                : 0.90 - intelligence * 0.10 + (index % 3) * 0.008
-            brainCursor = (index + 1) % snakes.length
-            return
+                : 0.90 - intelligence * 0.10
+                  + (plan.snakeIndex % 3) * 0.008
+            activeBrainPlan = null
         }
     }
 
@@ -1394,6 +1727,230 @@ Item {
         const difference = normalizeAngle(snake.desiredAngle - snake.angle)
         const maxTurn = snakeTurnRate(snake) * seconds
         snake.angle = normalizeAngle(snake.angle + clamp(difference, -maxTurn, maxTurn))
+    }
+
+    // The predictive planner deliberately spreads its expensive work across
+    // frames. Walls are static and cheap to reason about, so enforce them with
+    // a per-frame safety controller as well. Its activation distance includes
+    // the snake's real minimum turning radius; even a head pointed directly at
+    // an edge begins its U-turn early enough to remain inside the arena.
+    function applyWallSafety(snake) {
+        if (!deadlyWalls || snake.segments.length === 0)
+            return false
+        const head = snake.segments[0]
+        const turnRadius = snakeSpeed(snake) / Math.max(0.1, snakeTurnRate(snake))
+        const safetyDistance = snake.radius * 2.6 + turnRadius * 1.35
+        let inwardX = 0
+        let inwardY = 0
+        let closest = Number.MAX_VALUE
+
+        function pressure(distance) {
+            if (distance >= safetyDistance)
+                return 0
+            const amount = 1 - Math.max(0, distance) / safetyDistance
+            return amount * amount
+        }
+
+        const leftPressure = pressure(head.x)
+        const rightPressure = pressure(worldWidth - head.x)
+        const topPressure = pressure(head.y)
+        const bottomPressure = pressure(worldHeight - head.y)
+        inwardX += leftPressure - rightPressure
+        inwardY += topPressure - bottomPressure
+        closest = Math.min(head.x, worldWidth - head.x,
+                           head.y, worldHeight - head.y)
+
+        const inwardLength = Math.sqrt(inwardX * inwardX + inwardY * inwardY)
+        if (inwardLength < 0.0001)
+            return false
+        inwardX /= inwardLength
+        inwardY /= inwardLength
+        const forwardInward = Math.cos(snake.angle) * inwardX
+                              + Math.sin(snake.angle) * inwardY
+        const criticalDistance = snake.radius * 1.4 + turnRadius
+        if (forwardInward < 0.72 || closest < criticalDistance) {
+            snake.desiredAngle = Math.atan2(inwardY, inwardX)
+            snake.brainCooldown = Math.min(snake.brainCooldown, 0.08)
+            return true
+        }
+        return false
+    }
+
+    // The full planner predicts moving capsules far into the future, but a
+    // dense arena can queue several plans. This bounded near-field guard scans
+    // only coalesced body capsules along the head's immediate travel corridor.
+    // It never changes speed; it commits to a turn away from the closest
+    // imminent body while the predictive planner prepares the longer route.
+    function applyCollisionSafety(snake, snakeIndex) {
+        if (intelligence < 0.2 || snake.segments.length === 0)
+            return false
+        const enforcing = snake.safetyActiveUntil > simulationTime
+        if (enforcing)
+            snake.desiredAngle = snake.safetyDesiredAngle
+        if (snake.nextSafetyCheck > simulationTime)
+            return enforcing
+        snake.nextSafetyCheck = simulationTime + 0.052
+            + (snakeIndex % 3) * 0.004
+        const head = snake.segments[0]
+        const speed = snakeSpeed(snake)
+        const turnRadius = speed / Math.max(0.1, snakeTurnRate(snake))
+        const lookAhead = Math.min(190, speed * (0.38 + intelligence * 0.28)
+                                   + turnRadius * 1.2)
+        const futureX = head.x + Math.cos(snake.angle) * lookAhead
+        const futureY = head.y + Math.sin(snake.angle) * lookAhead
+        let bestDistanceSquared = Number.MAX_VALUE
+        let threatX = 0
+        let threatY = 0
+        let threatIsSelf = false
+
+        for (let otherIndex = 0; otherIndex < snakes.length; ++otherIndex) {
+            const other = snakes[otherIndex]
+            if (!other.alive || other.segments.length === 0)
+                continue
+            const sameSnake = otherIndex === snakeIndex
+            if (sameSnake && !selfCollisions)
+                continue
+
+            if (!sameSnake) {
+                const otherHead = other.segments[0]
+                const otherTravel = snakeSpeed(other) * lookAhead / Math.max(1, speed)
+                const otherFutureX = otherHead.x + Math.cos(other.angle) * otherTravel
+                const otherFutureY = otherHead.y + Math.sin(other.angle) * otherTravel
+                const headClearance = (snake.radius + other.radius)
+                    * (1.35 + intelligence * 0.45)
+                const crossingDistance = worldSegmentsDistanceSquared(
+                    head.x, head.y, futureX, futureY,
+                    otherHead.x, otherHead.y, otherFutureX, otherFutureY)
+                if (crossingDistance < headClearance * headClearance
+                        && crossingDistance < bestDistanceSquared) {
+                    bestDistanceSquared = crossingDistance
+                    threatX = axisDelta(head.x, otherHead.x, worldWidth)
+                    threatY = axisDelta(head.y, otherHead.y, worldHeight)
+                    threatIsSelf = false
+                }
+            }
+
+        }
+
+        // Query last frame's collision grid along the projected head route.
+        // Body points are closer together than the safety clearance, so point
+        // queries preserve a continuous guard while avoiding snakes x bodies
+        // scans. One-frame-old positions are deliberately covered by the
+        // generous near-field margin.
+        const validGrid = safetyCellColumns > 0 && safetyCellRows > 0
+            && safetyCellSnakeCount > 0
+        const visitedCells = {}
+        const visitedOccupants = {}
+        const routeSamples = validGrid ? Math.max(1, Math.ceil(lookAhead
+            / Math.max(1, Math.min(safetyCellWidth, safetyCellHeight)))) : 0
+        for (let routeSample = 0; routeSample <= routeSamples; ++routeSample) {
+            const amount = routeSample / Math.max(1, routeSamples)
+            const sampleX = head.x + (futureX - head.x) * amount
+            const sampleY = head.y + (futureY - head.y) * amount
+            const centerX = collisionCell(sampleX, safetyCellWidth,
+                                          safetyCellColumns, worldWidth)
+            const centerY = collisionCell(sampleY, safetyCellHeight,
+                                          safetyCellRows, worldHeight)
+            for (let offsetX = -1; offsetX <= 1; ++offsetX) {
+                for (let offsetY = -1; offsetY <= 1; ++offsetY) {
+                    let cellX = centerX + offsetX
+                    let cellY = centerY + offsetY
+                    if (!deadlyWalls) {
+                        cellX = ((cellX % safetyCellColumns)
+                                 + safetyCellColumns) % safetyCellColumns
+                        cellY = ((cellY % safetyCellRows)
+                                 + safetyCellRows) % safetyCellRows
+                    } else if (cellX < 0 || cellX >= safetyCellColumns
+                               || cellY < 0 || cellY >= safetyCellRows) {
+                        continue
+                    }
+                    const cellKey = cellY * safetyCellColumns + cellX
+                    if (visitedCells[cellKey])
+                        continue
+                    visitedCells[cellKey] = true
+                    const occupants = safetyCells[cellKey] || []
+                    for (let occupantIndex = 0; occupantIndex < occupants.length;
+                            ++occupantIndex) {
+                        const encoded = occupants[occupantIndex]
+                        if (visitedOccupants[encoded])
+                            continue
+                        visitedOccupants[encoded] = true
+                        const otherIndex = encoded % safetyCellSnakeCount
+                        const segmentIndex = Math.floor(encoded / safetyCellSnakeCount)
+                        if (otherIndex >= snakes.length)
+                            continue
+                        const other = snakes[otherIndex]
+                        if (!other.alive || segmentIndex >= other.segments.length)
+                            continue
+                        const sameSnake = otherIndex === snakeIndex
+                        if ((sameSnake && !selfCollisions)
+                                || (sameSnake && segmentIndex < 10))
+                            continue
+                        const segment = other.segments[segmentIndex]
+                        const bodyClearance = sameSnake
+                            ? snake.radius * (2.0 + intelligence * 1.1)
+                            : (snake.radius + other.radius)
+                              * (1.18 + intelligence * 0.42)
+                        const routeDistance = worldSegmentDistanceSquared(
+                            segment.x, segment.y,
+                            head.x, head.y, futureX, futureY)
+                        if (routeDistance >= bodyClearance * bodyClearance
+                                || routeDistance >= bestDistanceSquared)
+                            continue
+                        bestDistanceSquared = routeDistance
+                        threatX = axisDelta(head.x, segment.x, worldWidth)
+                        threatY = axisDelta(head.y, segment.y, worldHeight)
+                        threatIsSelf = sameSnake
+                    }
+                }
+            }
+        }
+
+        if (bestDistanceSquared === Number.MAX_VALUE)
+            return enforcing
+        const cross = Math.cos(snake.angle) * threatY
+                      - Math.sin(snake.angle) * threatX
+        let turnSide
+        if (!threatIsSelf && snake.avoidanceCommitUntil > simulationTime
+                && snake.avoidanceSide !== 0) {
+            turnSide = snake.avoidanceSide
+        } else {
+            turnSide = Math.abs(cross) < snake.radius * 0.35
+                ? 1 : (cross > 0 ? -1 : 1)
+        }
+        snake.avoidanceSide = turnSide
+        snake.avoidanceCommitUntil = Math.max(snake.avoidanceCommitUntil,
+                                               simulationTime + 0.34
+                                               + intelligence * 0.34)
+        if (threatIsSelf) {
+            // When circling food the tail is usually beside or slightly behind
+            // the head. Steering merely left/right can tighten that same loop.
+            // Blend the current heading with a radial vector away from the
+            // coil, producing an outward escape line instead.
+            const threatLength = Math.max(0.001,
+                Math.sqrt(threatX * threatX + threatY * threatY))
+            const toward = (Math.cos(snake.angle) * threatX
+                            + Math.sin(snake.angle) * threatY) / threatLength
+            if (toward > 0.2) {
+                snake.safetyDesiredAngle = normalizeAngle(snake.angle
+                    + turnSide * (0.9 + intelligence * 0.42))
+            } else {
+                const escapeX = Math.cos(snake.angle) * 0.58
+                                - threatX / threatLength * 1.15
+                const escapeY = Math.sin(snake.angle) * 0.58
+                                - threatY / threatLength * 1.15
+                snake.safetyDesiredAngle = Math.atan2(escapeY, escapeX)
+            }
+            snake.safetyActiveUntil = simulationTime + 0.28
+            snake.foodPlanUntil = 0
+        } else {
+            snake.safetyDesiredAngle = normalizeAngle(snake.angle + turnSide
+                * (0.72 + intelligence * 0.42))
+            snake.safetyActiveUntil = simulationTime + 0.12
+        }
+        snake.desiredAngle = snake.safetyDesiredAngle
+        snake.brainCooldown = Math.min(snake.brainCooldown, 0.06)
+        return true
     }
 
     function updateSnakeRadius(snake) {
@@ -1426,6 +1983,11 @@ Item {
             previousX: deadlyWalls ? newX : wrapCoordinate(newX, worldWidth),
             previousY: deadlyWalls ? newY : wrapCoordinate(newY, worldHeight)
         })
+        // This helper is also used to construct long snakes in tests. Rebuild
+        // the history once movement resumes instead of doing quadratic work
+        // for a batch of appended segments.
+        snake.trailPoints = []
+        snake.trailStart = 0
         updateSnakeRadius(snake)
     }
 
@@ -1438,6 +2000,11 @@ Item {
             snake.segments[segmentIndex].previousX = snake.segments[segmentIndex].x
             snake.segments[segmentIndex].previousY = snake.segments[segmentIndex].y
         }
+        // Check for restored or externally repositioned segments before the
+        // head advances; after movement a head/trail mismatch is intentional.
+        ensureSnakeTrail(snake)
+        applyCollisionSafety(snake, snakeIndex)
+        applyWallSafety(snake)
         steerSnake(snake, seconds)
         const speed = snakeSpeed(snake)
         const head = snake.segments[0]
@@ -1447,6 +2014,7 @@ Item {
             head.x = wrapCoordinate(head.x, worldWidth)
             head.y = wrapCoordinate(head.y, worldHeight)
         }
+        appendHeadTrailPoint(snake)
 
         const spacing = snake.radius * 1.18
         if (growthAllowed && snake.growth >= growthCost) {
@@ -1455,89 +2023,102 @@ Item {
         } else {
             snake.growthStretch = 0
         }
-        for (let segmentIndex = 1; segmentIndex < snake.segments.length; ++segmentIndex) {
-            const previous = snake.segments[segmentIndex - 1]
-            const segment = snake.segments[segmentIndex]
-            const dx = axisDelta(segment.x, previous.x, worldWidth)
-            const dy = axisDelta(segment.y, previous.y, worldHeight)
-            const distance = Math.max(0.001, Math.sqrt(dx * dx + dy * dy))
-            const targetSpacing = segmentIndex === 1
-                ? spacing * (1 + (snake.growthStretch || 0)) : spacing
-            segment.x = previous.x - dx / distance * targetSpacing
-            segment.y = previous.y - dy / distance * targetSpacing
-            if (!deadlyWalls) {
-                segment.x = wrapCoordinate(segment.x, worldWidth)
-                segment.y = wrapCoordinate(segment.y, worldHeight)
-            }
-        }
+        placeSegmentsOnTrail(snake)
 
         if (growthAllowed && snake.growth >= growthCost && snake.growthStretch >= 1) {
-            const head = snake.segments[0]
-            const oldNeck = snake.segments[1]
-            const dx = axisDelta(head.x, oldNeck.x, worldWidth)
-            const dy = axisDelta(head.y, oldNeck.y, worldHeight)
-            const distance = Math.max(0.001, Math.sqrt(dx * dx + dy * dy))
-            let neckX = head.x + dx / distance * spacing
-            let neckY = head.y + dy / distance * spacing
-            if (!deadlyWalls) {
-                neckX = wrapCoordinate(neckX, worldWidth)
-                neckY = wrapCoordinate(neckY, worldHeight)
-            }
             snake.segments.splice(1, 0, {
-                x: neckX, y: neckY, previousX: neckX, previousY: neckY
+                x: head.x, y: head.y, previousX: head.x, previousY: head.y
             })
             snake.growth -= growthCost
             snake.growthStretch = 0
             growthSlots = Math.max(0, growthSlots - 1)
             updateSnakeRadius(snake)
+            placeSegmentsOnTrail(snake)
         }
+    }
+
+    function consumeFoodParticle(eater, particle, index) {
+        const storedGrowthLimit = segmentGrowthCost(eater) * 12
+        eater.growth = Math.min(storedGrowthLimit,
+                                eater.growth + particle.value)
+        eater.score += particle.value
+        if (particle.id === eater.foodTargetId)
+            eater.foodPlanUntil = 0
+        if (particle.feastId > 0 && eater.feastId === particle.feastId) {
+            const nextTarget = particle.trailIndex + eater.feastDirection
+            if (eater.feastTargetIndex < 0
+                    || (nextTarget - eater.feastTargetIndex)
+                       * eater.feastDirection > 0) {
+                eater.feastTargetIndex = nextTarget
+                eater.foodPlanUntil = 0
+            }
+        }
+        food.splice(index, 1)
     }
 
     function feedSnakes(seconds, onlySnake) {
         for (let index = food.length - 1; index >= 0; --index) {
             const particle = food[index]
             let eater = null
+            let eaterIndex = -1
             let closestDistance = Number.MAX_VALUE
-            for (let snakeIndex = 0; snakeIndex < snakes.length; ++snakeIndex) {
-                const snake = snakes[snakeIndex]
-                if (!snake.alive || (onlySnake && snake !== onlySnake))
-                    continue
-                const head = snake.segments[0]
-                const distance = Math.sqrt(worldDistanceSquared(
-                    particle.x, particle.y, head.x, head.y))
-                const reach = foodCaptureRadius(snake, particle)
-                if (distance <= reach && distance < closestDistance) {
-                    closestDistance = distance
-                    eater = snake
+            const lockedIndex = particle.vacuumOwner === undefined
+                ? -1 : particle.vacuumOwner
+            if (lockedIndex >= 0 && lockedIndex < snakes.length) {
+                const lockedSnake = snakes[lockedIndex]
+                if (lockedSnake.alive && (!onlySnake || lockedSnake === onlySnake)) {
+                    eater = lockedSnake
+                    eaterIndex = lockedIndex
+                    closestDistance = Math.sqrt(worldDistanceSquared(
+                        particle.x, particle.y,
+                        eater.segments[0].x, eater.segments[0].y))
+                } else {
+                    particle.vacuumOwner = -1
+                    particle.life = particle.vacuumOriginalLife === undefined
+                        ? 20 : particle.vacuumOriginalLife
+                }
+            }
+            if (!eater) {
+                for (let snakeIndex = 0; snakeIndex < snakes.length; ++snakeIndex) {
+                    const snake = snakes[snakeIndex]
+                    if (!snake.alive || (onlySnake && snake !== onlySnake))
+                        continue
+                    const head = snake.segments[0]
+                    const distance = Math.sqrt(worldDistanceSquared(
+                        particle.x, particle.y, head.x, head.y))
+                    const reach = foodCaptureRadius(snake, particle)
+                    if (distance <= reach && distance < closestDistance) {
+                        closestDistance = distance
+                        eater = snake
+                        eaterIndex = snakeIndex
+                    }
                 }
             }
             if (!eater)
                 continue
+            if (particle.vacuumOwner !== eaterIndex) {
+                particle.vacuumOwner = eaterIndex
+                particle.vacuumOriginalLife = particle.life
+                particle.vx = 0
+                particle.vy = 0
+                particle.life = -1
+            }
             const head = eater.segments[0]
             const eatingDistance = eater.radius * 1.16 + particle.size
             if (closestDistance <= eatingDistance) {
-                const storedGrowthLimit = segmentGrowthCost(eater) * 12
-                eater.growth = Math.min(storedGrowthLimit,
-                                        eater.growth + particle.value)
-                eater.score += particle.value
-                if (particle.id === eater.foodTargetId)
-                    eater.foodPlanUntil = 0
-                if (particle.feastId > 0 && eater.feastId === particle.feastId) {
-                    const nextTarget = particle.trailIndex + eater.feastDirection
-                    if (eater.feastTargetIndex < 0
-                            || (nextTarget - eater.feastTargetIndex)
-                               * eater.feastDirection > 0) {
-                        eater.feastTargetIndex = nextTarget
-                        eater.foodPlanUntil = 0
-                    }
-                }
-                food.splice(index, 1)
+                consumeFoodParticle(eater, particle, index)
                 continue
             }
             const pull = clamp(1 - (closestDistance - eatingDistance)
                                / Math.max(1, eater.radius * 1.84), 0.08, 1)
+            const vacuumSpeed = Math.max(240 + pull * 420,
+                                         snakeSpeed(eater) * 1.8)
             const travel = Math.min(closestDistance - eatingDistance,
-                                    (55 + pull * 330) * seconds)
+                                    vacuumSpeed * seconds)
+            if (travel >= closestDistance - eatingDistance - 0.001) {
+                consumeFoodParticle(eater, particle, index)
+                continue
+            }
             const dx = axisDelta(particle.x, head.x, worldWidth)
             const dy = axisDelta(particle.y, head.y, worldHeight)
             particle.x += dx / closestDistance * travel
@@ -1566,13 +2147,16 @@ Item {
         for (let index = 0; index < snakes.length; ++index) {
             const snake = snakes[index]
             snake.dying = false
+            snake.deathReason = ""
             if (!snake.alive)
                 continue
             const head = snake.segments[0]
             if (deadlyWalls
                     && (head.x < 0 || head.x > worldWidth
-                        || head.y < 0 || head.y > worldHeight))
+                        || head.y < 0 || head.y > worldHeight)) {
                 snake.dying = true
+                snake.deathReason = "wall"
+            }
         }
 
         for (let left = 0; left < snakes.length; ++left) {
@@ -1584,17 +2168,46 @@ Item {
                 if (!b.alive)
                     continue
                 const headDistance = (a.radius + b.radius) * 0.82
-                if (worldDistanceSquared(a.segments[0].x, a.segments[0].y,
-                                         b.segments[0].x, b.segments[0].y)
-                        < headDistance * headDistance) {
+                const aHead = a.segments[0]
+                const bHead = b.segments[0]
+                const aPreviousX = aHead.previousX === undefined
+                    ? aHead.x : aHead.previousX
+                const aPreviousY = aHead.previousY === undefined
+                    ? aHead.y : aHead.previousY
+                const bPreviousX = bHead.previousX === undefined
+                    ? bHead.x : bHead.previousX
+                const bPreviousY = bHead.previousY === undefined
+                    ? bHead.y : bHead.previousY
+                const currentHeadDistance = worldDistanceSquared(
+                    aHead.x, aHead.y, bHead.x, bHead.y)
+                const headDistanceSquared = headDistance * headDistance
+                let headsCollide = currentHeadDistance < headDistanceSquared
+                if (!headsCollide) {
+                    const combinedTravel = Math.sqrt(worldDistanceSquared(
+                        aPreviousX, aPreviousY, aHead.x, aHead.y))
+                        + Math.sqrt(worldDistanceSquared(
+                            bPreviousX, bPreviousY, bHead.x, bHead.y))
+                    const sweptReach = headDistance + combinedTravel
+                    if (currentHeadDistance < sweptReach * sweptReach) {
+                        headsCollide = worldSegmentsDistanceSquared(
+                            aPreviousX, aPreviousY, aHead.x, aHead.y,
+                            bPreviousX, bPreviousY, bHead.x, bHead.y)
+                            < headDistanceSquared
+                    }
+                }
+                if (headsCollide) {
                     const difference = a.segments.length - b.segments.length
                     if (Math.abs(difference) < 4) {
                         a.dying = true
                         b.dying = true
+                        a.deathReason = "head"
+                        b.deathReason = "head"
                     } else if (difference < 0) {
                         a.dying = true
+                        a.deathReason = "head"
                     } else {
                         b.dying = true
+                        b.deathReason = "head"
                     }
                 }
             }
@@ -1618,7 +2231,7 @@ Item {
             const owner = snakes[ownerIndex]
             if (!owner.alive)
                 continue
-            for (let segmentIndex = 3; segmentIndex < owner.segments.length;
+            for (let segmentIndex = 1; segmentIndex < owner.segments.length;
                     ++segmentIndex) {
                 const segment = owner.segments[segmentIndex]
                 const cellX = collisionCell(segment.x, cellWidth, columns, worldWidth)
@@ -1629,6 +2242,12 @@ Item {
                 cells[key].push(segmentIndex * snakeCount + ownerIndex)
             }
         }
+        safetyCells = cells
+        safetyCellColumns = columns
+        safetyCellRows = rows
+        safetyCellWidth = cellWidth
+        safetyCellHeight = cellHeight
+        safetyCellSnakeCount = snakeCount
 
         for (let index = 0; index < snakeCount; ++index) {
             const snake = snakes[index]
@@ -1665,13 +2284,39 @@ Item {
                             continue
                         const other = snakes[otherIndex]
                         const collisionDistance = sameSnake
-                            ? snake.radius * 1.42
-                            : (snake.radius + other.radius) * 0.72
+                            ? snake.radius * 1.48
+                            : (snake.radius + other.radius) * 0.78
                         const segment = other.segments[segmentIndex]
-                        if (worldDistanceSquared(head.x, head.y,
-                                                 segment.x, segment.y)
-                                < collisionDistance * collisionDistance) {
+                        const previousHeadX = head.previousX === undefined
+                            ? head.x : head.previousX
+                        const previousHeadY = head.previousY === undefined
+                            ? head.y : head.previousY
+                        const previousSegmentX = segment.previousX === undefined
+                            ? segment.x : segment.previousX
+                        const previousSegmentY = segment.previousY === undefined
+                            ? segment.y : segment.previousY
+                        const currentDistance = worldDistanceSquared(
+                            head.x, head.y, segment.x, segment.y)
+                        const collisionSquared = collisionDistance * collisionDistance
+                        let collided = currentDistance < collisionSquared
+                        if (!collided) {
+                            const headTravel = Math.sqrt(worldDistanceSquared(
+                                previousHeadX, previousHeadY, head.x, head.y))
+                            const segmentTravel = Math.sqrt(worldDistanceSquared(
+                                previousSegmentX, previousSegmentY,
+                                segment.x, segment.y))
+                            const sweptReach = collisionDistance
+                                + headTravel + segmentTravel
+                            if (currentDistance < sweptReach * sweptReach) {
+                                collided = worldSegmentsDistanceSquared(
+                                    previousHeadX, previousHeadY, head.x, head.y,
+                                    previousSegmentX, previousSegmentY,
+                                    segment.x, segment.y) < collisionSquared
+                            }
+                        }
+                        if (collided) {
                             snake.dying = true
+                            snake.deathReason = sameSnake ? "self" : "body"
                             break
                         }
                     }
@@ -1721,6 +2366,14 @@ Item {
         snake.respawn = 2.2 + random() * 3.2
         snake.segments = []
         ++deathCount
+        if (snake.deathReason === "wall")
+            ++wallDeathCount
+        else if (snake.deathReason === "head")
+            ++headDeathCount
+        else if (snake.deathReason === "self")
+            ++selfDeathCount
+        else
+            ++bodyDeathCount
         return emittedCount
     }
 

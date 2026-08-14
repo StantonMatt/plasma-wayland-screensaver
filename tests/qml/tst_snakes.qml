@@ -163,6 +163,51 @@ TestCase {
         compare(visual.food.length, 0)
     }
 
+    function test_vacuumLockFinishesAfterSnakeTurnsAway() {
+        const snake = visual.snakes[0]
+        const head = snake.segments[0]
+        visual.food = []
+        visual.addFood(head.x + snake.radius * 2.7, head.y,
+                       1, 0, 0, 0, -1)
+        const particle = visual.food[0]
+
+        visual.feedSnake(snake, 1 / 60)
+        compare(particle.vacuumOwner, 0)
+
+        // Move the head abruptly outside the original capture radius, then
+        // keep it travelling away. A locked particle must continue chasing it.
+        head.x += 150
+        head.y += 90
+        for (let frame = 0; frame < 180 && visual.food.length > 0; ++frame) {
+            head.x += 1
+            visual.feedSnake(snake, 1 / 60)
+        }
+        verify(visual.food.length === 0,
+               "locked particle remained at (" + particle.x + ", " + particle.y
+               + ") while head reached (" + head.x + ", " + head.y + ") owner="
+               + particle.vacuumOwner)
+    }
+
+    function test_vacuumReleaseRestoresParticleExpiryAfterOwnerDies() {
+        const snake = visual.snakes[0]
+        const head = snake.segments[0]
+        visual.snakes = [snake]
+        visual.food = []
+        visual.addFood(head.x + snake.radius * 2.7, head.y,
+                       1, 0, 0, 0, 37)
+        const particle = visual.food[0]
+
+        visual.feedSnake(snake, 1 / 60)
+        compare(particle.vacuumOwner, 0)
+        compare(particle.life, -1)
+        snake.alive = false
+
+        visual.feedSnakes(1 / 60)
+
+        compare(particle.vacuumOwner, -1)
+        compare(particle.life, 37)
+    }
+
     function test_growthIsInsertedBehindHeadNotAppendedAtTail() {
         const snake = visual.snakes[0]
         snake.brainCooldown = 10
@@ -177,6 +222,109 @@ TestCase {
         compare(snake.segments.length, previousLength + 1)
         verify(snake.segments[2] === oldNeck)
         verify(snake.segments[snake.segments.length - 1] === oldTail)
+    }
+
+    function test_bodyReplaysHeadPathWithoutSidewaysDrift() {
+        visualContext.snakeDeadlyWalls = true
+        visual.snakes = [visual.makeSnake(0)]
+        const snake = visual.snakes[0]
+        const spacing = snake.radius * 1.18
+        for (let index = 0; index < snake.segments.length; ++index) {
+            snake.segments[index].x = 500 - spacing * index
+            snake.segments[index].y = 320
+            snake.segments[index].previousX = snake.segments[index].x
+            snake.segments[index].previousY = snake.segments[index].y
+        }
+        snake.angle = 0
+        snake.desiredAngle = 0
+        snake.brainCooldown = 10
+        visual.rebuildSnakeTrail(snake)
+
+        for (let frame = 0; frame < 8; ++frame)
+            visual.moveSnake(snake, 0, 1 / 60)
+        const cornerX = snake.segments[0].x
+        snake.angle = Math.PI / 2
+        snake.desiredAngle = Math.PI / 2
+        for (let frame = 0; frame < 12; ++frame)
+            visual.moveSnake(snake, 0, 1 / 60)
+
+        // Each point remains on one leg of the exact L-shaped head trail.
+        // A neighbour constraint instead creates diagonal points here and
+        // visibly strafes the still-horizontal tail toward the new heading.
+        for (let index = 1; index < snake.segments.length; ++index) {
+            const segment = snake.segments[index]
+            verify(Math.abs(segment.x - cornerX) < 0.02
+                   || Math.abs(segment.y - 320) < 0.02,
+                   "segment " + index + " cut across the head's corner")
+        }
+        fuzzyCompare(snake.segments[snake.segments.length - 1].y, 320, 0.02)
+    }
+
+    function test_highIntelligenceTurnsAwayFromDeadlyWall() {
+        visualContext.snakeIntelligence = 100
+        visualContext.snakeDeadlyWalls = true
+        visual.snakes = [visual.makeSnake(0)]
+        visual.food = []
+        visual.cancelActiveBrainPlan()
+        visual.brainCursor = 0
+        const snake = visual.snakes[0]
+        const spacing = snake.radius * 1.18
+        for (let index = 0; index < snake.segments.length; ++index) {
+            snake.segments[index].x = 95 + spacing * index
+            snake.segments[index].y = visual.worldHeight / 2
+            snake.segments[index].previousX = snake.segments[index].x
+            snake.segments[index].previousY = snake.segments[index].y
+        }
+        snake.angle = Math.PI
+        snake.desiredAngle = Math.PI
+        snake.brainCooldown = 0
+        visual.rebuildSnakeTrail(snake)
+
+        for (let frame = 0; frame < 240 && snake.alive; ++frame)
+            visual.stepSimulation(1 / 60)
+
+        verify(snake.alive, "intelligent snake drove through an unobstructed wall; x="
+               + (snake.segments.length ? snake.segments[0].x : "exploded")
+               + " angle=" + snake.angle + " desired=" + snake.desiredAngle
+               + " risk=" + snake.lastPlanRisk
+               + " collision=" + snake.lastPlanCollision)
+        verify(snake.segments[0].x > snake.radius,
+               "intelligent snake failed to preserve wall clearance")
+    }
+
+    function test_highIntelligenceAvoidsLiveHeadOnCollision() {
+        visualContext.snakeIntelligence = 100
+        visualContext.snakeDeadlyWalls = true
+        const left = visual.makeSnake(0)
+        const right = visual.makeSnake(1)
+        const centerY = visual.worldHeight / 2
+
+        function positionSnake(snake, headX, angle) {
+            const spacing = snake.radius * 1.18
+            for (let index = 0; index < snake.segments.length; ++index) {
+                snake.segments[index].x = headX - Math.cos(angle) * spacing * index
+                snake.segments[index].y = centerY
+                snake.segments[index].previousX = snake.segments[index].x
+                snake.segments[index].previousY = snake.segments[index].y
+            }
+            snake.angle = angle
+            snake.desiredAngle = angle
+            snake.brainCooldown = 0
+            visual.rebuildSnakeTrail(snake)
+        }
+
+        positionSnake(left, 390, 0)
+        positionSnake(right, 890, Math.PI)
+        visual.snakes = [left, right]
+        visual.food = []
+        visual.cancelActiveBrainPlan()
+        visual.brainCursor = 0
+
+        for (let frame = 0; frame < 300 && left.alive && right.alive; ++frame)
+            visual.stepSimulation(1 / 60)
+
+        verify(left.alive && right.alive,
+               "intelligent snakes failed to resolve a visible head-on approach")
     }
 
     function test_adaptiveLengthBudgetAllowsLongChampions() {
@@ -386,6 +534,51 @@ TestCase {
         verify(victim.respawn > 2)
     }
 
+    function test_neckSegmentsHaveNoCollisionGap() {
+        const victim = visual.snakes[0]
+        const rival = visual.snakes[1]
+        visual.snakes = [victim, rival]
+        const neck = rival.segments[2]
+        victim.segments[0].x = neck.x
+        victim.segments[0].y = neck.y
+        victim.segments[0].previousX = neck.x
+        victim.segments[0].previousY = neck.y
+
+        visual.markCollisions()
+
+        verify(victim.dying, "a rival head passed through the neck collision gap")
+    }
+
+    function test_fastHeadCannotTunnelThroughBodyBetweenSteps() {
+        const victim = visual.snakes[0]
+        const rival = visual.snakes[1]
+        visual.snakes = [victim, rival]
+        for (let index = 0; index < victim.segments.length; ++index) {
+            victim.segments[index].x = 200 - index * victim.radius * 1.18
+            victim.segments[index].y = 360
+            victim.segments[index].previousX = victim.segments[index].x
+            victim.segments[index].previousY = victim.segments[index].y
+        }
+        for (let index = 0; index < rival.segments.length; ++index) {
+            rival.segments[index].x = 900 + index * rival.radius * 1.18
+            rival.segments[index].y = 360
+            rival.segments[index].previousX = rival.segments[index].x
+            rival.segments[index].previousY = rival.segments[index].y
+        }
+        rival.segments[5].x = 600
+        rival.segments[5].y = 360
+        rival.segments[5].previousX = 600
+        rival.segments[5].previousY = 360
+        victim.segments[0].previousX = 570
+        victim.segments[0].previousY = 360
+        victim.segments[0].x = 630
+        victim.segments[0].y = 360
+
+        visual.markCollisions()
+
+        verify(victim.dying, "a swept head crossed a body between simulation steps")
+    }
+
     function test_selfCollisionCanBeEnabled() {
         const snake = visual.snakes[0]
         const body = snake.segments[12]
@@ -400,6 +593,37 @@ TestCase {
         visualContext.snakeSelfCollisions = true
         visual.markCollisions()
         verify(snake.dying)
+    }
+
+    function test_selfSafetyBreaksOutwardFromFoodCircle() {
+        visualContext.snakeIntelligence = 100
+        visualContext.snakeSelfCollisions = true
+        const snake = visual.snakes[0]
+        visual.snakes = [snake]
+        const spacing = snake.radius * 1.18
+        for (let index = 0; index < snake.segments.length; ++index) {
+            snake.segments[index].x = 500 - spacing * index
+            snake.segments[index].y = 350
+            snake.segments[index].previousX = snake.segments[index].x
+            snake.segments[index].previousY = snake.segments[index].y
+        }
+        snake.angle = 0
+        snake.desiredAngle = 0
+        snake.segments[12].x = 500
+        snake.segments[12].y = 350 + snake.radius * 2.5
+        snake.segments[12].previousX = snake.segments[12].x
+        snake.segments[12].previousY = snake.segments[12].y
+        snake.avoidanceSide = 1
+        snake.avoidanceCommitUntil = visual.simulationTime + 1
+        snake.nextSafetyCheck = 0
+        visual.markCollisions()
+        verify(!snake.dying)
+
+        verify(visual.applyCollisionSafety(snake, 0))
+
+        verify(visual.normalizeAngle(snake.safetyDesiredAngle - snake.angle) < 0,
+               "self safety followed the existing inward turn instead of escaping")
+        verify(snake.safetyActiveUntil >= visual.simulationTime + 0.27)
     }
 
     function test_wraparoundPreservesBodySpacing() {
@@ -754,29 +978,54 @@ TestCase {
         fuzzyCompare(visual.snakeSpeed(snake), speedBefore, 0.01)
     }
 
-    function test_predictiveBrainsAreStaggeredAcrossFrames() {
+    function test_predictiveBrainPlanningIsBoundedAcrossFrames() {
         visualContext.snakeIntelligence = 100
+        visual.cancelActiveBrainPlan()
         visual.brainCursor = 0
-        for (let index = 0; index < visual.snakes.length; ++index)
+        for (let index = 0; index < visual.snakes.length; ++index) {
             visual.snakes[index].brainCooldown = 0
+            visual.snakes[index].brainPlanning = false
+        }
+        const firstSnake = visual.snakes[0]
 
         visual.updateSnakeBrains(0)
-        let planned = 0
-        for (let index = 0; index < visual.snakes.length; ++index) {
-            if (visual.snakes[index].brainCooldown > 0)
-                ++planned
-        }
-        compare(planned, 1)
+        verify(firstSnake.brainPlanning)
+        compare(visual.activeBrainPlan.snake, firstSnake)
         compare(visual.brainCursor, 1)
+        verify(visual.lastBrainWorkUnits <= visual.maximumBrainWorkUnits)
+        verify(visual.activeBrainPlan.candidateIndex <= 2)
 
-        visual.updateSnakeBrains(0)
-        planned = 0
-        for (let index = 0; index < visual.snakes.length; ++index) {
-            if (visual.snakes[index].brainCooldown > 0)
-                ++planned
+        let ticks = 1
+        while (firstSnake.brainPlanning && ticks < 30) {
+            visual.updateSnakeBrains(0)
+            verify(visual.lastBrainWorkUnits <= visual.maximumBrainWorkUnits)
+            ++ticks
         }
-        compare(planned, 2)
-        compare(visual.brainCursor, 2)
+        verify(!firstSnake.brainPlanning)
+        verify(firstSnake.brainCooldown > 0)
+        verify(ticks > 2)
+        verify(ticks < 20)
+    }
+
+    function test_incrementalPlanUsesOneImmutableSnakeState() {
+        const snake = visual.snakes[0]
+        const originalX = snake.segments[0].x
+        const originalY = snake.segments[0].y
+        const originalAngle = snake.angle
+        const plan = visual.createSteeringPlan(snake, 0)
+
+        visual.evaluateNextPlanCandidate(plan)
+        snake.segments[0].x += 180
+        snake.segments[0].y += 90
+        snake.angle = visual.normalizeAngle(snake.angle + 1.2)
+        visual.evaluateNextPlanCandidate(plan)
+
+        fuzzyCompare(plan.evaluated[0].points[0].x, originalX, 0.001)
+        fuzzyCompare(plan.evaluated[0].points[0].y, originalY, 0.001)
+        fuzzyCompare(plan.evaluated[0].points[0].angle, originalAngle, 0.001)
+        fuzzyCompare(plan.evaluated[1].points[0].x, originalX, 0.001)
+        fuzzyCompare(plan.evaluated[1].points[0].y, originalY, 0.001)
+        fuzzyCompare(plan.evaluated[1].points[0].angle, originalAngle, 0.001)
     }
 
     function test_maxDensitySimulationHasRealtimeHeadroom() {
@@ -793,9 +1042,12 @@ TestCase {
         const elapsed = Date.now() - started
         verify(elapsed < 5000,
                "10 simulated seconds took " + elapsed + " ms")
-        verify(visual.deathCount < visual.desiredSnakeCount,
+        verify(visual.deathCount <= 3,
                visual.deathCount + " deaths for " + visual.desiredSnakeCount
-               + " intelligent snakes in 10 seconds")
+               + " intelligent snakes in 10 seconds (walls="
+               + visual.wallDeathCount + ", heads=" + visual.headDeathCount
+               + ", bodies=" + visual.bodyDeathCount + ", self="
+               + visual.selfDeathCount + ")")
     }
 
     function test_longSnakeSimulationHasRealtimeHeadroom() {

@@ -57,13 +57,14 @@ Settings are retained across upgrades in
   Slithering Snakes (with adjustable predictive AI, visibly magnetic food,
   persistent nearest-neighbor food paths, vacuum-corridor route planning,
   turning-radius-aware approaches, cluster and death-trail pursuit,
-  collision-safe spawning, strengthened self-body prediction, forward growth,
-  optional self-collision, deadly or wraparound edges, and size-proportional
-  edible death particles). Snake length uses adaptive individual and arena-wide
-  painted-area budgets rather than a small fixed cap, with progressively more
-  food required for extreme late-game growth. Ambient food expires after a
-  randomized 34–46 seconds and is replenished elsewhere to avoid persistent
-  bright points on OLED panels;
+  collision-safe spawning, exact head-path body following, outward self-tail
+  escapes, swept neck/body collision detection, forward growth, persistent
+  food vacuum locks, optional self-collision, deadly or wraparound edges, and
+  size-proportional edible death particles). Snake length uses adaptive
+  individual and arena-wide painted-area budgets rather than a small fixed cap,
+  with progressively more food required for extreme late-game growth. Ambient
+  food expires after a randomized 34–46 seconds and is replenished elsewhere
+  to avoid persistent bright points on OLED panels;
   backgrounds provide Pure Black and several dark gradients. Every module has
   contextual controls for motion speed, population/detail, scale, palette, and
   trails or glow. Frame-rate choices range from 15 through 240 fps, with an
@@ -190,7 +191,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.4.0`, publishes the verified
+matching the CMake project version, such as `v0.5.0`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 
