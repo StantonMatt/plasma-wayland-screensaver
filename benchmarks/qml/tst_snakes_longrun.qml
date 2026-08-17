@@ -154,13 +154,9 @@ TestCase {
         snake.foodTargetUntil = 0
         snake.foodPathIds = []
         snake.foodPathUntil = 0
-        snake.feastId = 0
-        snake.feastTargetIndex = -1
-        snake.feastDirection = 1
         snake.rush = 0
         snake.lastPlanRisk = 0
         snake.lastPlanCollision = false
-        snake.lastPlanHarvest = 0
     }
 
     function resetPlannerFixtureInputs() {
@@ -299,12 +295,51 @@ TestCase {
     function test_longRunThroughputByMinute() {
         visual.initializeWorld()
         console.info("SNAKE_BENCHMARK_CSV,minute,wall_ms,ms_per_step,realtime_ratio,alive,total_segments,max_segments,food,trail_points,retained_trail_points,deaths,estimated_vertices")
+        console.info("SNAKE_ALIGNMENT_CSV,minute,samples,head_aligned,steering_aligned,planned_capture,safety_active,planning_active")
 
         let previousDeaths = 0
         for (let minute = 1; minute <= simulatedMinutes; ++minute) {
+            const alignment = {
+                samples: 0,
+                headAligned: 0,
+                steeringAligned: 0,
+                plannedCapture: 0,
+                safetyActive: 0,
+                planningActive: 0
+            }
             const started = Date.now()
-            for (let step = 0; step < stepsPerMinute; ++step)
+            for (let step = 0; step < stepsPerMinute; ++step) {
                 visual.stepSimulation(1 / 30)
+                if (step % 5 !== 0)
+                    continue
+                for (let snakeIndex = 0; snakeIndex < visual.snakes.length;
+                        ++snakeIndex) {
+                    const snake = visual.snakes[snakeIndex]
+                    if (!snake.alive || !snake.foodPathIds
+                            || snake.foodPathIds.length === 0)
+                        continue
+                    const particle = visual.foodById(snake.foodPathIds[0])
+                    if (!particle)
+                        continue
+                    const head = snake.segments[0]
+                    const routeAngle = Math.atan2(
+                        visual.axisDelta(head.y, particle.y, visual.worldHeight),
+                        visual.axisDelta(head.x, particle.x, visual.worldWidth))
+                    ++alignment.samples
+                    if (Math.abs(visual.normalizeAngle(
+                            snake.angle - routeAngle)) < 0.55)
+                        ++alignment.headAligned
+                    if (Math.abs(visual.normalizeAngle(
+                            snake.desiredAngle - routeAngle)) < 0.55)
+                        ++alignment.steeringAligned
+                    if (snake.lastPlanCapturesRouteTarget)
+                        ++alignment.plannedCapture
+                    if (snake.safetyActiveUntil > visual.simulationTime)
+                        ++alignment.safetyActive
+                    if (snake.brainPlanning)
+                        ++alignment.planningActive
+                }
+            }
             const wallMilliseconds = Date.now() - started
             const stats = statistics()
             console.info("SNAKE_BENCHMARK_CSV,"
@@ -320,6 +355,19 @@ TestCase {
                          + stats.retainedTrailPoints + ","
                          + stats.deaths + ","
                          + stats.estimatedVertices)
+            console.info("SNAKE_ALIGNMENT_CSV,"
+                         + minute + ","
+                         + alignment.samples + ","
+                         + (alignment.headAligned
+                            / Math.max(1, alignment.samples)).toFixed(4) + ","
+                         + (alignment.steeringAligned
+                            / Math.max(1, alignment.samples)).toFixed(4) + ","
+                         + (alignment.plannedCapture
+                            / Math.max(1, alignment.samples)).toFixed(4) + ","
+                         + (alignment.safetyActive
+                            / Math.max(1, alignment.samples)).toFixed(4) + ","
+                         + (alignment.planningActive
+                            / Math.max(1, alignment.samples)).toFixed(4))
 
             verify(stats.alive > 0, "all snakes were dead at minute " + minute)
             verify(stats.food <= visual.maximumFoodCount,

@@ -34,6 +34,7 @@ public:
 public Q_SLOTS:
     Q_SCRIPTABLE void ShowSettings();
     Q_SCRIPTABLE void Preview();
+    Q_SCRIPTABLE void PreviewDebug();
     Q_SCRIPTABLE void Quit();
     Q_INVOKABLE void saveSettings(const QVariantMap &settings);
     Q_INVOKABLE bool openUpdateCenter() const;
@@ -55,4 +56,5 @@ private:
     OverlayManager m_overlays;
     ScreensaverStateMachine m_stateMachine;
     std::unique_ptr<QQmlApplicationEngine> m_settingsEngine;
+    bool m_debugPreviewPending = false;
 };

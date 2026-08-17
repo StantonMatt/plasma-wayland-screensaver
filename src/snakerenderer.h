@@ -25,6 +25,7 @@ public:
     Q_INVOKABLE void presentFrame(qreal simulationTime, qreal interpolation);
     void setDrawOffset(qreal drawOffsetX, qreal drawOffsetY);
     void setScaleToViewport(bool scaleToViewport);
+    void setDeveloperMode(bool enabled);
     void follow(SnakeRenderer *source);
 
 Q_SIGNALS:
@@ -43,7 +44,10 @@ private:
         QVector<Segment> segments;
         qreal radius = 1.0;
         qreal angle = 0.0;
+        qreal desiredAngle = 0.0;
         int colorIndex = 0;
+        QVector<int> foodPathIds;
+        QVector<QPointF> plannedPath;
         bool alive = false;
     };
     struct Food {
@@ -53,6 +57,7 @@ private:
         qreal phase = 0.0;
         qreal attraction = 0.0;
         int colorIndex = 0;
+        int id = 0;
     };
 
     QVector<Snake> m_snakes;
@@ -66,6 +71,7 @@ private:
     qreal m_drawOffsetY = 0.0;
     bool m_deadlyWalls = true;
     bool m_scaleToViewport = false;
+    bool m_developerMode = false;
     bool m_denseFoodRendering = false;
     int m_geometryCapacity = 0;
     QPointer<SnakeRenderer> m_source;

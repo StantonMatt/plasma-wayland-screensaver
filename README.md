@@ -59,8 +59,8 @@ opens the latest GitHub release instead.
   provide None, Aurora Drift, Floating Orbs, Bouncing Balls, Hyperspace,
   Digital Rain, Kaleidoscope, Fireflies, Neon Ribbons, Constellations, and
   Slithering Snakes (with adjustable predictive AI, visibly magnetic food,
-  persistent nearest-neighbor food paths, vacuum-corridor route planning,
-  turning-radius-aware approaches, cluster and death-trail pursuit,
+  single-target pursuit of the closest turn-reachable food anywhere around
+  the snake, collision-aware curved approaches,
   collision-safe spawning, exact head-path body following, outward self-tail
   escapes, swept neck/body collision detection, forward growth, persistent
   food vacuum locks, optional self-collision, deadly or wraparound edges, and
@@ -145,6 +145,26 @@ Useful commands:
 Only one instance runs per session. Subsequent commands are forwarded over the
 session D-Bus. Preview saves current UI values and then uses the same overlay and
 inhibition path as idle activation.
+
+### Snake path developer preview
+
+Stop any installed/background instance, then launch the development build with
+the preview-only diagnostics enabled:
+
+```bash
+plasma-visual-screensaver --quit
+./build/bin/plasma-visual-screensaver --preview --dev
+```
+
+For Slithering Snakes, the thin translucent line points to its single food
+target: the closest available particle outside the head's current turning
+pocket, including particles behind it. The bold colored curve is the
+collision-aware trajectory the planner
+currently predicts the snake will travel. The bright white arrow shows its
+immediate steering direction. A curved trajectory can therefore collect the
+marked particle even when the head is not pointing straight at it. Input
+dismisses the preview as usual. Developer tracing is never enabled for automatic
+idle activation and adds no rendering work to the normal screensaver.
 
 ## Install from source
 

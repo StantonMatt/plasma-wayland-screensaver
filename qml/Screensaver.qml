@@ -20,6 +20,7 @@ Item {
     required property int snakeIntelligence
     required property bool snakeSelfCollisions
     required property bool snakeDeadlyWalls
+    required property bool developerMode
     required property bool showClock
     required property string clockMovement
     required property string clockSpeed

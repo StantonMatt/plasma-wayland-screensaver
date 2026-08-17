@@ -23,6 +23,7 @@ private:
             snake.setProperty(QStringLiteral("alive"), true);
             snake.setProperty(QStringLiteral("radius"), 8.0);
             snake.setProperty(QStringLiteral("angle"), 0.0);
+            snake.setProperty(QStringLiteral("desiredAngle"), 0.0);
             snake.setProperty(QStringLiteral("colorIndex"), 0);
 
             QJSValue segments = engine.newArray(segmentCount);
@@ -52,6 +53,7 @@ private:
         QJSValue food = engine.newArray(count);
         for (int index = 0; index < count; ++index) {
             QJSValue particle = engine.newObject();
+            particle.setProperty(QStringLiteral("id"), index + 1);
             const qreal x = 12.0 + (index % 32) * 9.0;
             const qreal y = 12.0 + (index / 32) * 9.0;
             particle.setProperty(QStringLiteral("x"), x);
@@ -148,6 +150,52 @@ private Q_SLOTS:
         QVERIFY(renderer.m_denseFoodRendering);
         renderFoodCount(279);
         QVERIFY(!renderer.m_denseFoodRendering);
+        delete node;
+    }
+
+    void developerModeCopiesAndRendersPlannedRoute()
+    {
+        SnakeRenderer renderer;
+        renderer.setSize(QSizeF(320, 240));
+        renderer.setDeveloperMode(true);
+
+        QJSEngine engine;
+        QJSValue palette = engine.newArray(1);
+        palette.setProperty(0, QStringLiteral("#4de6ff"));
+        QJSValue snakes = makeSnakes(engine, 18);
+        QJSValue snake = snakes.property(0);
+        snake.setProperty(QStringLiteral("desiredAngle"), 0.7);
+        QJSValue path = engine.newArray(2);
+        path.setProperty(0, 1);
+        path.setProperty(1, 2);
+        snake.setProperty(QStringLiteral("foodPathIds"), path);
+        QJSValue plannedPath = engine.newArray(2);
+        for (int index = 0; index < 2; ++index) {
+            QJSValue point = engine.newObject();
+            point.setProperty(QStringLiteral("x"), 250.0 + index * 35.0);
+            point.setProperty(QStringLiteral("y"), 120.0 + index * 20.0);
+            plannedPath.setProperty(index, point);
+        }
+        snake.setProperty(QStringLiteral("debugPlannedPath"), plannedPath);
+
+        renderer.syncFrame(snakes, makeFood(engine, 2), palette,
+                           1.0, 0.5, 320, 240, 0, 0, true);
+        QCOMPARE(renderer.m_snakes[0].foodPathIds, QVector<int>({1, 2}));
+        QCOMPARE(renderer.m_snakes[0].plannedPath.size(), 2);
+        QVERIFY(std::abs(renderer.m_snakes[0].desiredAngle - 0.7) < 0.0001);
+        QSGNode *node = renderer.updatePaintNode(nullptr, nullptr);
+        const int developerVertices = static_cast<QSGGeometryNode *>(node)
+                                          ->geometry()->vertexCount();
+        delete node;
+
+        renderer.setDeveloperMode(false);
+        renderer.syncFrame(snakes, makeFood(engine, 2), palette,
+                           2.0, 0.5, 320, 240, 0, 0, true);
+        QVERIFY(renderer.m_snakes[0].foodPathIds.isEmpty());
+        node = renderer.updatePaintNode(nullptr, nullptr);
+        const int normalVertices = static_cast<QSGGeometryNode *>(node)
+                                       ->geometry()->vertexCount();
+        QVERIFY(developerVertices > normalVertices);
         delete node;
     }
 

@@ -1,3 +1,14 @@
+plasma-visual-screensaver (0.6.0-1ppa1~resolute1) resolute; urgency=medium
+
+  * Add preview-only snake path and steering diagnostics.
+  * Pursue the closest turn-reachable food across the full 360-degree arena.
+  * Keep food targets stable and reject missed particles that would cause
+    repeated tight orbits.
+  * Preserve safer escape routes when food lies near predicted hazards.
+  * Expand deterministic planner, alignment, and long-run performance tests.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Mon, 17 Aug 2026 01:37:38 -0400
+
 plasma-visual-screensaver (0.5.1-1ppa1~resolute1) resolute; urgency=medium
 
   * Reduce Slithering Snakes simulation and rendering overhead.

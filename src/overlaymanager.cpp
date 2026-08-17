@@ -117,6 +117,11 @@ bool OverlayManager::isVisible() const
     return m_visible;
 }
 
+void OverlayManager::setDeveloperMode(bool enabled)
+{
+    m_developerMode = enabled;
+}
+
 bool OverlayManager::addScreen(QScreen *screen)
 {
     if (!screen || m_views.contains(screen)) {
@@ -168,6 +173,7 @@ bool OverlayManager::addScreen(QScreen *screen)
         {QStringLiteral("snakeIntelligence"), m_configuration->snakeIntelligence()},
         {QStringLiteral("snakeSelfCollisions"), m_configuration->snakeSelfCollisions()},
         {QStringLiteral("snakeDeadlyWalls"), m_configuration->snakeDeadlyWalls()},
+        {QStringLiteral("developerMode"), m_developerMode},
         {QStringLiteral("showClock"), m_configuration->showClock()},
         {QStringLiteral("clockMovement"), m_configuration->clockMovement()},
         {QStringLiteral("clockSpeed"), m_configuration->clockSpeed()},
@@ -201,6 +207,7 @@ bool OverlayManager::addScreen(QScreen *screen)
                 renderer->setParentItem(snakeRoot);
                 renderer->setSize(snakeRoot->size());
                 renderer->setZ(1.0);
+                renderer->setDeveloperMode(m_developerMode);
                 connect(snakeRoot, &QQuickItem::widthChanged, renderer,
                         [snakeRoot, renderer] { renderer->setWidth(snakeRoot->width()); });
                 connect(snakeRoot, &QQuickItem::heightChanged, renderer,

@@ -94,6 +94,13 @@ void ApplicationController::ShowSettings()
 
 void ApplicationController::Preview()
 {
+    m_debugPreviewPending = false;
+    m_stateMachine.previewRequested();
+}
+
+void ApplicationController::PreviewDebug()
+{
+    m_debugPreviewPending = true;
     m_stateMachine.previewRequested();
 }
 
@@ -141,7 +148,8 @@ bool ApplicationController::openUpdateCenter() const
 
 void ApplicationController::activate(bool preview)
 {
-    Q_UNUSED(preview)
+    m_overlays.setDeveloperMode(preview && m_debugPreviewPending);
+    m_debugPreviewPending = false;
     m_idleMonitor.watchForResume();
     m_inhibitor.acquire();
 }

@@ -47,17 +47,21 @@ int main(int argc, char *argv[])
                                         QStringLiteral("Run only as a background idle service"));
     const QCommandLineOption preview(QStringLiteral("preview"),
                                      QStringLiteral("Show the screensaver immediately"));
+    const QCommandLineOption developerMode(QStringLiteral("dev"),
+        QStringLiteral("Show snake path diagnostics (use with --preview)"));
     const QCommandLineOption settings(QStringLiteral("settings"),
                                       QStringLiteral("Open the settings window"));
     const QCommandLineOption quit(QStringLiteral("quit"),
                                   QStringLiteral("Stop the running background process"));
-    parser.addOptions({background, preview, settings, quit});
+    parser.addOptions({background, preview, developerMode, settings, quit});
     parser.process(app);
 
     if (parser.isSet(quit)) {
         return invokeExisting(QStringLiteral("Quit")) ? 0 : 1;
     }
-    const QString requestedMethod = parser.isSet(preview) ? QStringLiteral("Preview")
+    const QString requestedMethod = parser.isSet(preview)
+        ? (parser.isSet(developerMode) ? QStringLiteral("PreviewDebug")
+                                      : QStringLiteral("Preview"))
         : (parser.isSet(settings) || !parser.isSet(background)
                ? QStringLiteral("ShowSettings") : QString());
     if (invokeExisting(requestedMethod)) {
@@ -79,7 +83,11 @@ int main(int argc, char *argv[])
 
     controller.start();
     if (parser.isSet(preview)) {
-        controller.Preview();
+        if (parser.isSet(developerMode)) {
+            controller.PreviewDebug();
+        } else {
+            controller.Preview();
+        }
     } else if (!parser.isSet(background) || parser.isSet(settings)) {
         controller.ShowSettings();
     }

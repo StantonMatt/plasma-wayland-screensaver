@@ -26,6 +26,7 @@ public:
     bool show();
     void hide();
     bool isVisible() const;
+    void setDeveloperMode(bool enabled);
 
 Q_SIGNALS:
     void inputDetected();
@@ -53,4 +54,5 @@ private:
     qint64 m_animationEpochMs = 0;
     bool m_visible = false;
     bool m_sharedAnimationActive = false;
+    bool m_developerMode = false;
 };
