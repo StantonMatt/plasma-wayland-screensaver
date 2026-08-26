@@ -15,11 +15,16 @@
 #include <QQuickView>
 #include <QScreen>
 #include <QString>
+#include <QTimer>
 #include <QUrl>
 #include <QVariant>
 
 #include <algorithm>
 #include <utility>
+
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 namespace {
 QString captureSnakeSimulation(SnakeRenderer *renderer)
@@ -107,8 +112,7 @@ void OverlayManager::hide()
     const auto views = m_views;
     m_views.clear();
     for (QQuickView *view : views) {
-        view->hide();
-        view->deleteLater();
+        retireView(view);
     }
 }
 
@@ -129,6 +133,11 @@ bool OverlayManager::addScreen(QScreen *screen)
     }
 
     auto *view = new QQuickView;
+    // Overlay windows are short lived. Their scene graphs, swapchains and
+    // Canvas backing stores must be releasable as soon as the saver dismisses.
+    // QQuickWindow keeps both categories persistent by default.
+    view->setPersistentGraphics(false);
+    view->setPersistentSceneGraph(false);
     view->setObjectName(QStringLiteral("screensaver-%1").arg(screen->name()));
     view->setColor(Qt::black);
     view->setResizeMode(QQuickView::SizeRootObjectToView);
@@ -269,8 +278,7 @@ void OverlayManager::removeScreen(QScreen *screen)
     }
     QQuickView *view = m_views.take(screen);
     if (view) {
-        view->hide();
-        view->deleteLater();
+        retireView(view);
     }
     if (m_visible && m_views.isEmpty()) {
         Q_EMIT inputDetected();
@@ -288,6 +296,46 @@ void OverlayManager::removeScreen(QScreen *screen)
             qWarning() << "Could not preserve the seamless snake simulation after monitor removal";
         }
     }
+}
+
+void OverlayManager::retireView(QQuickView *view)
+{
+    if (!view) {
+        return;
+    }
+
+    // Stop rendering before the deferred QObject destruction. This asks the
+    // render thread to discard per-window caches and releases the native
+    // Wayland surface immediately, rather than retaining them until an
+    // arbitrary later event-loop turn.
+    view->hide();
+    view->releaseResources();
+    view->destroy();
+
+    ++m_pendingViewDeletions;
+    connect(view, &QObject::destroyed, this, [this] {
+        --m_pendingViewDeletions;
+        if (m_pendingViewDeletions == 0 && !m_visible) {
+            // Run after QQuickView's destructor has joined its Canvas/render
+            // workers. Those workers use separate glibc allocation arenas.
+            QTimer::singleShot(0, this, &OverlayManager::reclaimReleasedMemory);
+        }
+    });
+    view->deleteLater();
+}
+
+void OverlayManager::reclaimReleasedMemory()
+{
+    if (m_visible || m_pendingViewDeletions != 0) {
+        return;
+    }
+
+#if defined(__GLIBC__)
+    // Qt has now destroyed the heavy QML scene. glibc otherwise keeps many of
+    // the freed Canvas and scene-graph pages in its process arenas for reuse,
+    // which made the idle daemon appear to retain gigabytes for days.
+    malloc_trim(0);
+#endif
 }
 
 void OverlayManager::updateAllViewGeometry()

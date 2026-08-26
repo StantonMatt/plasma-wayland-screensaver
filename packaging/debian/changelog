@@ -1,3 +1,16 @@
+plasma-visual-screensaver (0.6.1-1) resolute; urgency=medium
+
+  * Release fullscreen scene-graph, Canvas, and allocator memory after every
+    screensaver session instead of retaining it in the idle daemon.
+  * Use shared cooperative Canvas rendering to avoid accumulating per-visual
+    worker caches across repeated activations.
+  * Improve Slithering Snakes food pursuit, stable target tracking, curved
+    collision prediction, and long-snake self-escape behavior.
+  * Expand deterministic behavior, resource-lifetime, and long-run benchmark
+    coverage, including per-cause collision metrics.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Wed, 26 Aug 2026 08:31:25 -0400
+
 plasma-visual-screensaver (0.6.0-1) resolute; urgency=medium
 
   * Add preview-only snake path and steering diagnostics.

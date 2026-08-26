@@ -527,6 +527,166 @@ TestCase {
                      head.x + 80, 0.1)
     }
 
+    function test_tightPairCanBeatSlightlyCloserSingleton() {
+        visualContext.snakeIntelligence = 100
+        const snake = visual.snakes[0]
+        const head = snake.segments[0]
+        head.x = 400
+        head.y = 320
+        snake.angle = 0
+        visual.snakes = [snake]
+        visual.food = []
+
+        // The singleton is two relative travel units away. The first particle
+        // in the pair is three units away, but its immediate follow-up makes
+        // that direction the better short sequence.
+        visual.addFood(480, 320, 1, 0, 0, 0, -1)
+        const pairAngle = Math.PI / 6
+        visual.addFood(head.x + Math.cos(pairAngle) * 120,
+                       head.y + Math.sin(pairAngle) * 120,
+                       1, 1, 0, 0, -1)
+        visual.addFood(head.x + Math.cos(pairAngle) * 128,
+                       head.y + Math.sin(pairAngle) * 128,
+                       1, 1, 0, 0, -1)
+        visual.analyzeFoodClusters()
+
+        visual.chooseGoal(snake, 0)
+        const chosen = visual.foodById(snake.foodTargetId)
+
+        verify(chosen !== null)
+        verify(chosen.colorIndex === 1,
+               "the closer singleton beat an immediately collectible pair; chosen="
+               + chosen.x + ", followups=" + visual.food[1].followupValue
+               + "/" + visual.food[2].followupValue
+               + ", scores=" + visual.foodOpportunityDistanceSquared(
+                   visual.food[0], 80 * 80) + "/"
+               + visual.foodOpportunityDistanceSquared(
+                   visual.food[1], 120 * 120))
+        verify(Math.sqrt(visual.worldDistanceSquared(
+            head.x, head.y, chosen.x, chosen.y)) > 110)
+        verify(snake.foodLookaheadId > 0)
+        const followup = visual.foodById(snake.foodLookaheadId)
+        verify(followup !== null)
+        compare(followup.claimedBy, 0)
+
+        // Both pieces of the pair are now reserved, so another snake should
+        // not stampede into the same two-bite opportunity before the cache is
+        // analyzed again.
+        const competitor = visual.makeSnake(1)
+        competitor.segments[0].x = head.x
+        competitor.segments[0].y = head.y
+        competitor.angle = 0
+        visual.snakes = [snake, competitor]
+        visual.chooseGoal(competitor, 1)
+        const competitorTarget = visual.foodById(competitor.foodTargetId)
+        verify(competitorTarget !== null)
+        compare(competitorTarget.colorIndex, 0)
+    }
+
+    function test_unavailableCachedFollowupCannotBiasOpportunity() {
+        visualContext.snakeIntelligence = 100
+        const snake = visual.snakes[0]
+        const head = snake.segments[0]
+        head.x = 400
+        head.y = 320
+        snake.angle = 0
+        visual.snakes = [snake]
+
+        const modes = ["consumed", "vacuumed", "claimed"]
+        for (let modeIndex = 0; modeIndex < modes.length; ++modeIndex) {
+            visual.food = []
+            visual.addFood(480, 320, 1, 0, 0, 0, -1)
+            visual.addFood(520, 320, 1, 1, 0, 0, -1)
+            visual.addFood(528, 320, 1, 1, 0, 0, -1)
+            visual.analyzeFoodClusters()
+            const pairPrimary = visual.food[1]
+            const followup = visual.foodById(pairPrimary.followupId)
+            verify(followup !== null)
+            if (modes[modeIndex] === "consumed") {
+                visual.food = [visual.food[0], pairPrimary]
+            } else if (modes[modeIndex] === "vacuumed") {
+                followup.vacuumOwner = 9
+            } else {
+                followup.claimedBy = 9
+                followup.claimedUntil = visual.simulationTime + 5
+            }
+
+            const chosen = visual.closestReachableFood(snake, 0)
+            verify(chosen !== null)
+            compare(chosen.colorIndex, 0,
+                    modes[modeIndex]
+                    + " follow-up still discounted the farther primary")
+        }
+    }
+
+    function test_resizeScalesCachedFollowupVector() {
+        visual.food = []
+        visual.addFood(300, 220, 1, 0, 0, 0, -1)
+        visual.addFood(330, 250, 1, 0, 0, 0, -1)
+        visual.analyzeFoodClusters()
+        const particle = visual.food[0]
+        verify(particle.followupId > 0)
+        const oldDx = particle.followupDx
+        const oldDy = particle.followupDy
+
+        visual.resizeSimulationWorld(visual.worldWidth * 2,
+                                     visual.worldHeight * 2)
+
+        fuzzyCompare(particle.followupDx, oldDx * 0.5, 0.001)
+        fuzzyCompare(particle.followupDy, oldDy * 0.5, 0.001)
+    }
+
+    function test_clusterDiscountCannotPullSnakePastNearbyFood() {
+        visualContext.snakeIntelligence = 100
+        const snake = visual.snakes[0]
+        const head = snake.segments[0]
+        head.x = 300
+        head.y = 320
+        snake.angle = 0
+        visual.snakes = [snake]
+        visual.food = []
+        visual.addFood(380, 320, 1, 0, 0, 0, -1)
+        for (let index = 0; index < 12; ++index) {
+            visual.addFood(530 + (index % 4) * 7,
+                           305 + Math.floor(index / 4) * 7,
+                           1, 1, 0, 0, -1)
+        }
+        visual.analyzeFoodClusters()
+
+        const chosen = visual.closestReachableFood(snake, 0)
+
+        verify(chosen !== null)
+        fuzzyCompare(chosen.x, 380, 0.1)
+    }
+
+    function test_nearbyRivalSuppressesMarginalPairDetour() {
+        visualContext.snakeIntelligence = 100
+        const snake = visual.makeSnake(0)
+        const rival = visual.makeSnake(1)
+        const head = snake.segments[0]
+        head.x = 400
+        head.y = 320
+        snake.angle = 0
+        rival.segments[0].x = 430
+        rival.segments[0].y = 320
+        visual.snakes = [snake, rival]
+        visual.food = []
+        visual.addFood(480, 320, 1, 0, 0, 0, -1)
+        const pairAngle = Math.PI / 6
+        visual.addFood(head.x + Math.cos(pairAngle) * 120,
+                       head.y + Math.sin(pairAngle) * 120,
+                       1, 1, 0, 0, -1)
+        visual.addFood(head.x + Math.cos(pairAngle) * 128,
+                       head.y + Math.sin(pairAngle) * 128,
+                       1, 1, 0, 0, -1)
+        visual.analyzeFoodClusters()
+
+        const chosen = visual.closestReachableFood(snake, 0)
+
+        verify(chosen !== null)
+        compare(chosen.colorIndex, 0)
+    }
+
     function test_foodClustersConnectAcrossWraparoundSeam() {
         visualContext.snakeDeadlyWalls = false
         visual.food = []
@@ -877,6 +1037,141 @@ TestCase {
         verify(snake.dying)
     }
 
+    function test_longSnakeTurnRadiusScalesWithBodyMaturity() {
+        visualContext.snakeIntelligence = 100
+        const shortSnake = visual.makeSnake(0)
+        const longSnake = visual.makeSnake(1)
+        while (longSnake.segments.length < 400)
+            visual.appendGrowthSegment(longSnake)
+
+        const shortRadius = visual.minimumSnakeTurnRadius(shortSnake)
+        const longRadius = visual.minimumSnakeTurnRadius(longSnake)
+        verify(longRadius / longSnake.radius > shortRadius / shortSnake.radius)
+
+        longSnake.angle = 0
+        longSnake.desiredAngle = Math.PI
+        const seconds = 1 / 30
+        const speed = visual.snakeSpeed(longSnake)
+        visual.steerSnake(longSnake, seconds)
+        const angularSpeed = Math.abs(longSnake.angle) / seconds
+        const realizedRadius = speed / Math.max(0.001, angularSpeed)
+
+        verify(realizedRadius >= longRadius - 0.1,
+               "long snake bent at radius " + realizedRadius
+               + " below minimum " + longRadius)
+    }
+
+    function test_selfSafetyChecksCurvedDesiredRoute() {
+        visualContext.snakeIntelligence = 100
+        visualContext.snakeSelfCollisions = true
+        const snake = visual.makeSnake(0)
+        while (snake.segments.length < 140)
+            visual.appendGrowthSegment(snake)
+        visual.snakes = [snake]
+        const head = snake.segments[0]
+        head.x = 430
+        head.y = 260
+        head.previousX = head.x
+        head.previousY = head.y
+        snake.angle = 0
+        snake.desiredAngle = Math.PI / 2
+        for (let index = 1; index < snake.segments.length; ++index) {
+            snake.segments[index].x = 100 + (index % 20) * 8
+            snake.segments[index].y = 540 + Math.floor(index / 20) * 8
+            snake.segments[index].previousX = snake.segments[index].x
+            snake.segments[index].previousY = snake.segments[index].y
+        }
+
+        const speed = visual.snakeSpeed(snake)
+        const turnRadius = speed / visual.snakeTurnRate(snake)
+        const lookAhead = Math.min(190, speed * 0.66 + turnRadius * 1.2)
+        const route = visual.projectTrajectory(
+            snake, snake.desiredAngle, 2,
+            head.x, head.y + lookAhead, lookAhead, 9)
+        const insideTurn = route[5]
+        snake.segments[40].x = insideTurn.x
+        snake.segments[40].y = insideTurn.y
+        snake.segments[40].previousX = insideTurn.x
+        snake.segments[40].previousY = insideTurn.y
+        const tangentDistance = visual.worldSegmentDistanceSquared(
+            insideTurn.x, insideTurn.y,
+            head.x, head.y, head.x + lookAhead, head.y)
+        verify(tangentDistance > Math.pow(snake.radius * 3.1, 2),
+               "fixture also intersects the obsolete straight-tangent guard")
+
+        snake.nextSafetyCheck = 0
+        visual.markCollisions()
+        verify(!snake.dying)
+        const obstructedAngle = snake.desiredAngle
+
+        verify(visual.applyCollisionSafety(snake, 0),
+               "curved self-intersection was not detected")
+        verify(Math.abs(visual.normalizeAngle(
+            snake.safetyDesiredAngle - obstructedAngle)) > 0.2,
+            "self safety kept following the obstructed curve: escape="
+            + snake.safetyDesiredAngle + " desired=" + obstructedAngle)
+    }
+
+    function test_rivalHeadSafetyChecksCurvedDesiredRoute() {
+        visualContext.snakeIntelligence = 100
+        const snake = visual.makeSnake(0)
+        const rival = visual.makeSnake(1)
+        visual.snakes = [snake, rival]
+        const head = snake.segments[0]
+        head.x = 430
+        head.y = 300
+        head.previousX = head.x
+        head.previousY = head.y
+        snake.angle = 0
+        snake.desiredAngle = Math.PI
+        for (let index = 1; index < snake.segments.length; ++index) {
+            snake.segments[index].x = 100 + index * 4
+            snake.segments[index].y = 620
+            snake.segments[index].previousX = snake.segments[index].x
+            snake.segments[index].previousY = snake.segments[index].y
+        }
+
+        const speed = visual.snakeSpeed(snake)
+        const turnRadius = speed / visual.snakeTurnRate(snake)
+        const lookAhead = Math.min(190, speed * 0.66 + turnRadius * 1.2)
+        const route = visual.projectTrajectory(
+            snake, snake.desiredAngle, 2,
+            head.x - lookAhead, head.y, lookAhead, 9)
+        const routeEnd = route[route.length - 1]
+        let crossing = route[1]
+        let obsoleteChordDistance = 0
+        for (let index = 1; index < route.length - 1; ++index) {
+            const distance = visual.worldSegmentDistanceSquared(
+                route[index].x, route[index].y,
+                head.x, head.y, routeEnd.x, routeEnd.y)
+            if (distance > obsoleteChordDistance) {
+                obsoleteChordDistance = distance
+                crossing = route[index]
+            }
+        }
+        const headClearance = (snake.radius + rival.radius) * 1.8
+        verify(obsoleteChordDistance > headClearance * headClearance,
+               "fixture also intersects the obsolete straight-chord guard")
+
+        // Keep the rival effectively stationary at the arc's widest point so
+        // only a curved-route check can see the future head-to-head conflict.
+        rival.speedBias = 0
+        for (let index = 0; index < rival.segments.length; ++index) {
+            rival.segments[index].x = index === 0 ? crossing.x : 1120 + index
+            rival.segments[index].y = index === 0 ? crossing.y : 650
+            rival.segments[index].previousX = rival.segments[index].x
+            rival.segments[index].previousY = rival.segments[index].y
+        }
+        visual.safetyCellColumns = 0
+        visual.safetyCellRows = 0
+        visual.safetyCellSnakeCount = 0
+        snake.nextSafetyCheck = 0
+
+        verify(visual.applyCollisionSafety(snake, 0),
+               "rival crossing the curved route was not detected")
+        verify(snake.safetyActiveUntil > visual.simulationTime)
+    }
+
     function test_selfSafetyBreaksOutwardFromFoodCircle() {
         visualContext.snakeIntelligence = 100
         visualContext.snakeSelfCollisions = true
@@ -897,6 +1192,10 @@ TestCase {
         snake.segments[12].previousY = snake.segments[12].y
         snake.avoidanceSide = 1
         snake.avoidanceCommitUntil = visual.simulationTime + 1
+        visual.food = []
+        visual.addFood(720, 350, 1, 0, 0, 0, -1)
+        visual.chooseGoal(snake, 0)
+        const dangerousTarget = snake.foodTargetId
         snake.nextSafetyCheck = 0
         visual.markCollisions()
         verify(!snake.dying)
@@ -904,8 +1203,12 @@ TestCase {
         verify(visual.applyCollisionSafety(snake, 0))
 
         verify(visual.normalizeAngle(snake.safetyDesiredAngle - snake.angle) < 0,
-               "self safety followed the existing inward turn instead of escaping")
-        verify(snake.safetyActiveUntil >= visual.simulationTime + 0.27)
+               "self safety followed the existing inward turn instead of escaping: escape="
+               + snake.safetyDesiredAngle + " heading=" + snake.angle)
+        verify(snake.safetyActiveUntil >= visual.simulationTime + 0.47)
+        compare(snake.foodTargetId, 0)
+        compare(snake.rejectedFoodId, dangerousTarget)
+        verify(snake.rejectedFoodUntil > visual.simulationTime)
     }
 
     function test_wraparoundPreservesBodySpacing() {
@@ -982,6 +1285,38 @@ TestCase {
         const result = visual.evaluateTrajectory(snake, 0, points, hazards, 81, 50)
 
         verify(result.collides)
+    }
+
+    function test_overlappingSelfCapsulesDoNotAddRiskLinearly() {
+        visualContext.snakeIntelligence = 100
+        visualContext.snakeDeadlyWalls = true
+        const snake = visual.makeSnake(0)
+        snake.radius = 10
+        snake.segments[0].x = 300
+        snake.segments[0].y = 360
+        snake.angle = 0
+        const points = visual.projectTrajectory(
+            snake, 0, 2, 600, 360, 240, 8)
+        const hazardY = 360 + snake.radius * 3.2
+        const hazard = {
+            x: 350, y: hazardY, x2: 480, y2: hazardY,
+            vx: 0, vy: 0, vx2: 0, vy2: 0,
+            midX: 415, midY: hazardY, midVx: 0, midVy: 0,
+            radius: snake.radius, self: true, head: false,
+            halfLength: 65, halfStretchSpeed: 0,
+            releaseTime: Number.MAX_VALUE
+        }
+
+        const once = visual.evaluateTrajectory(
+            snake, 0, points, [hazard], 600, 360)
+        const duplicated = visual.evaluateTrajectory(
+            snake, 0, points, [hazard, hazard], 600, 360)
+
+        verify(!once.collides)
+        verify(once.risk > 0)
+        verify(duplicated.risk > once.risk)
+        verify(duplicated.risk < once.risk * 1.5,
+               "duplicated=" + duplicated.risk + ", once=" + once.risk)
     }
 
     function test_longWraparoundBodiesGenerateEveryVisibleCopy() {
@@ -1342,6 +1677,12 @@ TestCase {
             visual.snakes[index].brainPlanning = false
         }
         const firstSnake = visual.snakes[0]
+        // Exercise the incremental multi-rollout path; a certified direct
+        // food route is intentionally allowed to finish in one rollout.
+        firstSnake.avoidanceCommitUntil = visual.simulationTime + 1
+        firstSnake.foodPlanUntil = visual.simulationTime + 1
+        firstSnake.foodTargetId = 0
+        firstSnake.foodPathIds = []
 
         visual.updateSnakeBrains(0)
         verify(firstSnake.brainPlanning)
@@ -1365,7 +1706,7 @@ TestCase {
         verify(ticks < 20)
     }
 
-    function test_safeDirectPlanSkipsExtremeEscapeRollouts() {
+    function test_safeDirectFoodPlanFinishesAfterFirstRollout() {
         const snake = visual.snakes[0]
         const plan = visual.createSteeringPlan(snake, 0)
         verify(plan.candidates.length > 6)
@@ -1375,10 +1716,40 @@ TestCase {
         plan.hazards = []
         plan.goal.x = snake.segments[0].x + Math.cos(snake.angle) * 180
         plan.goal.y = snake.segments[0].y + Math.sin(snake.angle) * 180
+        plan.routeTarget = { x: plan.goal.x, y: plan.goal.y, size: 3 }
         plan.candidates[0].angle = snake.angle
-        visual.evaluateNextPlanCandidate(plan)
+        verify(visual.advanceSteeringPlan(plan))
 
-        compare(plan.candidates.length, 6)
+        compare(plan.candidates.length, 1)
+        compare(plan.evaluated.length, 1)
+        verify(plan.complete)
+        fuzzyCompare(plan.selectedAngle, snake.angle, 0.001)
+    }
+
+    function test_farClearLockedFoodDoesNotEvaluateDetours() {
+        visualContext.snakeIntelligence = 100
+        visualContext.snakeDeadlyWalls = true
+        const snake = visual.makeSnake(0)
+        const spacing = snake.radius * 1.18
+        for (let index = 0; index < snake.segments.length; ++index) {
+            snake.segments[index].x = 260 - spacing * index
+            snake.segments[index].y = 360
+        }
+        snake.angle = 0
+        snake.desiredAngle = 0
+        visual.snakes = [snake]
+        visual.food = []
+        visual.addFood(940, 360, 1, 0, 0, 0, -1)
+
+        const plan = visual.createSteeringPlan(snake, 0)
+        verify(visual.advanceSteeringPlan(plan))
+
+        verify(plan.evaluated[0].initialDistance
+               > plan.horizon + visual.foodCaptureRadius(
+                   plan.planningSnake, plan.routeTarget))
+        compare(plan.candidates.length, 1)
+        compare(plan.evaluated.length, 1)
+        fuzzyCompare(plan.selectedAngle, plan.goalAngle, 0.001)
     }
 
     function test_incrementalPlanUsesOneImmutableSnakeState() {
@@ -1387,6 +1758,9 @@ TestCase {
         const originalY = snake.segments[0].y
         const originalAngle = snake.angle
         const plan = visual.createSteeringPlan(snake, 0)
+        // This test is about immutable snapshots across multiple rollouts,
+        // independent of the direct-food fast path.
+        plan.routeTarget = null
 
         visual.evaluateNextPlanCandidate(plan)
         snake.segments[0].x += 180

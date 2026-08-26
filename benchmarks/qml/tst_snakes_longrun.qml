@@ -82,6 +82,10 @@ TestCase {
             trailPoints: trailPoints,
             retainedTrailPoints: retainedTrailPoints,
             deaths: visual.deathCount,
+            wallDeaths: visual.wallDeathCount,
+            headDeaths: visual.headDeathCount,
+            bodyDeaths: visual.bodyDeathCount,
+            selfDeaths: visual.selfDeathCount,
             estimatedVertices: estimatedVertices
         }
     }
@@ -294,7 +298,7 @@ TestCase {
 
     function test_longRunThroughputByMinute() {
         visual.initializeWorld()
-        console.info("SNAKE_BENCHMARK_CSV,minute,wall_ms,ms_per_step,realtime_ratio,alive,total_segments,max_segments,food,trail_points,retained_trail_points,deaths,estimated_vertices")
+        console.info("SNAKE_BENCHMARK_CSV,minute,wall_ms,ms_per_step,realtime_ratio,alive,total_segments,max_segments,food,trail_points,retained_trail_points,deaths,wall_deaths,head_deaths,body_deaths,self_deaths,estimated_vertices")
         console.info("SNAKE_ALIGNMENT_CSV,minute,samples,head_aligned,steering_aligned,planned_capture,safety_active,planning_active")
 
         let previousDeaths = 0
@@ -354,6 +358,10 @@ TestCase {
                          + stats.trailPoints + ","
                          + stats.retainedTrailPoints + ","
                          + stats.deaths + ","
+                         + stats.wallDeaths + ","
+                         + stats.headDeaths + ","
+                         + stats.bodyDeaths + ","
+                         + stats.selfDeaths + ","
                          + stats.estimatedVertices)
             console.info("SNAKE_ALIGNMENT_CSV,"
                          + minute + ","

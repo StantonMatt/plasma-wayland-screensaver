@@ -11,8 +11,8 @@ Canvas {
     property double animationEpochMs: Date.now()
     property real phase: 0
 
-    renderTarget: Canvas.FramebufferObject
-    renderStrategy: Canvas.Threaded
+    renderTarget: Canvas.Image
+    renderStrategy: Canvas.Cooperative
     onWidthChanged: requestPaint()
     onHeightChanged: requestPaint()
     onPaint: {

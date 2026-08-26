@@ -359,6 +359,7 @@ Item {
             rush: 0,
             foodTargetId: 0,
             foodTargetUntil: 0,
+            foodLookaheadId: 0,
             rejectedFoodId: 0,
             rejectedFoodUntil: 0,
             foodPlanUntil: 0,
@@ -535,6 +536,10 @@ Item {
             trailIndex: trailIndex === undefined ? -1 : trailIndex,
             feastLength: feastLength === undefined ? 0 : feastLength,
             clusterValue: value,
+            followupValue: 0,
+            followupId: 0,
+            followupDx: 0,
+            followupDy: 0,
             claimedBy: -1,
             claimedUntil: 0,
             attraction: 0,
@@ -639,6 +644,8 @@ Item {
             particle.vy *= scaleY
             particle.attractionX *= scaleX
             particle.attractionY *= scaleY
+            particle.followupDx *= scaleX
+            particle.followupDy *= scaleY
         }
         initializedWidth = worldWidth
         initializedHeight = worldHeight
@@ -737,6 +744,10 @@ Item {
         for (let index = 0; index < food.length; ++index) {
             const particle = food[index]
             particle.clusterValue = particle.value
+            particle.followupValue = 0
+            particle.followupId = 0
+            particle.followupDx = 0
+            particle.followupDy = 0
             const key = Math.floor(particle.x / cellSize) + ":"
                         + Math.floor(particle.y / cellSize)
             if (!cells[key])
@@ -772,8 +783,18 @@ Item {
                         const other = food[otherIndex]
                         const distance = Math.sqrt(worldDistanceSquared(
                             particle.x, particle.y, other.x, other.y))
-                        if (distance < range)
-                            clusterValue += other.value * (1 - distance / range)
+                        if (distance < range) {
+                            const nearbyValue = other.value * (1 - distance / range)
+                            clusterValue += nearbyValue
+                            if (nearbyValue > particle.followupValue) {
+                                particle.followupValue = nearbyValue
+                                particle.followupId = other.id
+                                particle.followupDx = axisDelta(
+                                    particle.x, other.x, worldWidth)
+                                particle.followupDy = axisDelta(
+                                    particle.y, other.y, worldHeight)
+                            }
+                        }
                     }
                 }
             }
@@ -785,9 +806,18 @@ Item {
         return snake.radius * 3 + particle.size
     }
 
+    function minimumSnakeTurnRadius(snake) {
+        const lengthRatio = Math.max(1, snake.segments.length / 20)
+        const maturity = clamp(Math.log(lengthRatio) / Math.log(25), 0, 1)
+        return snake.radius * (3.15 + maturity * 1.35)
+    }
+
     function snakeTurnRate(snake) {
-        return 2.05 + intelligence * 1.8
-               + 20 / Math.max(8, snake.segments.length)
+        const nominalRate = 2.05 + intelligence * 1.8
+                            + 20 / Math.max(8, snake.segments.length)
+        const geometricRate = snakeSpeed(snake)
+            / Math.max(1, minimumSnakeTurnRadius(snake))
+        return Math.min(nominalRate, geometricRate)
     }
 
     function foodById(id) {
@@ -796,6 +826,49 @@ Item {
                 return food[index]
         }
         return null
+    }
+
+    function releaseFoodLookahead(snake, snakeIndex) {
+        if (!snake.foodLookaheadId)
+            return
+        const particle = foodById(snake.foodLookaheadId)
+        if (particle && particle.claimedBy === snakeIndex)
+            particle.claimedUntil = simulationTime
+        snake.foodLookaheadId = 0
+    }
+
+    function reserveFoodLookahead(snake, snakeIndex, target) {
+        releaseFoodLookahead(snake, snakeIndex)
+        if (!target || !target.followupId)
+            return
+        const followup = foodById(target.followupId)
+        if (!followup || (followup.vacuumOwner !== undefined
+                          && followup.vacuumOwner >= 0)
+                || (followup.claimedBy !== undefined
+                    && followup.claimedBy >= 0
+                    && followup.claimedBy !== snakeIndex
+                    && followup.claimedUntil > simulationTime))
+            return
+        followup.claimedBy = snakeIndex
+        followup.claimedUntil = snake.foodTargetUntil
+        snake.foodLookaheadId = followup.id
+    }
+
+    function rejectCurrentFoodTarget(snake, snakeIndex, cooldownSeconds) {
+        if (!snake.foodTargetId)
+            return
+        releaseFoodLookahead(snake, snakeIndex)
+        const targetId = snake.foodTargetId
+        const particle = foodById(targetId)
+        snake.rejectedFoodId = targetId
+        snake.rejectedFoodUntil = simulationTime + cooldownSeconds
+        snake.foodTargetId = 0
+        snake.foodTargetUntil = 0
+        snake.foodPathIds = []
+        snake.foodPathUntil = 0
+        snake.foodPlanUntil = 0
+        if (particle && particle.claimedBy === snakeIndex)
+            particle.claimedUntil = simulationTime
     }
 
     function nextFoodPathParticle(snake) {
@@ -840,11 +913,67 @@ Item {
         return distance >= requiredDistance
     }
 
+    // Value the first bite by the inexpensive cluster analysis already cached
+    // on each particle. One close follow-up can discount at most 34% of the
+    // travel distance: enough for a 3:2 choice to favor a tight pair, but not
+    // enough for a distant feast to distract the snake from nearby food. The
+    // steering controller still locks only this first particle, keeping the
+    // route responsive when food or other snakes move.
+    function foodOpportunityDistanceSquared(particle, distanceSquared,
+                                            approachDx, approachDy,
+                                            competitionPressure,
+                                            followupAvailable) {
+        const cluster = particle.clusterValue === undefined
+            ? particle.value : particle.clusterValue
+        const cachedFollowupValue = particle.followupValue === undefined
+            ? Math.max(0, cluster - particle.value) : particle.followupValue
+        const followupValue = followupAvailable === false
+            ? 0 : cachedFollowupValue
+        let followupStrength = clamp(
+            followupValue / Math.max(0.75, particle.value * 0.75), 0, 1)
+        if (approachDx !== undefined && approachDy !== undefined) {
+            const followupLengthSquared = particle.followupDx * particle.followupDx
+                                          + particle.followupDy * particle.followupDy
+            const alignmentDot = approachDx * particle.followupDx
+                                 + approachDy * particle.followupDy
+            // Squared cosine keeps this hot comparison free of square roots
+            // and strongly favors a smooth continuation through both pieces.
+            const pathAlignment = alignmentDot <= 0
+                || followupLengthSquared < 0.001 ? 0 : clamp(
+                    alignmentDot * alignmentDot
+                    / (Math.max(0.0001, distanceSquared)
+                       * followupLengthSquared), 0, 1)
+            followupStrength *= pathAlignment
+        }
+        const availableDiscount = 0.34
+            - 0.12 * clamp(competitionPressure || 0, 0, 1)
+        const discount = intelligence * availableDiscount * followupStrength
+        const distanceFactor = 1 - discount
+        return distanceSquared * distanceFactor * distanceFactor
+    }
+
     function closestReachableFood(snake, snakeIndex) {
         const head = snake.segments[0]
         const ownerIndex = snakeIndex === undefined ? snakes.indexOf(snake) : snakeIndex
         const turnRadius = snakeSpeed(snake) / Math.max(0.1, snakeTurnRate(snake))
+        const competitionRange = Math.max(210, baseRadius() * 27)
+        const competitionRangeSquared = competitionRange * competitionRange
+        let competitionPressure = 0
+        for (let rivalIndex = 0; rivalIndex < snakes.length; ++rivalIndex) {
+            if (rivalIndex === ownerIndex || !snakes[rivalIndex].alive
+                    || snakes[rivalIndex].segments.length === 0)
+                continue
+            const rivalHead = snakes[rivalIndex].segments[0]
+            const rivalDistanceSquared = worldDistanceSquared(
+                head.x, head.y, rivalHead.x, rivalHead.y)
+            if (rivalDistanceSquared < competitionRangeSquared) {
+                competitionPressure += 1
+                    - rivalDistanceSquared / competitionRangeSquared
+            }
+        }
+        competitionPressure = clamp(competitionPressure / 1.5, 0, 1)
         let chosen = null
+        let bestOpportunityDistanceSquared = Number.MAX_VALUE
         let closestDistanceSquared = Number.MAX_VALUE
         for (let index = 0; index < food.length; ++index) {
             const particle = food[index]
@@ -868,7 +997,24 @@ Item {
             if (!foodTurningReachable(snake, particle, turnRadius,
                                       turn, distanceSquared))
                 continue
-            if (distanceSquared < closestDistanceSquared) {
+            const followup = particle.followupId
+                ? foodById(particle.followupId) : null
+            const followupAvailable = !!followup
+                && !(followup.vacuumOwner !== undefined
+                     && followup.vacuumOwner >= 0)
+                && !(followup.claimedBy !== undefined
+                     && followup.claimedBy >= 0
+                     && followup.claimedBy !== ownerIndex
+                     && followup.claimedUntil > simulationTime)
+            const opportunityDistanceSquared = foodOpportunityDistanceSquared(
+                particle, distanceSquared, dx, dy, competitionPressure,
+                followupAvailable)
+            if (opportunityDistanceSquared
+                    < bestOpportunityDistanceSquared - 0.001
+                    || (Math.abs(opportunityDistanceSquared
+                                 - bestOpportunityDistanceSquared) <= 0.001
+                        && distanceSquared < closestDistanceSquared)) {
+                bestOpportunityDistanceSquared = opportunityDistanceSquared
                 closestDistanceSquared = distanceSquared
                 chosen = particle
             }
@@ -895,10 +1041,8 @@ Item {
             // A missed target can end up inside the head's minimum turning
             // pocket. Drop it for a while so the snake does not orbit the same
             // unreachable point and can pursue another particle instead.
-            snake.rejectedFoodId = particle.id
-            snake.rejectedFoodUntil = simulationTime + rejectedFoodCooldownSeconds
-            if (particle.claimedBy === ownerIndex)
-                particle.claimedUntil = simulationTime
+            rejectCurrentFoodTarget(snake, ownerIndex,
+                                    rejectedFoodCooldownSeconds)
             return null
         }
         return particle
@@ -920,6 +1064,7 @@ Item {
             if (!retained) {
                 snake.foodTargetId = chosen.id
                 snake.foodTargetUntil = simulationTime + foodTargetCommitSeconds
+                reserveFoodLookahead(snake, snakeIndex, chosen)
             }
             snake.foodPathIds = [chosen.id]
             snake.foodPathUntil = snake.foodTargetUntil
@@ -935,6 +1080,7 @@ Item {
 
         snake.foodPathIds = []
         snake.foodPathUntil = 0
+        releaseFoodLookahead(snake, snakeIndex)
         snake.foodTargetId = 0
         snake.foodTargetUntil = 0
         snake.rush = 0
@@ -1167,6 +1313,13 @@ Item {
             const previousPoint = points[pointIndex - 1]
             const point = points[pointIndex]
             const urgency = points.length - pointIndex
+            // Adjacent capsules belonging to this snake overlap by design.
+            // Combine their soft warnings as a magnitude instead of adding
+            // every envelope linearly. This stops a straight body stretch
+            // being mistaken for several independent hazards, while two
+            // genuinely nearby coils still produce more risk than one. Exact
+            // collision hits remain cumulative and therefore dominant.
+            let selfProximityRiskSquared = 0
             const routeX = deadlyWalls ? point.x - previousPoint.x
                 : axisDelta(previousPoint.x, point.x, worldWidth)
             const routeY = deadlyWalls ? point.y - previousPoint.y
@@ -1270,11 +1423,17 @@ Item {
                     const distance = Math.sqrt(distanceSquared)
                     const proximity = (softDistance - distance)
                                       / Math.max(1, softDistance - collisionDistance)
-                    risk += proximity * proximity * (1 + urgency)
-                            * (2 + intelligence * 6)
-                            * (hazard.self ? 1.6 : 1)
+                    const proximityRisk = proximity * proximity * (1 + urgency)
+                        * (2 + intelligence * 6)
+                        * (hazard.self ? 1.6 : 1)
+                    if (hazard.self) {
+                        selfProximityRiskSquared += proximityRisk * proximityRisk
+                    } else {
+                        risk += proximityRisk
+                    }
                 }
             }
+            risk += Math.sqrt(selfProximityRiskSquared)
         }
         const head = snake.segments[0]
         const finalPoint = points[points.length - 1]
@@ -1286,6 +1445,7 @@ Item {
             risk: risk,
             collides: collides,
             collisionTime: collisionTime,
+            initialDistance: initialDistance,
             progress: initialDistance - finalDistance,
             finalDistance: finalDistance,
             points: points
@@ -1315,6 +1475,31 @@ Item {
                 return
         }
         candidates.push({ angle: normalized, recovery: recoveryFraction })
+    }
+
+    function directFoodRiskLimit(particle) {
+        // Two-bite opportunities attract more competitors than isolated food.
+        // Require extra clearance before skipping their alternative rollouts;
+        // the opportunity score affects value, never the safety threshold.
+        return particle && (particle.followupValue || 0) > 0 ? 0.35 : 1
+    }
+
+    function directFoodRouteIsAuthoritative(plan, result) {
+        if (!plan.routeTarget || !result || result.collides
+                || result.risk >= directFoodRiskLimit(plan.routeTarget))
+            return false
+        if (plan.commitActive)
+            return false
+        if (result.capturesRouteTarget)
+            return true
+        // Far food cannot be captured inside this finite rollout by design.
+        // Once it is beyond the simulated travel distance, a clear curve
+        // toward it is already a complete steering answer.
+        const captureRadius = foodCaptureRadius(
+            plan.planningSnake, plan.routeTarget)
+        if (result.initialDistance <= plan.horizon + captureRadius)
+            return false
+        return plan.hazards.length === 0
     }
 
     function planningSnakeSnapshot(snake) {
@@ -1434,6 +1619,16 @@ Item {
             plan.snake.desiredAngle = candidate.angle
             plan.provisionalPublished = true
         }
+        // A very low-risk direct curve that reaches the locked particle is a
+        // complete answer. Finishing it immediately avoids spending several
+        // frames comparing detours which cannot improve the requested food
+        // approach, and lets the round-robin planner refresh every snake's
+        // head-to-food bearing far more often without increasing its work
+        // budget.
+        if (plan.candidateIndex === 0
+                && directFoodRouteIsAuthoritative(plan, result)) {
+            plan.candidates = plan.candidates.slice(0, 1)
+        }
         // The first six candidates cover the food heading, current heading,
         // a food-centred sweep, and a modest escape on either side. Once any
         // of them proves clearly safe, extreme reversals add no useful safety
@@ -1499,15 +1694,12 @@ Item {
         }
 
         const direct = plan.evaluated.length > 0 ? plan.evaluated[0] : null
-
         // If the target-bearing curve is completely clear, begin the turn
         // now. Without this rule, a route which continues straight briefly
         // and only then bends through the food can win on turn continuity,
         // making the snake appear to ignore its own tracer. Any meaningful
         // hazard or an active avoidance commitment leaves safety in charge.
-        if (direct && direct.capturesRouteTarget && !direct.collides
-                && direct.risk < 0.05 && plan.hazards.length === 0
-                && !plan.commitActive)
+        if (directFoodRouteIsAuthoritative(plan, direct))
             best = direct
 
         if (!best) {
@@ -1677,6 +1869,96 @@ Item {
         return false
     }
 
+    // Choose the curved route with the most time and clearance before meeting
+    // the snake's own body. This is only used after the cheap near-field guard
+    // has already found a self threat, so scanning a bounded body sample here
+    // does not add steady-state work to every snake.
+    function bestSelfEscapeAngle(snake, horizon) {
+        const head = snake.segments[0]
+        const speed = Math.max(1, snakeSpeed(snake))
+        const spacing = snake.radius * 1.18
+        const samples = 9
+        const offsets = [0, -0.55, 0.55, -1.1, 1.1, -1.65, 1.65]
+        const desiredOffset = normalizeAngle(snake.desiredAngle - snake.angle)
+        if (Math.abs(desiredOffset) > 0.05)
+            offsets.push(desiredOffset)
+        // Match the near-field guard's self envelope. Using a smaller hard
+        // clearance here let the escape search select essentially the same
+        // route that had just triggered the guard, especially inside coils.
+        const collisionClearance = snake.radius * (2.0 + intelligence * 1.1)
+        const softClearance = collisionClearance + snake.radius * 0.9
+        const collisionSquared = collisionClearance * collisionClearance
+        const softSquared = softClearance * softClearance
+        const bodyStride = Math.max(1,
+            Math.ceil(Math.max(1, snake.segments.length - 10) / 500))
+        let bestAngle = snake.angle
+        let bestScore = -Number.MAX_VALUE
+
+        for (let candidateIndex = 0; candidateIndex < offsets.length;
+                ++candidateIndex) {
+            const offset = offsets[candidateIndex]
+            const targetAngle = normalizeAngle(snake.angle + offset)
+            const goalX = head.x + Math.cos(targetAngle) * horizon
+            const goalY = head.y + Math.sin(targetAngle) * horizon
+            const points = projectTrajectory(snake, targetAngle, 2,
+                                             goalX, goalY, horizon, samples)
+            const routeDuration = points[points.length - 1].time
+            let safeUntil = routeDuration + 0.25
+            let proximityRisk = 0
+            let closestSquared = Number.MAX_VALUE
+
+            for (let segmentIndex = 10; segmentIndex < snake.segments.length;
+                    segmentIndex += bodyStride) {
+                const segment = snake.segments[segmentIndex]
+                const releaseTime = Math.max(0,
+                    (snake.segments.length - 1 - segmentIndex) * spacing / speed)
+                for (let pointIndex = 1; pointIndex < points.length; ++pointIndex) {
+                    const point = points[pointIndex]
+                    if (point.time >= releaseTime)
+                        continue
+                    // Score future positions rather than a swept segment that
+                    // always includes the current head. Otherwise every route
+                    // inherits the same initial warning-zone distance and the
+                    // search cannot distinguish escaping from moving deeper
+                    // into a coil. Nine closely spaced samples remain denser
+                    // than the self-safety envelope.
+                    const routeDistance = worldDistanceSquared(
+                        segment.x, segment.y, point.x, point.y)
+                    closestSquared = Math.min(closestSquared, routeDistance)
+                    if (routeDistance <= collisionSquared)
+                        safeUntil = Math.min(safeUntil, point.time)
+                    if (routeDistance < softSquared) {
+                        const proximity = 1 - Math.sqrt(routeDistance)
+                                              / Math.max(1, softClearance)
+                        proximityRisk += proximity * proximity
+                            * (points.length - pointIndex)
+                    }
+                }
+            }
+
+            if (deadlyWalls) {
+                for (let pointIndex = 1; pointIndex < points.length; ++pointIndex) {
+                    const point = points[pointIndex]
+                    const wallDistance = Math.min(point.x, point.y,
+                                                  worldWidth - point.x,
+                                                  worldHeight - point.y)
+                    if (wallDistance < snake.radius * 1.8)
+                        safeUntil = Math.min(safeUntil, point.time)
+                }
+            }
+
+            const clearanceScore = closestSquared === Number.MAX_VALUE
+                ? 1 : Math.min(1, closestSquared / Math.max(1, softSquared))
+            const score = safeUntil * 100 - proximityRisk * 2.5
+                          + clearanceScore * 3 - Math.abs(offset) * 0.08
+            if (score > bestScore) {
+                bestScore = score
+                bestAngle = targetAngle
+            }
+        }
+        return bestAngle
+    }
+
     // The full planner predicts moving capsules far into the future, but a
     // dense arena can queue several plans. This bounded near-field guard scans
     // only coalesced body capsules along the head's immediate travel corridor.
@@ -1697,11 +1979,12 @@ Item {
         const turnRadius = speed / Math.max(0.1, snakeTurnRate(snake))
         const lookAhead = Math.min(190, speed * (0.38 + intelligence * 0.28)
                                    + turnRadius * 1.2)
-        const futureX = head.x + Math.cos(snake.angle) * lookAhead
-        const futureY = head.y + Math.sin(snake.angle) * lookAhead
-        const routeMidX = (head.x + futureX) * 0.5
-        const routeMidY = (head.y + futureY) * 0.5
-        const routeHalfLength = lookAhead * 0.5
+        const routeGoalX = head.x + Math.cos(snake.desiredAngle) * lookAhead
+        const routeGoalY = head.y + Math.sin(snake.desiredAngle) * lookAhead
+        const routeSamples = 9
+        const projectedRoute = projectTrajectory(
+            snake, snake.desiredAngle, 2, routeGoalX, routeGoalY,
+            lookAhead, routeSamples)
         let bestDistanceSquared = Number.MAX_VALUE
         let threatX = 0
         let threatY = 0
@@ -1717,31 +2000,49 @@ Item {
 
             if (!sameSnake) {
                 const otherHead = other.segments[0]
-                const otherTravel = snakeSpeed(other) * lookAhead / Math.max(1, speed)
-                const otherFutureX = otherHead.x + Math.cos(other.angle) * otherTravel
-                const otherFutureY = otherHead.y + Math.sin(other.angle) * otherTravel
+                const otherSpeed = snakeSpeed(other)
+                const otherDirectionX = Math.cos(other.angle)
+                const otherDirectionY = Math.sin(other.angle)
                 const headClearance = (snake.radius + other.radius)
                     * (1.35 + intelligence * 0.45)
-                if (deadlyWalls) {
-                    const otherMidX = (otherHead.x + otherFutureX) * 0.5
-                    const otherMidY = (otherHead.y + otherFutureY) * 0.5
-                    const midpointDeltaX = otherMidX - routeMidX
-                    const midpointDeltaY = otherMidY - routeMidY
-                    const boundingDistance = routeHalfLength
-                        + otherTravel * 0.5 + headClearance
-                    if (midpointDeltaX * midpointDeltaX
-                            + midpointDeltaY * midpointDeltaY
-                            > boundingDistance * boundingDistance)
-                        continue
+                let crossingDistance = Number.MAX_VALUE
+                let crossingThreatX = otherHead.x
+                let crossingThreatY = otherHead.y
+                // Compare equal-time slices of the curved rollout with the
+                // rival's projected motion. A single head-to-end chord cuts
+                // inside a turn and can miss a rival crossing the actual arc.
+                for (let pointIndex = 1;
+                        pointIndex < projectedRoute.length; ++pointIndex) {
+                    const routeStart = projectedRoute[pointIndex - 1]
+                    const routeFinish = projectedRoute[pointIndex]
+                    const otherStartX = otherHead.x
+                        + otherDirectionX * otherSpeed * routeStart.time
+                    const otherStartY = otherHead.y
+                        + otherDirectionY * otherSpeed * routeStart.time
+                    const otherFinishX = otherHead.x
+                        + otherDirectionX * otherSpeed * routeFinish.time
+                    const otherFinishY = otherHead.y
+                        + otherDirectionY * otherSpeed * routeFinish.time
+                    const segmentDistance = worldSegmentsDistanceSquared(
+                        routeStart.x, routeStart.y,
+                        routeFinish.x, routeFinish.y,
+                        otherStartX, otherStartY,
+                        otherFinishX, otherFinishY)
+                    if (segmentDistance < crossingDistance) {
+                        crossingDistance = segmentDistance
+                        const middleTime = (routeStart.time
+                                            + routeFinish.time) * 0.5
+                        crossingThreatX = otherHead.x
+                            + otherDirectionX * otherSpeed * middleTime
+                        crossingThreatY = otherHead.y
+                            + otherDirectionY * otherSpeed * middleTime
+                    }
                 }
-                const crossingDistance = worldSegmentsDistanceSquared(
-                    head.x, head.y, futureX, futureY,
-                    otherHead.x, otherHead.y, otherFutureX, otherFutureY)
                 if (crossingDistance < headClearance * headClearance
                         && crossingDistance < bestDistanceSquared) {
                     bestDistanceSquared = crossingDistance
-                    threatX = axisDelta(head.x, otherHead.x, worldWidth)
-                    threatY = axisDelta(head.y, otherHead.y, worldHeight)
+                    threatX = axisDelta(head.x, crossingThreatX, worldWidth)
+                    threatY = axisDelta(head.y, crossingThreatY, worldHeight)
                     threatIsSelf = false
                 }
             }
@@ -1757,12 +2058,10 @@ Item {
             && safetyCellSnakeCount > 0
         const visitedCells = {}
         const visitedOccupants = {}
-        const routeSamples = validGrid ? Math.max(1, Math.ceil(lookAhead
-            / Math.max(1, Math.min(safetyCellWidth, safetyCellHeight)))) : 0
-        for (let routeSample = 0; routeSample <= routeSamples; ++routeSample) {
-            const amount = routeSample / Math.max(1, routeSamples)
-            const sampleX = head.x + (futureX - head.x) * amount
-            const sampleY = head.y + (futureY - head.y) * amount
+        for (let routeSample = 0; validGrid
+                && routeSample < projectedRoute.length; ++routeSample) {
+            const sampleX = projectedRoute[routeSample].x
+            const sampleY = projectedRoute[routeSample].y
             const centerX = collisionCell(sampleX, safetyCellWidth,
                                           safetyCellColumns, worldWidth)
             const centerY = collisionCell(sampleY, safetyCellHeight,
@@ -1807,9 +2106,17 @@ Item {
                             ? snake.radius * (2.0 + intelligence * 1.1)
                             : (snake.radius + other.radius)
                               * (1.18 + intelligence * 0.42)
-                        const routeDistance = worldSegmentDistanceSquared(
-                            segment.x, segment.y,
-                            head.x, head.y, futureX, futureY)
+                        let routeDistance = Number.MAX_VALUE
+                        for (let pathIndex = 1; pathIndex < projectedRoute.length;
+                                ++pathIndex) {
+                            routeDistance = Math.min(routeDistance,
+                                worldSegmentDistanceSquared(
+                                    segment.x, segment.y,
+                                    projectedRoute[pathIndex - 1].x,
+                                    projectedRoute[pathIndex - 1].y,
+                                    projectedRoute[pathIndex].x,
+                                    projectedRoute[pathIndex].y))
+                        }
                         if (routeDistance >= bodyClearance * bodyClearance
                                 || routeDistance >= bestDistanceSquared)
                             continue
@@ -1839,26 +2146,15 @@ Item {
                                                simulationTime + 0.34
                                                + intelligence * 0.34)
         if (threatIsSelf) {
-            // When circling food the tail is usually beside or slightly behind
-            // the head. Steering merely left/right can tighten that same loop.
-            // Blend the current heading with a radial vector away from the
-            // coil, producing an outward escape line instead.
-            const threatLength = Math.max(0.001,
-                Math.sqrt(threatX * threatX + threatY * threatY))
-            const toward = (Math.cos(snake.angle) * threatX
-                            + Math.sin(snake.angle) * threatY) / threatLength
-            if (toward > 0.2) {
-                snake.safetyDesiredAngle = normalizeAngle(snake.angle
-                    + turnSide * (0.9 + intelligence * 0.42))
-            } else {
-                const escapeX = Math.cos(snake.angle) * 0.58
-                                - threatX / threatLength * 1.15
-                const escapeY = Math.sin(snake.angle) * 0.58
-                                - threatY / threatLength * 1.15
-                snake.safetyDesiredAngle = Math.atan2(escapeY, escapeX)
-            }
-            snake.safetyActiveUntil = simulationTime + 0.28
-            snake.foodPlanUntil = 0
+            const escapeHorizon = Math.min(260,
+                Math.max(lookAhead * 1.35, minimumSnakeTurnRadius(snake) * 3.2))
+            snake.safetyDesiredAngle = bestSelfEscapeAngle(snake, escapeHorizon)
+            const escapeTurn = normalizeAngle(snake.safetyDesiredAngle - snake.angle)
+            snake.avoidanceSide = Math.abs(escapeTurn) < 0.04
+                ? 0 : (escapeTurn < 0 ? -1 : 1)
+            snake.safetyActiveUntil = simulationTime + 0.48
+            rejectCurrentFoodTarget(snake, snakeIndex,
+                                    rejectedFoodCooldownSeconds)
         } else {
             snake.safetyDesiredAngle = normalizeAngle(snake.angle + turnSide
                 * (0.72 + intelligence * 0.42))
@@ -2671,7 +2967,7 @@ Item {
                 height: Math.max(1, Math.ceil(root.height * root.canvasScale))
                 transformOrigin: Item.TopLeft
                 scale: 1 / root.canvasScale
-                renderTarget: Canvas.FramebufferObject
+                renderTarget: Canvas.Image
                 renderStrategy: Canvas.Cooperative
                 onPaint: {
                     const painter = getContext("2d")

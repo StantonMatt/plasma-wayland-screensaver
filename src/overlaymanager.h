@@ -42,6 +42,8 @@ private:
     void updateAnimationState();
     void updatePresentationClocks();
     void configureSnakeRenderSharing();
+    void retireView(QQuickView *view);
+    void reclaimReleasedMemory();
     bool isDismissEvent(const QEvent *event) const;
 
     Configuration *m_configuration;
@@ -52,6 +54,7 @@ private:
     QPointer<SnakeRenderer> m_snakeSimulationDriver;
     QScreen *m_animationDriverScreen = nullptr;
     qint64 m_animationEpochMs = 0;
+    int m_pendingViewDeletions = 0;
     bool m_visible = false;
     bool m_sharedAnimationActive = false;
     bool m_developerMode = false;

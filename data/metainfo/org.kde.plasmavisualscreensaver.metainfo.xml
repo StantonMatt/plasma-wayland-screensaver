@@ -20,6 +20,11 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.6.1" date="2026-08-26">
+      <description>
+        <p>Reclaims fullscreen rendering memory after dismissal and improves Slithering Snakes with steadier food pursuit, curved rival prediction, safer self-escape behavior, and expanded long-run tests.</p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-08-17">
       <description>
         <p>Adds preview path diagnostics and improves Slithering Snakes with stable 360-degree turn-aware food targeting, anti-orbit recovery, safer predictive pursuit, and expanded long-run benchmarks.</p>

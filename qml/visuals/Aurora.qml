@@ -11,8 +11,11 @@ Canvas {
     property double animationEpochMs: Date.now()
     property real phase: (seed % 1000) / 159.0
 
-    renderTarget: Canvas.FramebufferObject
-    renderStrategy: Canvas.Threaded
+    // Qt 6 renders Canvas through an in-memory image. Use the shared render
+    // thread so repeated fullscreen sessions do not leave private Canvas
+    // worker caches behind in the idle daemon.
+    renderTarget: Canvas.Image
+    renderStrategy: Canvas.Cooperative
 
     onWidthChanged: requestPaint()
     onHeightChanged: requestPaint()

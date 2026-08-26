@@ -113,7 +113,7 @@ Item {
         id: localCanvas
         anchors.fill: parent
         visible: !root.seamless
-        renderTarget: Canvas.FramebufferObject
+        renderTarget: Canvas.Image
         renderStrategy: Canvas.Cooperative
         onPaint: {
             const painter = getContext("2d")
