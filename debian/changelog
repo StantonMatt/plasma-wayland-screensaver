@@ -1,3 +1,10 @@
+plasma-visual-screensaver (0.6.1-1ppa2~resolute1) resolute; urgency=medium
+
+  * Keep all wall-clock performance benchmarks in controlled upstream CI so
+    variable shared-builder timing cannot reject an otherwise valid package.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Wed, 26 Aug 2026 09:12:00 -0400
+
 plasma-visual-screensaver (0.6.1-1ppa1~resolute1) resolute; urgency=medium
 
   * Release fullscreen scene-graph, Canvas, and allocator memory after every
