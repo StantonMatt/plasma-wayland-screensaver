@@ -17,8 +17,19 @@ TestCase {
         context: null
     }
 
-    function test_canvasUsesSharedRenderThread() {
-        compare(fireflies.renderTarget, Canvas.Image)
-        compare(fireflies.renderStrategy, Canvas.Cooperative)
+    function containsCanvas(item) {
+        if (item instanceof Canvas)
+            return true
+        for (let i = 0; i < item.children.length; ++i) {
+            if (containsCanvas(item.children[i]))
+                return true
+        }
+        return false
+    }
+
+    function test_firefliesUseSceneGraphNodes() {
+        verify(!containsCanvas(fireflies))
+        compare(fireflies.fireflyCount, 50)
+        compare(fireflies.renderedFireflyCount, 0)
     }
 }

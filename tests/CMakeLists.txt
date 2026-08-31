@@ -22,6 +22,17 @@ add_executable(test-animationstate
 target_link_libraries(test-animationstate PRIVATE Qt6::Core Qt6::Gui Qt6::Test)
 add_test(NAME animation-state COMMAND test-animationstate)
 
+add_executable(test-fireflyrenderer
+    test_fireflyrenderer.cpp
+    ../src/fireflyrenderer.cpp
+    ../src/fireflyrenderer.h
+)
+target_include_directories(test-fireflyrenderer PRIVATE ../src)
+target_link_libraries(test-fireflyrenderer PRIVATE Qt6::Quick Qt6::Test)
+add_test(NAME firefly-renderer COMMAND test-fireflyrenderer)
+set_tests_properties(firefly-renderer PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+
 add_executable(test-snakerenderer
     test_snakerenderer.cpp
     ../src/snakerenderer.cpp

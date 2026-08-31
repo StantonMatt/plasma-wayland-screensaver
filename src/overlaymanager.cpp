@@ -2,6 +2,7 @@
 #include "overlaymanager.h"
 
 #include "configuration.h"
+#include "fireflyrenderer.h"
 #include "presentationclock.h"
 #include "snakerenderer.h"
 
@@ -224,6 +225,23 @@ bool OverlayManager::addScreen(QScreen *screen)
                 snakeRoot->setProperty("nativeRenderer",
                                        QVariant::fromValue(static_cast<QObject *>(renderer)));
                 m_snakeRenderers.insert(screen, renderer);
+            }
+        }
+    }
+
+    if (m_configuration->visualModule() == QStringLiteral("fireflies")) {
+        if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
+            if (auto *fireflyRoot = rootItem->findChild<QQuickItem *>(
+                    QStringLiteral("fireflyVisualRoot"), Qt::FindChildrenRecursively)) {
+                auto *renderer = new FireflyRenderer(fireflyRoot);
+                renderer->setParentItem(fireflyRoot);
+                renderer->setSize(fireflyRoot->size());
+                connect(fireflyRoot, &QQuickItem::widthChanged, renderer,
+                        [fireflyRoot, renderer] { renderer->setWidth(fireflyRoot->width()); });
+                connect(fireflyRoot, &QQuickItem::heightChanged, renderer,
+                        [fireflyRoot, renderer] { renderer->setHeight(fireflyRoot->height()); });
+                fireflyRoot->setProperty("nativeRenderer",
+                                         QVariant::fromValue(static_cast<QObject *>(renderer)));
             }
         }
     }

@@ -1,3 +1,14 @@
+plasma-visual-screensaver (0.6.2-1ppa1~resolute1) resolute; urgency=medium
+
+  * Replace Fireflies' fullscreen CPU Canvas with a batched native Qt Quick
+    scene-graph renderer.
+  * Preserve the existing motion, density, size, glow, and palette controls
+    while sharply reducing CPU and GPU load on multi-monitor desktops.
+  * Add geometry, premultiplied-alpha, resource, and three-monitor performance
+    regression coverage for the Fireflies renderer.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Sun, 30 Aug 2026 20:13:25 -0400
+
 plasma-visual-screensaver (0.6.1-1ppa2~resolute1) resolute; urgency=medium
 
   * Keep all wall-clock performance benchmarks in controlled upstream CI so

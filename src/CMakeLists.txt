@@ -6,6 +6,8 @@ set(screensaver_sources
     applicationcontroller.h
     configuration.cpp
     configuration.h
+    fireflyrenderer.cpp
+    fireflyrenderer.h
     idlemonitor.cpp
     idlemonitor.h
     inhibitor.cpp
