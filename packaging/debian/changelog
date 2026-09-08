@@ -1,3 +1,11 @@
+plasma-visual-screensaver (0.6.3-1) resolute; urgency=medium
+
+  * Reliably re-arm idle activation after dismissing the overlay on Plasma
+    Wayland, regardless of whether Qt or KIdleTime receives the input first.
+  * Preserve immediate recovery when the active monitor layout disappears.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Tue, 08 Sep 2026 07:59:06 -0300
+
 plasma-visual-screensaver (0.6.2-1) resolute; urgency=medium
 
   * Replace Fireflies' fullscreen CPU Canvas with a batched native Qt Quick

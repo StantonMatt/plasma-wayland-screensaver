@@ -21,13 +21,20 @@ ApplicationController::ApplicationController(QObject *parent)
             &m_stateMachine, &ScreensaverStateMachine::idleTimeoutReached);
     connect(&m_idleMonitor, &IdleMonitor::activityResumed, this, [this] {
         if (m_stateMachine.isActive()) {
+            m_waitForIdleResumeOnDismissal = false;
             m_stateMachine.activityDetected();
         } else {
             scheduleIdleTimeout();
         }
     });
-    connect(&m_overlays, &OverlayManager::inputDetected,
-            &m_stateMachine, &ScreensaverStateMachine::activityDetected);
+    connect(&m_overlays, &OverlayManager::inputDetected, this, [this] {
+        m_waitForIdleResumeOnDismissal = true;
+        m_stateMachine.activityDetected();
+    });
+    connect(&m_overlays, &OverlayManager::overlayUnavailable, this, [this] {
+        m_waitForIdleResumeOnDismissal = false;
+        m_stateMachine.activityDetected();
+    });
     connect(&m_inhibitor, &Inhibitor::acquired,
             this, &ApplicationController::finishActivation);
     connect(&m_inhibitor, &Inhibitor::failed,
@@ -184,7 +191,15 @@ void ApplicationController::dismiss()
 {
     m_overlays.hide();
     m_inhibitor.release();
-    scheduleIdleTimeout();
+    if (m_waitForIdleResumeOnDismissal) {
+        m_waitForIdleResumeOnDismissal = false;
+        // Qt can deliver the overlay input before KIdleTime's Wayland backend
+        // observes it. Preserve the resume watch and let activityResumed arm
+        // the next timeout after the compositor has reset its idle clock.
+        m_idleMonitor.clearTimeoutWhileWaitingForResume();
+    } else {
+        scheduleIdleTimeout();
+    }
 }
 
 void ApplicationController::scheduleIdleTimeout()

@@ -20,6 +20,11 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.6.3" date="2026-09-08">
+      <description>
+        <p>Reliably re-arms idle activation after overlay dismissal on Plasma Wayland and preserves recovery when the active monitor layout disappears.</p>
+      </description>
+    </release>
     <release version="0.6.2" date="2026-08-30">
       <description>
         <p>Moves Fireflies to a batched native scene-graph renderer, preserving its visual controls while cutting multi-monitor CPU and GPU usage and improving frame pacing.</p>

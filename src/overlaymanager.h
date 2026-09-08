@@ -30,6 +30,7 @@ public:
 
 Q_SIGNALS:
     void inputDetected();
+    void overlayUnavailable();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

@@ -14,6 +14,7 @@ public:
     void start(int timeoutMilliseconds);
     void stop();
     void watchForResume();
+    void clearTimeoutWhileWaitingForResume();
 
 Q_SIGNALS:
     void idleTimeoutReached();

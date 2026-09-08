@@ -299,7 +299,7 @@ void OverlayManager::removeScreen(QScreen *screen)
         retireView(view);
     }
     if (m_visible && m_views.isEmpty()) {
-        Q_EMIT inputDetected();
+        Q_EMIT overlayUnavailable();
     } else {
         updateAllViewGeometry();
         SnakeRenderer *restoreTarget = m_snakeSimulationDriver;

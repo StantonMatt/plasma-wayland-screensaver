@@ -37,3 +37,15 @@ void IdleMonitor::watchForResume()
 {
     m_idleTime->catchNextResumeEvent();
 }
+
+void IdleMonitor::clearTimeoutWhileWaitingForResume()
+{
+    if (m_timeoutId >= 0) {
+        m_idleTime->removeIdleTimeout(m_timeoutId);
+        m_timeoutId = -1;
+    }
+    // Activation already called catchNextResumeEvent(). Keep that request
+    // armed: the overlay can receive the dismissing input before KIdleTime's
+    // Wayland backend reports the corresponding resume. activityResumed then
+    // starts the next complete idle interval.
+}

@@ -57,4 +57,5 @@ private:
     ScreensaverStateMachine m_stateMachine;
     std::unique_ptr<QQmlApplicationEngine> m_settingsEngine;
     bool m_debugPreviewPending = false;
+    bool m_waitForIdleResumeOnDismissal = false;
 };
