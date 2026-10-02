@@ -1,0 +1,38 @@
+Description: Keep real-time cadence checks out of shared Launchpad builds
+ The three real-timer cadence tests impose millisecond tolerances that shared
+ builders cannot guarantee. Keep deterministic pacing, stall arithmetic,
+ stop/resume, simulation, allocation and parity coverage enabled in Debian.
+ These cadence tests remain enabled in the unpatched upstream/CI source.
+Author: Matthew Stanton <stantonmatthewj@gmail.com>
+Origin: upstream
+Forwarded: not-needed
+Last-Update: 2026-10-02
+--- a/tests/test_presentationclock.cpp
++++ b/tests/test_presentationclock.cpp
+@@ -243,6 +243,8 @@
+ 
+     void clockUsesFixedPhase()
+     {
++        QSKIP("Wall-clock cadence is validated in upstream CI");
++
+         QFETCH(int, target);
+         QFETCH(int, submissionDelayMs);
+         QQuickWindow window; // No real rendering; supply synthetic swap feedback.
+@@ -325,6 +327,8 @@
+ 
+     void synchronousWorkDoesNotExtendTimerPeriod()
+     {
++        QSKIP("Wall-clock cadence is validated in upstream CI");
++
+         // An unexposed window has no scene-graph swaps, exercising the actual
+         // fallback timer rather than just the scheduling calculation.
+         QQuickWindow window;
+@@ -387,6 +391,8 @@
+ 
+     void renderedFeedbackIncludesStallTime()
+     {
++        QSKIP("Wall-clock cadence is validated in upstream CI");
++
+         // Exercise real Qt Quick swap callbacks too. The offscreen software
+         // backend does not provide physical vsync; the virtual KWin harness
+         // remains the authoritative test of display-aligned presentation.

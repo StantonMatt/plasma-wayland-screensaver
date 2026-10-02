@@ -54,7 +54,8 @@ private Q_SLOTS:
         state.configureGeometries({QRect(0, 0, 3440, 1440), QRect(3440, 166, 1920, 1080)},
                                   true, false, QStringLiteral("normal"), 60,
                                   20, 300, 160, 100, 65, true);
-        QTest::qWait(250);
+        QSignalSpy frames(&state, &AnimationState::frameChanged);
+        QTRY_VERIFY(frames.count() >= 15);
         QCOMPARE(state.balls().size(), 20);
         for (const QVariant &entry : state.balls()) {
             const QVariantMap ball = entry.toMap();

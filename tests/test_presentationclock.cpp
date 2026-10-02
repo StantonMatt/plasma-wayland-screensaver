@@ -5,6 +5,7 @@
 #include <QEventLoop>
 #include <QQuickWindow>
 #include <QSignalSpy>
+#include <QScreen>
 #include <QTest>
 #include <QTimer>
 
@@ -359,18 +360,26 @@ private Q_SLOTS:
         QSignalSpy firstListener(&clock, &PresentationClock::frameTick);
         QSignalSpy secondListener(&clock, &PresentationClock::frameTick);
         clock.setRunning(true);
-        QTRY_VERIFY_WITH_TIMEOUT(firstListener.count() >= 3, 1000);
+        QTRY_VERIFY(firstListener.count() >= 3);
         clock.setRunning(false);
         const int stoppedCount = firstListener.count();
         QTest::qWait(150);
         QCOMPARE(firstListener.count(), stoppedCount);
         QCOMPARE(secondListener.count(), stoppedCount);
+        QElapsedTimer resumeDuration;
+        resumeDuration.start();
         clock.setRunning(true);
-        QTRY_VERIFY_WITH_TIMEOUT(firstListener.count() > stoppedCount, 1000);
+        const qreal resumeSeconds = resumeDuration.nsecsElapsed() / 1'000'000'000.0;
+        // Resume emits the bootstrap tick synchronously. Its delta includes
+        // one nominal period plus time spent resuming, never the paused time.
+        QCOMPARE(firstListener.count(), stoppedCount + 1);
         clock.setRunning(false);
         QCOMPARE(firstListener.count(), secondListener.count());
         const qreal resumedDelta = firstListener.at(stoppedCount).at(0).toReal();
-        QVERIFY(resumedDelta > 0.03 && resumedDelta < 0.05);
+        const qreal refresh = window.screen() ? window.screen()->refreshRate() : 60.0;
+        const qreal periodSeconds = periodNanoseconds(30, refresh) / 1'000'000'000.0L;
+        QVERIFY(resumedDelta >= periodSeconds - 1e-9);
+        QVERIFY(resumedDelta <= periodSeconds + resumeSeconds + 1e-9);
         for (int index = 0; index < firstListener.count(); ++index) {
             QCOMPARE(firstListener.at(index).at(0), secondListener.at(index).at(0));
         }

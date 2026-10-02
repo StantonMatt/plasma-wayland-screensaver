@@ -31,7 +31,8 @@ TestCase {
         compare(renderer.simulation, snakeTestSimulation)
         compare(renderer.width, visual.width)
         verify(renderer.scaleToViewport)
-        wait(50)
+        renderer.update()
+        verify(waitForRendering(visual, 5000))
         const image = grabImage(visual)
         compare(image.width, visual.width)
         compare(image.height, visual.height)
@@ -39,7 +40,8 @@ TestCase {
     function test_nativePixels() {
         if (visual.GraphicsInfo.api === GraphicsInfo.Software)
             skip("Qt software scene graph does not draw custom geometry; C++ tests verify its triangles")
-        wait(50)
+        findChild(visual, "snakeNativeRenderer").update()
+        verify(waitForRendering(visual, 5000))
         const image = grabImage(visual)
         let coloredPixels = 0
         for (let y = 0; y < image.height; y += 8) {
