@@ -3,6 +3,7 @@ Section: kde
 Maintainer: Matthew Stanton <stantonmatthewj@gmail.com>
 Build-Depends:
  appstream,
+ cargo (>= 1.93),
  cmake (>= 3.22),
  debhelper-compat (= 13),
  extra-cmake-modules (>= 6.0),
@@ -11,7 +12,8 @@ Build-Depends:
  liblayershellqtinterface-dev,
  ninja-build,
  qt6-base-dev (>= 6.8),
- qt6-declarative-dev (>= 6.8)
+ qt6-declarative-dev (>= 6.8),
+ rustc (>= 1.93)
 Standards-Version: 4.7.3
 Homepage: https://github.com/StantonMatt/plasma-wayland-screensaver
 Vcs-Browser: https://github.com/StantonMatt/plasma-wayland-screensaver
@@ -19,6 +21,7 @@ Vcs-Git: https://github.com/StantonMatt/plasma-wayland-screensaver.git
 
 Package: plasma-visual-screensaver
 Architecture: any
+Static-Built-Using: ${rust:Static-Built-Using}
 Depends:
  ${misc:Depends},
  ${shlibs:Depends},

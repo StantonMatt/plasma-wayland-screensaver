@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 022
+export CARGO_NET_OFFLINE=true
 
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 output_dir=${1:-"${project_root}/dist/ppa"}

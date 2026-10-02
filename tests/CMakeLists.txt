@@ -52,3 +52,12 @@ if(TARGET Qt6::qmltestrunner)
 else()
     message(FATAL_ERROR "Qt6 qmltestrunner is required for visual module tests")
 endif()
+
+add_executable(test-snakescore-abi test_snakescore_abi.cpp)
+target_link_libraries(test-snakescore-abi PRIVATE Qt6::Core Qt6::Test SnakesCore::snakes_core)
+add_test(NAME snakes-core-abi COMMAND test-snakescore-abi)
+
+add_test(NAME snakes-core-rust
+    COMMAND "${CMAKE_COMMAND}" -E env ${SNAKES_CORE_CARGO_ENV}
+        "${CARGO_EXECUTABLE}" test --frozen
+        --manifest-path "${SNAKES_CORE_MANIFEST}" --profile "${SNAKES_CORE_PROFILE}")

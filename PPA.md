@@ -44,11 +44,15 @@ Launchpad accepts only signed source packages. It does not accept the prebuilt
 Install the packaging tools once:
 
 ```bash
-sudo apt install appstream build-essential cmake debhelper devscripts dput \
+sudo apt install appstream build-essential cargo rustc cmake debhelper devscripts dput \
   extra-cmake-modules libkf6config-dev libkf6idletime-dev \
   liblayershellqtinterface-dev lintian ninja-build qt6-base-dev \
   qt6-declarative-dev
 ```
+
+Use the distribution's Rust 1.93 or newer toolchain. Binary builds run Cargo
+offline with the committed `Cargo.lock`; include `rust/snakes-core/` in the
+exported upstream tag.
 
 Then run:
 

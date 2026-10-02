@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "applicationcontroller.h"
+#include "configuration.h"
+#include "overlaymanager.h"
 
 #include <QCommandLineOption>
 #include <QCommandLineParser>
@@ -7,6 +9,8 @@
 #include <QDBusInterface>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QTimer>
+#include <limits>
 
 namespace {
 constexpr auto serviceName = "org.kde.PlasmaVisualScreensaver";
@@ -66,6 +70,22 @@ int main(int argc, char *argv[])
                ? QStringLiteral("ShowSettings") : QString());
     if (invokeExisting(requestedMethod)) {
         return 0;
+    }
+
+    // A timed tracing preview needs no desktop power/portal services. The
+    // harness supplies a private bus, config and headless Wayland compositor.
+    if (parser.isSet(preview) && !qEnvironmentVariableIsEmpty("PVS_FRAME_TRACE")
+            && !qEnvironmentVariableIsEmpty("PVS_FRAME_TRACE_DURATION_MS")) {
+        bool valid = false;
+        const qint64 duration = qEnvironmentVariable("PVS_FRAME_TRACE_DURATION_MS").toLongLong(&valid);
+        if (!valid || duration <= 0 || duration > std::numeric_limits<int>::max()) return 1;
+        Configuration configuration;
+        OverlayManager overlays(&configuration);
+        QObject::connect(&app, &QCoreApplication::aboutToQuit, &overlays, &OverlayManager::hide);
+        QObject::connect(&overlays, &OverlayManager::overlayUnavailable, &app, &QCoreApplication::quit);
+        if (!overlays.show()) return 1;
+        QTimer::singleShot(int(duration), &app, &QCoreApplication::quit);
+        return app.exec();
     }
 
     ApplicationController controller;

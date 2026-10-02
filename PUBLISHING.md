@@ -5,6 +5,10 @@ package includes the application, desktop launcher, icon, AppStream metadata,
 documentation, and KDE autostart entry. User settings are never packaged or
 deleted during upgrades.
 
+Install the README's build dependencies, including the distribution's `rustc`
+and `cargo` (1.93 or newer), before running the release helper. Both package
+formats record the Rust standard library's source version in `Static-Built-Using`.
+
 ## One-time GitHub setup
 
 1. Make the repository public when it is ready for general access. Standard

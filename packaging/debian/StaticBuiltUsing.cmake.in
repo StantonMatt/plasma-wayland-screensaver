@@ -1,0 +1,18 @@
+# CPack's DEB generator has no custom control-field API. Add the field to the
+# completed package before build-deb.sh inspects it and generates checksums.
+execute_process(
+    COMMAND "@PROJECT_SOURCE_DIR@/packaging/debian/rust-static-built-using.sh" "@RUSTC_EXECUTABLE@"
+    OUTPUT_VARIABLE static_built_using OUTPUT_STRIP_TRAILING_WHITESPACE
+    COMMAND_ERROR_IS_FATAL ANY)
+foreach(package IN LISTS CPACK_PACKAGE_FILES)
+    if(NOT package MATCHES "\\.deb$")
+        continue()
+    endif()
+    set(staging "${package}.control-work")
+    execute_process(COMMAND dpkg-deb --raw-extract "${package}" "${staging}"
+        COMMAND_ERROR_IS_FATAL ANY)
+    file(APPEND "${staging}/DEBIAN/control" "Static-Built-Using: ${static_built_using}\n")
+    execute_process(COMMAND dpkg-deb --root-owner-group -Zzstd --build "${staging}" "${package}"
+        COMMAND_ERROR_IS_FATAL ANY)
+    file(REMOVE_RECURSE "${staging}")
+endforeach()

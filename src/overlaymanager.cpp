@@ -213,6 +213,7 @@ bool OverlayManager::addScreen(QScreen *screen)
         if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
             if (auto *snakeRoot = rootItem->findChild<QQuickItem *>(
                     QStringLiteral("snakeVisualRoot"), Qt::FindChildrenRecursively)) {
+                presentationClock->setTraceSimulationSource(snakeRoot);
                 auto *renderer = new SnakeRenderer(snakeRoot);
                 renderer->setParentItem(snakeRoot);
                 renderer->setSize(snakeRoot->size());

@@ -25,7 +25,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            appstream build-essential cmake debhelper desktop-file-utils \
+            appstream build-essential cargo rustc cmake debhelper desktop-file-utils \
             devscripts dpkg-dev extra-cmake-modules libkf6config-dev \
             libkf6idletime-dev liblayershellqtinterface-dev lintian ninja-build qt6-base-dev \
             qt6-declarative-dev qt6-tools-dev qml6-module-qtquick \
@@ -39,6 +39,13 @@ jobs:
           PPA_BUILD_BINARY: 0
           PPA_SOURCE_REF: HEAD
         run: ./scripts/build-ppa-source.sh "$RUNNER_TEMP/ppa"
+
+      - name: Build and lint offline Debian binary package
+        env:
+          CARGO_NET_OFFLINE: true
+        run: |
+          dpkg-buildpackage -b -us -uc
+          lintian --display-info --pedantic --fail-on error ../plasma-visual-screensaver_*_amd64.changes
 
       - name: Upload installable package
         uses: actions/upload-artifact@v6

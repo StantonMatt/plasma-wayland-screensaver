@@ -115,11 +115,16 @@ KDE Frameworks 6.24, and LayerShellQt 6.6.4. Install the build dependencies:
 
 ```bash
 sudo apt update
-sudo apt install build-essential cmake ninja-build extra-cmake-modules \
+sudo apt install build-essential cargo rustc cmake ninja-build extra-cmake-modules \
   appstream desktop-file-utils lintian shellcheck \
   qt6-base-dev qt6-declarative-dev qt6-tools-dev \
   libkf6config-dev libkf6idletime-dev liblayershellqtinterface-dev
 ```
+
+Rust 1.93 or newer is required. CMake prefers `/usr/bin/cargo` and
+`/usr/bin/rustc`; Cargo builds use the committed lockfile offline, with no
+third-party crates. Debug uses the Rust dev profile; all other build types,
+including Debian's `None`, use the optimized release profile.
 
 At runtime Plasma should provide `xdg-desktop-portal`,
 `xdg-desktop-portal-kde`, PowerDevil, and the Qt Quick/Controls modules. A normal
@@ -259,6 +264,35 @@ those separately:
 ```bash
 rm ~/.config/plasma-visual-screensaverrc
 ```
+
+## Presentation frame timing
+
+Build Release, then run:
+
+```bash
+./scripts/frame-timing.sh --duration 300 --output-dir /tmp/pvs-frame-baseline
+```
+
+The script runs maximum
+Snakes density, trails and intelligence at 30 FPS and auto on one and two
+3440×1440 virtual KWin outputs. It uses a private D-Bus session with service
+autoactivation disabled, fresh config/home/runtime directories, and no inherited
+desktop display or bus. Failure stops the run; there is no real-desktop fallback.
+Use `--outputs 1` or `--rates 30` to select a subset, and `--binary PATH` for a
+binary outside `build-frametiming/bin/`. Each run saves raw CSV, logs and a JSON
+summary with per-window interval/tick/sync/render percentiles, deadline counts,
+RSS and process CPU usage. Initial five seconds are excluded from frame metrics.
+
+`PVS_FRAME_TRACE=/path/frames.csv` enables buffered tracing; unset, no timing
+hooks or resource timer are installed. `PVS_FRAME_TRACE_DURATION_MS` additionally
+makes `--preview` a timed measurement without desktop inhibition services.
+Frames record monotonic nanoseconds at Qt `frameSwapped`, synchronous GUI tick
+work and physics steps consumed by scene-graph synchronization. Sync includes
+`updatePaintNode`; render measures CPU command recording. These are swap/submission
+measurements on virtual outputs, not physical scanout or GPU execution times.
+Raw deadline counts include sub-millisecond jitter, so summaries also report a
+1 ms tolerance. Auto retains the existing Snakes 60 FPS cap and timer pacing.
+The buffer is written at graceful exit and contributes to sampled RSS.
 
 ## Long-run Slithering Snakes benchmark
 

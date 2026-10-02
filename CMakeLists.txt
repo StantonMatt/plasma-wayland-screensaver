@@ -33,6 +33,8 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS Core DBus Gui Qml Quick QuickControls2)
 find_package(KF6 6.0 REQUIRED COMPONENTS Config IdleTime)
 find_package(LayerShellQt REQUIRED)
 
+include(cmake/SnakesCore.cmake)
+
 add_subdirectory(src)
 
 include(CTest)
@@ -105,6 +107,9 @@ set(CPACK_STRIP_FILES ON)
 set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION ON)
 set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA
     "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/conffiles;${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postinst;${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/postrm")
+configure_file(packaging/debian/StaticBuiltUsing.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/StaticBuiltUsing.cmake" @ONLY)
+set(CPACK_POST_BUILD_SCRIPTS "${CMAKE_CURRENT_BINARY_DIR}/StaticBuiltUsing.cmake")
 include(CPack)
 
 feature_summary(WHAT ALL FATAL_ON_MISSING_REQUIRED_PACKAGES)

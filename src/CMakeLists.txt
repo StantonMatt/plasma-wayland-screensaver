@@ -25,6 +25,7 @@ set(screensaver_sources
 
 add_executable(plasma-visual-screensaver ${screensaver_sources})
 target_link_libraries(plasma-visual-screensaver PRIVATE
+    SnakesCore::snakes_core
     Qt6::Core
     Qt6::DBus
     Qt6::Gui

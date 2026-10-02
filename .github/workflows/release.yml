@@ -31,7 +31,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            appstream build-essential cmake desktop-file-utils dpkg-dev \
+            appstream build-essential cargo rustc cmake debhelper desktop-file-utils devscripts dpkg-dev \
             extra-cmake-modules libkf6config-dev libkf6idletime-dev \
             liblayershellqtinterface-dev lintian ninja-build qt6-base-dev \
             qt6-declarative-dev qt6-tools-dev qml6-module-qtquick \
@@ -39,6 +39,13 @@ jobs:
 
       - name: Build, test, validate, and package
         run: ./scripts/build-deb.sh "$RUNNER_TEMP/build" "$RUNNER_TEMP/dist"
+
+      - name: Build and lint offline Debian binary package
+        env:
+          CARGO_NET_OFFLINE: true
+        run: |
+          dpkg-buildpackage -b -us -uc
+          lintian --display-info --pedantic --fail-on error ../plasma-visual-screensaver_*_amd64.changes
 
       - name: Publish GitHub Release
         env:

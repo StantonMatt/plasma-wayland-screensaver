@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 022
+export CARGO_NET_OFFLINE=true
 
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 build_dir=${1:-"${project_root}/build-package"}
@@ -27,12 +28,15 @@ shellcheck \
     "${project_root}/scripts/publish-ppa.sh" \
     "${project_root}/debian/tests/smoke" \
     "${project_root}/packaging/debian/postinst" \
-    "${project_root}/packaging/debian/postrm"
+    "${project_root}/packaging/debian/postrm" \
+    "${project_root}/packaging/debian/rust-static-built-using.sh"
 
 cmake -S "${project_root}" -B "${build_dir}" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr \
-    -DBUILD_TESTING=ON
+    -DBUILD_TESTING=ON \
+    -DCARGO_EXECUTABLE=/usr/bin/cargo \
+    -DRUSTC_EXECUTABLE=/usr/bin/rustc
 cmake --build "${build_dir}" --parallel
 ctest --test-dir "${build_dir}" --output-on-failure
 
