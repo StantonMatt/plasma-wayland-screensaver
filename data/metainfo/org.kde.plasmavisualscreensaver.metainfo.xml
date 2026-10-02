@@ -20,6 +20,12 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.7.2" date="2026-10-02">
+      <description>
+        <p>Makes Slithering Snakes hunt rivals, predicting their movement from what they can see and reacting at individual speeds. Bursts of speed let snakes cut across rivals' paths, and long snakes can trap smaller ones against walls.</p>
+        <p>More snakes are taken out by rivals, with fewer self-inflicted deaths and no deaths from hitting walls, at the same low CPU cost.</p>
+      </description>
+    </release>
     <release version="0.7.1" date="2026-10-02">
       <description>
         <p>Paces each display at the highest rate up to the configured FPS that divides its refresh rate evenly, removing judder on mixed-refresh setups. Synchronized and seamless visuals keep one shared simulation sampled by each display, and shared Bounce physics keeps synchronized monitors in step.</p>

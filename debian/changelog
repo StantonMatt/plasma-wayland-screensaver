@@ -1,3 +1,14 @@
+plasma-visual-screensaver (0.7.2-1ppa1~resolute1) resolute; urgency=medium
+
+  * Make Slithering Snakes hunt rivals, predicting their movement from what
+    they can see and reacting at individual speeds.
+  * Use bursts of speed to cut across rivals' paths, and let long snakes
+    trap smaller ones against walls.
+  * Increase rival takedowns, reduce self-inflicted deaths, and eliminate
+    deaths from wall collisions while keeping CPU use low.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Fri, 02 Oct 2026 10:41:03 -0300
+
 plasma-visual-screensaver (0.7.1-1ppa1~resolute1) resolute; urgency=medium
 
   * Pace each display at the highest rate up to the configured FPS that
