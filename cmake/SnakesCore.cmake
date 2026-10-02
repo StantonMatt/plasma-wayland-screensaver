@@ -3,6 +3,8 @@ find_program(CARGO_EXECUTABLE cargo PATHS /usr/bin NO_DEFAULT_PATH)
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 find_program(RUSTC_EXECUTABLE rustc PATHS /usr/bin NO_DEFAULT_PATH)
 find_program(RUSTC_EXECUTABLE rustc REQUIRED)
+find_program(RUSTDOC_EXECUTABLE rustdoc PATHS /usr/bin NO_DEFAULT_PATH)
+find_program(RUSTDOC_EXECUTABLE rustdoc REQUIRED)
 
 set(SNAKES_CORE_MANIFEST "${PROJECT_SOURCE_DIR}/rust/snakes-core/Cargo.toml")
 set(SNAKES_CORE_CARGO_HOME "${PROJECT_BINARY_DIR}/cargo-home")
@@ -13,6 +15,7 @@ set(SNAKES_CORE_PROFILE_DIR "$<IF:$<CONFIG:Debug>,debug,release>")
 # RUSTFLAGS stays in the command's inherited environment, including Debian flags.
 set(SNAKES_CORE_CARGO_ENV
     "RUSTC=${RUSTC_EXECUTABLE}"
+    "RUSTDOC=${RUSTDOC_EXECUTABLE}"
     "CARGO_HOME=${SNAKES_CORE_CARGO_HOME}"
     "CARGO_TARGET_DIR=${SNAKES_CORE_TARGET_DIR}/${SNAKES_CORE_CONFIG}"
     "CARGO_NET_OFFLINE=true")

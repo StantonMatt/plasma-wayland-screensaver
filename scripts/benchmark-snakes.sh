@@ -13,7 +13,7 @@ cmake -S "${project_root}" -B "${build_dir}" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 cmake --build "${build_dir}" --target test-snakerenderer --parallel "$(nproc)"
 
-RUSTC=/usr/bin/rustc CARGO_HOME="${build_dir}/cargo-home" \
+RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc CARGO_HOME="${build_dir}/cargo-home" \
 CARGO_TARGET_DIR="${build_dir}/cargo-target/Release" CARGO_NET_OFFLINE=true \
     /usr/bin/cargo run --frozen --offline --release \
     --manifest-path "${project_root}/rust/snakes-core/Cargo.toml" \
@@ -21,7 +21,7 @@ CARGO_TARGET_DIR="${build_dir}/cargo-target/Release" CARGO_NET_OFFLINE=true \
 
 # The production screensaver steers with AiController; measure it on the
 # same long-run workload so AI planning costs stay visible.
-RUSTC=/usr/bin/rustc CARGO_HOME="${build_dir}/cargo-home" \
+RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc CARGO_HOME="${build_dir}/cargo-home" \
 CARGO_TARGET_DIR="${build_dir}/cargo-target/Release" CARGO_NET_OFFLINE=true \
     /usr/bin/cargo run --frozen --offline --release \
     --manifest-path "${project_root}/rust/snakes-core/Cargo.toml" \

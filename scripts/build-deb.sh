@@ -36,7 +36,8 @@ cmake -S "${project_root}" -B "${build_dir}" -G Ninja \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DBUILD_TESTING=ON \
     -DCARGO_EXECUTABLE=/usr/bin/cargo \
-    -DRUSTC_EXECUTABLE=/usr/bin/rustc
+    -DRUSTC_EXECUTABLE=/usr/bin/rustc \
+    -DRUSTDOC_EXECUTABLE=/usr/bin/rustdoc
 cmake --build "${build_dir}" --parallel
 ctest --test-dir "${build_dir}" --output-on-failure
 
