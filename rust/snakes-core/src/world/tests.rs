@@ -657,3 +657,53 @@ fn append_growth_segment(w: &mut World, i: usize) {
     let large = w.explode_snake(1);
     assert!(large > small*2);
 }
+
+#[test]
+fn passive_collision_records_preserve_lengths_generations_and_expired_ticks() {
+    use crate::controller::{Controller, Steering};
+    struct Straight;
+    impl Controller for Straight {
+        fn steer(&mut self, _: &World, s: SnakeView<'_>) -> Steering {
+            Steering { desired_angle:s.angle,rush:0.0 }
+        }
+    }
+    let mut w=World::diagnostic_arena(Config {density:0.0,deadly_walls:true,..Config::default()},
+        &[(Point{x:400.0,y:400.0},0.0,32,1.0),
+          (Point{x:417.0,y:400.0},std::f64::consts::PI,16,0.0)],&[]).unwrap();
+    w.step(&mut Straight);
+    let e=*w.collision_events().next().unwrap();
+    assert_eq!(e.tick,w.tick());assert_eq!(e.victim,1);assert_eq!(e.generation,1);
+    assert_eq!(e.reason,DeathReason::Head);assert_eq!(e.victim_length,16);
+    assert_eq!(e.owner_mask,1);assert_eq!(e.owner_lengths[0],32);assert_eq!(e.owner_generations[0],1);
+    assert_eq!(w.snake(1).unwrap().segments.len(),0);
+    assert_eq!(e.head,w.collision_head(1).unwrap());
+    let copy=w.diagnostic_snapshot();assert_eq!(copy.collision_events().next(),Some(&e));
+    w.step(&mut Straight);assert_eq!(w.collision_events().count(),0);
+}
+
+#[test]
+fn passive_body_contact_keeps_first_owner_and_self_is_not_a_kill() {
+    let mut w=World::diagnostic_arena(Config {density:0.0,deadly_walls:true,self_collisions:true,..Config::default()},
+        &[(Point{x:400.0,y:400.0},0.0,24,1.0),(Point{x:600.0,y:600.0},0.0,24,1.0)],&[]).unwrap();
+    w.segments[MAX_SEGMENTS+1]=w.segments[0];
+    w.mark_collisions();
+    let e=w.collision_events().find(|e|e.victim==0).unwrap();
+    assert_eq!(e.reason,DeathReason::Body);assert_eq!(e.owner_mask,2);assert_eq!(e.owner_lengths[1],24);
+    w.segments[MAX_SEGMENTS+1].current=Point{x:700.0,y:700.0};
+    w.segments[MAX_SEGMENTS+1].previous=w.segments[MAX_SEGMENTS+1].current;
+    w.segments[10]=w.segments[0];w.mark_collisions();
+    let e=w.collision_events().find(|e|e.victim==0).unwrap();
+    assert_eq!(e.reason,DeathReason::SelfHit);assert_eq!(e.owner_mask,1);
+}
+
+#[test]
+fn passive_head_record_keeps_multiple_lethal_owners_and_collision_precedence() {
+    let mut w=World::diagnostic_arena(Config {density:0.0,deadly_walls:true,..Config::default()},
+        &[(Point{x:-1.0,y:400.0},0.0,16,1.0),
+          (Point{x:2.0,y:400.0},0.0,32,1.0),
+          (Point{x:4.0,y:400.0},0.0,40,1.0)],&[]).unwrap();
+    w.mark_collisions();
+    let e=w.collision_events().find(|e|e.victim==0).unwrap();
+    assert_eq!(e.reason,DeathReason::Head,"mechanics head precedence overrides wall");
+    assert_eq!(e.owner_mask,6);assert_eq!(e.owner_lengths[1],32);assert_eq!(e.owner_lengths[2],40);
+}

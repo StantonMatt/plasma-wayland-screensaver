@@ -103,6 +103,21 @@ pub enum DeathReason {
     Body,
     SelfHit
 }
+/// Passive, exact record of the latest mechanics collision pass. Head contacts
+/// can have several lethal owners; body contacts preserve mechanics' first-hit
+/// owner. Lengths and generations are captured before any explosion.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CollisionEvent {
+    pub tick: u64,
+    pub victim: u32,
+    pub generation: u32,
+    pub reason: DeathReason,
+    pub victim_length: usize,
+    pub owner_mask: u16,
+    pub owner_generations: [u32; MAX_SNAKES],
+    pub owner_lengths: [usize; MAX_SNAKES],
+    pub head: Segment,
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub alive: u32,
@@ -228,6 +243,9 @@ pub struct World {
     pub(crate) geometry_generation: u64,
     growth_slots: usize,
     deaths: Stats,
+    collisions: [CollisionEvent; MAX_SNAKES],
+    // Passive bounded observer storage, reused on every step.
+    consumptions: Vec<(u64, u32, u32, Point, f64)>,
     #[cfg(feature = "parity")]
     events: Vec<String>,
     #[cfg(feature = "parity")]
@@ -262,6 +280,8 @@ impl World {
             geometry_generation: 1,
             growth_slots: 0,
             deaths: Stats::default(),
+            collisions: [CollisionEvent::default(); MAX_SNAKES],
+            consumptions: Vec::with_capacity(MAX_FOOD),
             #[cfg(feature = "parity")]
             events: Vec::new(),
             #[cfg(feature = "parity")]
@@ -371,6 +391,8 @@ impl World {
         self.next_food = 1;
         self.next_feast = 1;
         self.deaths = Stats::default();
+        self.collisions.fill(CollisionEvent::default());
+        self.consumptions.clear();
         self.food.clear();
         for s in &mut self.snakes {
             s.alive = false;
@@ -749,6 +771,7 @@ impl World {
         self.step_seconds(controller, STEP_SECONDS);
     }
     fn step_seconds<C: Controller+?Sized>(&mut self, controller: &mut C, seconds: f64) {
+        self.consumptions.clear();
         self.time+=seconds;
         self.update_food(seconds);
         self.growth_slots = self.config.maximum_world_segments().saturating_sub(self.stats().total_segments as usize);
@@ -864,6 +887,7 @@ impl World {
     }
     fn consume_food(&mut self, i: usize, owner: usize) {
         let f = self.food[i];
+        self.consumptions.push((f.id, owner as u32, self.snakes[owner].generation, f.p, f.value));
         #[cfg(feature = "parity")]
         self.parity_eat(owner, f);
         let s = &mut self.snakes[owner];
@@ -963,6 +987,7 @@ impl World {
     }
     fn mark_collisions(&mut self) {
         let g = self.config.geometry();
+        self.collisions.fill(CollisionEvent::default());
         for (i, s) in self.snakes.iter_mut().enumerate() {
             s.dying = DeathReason::None;
             if !s.alive {
@@ -988,11 +1013,15 @@ impl World {
                     if diff.abs()<4 {
                         self.snakes[left].dying = DeathReason::Head;
                         self.snakes[right].dying = DeathReason::Head;
+                        self.collisions[left].owner_mask |= 1 << right;
+                        self.collisions[right].owner_mask |= 1 << left;
                     }
                     else if diff<0 {
                         self.snakes[left].dying = DeathReason::Head;
+                        self.collisions[left].owner_mask |= 1 << right;
                     } else {
                         self.snakes[right].dying = DeathReason::Head;
+                        self.collisions[right].owner_mask |= 1 << left;
                     }
                 }
             }
@@ -1060,9 +1089,26 @@ impl World {
                             } else {
                                 DeathReason::Body
                             };
+                            self.collisions[i].owner_mask = 1 << other;
                             break 'search;
                         }
                     }
+                }
+            }
+        }
+        for (i, s) in self.snakes.iter().enumerate() {
+            if s.dying == DeathReason::None { continue; }
+            let event = &mut self.collisions[i];
+            event.tick = self.tick.wrapping_add(1);
+            event.victim = i as u32;
+            event.generation = s.generation;
+            event.reason = s.dying;
+            event.victim_length = s.len;
+            event.head = self.segments[i*MAX_SEGMENTS];
+            for (owner, other) in self.snakes.iter().enumerate() {
+                if event.owner_mask & (1 << owner) != 0 {
+                    event.owner_generations[owner] = other.generation;
+                    event.owner_lengths[owner] = other.len;
                 }
             }
         }

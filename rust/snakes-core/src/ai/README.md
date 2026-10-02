@@ -1,313 +1,653 @@
-# Rust snake AI — iteration 2
+# Rust snake AI — iteration 4
 
-Iteration 2 cuts total deaths from **988 to 195 (80.3%)** across twelve paired
-8-minute ecosystems. The old-JS reference configuration has **14 deaths**, versus
-Rust V1's 79 and the supplied JS result's 64. All twelve runs meet the total-death,
-wall, oscillation, average-time and p99 targets. **The self-death target remains
-unfinished:** ten configurations exceed five self deaths, with 3–13 per run.
-Remaining deaths cannot mostly be described as successful rival outplays: 104 of
-195 are self hits. This is a substantial improvement, not full behavioral acceptance.
+The advisory production follow-up fixes five accepted collision/feasibility
+classes and their siblings, with unchanged mechanics/C ABI and zero steady-state
+allocations. Against the previous README, exact opponent kills change
+**182 → 156**, self deaths **39 → 49**, wall deaths stay **0**, responsive duel
+kills change **4 → 5**, and mean step changes **0.2794 → 0.5451 ms (+95.1%)**
+in separate sessions. Three same-session alternating normal-world pairs measure
+**+0.2% mean / −6.0% median**. Self-safety, attack quality, oscillation and strict
+performance acceptance remain open. All changes are uncommitted.
 
-The paired V1 source is the pre-task staged implementation, against original
-project base `5f4f1d9a07ac6292a668868aaf797af68f105802`. Its saved Git blobs are
-`src/ai/mod.rs`: `2cde574589eefa3e64ef8bf3028ecea0c0e6989c`, and
-`src/ai/spatial.rs`: `80d5ed8758f5b3924a6dd5691ab8bc94aab4a544`.
-Before diagnostics use an isolated non-Git copy of that algorithm with the same
-observer/replay harness. Existing staged mechanics, integration, ABI exports and
-layouts are preserved. This iteration does not change `world.rs`.
+## Advisory production follow-up
 
-## What changed and why
+These measurements supersede the rollout follow-up below. Source edits are
+limited to `src/ai/{mod.rs,attack.rs,pocket.rs,tests.rs,README.md}`. No mechanics,
+exports, C layouts, dependencies or versions changed.
 
-V1's reference diagnosis had 20 rival-prediction misses and 21 space-estimation
-hypotheses among 78 non-head deaths. Its short mandatory horizon, three endpoint
-fills and execution/rollout disagreement missed traps. Two concrete planning
-bugs were especially harmful: a turn-then-straight rollout was executed as a
-continuing hard turn, and rival forecasts ignored retained turn deadlines.
-Truncated rollouts also lost their intended exit heading. These now retain the
-same control schedule through rollout, execution, continuation and known rival
-prediction. Turn commitment covers its expected duration rather than expiring
-mid-maneuver.
+| Accepted finding / class | Fix and siblings audited | Regression |
+| --- | --- | --- |
+| Attack-stage sweep bounds | Split collision intervals at the burst/crossing boundary. Body, losing/winning rival-head, rival-neck and deposited-self consumers share the same interval; broad phases use its traveled distance, and self-deposit padding retains the maximum stage bound. Covers the retained attack and both alternative slots. | `advisory_attack_sweeps_split_before_stage_speed_changes_for_all_attack_slots` |
+| Skipped prey wall deaths | Check walls before any contact on every reply tick. The sibling current-self check also missed ticks, so it now sweeps every exact tick, alongside head and deposited-body contacts. Shared by all six reply controls. | `advisory_reply_wall_exit_is_terminal_even_when_it_returns_next_tick`; `advisory_reply_checks_current_self_geometry_on_previously_skipped_ticks` |
+| Expired prey deposits | Shared distance-based trail clipping limits both prey self deposits and attacker barriers to their live body span, with distinct neck exemptions. Clips partially released edges too; preserves self-collision-off behavior. | `advisory_reply_releases_deposits_after_the_tail_passes_in_wrap` |
+| Gaps between sampled barriers | Replace disconnected sampled points/chords with contiguous one-tick edges, including the latest deposited edge. The sibling prey-deposit point sampling uses the same exact edge helper. Broad-phase bounds precede interpolation and narrow checks; no curve approximation or per-tick allocation is added. | `advisory_reply_hits_barrier_between_former_sampled_intervals` (deadly and seam-wrapping arenas) |
+| Pocket inner-radius floor | Check the proposed inner radius after subtracting pitch, including spiral curvature, before installing a pocket. Audited retained validation, entry, contraction and both goal-tracking rollouts; their existing floor checks remain consistent. | `advisory_pocket_admission_checks_the_inner_radius_before_installing` (radius 18, outer radius 145, pitch 41.4) |
 
-All safety rollouts now reach 72 ticks (2.4 seconds), irrespective of IQ. A body
-check verifies the first tick separately, then swept groups of at most four
-exact motion steps with curvature padding. A candidate's safe count advances
-only after a complete swept check; an unchecked interval is never reported as
-survived. First-tick body queries include observed previous/current body motion
-and enlarge the broad phase by the maximum observed motion. Later static trails
-use conservative time-to-tail-release plus the current growth reserve's actual
-stretch-cycle delay. Forecast future rival neck deposition is checked as well
-as losing/tied head contests and the candidate's own new trail.
+All **six regressions fail before and pass after**. The isolated pre-fix crate in
+`/tmp/ai4-prod-fix/before` receives only the new tests and a behavior-preserving
+extraction of the old single-reply loop, exposing it to tests; its collision and
+pocket logic stay unchanged. The existing positive wall-U entry, actual staged
+motion, collision-setting and allocation regressions also pass.
 
-Every evaluated candidate gets an area estimate at its checked endpoint and
-arrival time. Tail release affects those estimates. A one-cell obstacle band
-rejects cracks without turning room; a narrow starting cell can traverse up to
-two physically free cells to reach wide space. Such root-specific searches are
-not cached as connectivity for other roots. Pocket recovery targets the tail,
-ends when present space opens, and can be interrupted by sustained-turn escape.
-Analytic wall viability rejects states unable to turn parallel to an approaching
-wall even when the crossing lies beyond the horizon. A wall-room utility favors
-room for later turns. Plan reuse is disabled near walls.
+### Natural scorecard: rollout follow-up → advisory fixes
 
-The extra horizon and area work are paid for by cheaper motion/geometry and
-shared work: incremental sine/cosine rotations, tight swept cell ranges, axis
-rejection, wrap only when needed, a 256-entry per-tick body-query cache, connected
-area reuse, and adaptive fill limits. An existing plan is checked against current
-bodies and forecasts every tick. If fully safe and open (or committed), it can
-be retained between scheduled strategy slots without evaluating eight redundant
-alternatives. Diagnostics evaluate those alternatives but preserve the original
-choice; a 5,000-tick regression checks that observation does not change worlds.
+Same 12 configurations, eight minutes each, consecutively on core 4, with no
+concurrent task compiler, CTest or other task benchmark. Historical timings and
+new matrix timings are separate sessions. Each arrow compares the previous
+README's final value with this run.
 
-Food scoring rewards closest approach along the path, rather than penalizing a
-route whose endpoint has already passed the food. Size advantages, food races,
-cluster/feast value, rival interception and pursuit remain active. Winning head
-contact and winning food contest/cutoff fixtures verify concrete competitive
-behavior. Intelligence still influences strategy and aggression, but no longer
-reduces mandatory safety coverage.
+| Seed / IQ / walls | Exact kills | Self deaths | Mean ms | p99 ms | Final oscillations/snake-min |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 73 / 100 / deadly | 12 → 12 | 6 → 6 | 0.2669 → 0.5492 | 0.4176 → 4.0704 | 11.25 |
+| 73 / 100 / wrap | 21 → 19 | 4 → 3 | 0.3306 → 0.4919 | 0.6358 → 1.9976 | 9.40 |
+| 73 / 50 / deadly | 18 → 12 | 1 → 7 | 0.2761 → 0.5298 | 0.5238 → 2.7702 | 8.35 |
+| 73 / 50 / wrap | 15 → 12 | 2 → 4 | 0.2955 → 0.6111 | 0.4733 → 3.0286 | 9.78 |
+| 20260814 / 100 / deadly | 16 → 10 | 6 → 4 | 0.2757 → 0.4300 | 0.4459 → 0.7657 | 10.70 |
+| 20260814 / 100 / wrap | 19 → 11 | 2 → 2 | 0.2794 → 0.4660 | 0.4652 → 1.0013 | 8.45 |
+| 20260814 / 50 / deadly | 9 → 13 | 5 → 6 | 0.2719 → 0.5435 | 0.6109 → 3.6119 | 9.71 |
+| 20260814 / 50 / wrap | 15 → 14 | 2 → 4 | 0.2806 → 0.5274 | 0.5632 → 2.6201 | 9.19 |
+| 991 / 100 / deadly | 9 → 11 | 3 → 3 | 0.2596 → 0.5511 | 0.4044 → 3.6352 | 12.77 |
+| 991 / 100 / wrap | 17 → 14 | 2 → 3 | 0.2716 → 0.7069 | 0.4335 → 5.8002 | 8.38 |
+| 991 / 50 / deadly | 19 → 14 | 1 → 4 | 0.2559 → 0.5822 | 0.5039 → 4.2305 | 10.74 |
+| 991 / 50 / wrap | 12 → 14 | 5 → 3 | 0.2891 → 0.5522 | 0.4748 → 3.5973 | 8.83 |
 
-## Algorithm, bounds and knobs
+Exact kills **182 → 156 (−26)**; self deaths **39 → 49 (+10)**; wall deaths
+**0 → 0**. Bigger/smaller/similar kills are **115 / 34 / 7** with no ambiguous
+masks. Deaths total **205**; opponent contacts account for **76.1%**. Hunting
+kills **104 → 77** and staged kills **47 → 34** remain intention labels.
+Natural runs still admit zero pockets. The self-safety gate regresses.
 
-One deterministic decision chooses among nine controls: goal heading, retained
-plan, straight, gentle left/right (±0.6 radians), hard left/right (±3 radians),
-and hard turn for 16 ticks then straight. Motion uses the actual read-only
-mechanics speed/turn limits with rush zero. Safety duration wins lexicographically.
-If none survives the horizon, checked duration then clearance precede utility.
-Otherwise utility combines food approach, heading, clearance, space, continuity
-and turn bias. Known insufficient pockets get a large penalty. Full-horizon
-safety is a bounded prediction, not a proof of indefinite survival.
+Mean step **0.2794 → 0.5451 ms (+95.1%)**; p99 range **0.7657–5.8002 ms**.
+All twelve historical-session p99 comparisons exceed the 0.55 ms gate. The
+large session difference is not a controlled attribution to these source edits.
 
-One AI-owned grid is rebuilt per observed world tick, O(cells + live segments +
-food); queries use its linked body records, food buckets and occupancy masks.
-This remains a full rebuild: the mechanics moves **every body sample**, including
-corner relaxation and changing spacing/radius. Updating only head/tail cells
-would leave stale obstacles. A correct incremental grid would need to inspect
-all moved samples and maintain deletion links, release maxima and dilation; that
-migration was not justified by the measured budget. Mechanics' own grid remains
-private. Fixed preallocated storage uses a few MiB per controller and is retained
-across configuration changes. Steady-state ticks allocate nothing.
+Three alternating runs of 20260814 / IQ100 / deadly compare preserved pre-fix
+and final executables, with identical observer code, configuration and core 4.
+Each side repeats its own outcomes exactly.
 
-- `STEPS=72`, `CANDIDATES=9`, `STRATEGY_QUOTA=2`, `URGENT_QUOTA=2`.
-- `NARROW_LIMIT=4096` visited body records per candidate. Query-cache hits charge
-  the same visits as the original query. Reaching the cap rejects unverified
-  continuation and sets uncertainty.
-- At most 128×128 grid cells and 14×1600 body slots. Cell side is
-  `max(28, base_radius * 5)`, with a one-cell turn-space clearance band.
-- Required area is `max(24, ceil(length * radius² * 8 / cell_area))`.
-  Each BFS stops at `clamp(max(64, 2 * required_area), 1, 512)` cells. Capped areas
-  are lower bounds, not exact sizes. Cache keys include mask, limit, time and
-  rebuild epoch; connected roots share results only when sound.
-- Tail travel assumes 65% current speed, segment spacing `radius * 1.18`, and a
-  0.15-second reserve. Growth delay uses remaining growth increments/stretch and
-  the mechanics' 0.62 growth-stretch factor; delay is zero at snake/world cap.
-- Food discovery examines at most 1024 cells and 64 particles, retains five
-  targets, and routes with at most 512 cells. Larger snakes require six excess
-  segments to accept head contests, eight for tactical pursuit.
-- Retained-plan utility bonus is 90, with an extra 160 during commitment.
-  Pocket penalty is `600 + 8 * missing_cells`. Turn-sign reversal costs 35.
-  Tail recovery lasts up to 45 ticks; sustained turn >2.8 radians triggers a
-  36-tick forward escape; no food progress for 75 ticks rejects that target.
+| Pair / order | Pre-fix mean / p99 ms | Fixed mean / p99 ms |
+| --- | --- | --- |
+| 1 / before–after | 0.2823 / 0.4988 | 0.2978 / 0.5855 |
+| 2 / after–before | 0.4347 / 0.9772 | 0.3906 / 0.8585 |
+| 3 / before–after | 0.4154 / 0.7563 | 0.4464 / 1.2352 |
 
-Strategy covers two ordinary snakes round-robin plus at most two urgent snakes
-per tick. At maximum population, ordinary coverage is within seven ticks. Every
-snake still revalidates safety each tick. Worst-case work remains bounded by
-population × nine 72-step rollouts, four strategy searches, per-candidate body
-visit limits and nine bounded fills per snake. Rival forecasts are shared.
-No wall-clock timing affects decisions; the controller owns an independent RNG.
+Paired arithmetic means are **0.3775 → 0.3783 ms (+0.2%)**; median means
+**0.4154 → 0.3906 ms (−6.0%)**. These pairs do not establish a strict performance
+non-regression bound across all worlds.
 
-## Paired ecosystem measurements
+### Duels: rollout follow-up → advisory fixes
 
-Intel i9-13900K; separate P cores 8/10/12/14, four sequential job lanes, with no
-concurrent task compiler or heavy observer jobs during the final normal matrix.
-Each run is 3440×1440, density/trails 100, scale/speed 100, self collisions on,
-30 Hz, eight simulated minutes. Timings include AI **and mechanics**, exclude
-scorecard observation and rendering. Host/user processes were left alone.
-The supplied JS timing (~3.35 ms/tick) has different controller-induced geometry
-and timing resolution, so it is context rather than a same-state microbenchmark.
+All eight scenarios, both IQs, jitters, aggressions, mirrors and role swaps:
+**1280 worlds per mode**, unchanged first-death stopping rule. Values are
+high/low aggression kills per 40 worlds.
 
-| Seed | IQ | Walls | Deaths V1 → V2 | Self V1 → V2 | Wall V1 → V2 | Avg ms V1 → V2 | p99 ms V1 → V2 | Oscillations/snake-min V1 → V2 |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 73 | 100 | deadly | 70 → 17 | 21 → 6 | 8 → 0 | 0.4323 → 0.2517 | 1.2314 → 0.4098 | 17.65 → 7.53 |
-| 73 | 100 | wrap | 82 → 16 | 33 → 11 | 0 → 0 | 0.4860 → 0.2913 | 0.7035 → 0.4740 | 21.99 → 6.44 |
-| 73 | 50 | deadly | 88 → 18 | 34 → 12 | 5 → 0 | 0.3387 → 0.2560 | 0.5012 → 0.3980 | 19.85 → 6.94 |
-| 73 | 50 | wrap | 79 → 18 | 26 → 12 | 0 → 0 | 0.4624 → 0.2887 | 0.7113 → 0.4670 | 19.64 → 6.37 |
-| 20260814 | 100 | deadly | 79 → 14 | 27 → 6 | 2 → 0 | 0.3808 → 0.2645 | 0.6065 → 0.4253 | 22.73 → 6.70 |
-| 20260814 | 100 | wrap | 82 → 15 | 33 → 8 | 0 → 0 | 0.5177 → 0.2881 | 0.7403 → 0.4758 | 21.35 → 6.74 |
-| 20260814 | 50 | deadly | 87 → 18 | 30 → 4 | 4 → 0 | 0.3308 → 0.2588 | 0.5148 → 0.4158 | 20.43 → 5.80 |
-| 20260814 | 50 | wrap | 75 → 15 | 30 → 9 | 0 → 0 | 0.4772 → 0.2881 | 0.7050 → 0.4863 | 20.19 → 6.79 |
-| 991 | 100 | deadly | 89 → 18 | 39 → 13 | 0 → 0 | 0.3802 → 0.2532 | 0.6401 → 0.4072 | 21.82 → 7.08 |
-| 991 | 100 | wrap | 86 → 13 | 33 → 8 | 0 → 0 | 0.6025 → 0.2850 | 1.0812 → 0.4659 | 22.42 → 5.77 |
-| 991 | 50 | deadly | 97 → 18 | 39 → 12 | 2 → 0 | 0.3331 → 0.2483 | 0.4841 → 0.3881 | 21.82 → 7.08 |
-| 991 | 50 | wrap | 74 → 15 | 31 → 3 | 0 → 0 | 0.5206 → 0.2954 | 0.9328 → 0.4881 | 20.47 → 7.87 |
+| Scenario / IQ | Responsive high / low | Limited high / low |
+| --- | --- | --- |
+| open_crossing / 100 | 0 → 0 / 0 → 0 | 29 → 29 / 18 → 18 |
+| wall_escape / 100 | 0 → 0 / 0 → 0 | 0 → 0 / 0 → 0 |
+| wrap_escape / 100 | 2 → 2 / 0 → 0 | 36 → 36 / 3 → 3 |
+| equal_cluster / 100 | 0 → 0 / 0 → 0 | 1 → 1 / 1 → 1 |
+| food_cutoff / 100 | 0 → 0 / 0 → 0 | 23 → 23 / 20 → 20 |
+| long_encircle / 100 | 0 → 0 / 0 → 0 | 26 → 26 / 31 → 31 |
+| feasible_crossing / 100 | 0 → 1 / 0 → 0 | 7 → 7 / 20 → 20 |
+| infeasible_chase / 100 | 0 → 0 / 0 → 0 | 0 → 0 / 0 → 0 |
+| open_crossing / 50 | 1 → 1 / 0 → 0 | 34 → 34 / 17 → 17 |
+| wall_escape / 50 | 0 → 0 / 0 → 0 | 0 → 0 / 0 → 0 |
+| wrap_escape / 50 | 0 → 0 / 0 → 0 | 33 → 32 / 4 → 4 |
+| equal_cluster / 50 | 1 → 1 / 0 → 0 | 0 → 0 / 0 → 0 |
+| food_cutoff / 50 | 0 → 0 / 0 → 0 | 16 → 16 / 32 → 32 |
+| long_encircle / 50 | 0 → 0 / 0 → 0 | 34 → 34 / 32 → 32 |
+| feasible_crossing / 50 | 0 → 0 / 0 → 0 | 15 → 15 / 12 → 12 |
+| infeasible_chase / 50 | 0 → 0 / 0 → 0 | 0 → 0 / 0 → 0 |
 
-Totals: **988 → 195 deaths**, **376 → 104 self deaths**, **586 → 91 body deaths**,
-**21 → 0 wall deaths**, **5 → 0 head deaths**. Mean of per-config average step
-times: **0.4385 → 0.2724 ms (37.9% lower)**. Final averages range 0.2483–0.2954 ms,
-p99 0.3881–0.4881 ms, oscillations 5.77–7.87 per snake-minute. Reference:
-**79 → 14 deaths; 0.3808 → 0.2645 ms average; 0.6065 → 0.4253 ms p99**.
+Responsive kills **4 → 5 (+1)**; attacker deaths **1 → 1**; victim self/wall
+**0 / 0**. Limited kills **444 → 443 (−1)**; attacker deaths **31 → 31**;
+victim self deaths **2 → 2**, wall deaths zero. Infeasible-chase kills remain
+zero. These are sampled contacts, not forced-kill or enclosure proofs.
 
-The colony stays larger on average: across-config mean length **68.29 → 74.70**.
-Absolute contest wins fall **21079 → 5124**, and estimated bigger kills **359 → 43**.
-Fewer deaths produce far fewer corpse particles: food/min averages
-**1038.41 → 447.71**. Thus absolute contests/kills are not comparable independent
-of food supply and rival mortality. Competition remains measurable (324–569
-contest wins and 1–7 estimated bigger kills per run), but these results do not
-prove stronger adversarial tactics. Further aggressiveness must be evaluated
-without restoring fatal trapping.
+### Verification and artifacts
 
-| Seed | IQ | Walls | Food/min | Contests won/lost | Bigger kills | Mean/max length | Circling snake-seconds |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| 73 | 100 | deadly | 437.38 | 324/340 | 1 | 70.35/159 | 5.00 |
-| 73 | 100 | wrap | 469.12 | 440/466 | 3 | 79.33/203 | 0.00 |
-| 73 | 50 | deadly | 455.25 | 388/405 | 2 | 72.68/205 | 15.00 |
-| 73 | 50 | wrap | 471.50 | 421/446 | 5 | 77.96/245 | 5.00 |
-| 20260814 | 100 | deadly | 402.25 | 455/487 | 5 | 73.73/208 | 5.00 |
-| 20260814 | 100 | wrap | 450.75 | 442/459 | 4 | 76.53/209 | 15.00 |
-| 20260814 | 50 | deadly | 465.50 | 381/406 | 7 | 71.72/217 | 45.00 |
-| 20260814 | 50 | wrap | 450.38 | 569/599 | 4 | 75.70/242 | 5.00 |
-| 991 | 100 | deadly | 426.88 | 336/347 | 1 | 70.89/203 | 10.00 |
-| 991 | 100 | wrap | 438.50 | 435/451 | 2 | 76.79/198 | 5.00 |
-| 991 | 50 | deadly | 430.62 | 371/385 | 3 | 70.11/208 | 40.00 |
-| 991 | 50 | wrap | 474.38 | 562/597 | 6 | 80.66/199 | 15.00 |
+`RUSTC=/usr/bin/rustc /usr/bin/cargo test --frozen --offline --manifest-path rust/snakes-core/Cargo.toml`
+passes **176 tests**: 85 library, 87 private allocation harness and four integration.
+`cmake -S . -B build-prod -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON`,
+`cmake --build build-prod -j 6` and
+`ctest --test-dir build-prod --output-on-failure` pass **14/14**, including
+mechanics and recorded parity, native simulation, C ABI and QML integration.
+`git diff --check` passes.
 
-Death totals/reasons come from mechanics. Food disappearance, physical near-food
-contests, bigger-killer attribution and movement-style metrics are observer
-estimates, not event counters or proof of planned cutoffs. A contest counts a
-near-food race with another live head within 160 px; each particle counts one
-winner and all challengers as losers. Expiry/eviction is filtered by nutrition
-increase near capture. Oscillation is a turn-sign change within 15 ticks with
->0.008-radian movement. Circling uses a five-second window with little positional
-or nutritional progress. No live Wayland visual soak was run by this worker;
-native/QML integration checks cover plumbing, not subjective animation quality.
+The Release 6000-segment / 450-food cap fixture retains 6000 segments with zero
+allocations/reallocations over 1000 measured ticks plus 2000 reconfiguration ticks,
+including first AI ticks. Its initial isolated timing is **0.8467 ms mean /
+1.2933 ms p99**, against the previous README's **0.5098 / 0.6487 ms**.
+Three alternating cap pairs use preserved pre-fix and final allocation test
+executables on core 4, with no concurrent task compiler or benchmark. Every run
+passes the zero-allocation assertions and retains all 6000 segments.
 
-## Death diagnostics
+| Pair / order | Pre-fix mean / p99 ms | Fixed mean / p99 ms |
+| --- | --- | --- |
+| 1 / before–after | 1.1105 / 4.9449 | 0.9545 / 3.7109 |
+| 2 / after–before | 0.9265 / 3.1543 | 0.9182 / 2.7479 |
+| 3 / before–after | 1.0970 / 6.3944 | 0.8574 / 2.2767 |
 
-`--diagnostics` records nine candidate controls, checked horizons, estimated
-area/cap, required area and length at exact 1/2/3-second lookbacks. It saves five
-world/controller snapshots at one-second intervals, normally replays from
-60–89 ticks before death, and tries all nine alternatives. Each probe holds its
-alternative for one second (respecting turn-then-straight/dynamic V1 goal
-semantics), then resumes the planner; all rivals continue responding normally.
-A probe must survive four seconds from its snapshot. Snapshot allocation/cloning
-is diagnostic-only and never runs in normal ticks.
+Paired cap arithmetic means are **1.0447 → 0.9100 ms (−12.9%)**, median means
+**1.0970 → 0.9182 ms (−16.3%)**. All three fixed cap samples are faster than their
+paired baseline samples. The large timing variation and failed absolute 0.50 ms
+cap still prevent a strict performance acceptance claim. Reproduce with
+`python3 /tmp/ai4-prod-fix/cap_pairs.py`; the allocation executables are built with
+`RUSTC=/usr/bin/rustc /usr/bin/cargo test --release --frozen --offline --manifest-path rust/snakes-core/Cargo.toml --test allocation zero_allocations_with_ai_at_caps_and_after_reconfiguration --no-run`
+(and the isolated baseline manifest), then run sequentially with `taskset -c 4`.
+`cap-{before,after}-[1-3].txt` and `cap-summary.json` retain the full results.
 
-The final paired matrix covers **983 V1 and 195 V2 non-head deaths**, with no
-missing snapshots. Every non-timing scorecard field matches the corresponding
-normal run for all twelve before and all twelve after configurations.
+Reproduce the matrix, duels and alternating normal pairs with
+`python3 /tmp/ai4-prod-fix/benchmarks.py`; its commands use immutable
+`scorecard-before`, `scorecard-final` and `competition-final` executables on
+core 4. Builds use `/usr/bin/cargo`, `/usr/bin/rustc`, Release, frozen/offline.
+Raw logs, `summary.json`, the pre-fix crate, reproduction scripts and binaries
+are preserved under `/tmp/ai4-prod-fix`: `regressions-before.txt`, `cargo.txt`,
+`cmake-{configure,build}.txt`, `ctest.txt`, `release-build.txt`,
+`allocation-release.txt`, `scorecard-<seed>-<iq>-<walls>.txt`, `duels-final.txt`,
+`limited-final.txt` and `normal-{before,after}-[1-3].txt`.
+No commit, push, review loop or persistent task process is created.
 
-| Replay diagnosis | V1 | V2 |
-| --- | ---: | ---: |
-| No tested replay escape | 417 | 151 |
-| Late detection | 11 | 1 |
-| Bad pocket, another measured open survivor | 7 | 2 |
-| Fill underestimate hypothesis | 107 | 32 |
-| Fill overestimate/turnability hypothesis | 142 | 5 |
-| Rival prediction hypothesis | 299 | 4 |
-| Query cap observed | 0 | 0 |
-| Missing snapshot | 0 | 0 |
+## Rollout feasibility follow-up
 
-| Actual death reason | No replay escape V1 → V2 | Underestimate V1 → V2 | Overestimate/turnability V1 → V2 | Rival prediction V1 → V2 | Bad pocket V1 → V2 | Late V1 → V2 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Self | 160 → 80 | 70 → 18 | 142 → 5 | 0 → 0 | 4 → 1 | 0 → 0 |
-| Other body | 246 → 71 | 37 → 14 | 0 → 0 | 299 → 4 | 3 → 1 | 1 → 1 |
-| Wall | 11 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 10 → 0 |
+This follow-up fixes the coil finding as three related classes. The measurements
+below supersede the previous review's results retained in the later sections.
+No mechanics, exported functions or `repr(C)` layouts changed.
 
-Reference (seed 20260814, IQ100, deadly): V1's 78 diagnosed deaths are
-36 no replay escape, 1 late, 10 underestimate, 11 overestimate/turnability and
-20 rival prediction. V2's 14 are 12 no replay escape and 2 underestimate.
+- **Candidate-specific gates:** only goal/coil-tracking candidates advance a
+  spiral and apply its curvature/floor gate. Straight, ordinary turn, compound
+  escape, harvest and flee alternatives still execute their physical safety
+  checks. Attack eligibility and stage controls apply only to the retained
+  attack and two attack slots. The straight-slot reuse optimization now rejects
+  an attack continuation rather than silently copying its staged trajectory.
+- **Checked publication:** candidates record whether a first physical step was
+  evaluated, including rejected wall/body/head steps. Pre-step tactic rejections
+  never enter selection. An ordinary straight rollout always supplies a checked
+  fallback. When none completes the horizon, ranking prefers checked survival
+  ticks, then reachable area, clearance and utility. Published heading and rush
+  come from that same candidate; the Rust-only observer exposes `checked` without
+  changing the stable C debug layout. Safe retained-plan reuse also rechecks the
+  current first step and horizon.
+- **Immediate retained-plan validation:** pocket validity runs every decision,
+  before quota or response timing can defer tactics. It checks current speed,
+  turning radius, lengths, pitch bounds, prey identity/position, release reserve,
+  winding progress, hunt/pocket expiry, walls and recovery states. Generated
+  pockets also retain their entry body length/radius and cancel on either
+  change, so a shortened/resized body cannot reuse a stale release reserve.
+  Crossing the
+  spiral floor also cancels tracking. Every cancellation shares `clear_coil`,
+  resetting retained heading/exit/turn/commitment/rush controls. Choosing a
+  checked non-tracking continuation abandons the old coil immediately. Generated
+  attacks retain their own motion/size snapshot and cancel immediately when
+  speed, turn limits, length or radius changes; fresh cutoffs must pass the normal
+  physical rollout. Harvest and flee store goals, not safety exemptions, and use
+  the same current-geometry rollout as ordinary alternatives.
 
-These labels are **hypotheses, not ground truth**. No replay escape means only
-that these nine one-second control probes failed; it cannot establish that a
-snake was unavoidably boxed in by others. A surviving probe demonstrates an
-escape under reacting rivals, but later decisions can diverge. The classifier
-uses the snapshot's selected area and available survivor masks: low selected
-area with a measured-open surviving option is a bad-pocket hypothesis; low area
-with other survivors suggests underestimation; self death with enough estimated
-area suggests overestimation/turnability. A body death with a full predicted
-horizon suggests rival-prediction miss. Cap classification has precedence if
-any candidate is capped; it would not by itself prove that the cap caused death.
-No such query caps were observed here.
+The sibling audit covers both tracking slots, straight-slot aliasing, both
+attack alternatives, compound escape copies, retained-plan reuse, all-failed
+selection, coil entry/contraction/cancellation, attack consumers, recovery,
+harvest and flee. Six regressions cover gate isolation, delayed pocket
+invalidation, exhausted fallback publication, straight/attack aliasing,
+immediate attack invalidation and abandoning a pocket for a checked straight
+continuation. All six fail on the pre-fix implementation in an isolated `/tmp`
+copy and pass after fixing. The old copy receives only compile-compatible
+private snapshot fields/helper and passive `checked` instrumentation; its gates,
+validation and selection remain unchanged. Pocket invalidation exercises speed,
+length (even a one-segment shrink that preserves eligibility), radius, hunt
+expiry, three recovery states, wrapping, contraction floor,
+pocket timeout and prey escape while tactical revision remains delayed.
 
-The remaining self issue is visible before impact: **all 104 self deaths had no
-72-tick candidate at both one and two seconds before death**, although 76 had a
-full-horizon candidate at three seconds. Eighty have no surviving replay probe
-from the 2–3-second snapshot. This supports earlier enclosure detection and
-multi-maneuver planning rather than simply stronger last-tick avoidance. It does
-not distinguish self-created enclosure from a rival forcing the escape closed,
-and does not prove the strict target impossible.
+### Natural scorecard: prior review → follow-up
 
-Raw task logs are in `/tmp/ai2-results`: `paired-before-*`, `accepted-*`,
-`diagnostic-before-*`, `diagnostic-after-*`, `cargo-accepted.txt`,
-`cmake-accepted-build.txt`, `ctest-accepted.txt`, and `stress-accepted.txt`.
+Same 12 configurations, eight minutes each, consecutively on core 4; no task
+compiler, CTest or other task benchmark runs concurrently. Timings compare
+separate sessions; the same-session alternating comparison follows the table.
 
+| Seed / IQ / walls | Exact kills | Self deaths | Oscillations/snake-min | Mean ms | p99 ms |
+| --- | ---: | ---: | --- | --- | --- |
+| 73 / 100 / deadly | 8 → 12 | 6 → 6 | 8.90 → 11.25 | 0.2651 → 0.2669 | 0.4061 → 0.4176 |
+| 73 / 100 / wrap | 11 → 21 | 3 → 4 | 10.33 → 8.32 | 0.2893 → 0.3306 | 0.4662 → 0.6358 |
+| 73 / 50 / deadly | 13 → 18 | 6 → 1 | 8.74 → 9.59 | 0.2682 → 0.2761 | 0.4527 → 0.5238 |
+| 73 / 50 / wrap | 12 → 15 | 5 → 2 | 8.35 → 10.86 | 0.2850 → 0.2955 | 0.4477 → 0.4733 |
+| 20260814 / 100 / deadly | 15 → 16 | 6 → 6 | 10.98 → 12.62 | 0.2535 → 0.2757 | 0.3966 → 0.4459 |
+| 20260814 / 100 / wrap | 11 → 19 | 4 → 2 | 7.49 → 8.59 | 0.2759 → 0.2794 | 0.4661 → 0.4652 |
+| 20260814 / 50 / deadly | 10 → 9 | 4 → 5 | 10.62 → 10.35 | 0.2659 → 0.2719 | 0.4102 → 0.6109 |
+| 20260814 / 50 / wrap | 14 → 15 | 4 → 2 | 8.55 → 8.53 | 0.2725 → 0.2806 | 0.4738 → 0.5632 |
+| 991 / 100 / deadly | 17 → 9 | 4 → 3 | 10.70 → 10.62 | 0.2617 → 0.2596 | 0.4050 → 0.4044 |
+| 991 / 100 / wrap | 13 → 17 | 2 → 2 | 7.89 → 8.49 | 0.2777 → 0.2716 | 0.4420 → 0.4335 |
+| 991 / 50 / deadly | 10 → 19 | 3 → 1 | 12.06 → 10.60 | 0.2716 → 0.2559 | 0.4323 → 0.5039 |
+| 991 / 50 / wrap | 17 → 12 | 3 → 5 | 7.72 → 9.05 | 0.2757 → 0.2891 | 0.4334 → 0.4748 |
 
-## Reproduction and verification
+Exact kills **151 → 182 (+31)**; self deaths **50 → 39 (−11)**; wall deaths
+**0 → 0**. Bigger/smaller/similar kills are **144 / 35 / 3**, with no ambiguous
+masks. Deaths total **221**; opponent contacts account for **82.4%**. Hunting
+kills **74 → 104** and staged kills **24 → 47** remain intention labels rather
+than causal certificates. Natural runs still admit zero pockets.
 
-Use the distribution toolchain without network/rustup. From the repository root:
+Mean step **0.2718 → 0.2794 ms (+2.8%)**; final p99 range is
+**0.4044–0.6358 ms**. Three p99s exceed 0.55 ms. Ten of twelve runs meet ≤5 self
+deaths, versus nine previously; no run meets ≤8 oscillations/snake-min.
+The broad behavioral/performance acceptance gates are not all met.
+
+Three fresh alternating before/after runs of 20260814 / IQ100 / deadly on core 4
+compare the preserved prior-review executable with this follow-up. Both replay
+identical outcomes on repetition. No task compiler or benchmark runs concurrently.
+
+| Pair / order | Prior review mean / p99 ms | Follow-up mean / p99 ms |
+| --- | --- | --- |
+| 1 / before–after | 0.2646 / 0.4177 | 0.2654 / 0.4105 |
+| 2 / after–before | 0.2723 / 0.5606 | 0.2621 / 0.4087 |
+| 3 / before–after | 0.2657 / 0.4353 | 0.2623 / 0.4097 |
+
+Paired arithmetic means are **0.2675 → 0.2633 ms (-1.6%)**; median means
+**0.2657 → 0.2623 ms (-1.3%)**. These same-session pairs show no
+mean timing regression in this fixture. Timing still varies between sessions,
+and these pairs do not establish a strict no-regression bound across all worlds;
+the full matrix's +2.8% historical-session measurement and three failed p99
+samples are retained above.
+
+### Duels: prior review → follow-up
+
+All eight scenarios, both IQs, identical jitters, aggression levels, mirrors and
+role swaps: 1280 worlds per mode, with the same first-death stopping rule.
+High/low means aggression 1.0/0.15; each value is kills per 40 worlds.
+
+| Scenario / IQ | Responsive high / low | Limited high / low |
+| --- | --- | --- |
+| open_crossing / 100 | 0 → 0 / 0 → 0 | 27 → 29 / 18 → 18 |
+| wall_escape / 100 | 0 → 0 / 0 → 0 | 0 → 0 / 0 → 0 |
+| wrap_escape / 100 | 2 → 2 / 0 → 0 | 36 → 36 / 3 → 3 |
+| equal_cluster / 100 | 0 → 0 / 0 → 0 | 1 → 1 / 1 → 1 |
+| food_cutoff / 100 | 0 → 0 / 0 → 0 | 28 → 23 / 20 → 20 |
+| long_encircle / 100 | 0 → 0 / 0 → 0 | 24 → 26 / 31 → 31 |
+| feasible_crossing / 100 | 1 → 0 / 0 → 0 | 6 → 7 / 20 → 20 |
+| infeasible_chase / 100 | 0 → 0 / 0 → 0 | 0 → 0 / 0 → 0 |
+| open_crossing / 50 | 1 → 1 / 0 → 0 | 34 → 34 / 17 → 17 |
+| wall_escape / 50 | 0 → 0 / 0 → 0 | 0 → 0 / 0 → 0 |
+| wrap_escape / 50 | 0 → 0 / 0 → 0 | 32 → 33 / 4 → 4 |
+| equal_cluster / 50 | 1 → 1 / 0 → 0 | 0 → 0 / 0 → 0 |
+| food_cutoff / 50 | 0 → 0 / 0 → 0 | 24 → 16 / 32 → 32 |
+| long_encircle / 50 | 0 → 0 / 0 → 0 | 34 → 34 / 32 → 32 |
+| feasible_crossing / 50 | 1 → 0 / 0 → 0 | 15 → 15 / 12 → 12 |
+| infeasible_chase / 50 | 0 → 0 / 0 → 0 | 0 → 0 / 0 → 0 |
+
+Responsive kills **6 → 4 (−2)**; attacker deaths **2 → 1**; victim self/wall
+**0 / 0**. Both previously responsive feasible-crossing kills disappear.
+Remaining contacts are two IQ100 seam kills, one IQ50 open crossing and one IQ50
+equal-cluster contact; the equal-cluster attacker also dies. Infeasible chase
+kills remain zero. Limited kills **451 → 444 (−7)**; attacker deaths **30 → 31**;
+victim self deaths **3 → 2**, wall deaths zero. These are not forced-kill claims.
+The responsive attack-quality limitation remains unresolved.
+
+### Final verification
+
+`cargo test --frozen --offline` passes **164 tests**: 79 library, 81 private
+allocation harness and four integration. Final CTest passes **14/14**, including
+mechanics parity, recorded parity, C ABI, native simulation and QML integration.
+The Release 6000-segment / 450-food test retains all segments and reports zero
+allocations/reallocations for 1000 measured ticks plus 2000 reconfiguration ticks,
+including the first AI ticks. Its isolated measurement is **0.5098 ms mean /
+0.6487 ms p99**, versus the previous separate-session sample **0.5053 / 0.6622**;
+a strict 0.50 ms cap remains unestablished. `git diff --check` passes.
+
+Reproduction uses the commands in the verification section below. The exact
+sequential final command script is `/tmp/ai4-rollout-fix/verify.sh`; alternating
+normal comparisons use `/tmp/ai4-rollout-fix/pairs.py`. Raw final logs and immutable
+executables are in `/tmp/ai4-rollout-fix`: `cargo.txt`, `cmake-configure.txt`,
+`cmake-build.txt`, `ctest.txt`, `release-build.txt`, `allocation-release.txt`,
+`scorecard-final.txt`, `duels-final.txt`, `limited-final.txt`,
+`normal-before-[1-3].txt`, `normal-after-[1-3].txt`, `normal-pairs.txt`,
+`regressions-before.txt`, `scorecard-final` and `competition-final`.
+No commit, push, review loop or persistent process is created by this worker.
+
+## Scope and accounting
+
+The base is `d2e5eaf1bc5ec6abf82b248526cfa7c6cb5cdd24` plus the uncommitted
+iteration-3 candidate and imported Rust/integration work. The original crate is
+preserved in `/tmp/ai4-v3-original`; exact-accounting v3 is `/tmp/ai4-before`.
+Before and after share the same mechanics event hook and fixture/observer code.
+V3's added Rust-only debug fields return zero for unavailable attack phases;
+they do not change its controls. No imported integration code is edited here.
+
+`World::collision_events()` borrows a fixed `[CollisionEvent; MAX_SNAKES]`.
+Each event captures completed tick, victim slot/generation, final reason,
+collision-time lengths, head sweep, and owner generations/lengths before any
+explosion. Body contacts retain mechanics' first owner; simultaneous lethal
+head contacts retain a mask. Wall/head/body precedence and iteration order are
+unchanged. Records expire at the next collision pass and snapshots copy them.
+There is no event allocation, RNG draw, additional collision search, C export,
+or exported structure layout change.
+
+The primary metric counts deaths with an opponent contact. A victim is counted
+once, including simultaneous contacts; ambiguous masks are reported separately.
+Bigger/smaller means a collision-time length difference of at least four;
+remaining single-owner contacts have similar lengths. Deaths of the contact
+owner in the same pass remain visible: a kill does not imply attacker survival.
+Self/wall losses are never silently credited to a nearby hunter. Natural food
+capture attribution remains a nutrition-and-proximity observer estimate.
+
+## Controller
+
+- A single preallocated controller still chooses from **11 candidates**, with
+  **72 ticks** of mandatory coverage and **138** on scheduled enclosure-risk
+  decisions. Strategy/urgent quotas remain **2 + 2**. The existing spatial grid,
+  4096-record safety cap, future-trail space check, conservative growth/tail
+  release, turn hysteresis and two extended escape slots remain bounded.
+- `attack.rs` replaces the two ordinary turn-then-straight slots during hunts
+  with at most two cutoff finalists. It samples prey arrivals at **0.6, 1.0,
+  1.4 seconds**, constructs both perpendicular crossing sides, and deposits
+  the barrier about 0.2 seconds early. Approach bearing refinement is bounded
+  to three discrete simulations. An arc to the approach bearing and straight
+  burst lead into a slower crossing arc and straight exit. Rush is the hunter's
+  aggression on approach and **0.15** in the crossing turn.
+- Each stage uses `motion_limits()` and mechanics' angle clamp and 30 Hz
+  movement law. Ordinary safety rollout validates the generated path. Six
+  physical prey replies (straight, immediate/delayed left/right, escape burst)
+  are evaluated only for the two safe finalists on strategy searches. When enabled,
+  current and deposited self geometry reject invalid replies. Attacker barrier lifetime
+  uses cumulative distance traveled, not conservative slow tail-release time.
+  These are samples, not a forced-kill proof; forecasts hold current size and
+  nutrition rather than replaying future food consumption.
+- Retained attacks carry target generation, side, crossing, headings and stage
+  deadlines. Side continuity and commitment compete with reply pressure in the
+  existing safety ranking. Stale/dead targets, a passed crossing, lost size or
+  speed advantage, expiry and recovery cancel an attack and its alternatives.
+  Finalists are decision-local scratch. A shared predicate binds every retained
+  attack/finalist to prey slot/generation and checks deadlines, recovery, size,
+  speed and passed crossings before rush, rollout or reply evaluation. Every
+  published tick still checks actual nearby geometry. A new safe attack can supersede an old
+  one; visible retargeting remains a limitation.
+- All rival forecasts now use **observed position, heading, recent actual turn
+  and applied rush**. Observed curvature decays over 0.3 seconds into straight
+  travel. They never read another snake's private desired heading, retained
+  exit, goal or orbit. One forecast is shared across controllers' decisions.
+- A fixed life trait derived from turn bias gives opponent-response revisions
+  every **2–8 ticks**. Future rival-head/neck selection uses this cadence; the
+  immediate swept check, current bodies, wall viability and self lookahead run
+  every tick. Scheduled strategy quotas can further delay tactical goal updates.
+  Tactical revisions stay pending until a strategy slot performs them; recovery
+  early returns do not consume them. Forecast checks have a separate deadline
+  because they are performed during rollout. Attack expiry/identity validation
+  runs immediately each tick. IQ's existing physical turn-rate effect is unchanged.
+  No random steering mistakes or environmental-safety reductions are added.
+- `pocket.rs` admits an existing wall-side U only with sufficient body coverage,
+  initial prey containment, body-distance reserve and checked continuation.
+  Prey escape timing is not certified against all responses; successful
+  offensive gap closure and a finishing mechanism remain unproven.
+  Wrapping/seam pockets and open-space automatic coils are rejected. A legal
+  inner pitch bridges the U before contraction. The explicit spiral tangent has
+  bounded cross-track correction; radius follows angular progress, without the
+  old `0.622R` inward equilibrium. For `k = pitch / 2π`, curvature is
+  `(r² + 2k²)/(r² + k²)^(3/2)` and `vκ ≤ ω` is checked. Pitch lies strictly between
+  `1.48rA + 2` and `2×0.78(rA+rB) − 2`. Actual traveled distance ages the barrier.
+  Prey escape, release, reverse winding, curvature/floor or timeout aborts it.
+  The positive wall-U test proves a checked entry, not a finished enclosure.
+  Natural runs admit **zero** such pockets; no coil kills are claimed.
+
+## Previous review natural scorecard
+
+3440×1440, density/trails/scale/speed 100, 14 slots, self collision on, 30 Hz.
+Each row is a complete eight-minute run. Final runs execute consecutively on
+physical P-core **4**, without concurrent task compilers or diagnostic replays.
+The left values are the README's pre-review v4 results; timings compare separate
+sessions rather than alternating pairs. Every final p99 is below 0.55 ms.
+
+| Seed / IQ / walls | Opponent kills v4 → fixed | Fixed bigger / smaller / similar | Self v4 → fixed | Oscillations/snake-min v4 → fixed | Avg ms v4 → fixed | p99 ms v4 → fixed |
+| --- | ---: | --- | ---: | --- | --- | --- |
+| 73 / 100 / deadly | 14 → 8 | 7 / 1 / 0 | 5 → 6 | 8.18 → 8.90 | 0.2623 → 0.2651 | 0.4328 → 0.4061 |
+| 73 / 100 / wrap | 15 → 11 | 10 / 0 / 1 | 4 → 3 | 8.34 → 10.33 | 0.2868 → 0.2893 | 0.5021 → 0.4662 |
+| 73 / 50 / deadly | 16 → 13 | 11 / 1 / 1 | 2 → 6 | 7.44 → 8.74 | 0.2570 → 0.2682 | 0.4377 → 0.4527 |
+| 73 / 50 / wrap | 13 → 12 | 7 / 5 / 0 | 2 → 5 | 6.71 → 8.35 | 0.2740 → 0.2850 | 0.4526 → 0.4477 |
+| 20260814 / 100 / deadly | 12 → 15 | 13 / 2 / 0 | 3 → 6 | 10.81 → 10.98 | 0.2641 → 0.2535 | 0.4470 → 0.3966 |
+| 20260814 / 100 / wrap | 21 → 11 | 10 / 1 / 0 | 0 → 4 | 6.47 → 7.49 | 0.2701 → 0.2759 | 0.4555 → 0.4661 |
+| 20260814 / 50 / deadly | 15 → 10 | 5 / 5 / 0 | 5 → 4 | 10.22 → 10.62 | 0.2705 → 0.2659 | 0.4710 → 0.4102 |
+| 20260814 / 50 / wrap | 14 → 14 | 9 / 4 / 1 | 2 → 4 | 6.60 → 8.55 | 0.2791 → 0.2725 | 0.4631 → 0.4738 |
+| 991 / 100 / deadly | 11 → 17 | 11 / 5 / 1 | 6 → 4 | 10.80 → 10.70 | 0.2671 → 0.2617 | 0.4533 → 0.4050 |
+| 991 / 100 / wrap | 19 → 13 | 7 / 5 / 1 | 4 → 2 | 6.14 → 7.89 | 0.2655 → 0.2777 | 0.4464 → 0.4420 |
+| 991 / 50 / deadly | 14 → 10 | 9 / 1 / 0 | 6 → 3 | 8.71 → 12.06 | 0.2525 → 0.2716 | 0.4306 → 0.4323 |
+| 991 / 50 / wrap | 14 → 17 | 14 / 3 / 0 | 3 → 3 | 7.23 → 7.72 | 0.2741 → 0.2757 | 0.4663 → 0.4334 |
+
+No ambiguous masks occurred. Bigger-owner kills are **132 → 113**,
+smaller-owner kills **42 → 33**, and similar-length kills **4 → 5**. Deaths total
+**220 → 201**; **75.1%** of final deaths have an exact opponent contact.
+Mean kills/run are **14.83 → 12.58**.
+
+Mean step is **0.2686 → 0.2718 ms (+1.2%)**, final range
+**0.2535–0.2893 ms**, p99 **0.3966–0.4738 ms**. Self deaths are 2–6;
+nine of twelve meet ≤5, versus ten before review. Oscillations are 7.49–12.06;
+three meet ≤8, versus six before review. Wall deaths remain zero in every run.
+**The required non-regression in self safety is not achieved.**
+
+Kills with hunting intention change **83 → 74**; kills with a staged cutoff
+active change **12 → 24**. These flags label controls at contact, not causal
+proof. Hunting deaths are **8 → 5**, staged attack deaths **1 → 0**.
+Hunting time is **13004.91 → 16300.86 snake-seconds**, rushing time
+**7644.07 → 10044.51**. Food capture/min is **402.12 → 387.03**, mean length
+**70.25 → 70.06**. No general enclosure kills are claimed.
+
+## Previous review controlled fixtures
+
+Eight scenarios, IQ 100/50, ten identical jitters crossed with aggression
+1.0/0.15, mirror and role swap: **40 worlds per table cell**, 1280 per mode.
+Normal duration is 20 seconds, stopping at the first death before respawns.
+The infeasible chase lasts **3 seconds**, isolating the impossible attack window
+rather than counting an unrelated encounter after a wall turnaround.
+
+`--scripted-prey` now means competent **limited** prey: bounded heading choices,
+72-tick wall/self checks, own deposited trail checks and immediate rival-body
+checks. A passed food patch never asks it to reverse into its neck. It does not
+anticipate opponents' next maneuvers. The curved fixture uses **130 actual
+samples at radius 180**, meeting v3's length/turn eligibility at both IQs with
+an open gap. V4 correctly rejects its unsupported open-space coil.
+
+Kills use the exact record for **any uniquely attacker-owned opponent death**,
+including third rivals in triads and contacts of any size. Food shares normalize
+attacker/victim roles across swaps. The pre-review fixtures had no victim
+self/wall deaths. Corrected responsive fixtures still have none; corrected limited fixtures have three victim self
+deaths and zero victim wall deaths.
+
+| Scenario / IQ | Responsive high kills v4 → fixed | Responsive low kills v4 → fixed | Limited high kills v4 → fixed | Limited low kills v4 → fixed | Responsive high attacker deaths v4 → fixed | Limited high attacker deaths v4 → fixed |
+| --- | --- | --- | --- | --- | --- | --- |
+| open_crossing / 100 | 0 → 0 | 0 → 0 | 35 → 27 | 40 → 18 | 0 → 0 | 14 → 0 |
+| wall_escape / 100 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 |
+| wrap_escape / 100 | 8 → 2 | 0 → 0 | 40 → 36 | 3 → 3 | 0 → 0 | 0 → 6 |
+| equal_cluster / 100 | 1 → 0 | 0 → 0 | 0 → 1 | 0 → 1 | 0 → 0 | 0 → 0 |
+| food_cutoff / 100 | 0 → 0 | 0 → 0 | 17 → 28 | 33 → 20 | 0 → 0 | 0 → 0 |
+| long_encircle / 100 | 0 → 0 | 0 → 0 | 27 → 24 | 32 → 31 | 0 → 0 | 0 → 0 |
+| feasible_crossing / 100 | 0 → 1 | 0 → 0 | 2 → 6 | 0 → 20 | 0 → 0 | 0 → 0 |
+| infeasible_chase / 100 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 |
+| open_crossing / 50 | 1 → 1 | 0 → 0 | 39 → 34 | 40 → 17 | 0 → 0 | 22 → 12 |
+| wall_escape / 50 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 |
+| wrap_escape / 50 | 4 → 0 | 0 → 0 | 36 → 32 | 5 → 4 | 0 → 0 | 2 → 0 |
+| equal_cluster / 50 | 0 → 1 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 1 | 0 → 0 |
+| food_cutoff / 50 | 1 → 0 | 0 → 0 | 34 → 24 | 36 → 32 | 0 → 0 | 1 → 0 |
+| long_encircle / 50 | 2 → 0 | 0 → 0 | 36 → 34 | 32 → 32 | 2 → 0 | 2 → 0 |
+| feasible_crossing / 50 | 2 → 1 | 0 → 0 | 12 → 15 | 16 → 12 | 0 → 1 | 1 → 0 |
+| infeasible_chase / 50 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 |
+
+All responsive cells: kills **19 → 6**, attacker deaths **2 → 2**.
+
+All limited cells: kills **515 → 451**, attacker deaths **100 → 30**.
+
+Responsive feasible crossing is now **1/40 at each IQ**; the IQ50 kill also
+kills the attacker. Infeasible chases remain zero. Responsive aggressive seam
+kills are **2/40 at IQ100, 0/40 at IQ50**, with no attacker deaths there.
+The IQ100 crossing kill takes 9.800 seconds; seam kills average 3.550 seconds.
+The remaining responsive IQ50 contacts are open crossing and equal cluster;
+the equal-cluster contact also kills the attacker. Responsive mode has no victim
+self/wall deaths. Limited mode has three victim self deaths (IQ100 wrap escape) and zero victim wall deaths; these deaths
+are not credited as kills. Limited prey remains easier to contact and does not establish forced kills against responsive prey.
+
+## Previous review mature cost and allocations
+
+The cap fixture starts and ends with **6000 segments / 450 food** for 1000
+measured ticks, then tests 2000 ticks after deadly/self reconfiguration. Both
+phases allocate/reallocate **zero** times, including first AI ticks.
+
+The final isolated cap check measures **0.5053 ms avg / 0.6622 ms p99**,
+with zero allocations/reallocations and all 6000 segments retained. This single
+sample exceeds 0.50 ms; the historical timing pairs below are not measurements
+of the corrected controller.
+
+Three fresh alternating P-core-14 pairs compare the preserved pre-review v4
+controller with the final corrected controller. All six cap/reconfiguration
+checks allocate zero times; no concurrent task compiler or replay runs.
+
+| Pair | Pre-review v4 avg / p99 ms | Fixed avg / p99 ms |
+| --- | --- | --- |
+| 1 | 0.5336 / 0.7164 | 0.5286 / 0.7128 |
+| 2 | 0.5203 / 0.6925 | 0.6110 / 3.5665 |
+| 3 | 0.6177 / 0.9007 | 0.5223 / 0.6830 |
+
+Median average is **0.5336 → 0.5286 ms (−0.9%)**. The corrected pair-2 slowdown
+and p99 spike are retained in the table. Timing varies in both executables;
+these runs do not establish a strict 0.50 ms cap for either controller.
+
+Historical pre-review timing: three alternating same-core pairs on P-core 14:
+
+| Pair | v3 avg / p99 ms | v4 avg / p99 ms |
+| --- | --- | --- |
+| 1 | 0.4951 / 0.5665 | 0.4725 / 0.5662 |
+| 2 | 0.6968 / 1.1014 | 0.6629 / 0.9348 |
+| 3 | 0.4898 / 0.5674 | 0.4755 / 0.5590 |
+
+Median average **0.4951 → 0.4755 ms (−3.96%)** meets 0.50 ms. Pair 2 shows a
+shared slowdown in both algorithms and is disclosed, not discarded. Two earlier
+core-6 after samples measured 0.5353/0.5187 ms versus 0.4941 ms before; this timing
+variance prompted the three paired repeats. A strict every-sample 0.50 ms ceiling
+is not established on this shared machine. Normal scorecard limits are met.
+
+## Historical pre-review paths and exact events
+
+These describe the pre-review v4 executable, not the corrected controller.
+They are log-based descriptions, not a blinded visual judgment:
+
+- **Natural 20260814/IQ100/deadly, tick 4367 (145.57s):** snake 1 selects snake 5
+  around 143s and rushes diagonally toward its predicted route. The victim first
+  turns toward open rightward travel, then uses 0.25 escape rush and turns down.
+  The hunter briefly selects side +1 cutoff bursts, slows to 0.15 during the
+  final crossing turn, and wins a head contact at (2077,349), lengths **62/50**.
+  Several plans are superseded; it reads as pursuit plus an escape and closing
+  contact, not a perfectly held three-stage maneuver.
+- **Responsive seam, IQ100, jitter 1, mirrored, original roles, tick 112:** the
+  attacker bursts around the victim's changing turns from 1.8s, crosses the
+  seam ahead at 3.2s, then bends back across its rightward exit. The victim tries
+  a late nearly-horizontal turn at 3.6s; at 3.73s the **72/24** head contest
+  resolves for the attacker. Both geometry and the contact survive wrapping.
+- **Responsive feasible crossing, IQ50, jitter 0, original roles, tick 421:**
+  the hunter approaches from the victim's upper-left around 11.8s. The victim
+  turns repeatedly to escape; the hunter arcs around its outside, bursts along
+  the same side from 12.6–13.6s, then crosses the victim's leftward exit at 14.03s
+  and wins **72/41**. Earlier side switches make this less clean than the desired
+  stable attack. No wall/self death supplies the kill.
+- **Natural tick 5154 (171.8s):** the **80/67** body contact is exact, but the
+  owner is disengaging without hunt/cutoff flags. This is an incidental moving
+  barrier encounter; it is not labeled a deliberate trap.
+
+## Rejected pilots and remaining decision
+
+Staged attacks with privileged forecasts: reference opponent kills 9→10 but
+self deaths 3→7. Observation-only prediction then reached 15 kills / 2 self;
+the restricted-pocket/trait pilot reached 12 / 3. A steering deadband and earlier
+extension gate lost responsive seam kills; endpoint/burst-duration refinement
+reached only 8 kills / 7 self. These were not retained. A separate hard-commit
+pilot in `/tmp/ai4-commit-pilot` raised the reference to 18 kills / 1 self but
+eliminated the feasible responsive crossing kills; it was also not retained.
+The pre-review full matrix was authoritative for that candidate. The corrected
+controller is measured separately in the tables above; the self-safety gate
+remains failed.
+
+The remaining problem is robust, stable attacks against responsive prey,
+especially IQ100, plus the failed self-safety gate and excess oscillation.
+No gameplay rules were changed. If the next experiment needs a rule change,
+prototype **a 0.8s full burst costing two segments with a 1.2s recovery interval**,
+available to both sides. Require the attacker to retain its four-segment winning
+margin after the cost. That creates observable spent-escape windows; test it
+separately before changing the length-speed penalty. This is a recommendation,
+not evidence that current mechanics make stronger AI impossible. Preserve the
+historical mechanics oracle and explicitly version any such rule experiment.
+
+## Verification and reproduction
+
+Distribution Rust only, frozen/offline, no dependency or version changes:
 
 ```sh
 RUSTC=/usr/bin/rustc /usr/bin/cargo test --frozen --offline --manifest-path rust/snakes-core/Cargo.toml
-RUSTC=/usr/bin/rustc /usr/bin/cargo build --release --frozen --offline --manifest-path rust/snakes-core/Cargo.toml --example ai_scorecard
-cmake -S . -B build-ai2 -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-cmake --build build-ai2 -j 6
-ctest --test-dir build-ai2 --output-on-failure
-RUSTC=/usr/bin/rustc taskset -c 8 /usr/bin/cargo test --release --frozen --offline --manifest-path rust/snakes-core/Cargo.toml --test allocation zero_allocations_with_ai_at_caps_and_after_reconfiguration -- --nocapture
-cc -std=c11 -Wall -Wextra -Werror -I rust/snakes-core/include rust/snakes-core/tests/ai_debug_smoke.c build-ai2/cargo-target/Release/release/libsnakes_core.a -ldl -lpthread -lm -o /tmp/ai2-debug-smoke
-/tmp/ai2-debug-smoke
-taskset -c 8 rust/snakes-core/target/release/examples/ai_scorecard 8 20260814 100 deadly --ai-only
-taskset -c 16 rust/snakes-core/target/release/examples/ai_scorecard 8 20260814 100 deadly --ai-only --diagnostics
+RUSTC=/usr/bin/rustc /usr/bin/cargo build --release --frozen --offline --manifest-path rust/snakes-core/Cargo.toml --example ai_scorecard --example ai_competition
+cmake -S . -B build-ai4 -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build-ai4 -j 6
+ctest --test-dir build-ai4 --output-on-failure
+RUSTC=/usr/bin/rustc taskset -c 14 /usr/bin/cargo test --release --frozen --offline --manifest-path rust/snakes-core/Cargo.toml --test allocation zero_allocations_with_ai_at_caps_and_after_reconfiguration -- --nocapture
+taskset -c 4 rust/snakes-core/target/release/examples/ai_scorecard 8 20260814 100 deadly --ai-only
+taskset -c 18 rust/snakes-core/target/release/examples/ai_competition
+taskset -c 18 rust/snakes-core/target/release/examples/ai_competition --scripted-prey
+taskset -c 18 rust/snakes-core/target/release/examples/ai_competition --scenario feasible_crossing --trace
+cc -std=c11 -Wall -Wextra -Werror -I rust/snakes-core/include rust/snakes-core/tests/ai_debug_smoke.c build-ai4/cargo-target/Release/release/libsnakes_core.a -ldl -lpthread -lm -o /tmp/ai4-debug-smoke
+/tmp/ai4-debug-smoke
 ```
 
-Matrix job order is seeds `[73, 20260814, 991]`, IQ `[100, 50]`, walls
-`[deadly, wrap]`; lane `n` runs jobs `jobs[n::4]` sequentially on
-`[8, 10, 12, 14][n]`. Before/after diagnostics run each configuration on its own
-E core 16–27, before then after. Never use diagnostic or profiling timings for
-budget acceptance. `--help` lists optional positional arguments and flags.
+Cargo passes **164 tests** (79 library, 81 private allocation harness, four
+integration); full CTest **14/14**, including parity, recorded parity, ABI and
+native/QML integration. The C smoke client builds with warnings as errors and
+runs. `git diff --check` passes. Regressions cover exact event precedence/masks,
+pre-explosion lengths/generations, expiry/snapshot, stage movement/continuation,
+unreachable cutoffs, independence from private plans, immediate environmental
+checks under delayed response, spiral radius/curvature/distance aging and a
+positive wall-U entry. Existing observer determinism and mechanics goldens pass.
 
-The latest Cargo suite passes **90 tests** (42 library, 44 in the private
-allocation harness including duplicated library tests, four integration tests).
-Full CTest passes **14/14**, including `snakes-parity` and
-`snakes-parity-record`. The release example and C debug client build/run cleanly;
-`--help` and `git diff --check` pass.
+Raw logs, immutable executables and scripts are in `/tmp/ai4-results`:
+`paired-before-*` / `paired-after-*`, `duels-before-final.txt` /
+`duels-after-final.txt`, `limited-before-final.txt` / `limited-after-final.txt`,
+`stress-final-before-[1-3].txt` / `stress-final-after-[1-3].txt`,
+`readability-natural.txt`, `cargo-final.txt`, `ctest-final.txt` and
+`cmake-build-final.txt`. `/tmp/ai4-paired.py` runs the 12 alternating pairs.
+No commit, push, review loop or persistent process is created by this worker.
+The review-fix loop remains the orchestrator’s responsibility.
 
-The pinned release cap fixture holds **6000 segments and 450 food** at start,
-retains **6000 segments after 1000 measured ticks**, then checks a further
-2000-tick self-collision/deadly reconfiguration. Both measured phases have
-**zero allocations/reallocations**, including first AI ticks. First-phase
-average is **0.4741 ms**, p95 **0.5297**, p99 **0.5611**, maximum **1.0169**.
-V1 measured **0.7078 ms average**, p99 **0.9303**, ending at 5710 segments.
-The denser scale-25 stress average now meets the ≤0.6 ms target while preserving
-its full segment population. The normal ecosystem's average/p99 targets are
-also met in every configuration, not obtained by measuring diagnostic mode.
+## Review classes and sibling audit
 
-New regression coverage includes plan execution/continuation/exit deadlines,
-known rival plans, truncated exits, observed body-motion broad phase, exact query
-cache results and cap accounting, tail growth delay/cap, turning-space release,
-area invalidation, recovery cancellation, winning contact/cutoff, independent
-snapshot replay, and non-invasive diagnostics/profiling. Existing allocation,
-ABI, scripted-control, determinism and JS mechanics fixtures remain green.
-No ABI layout/function/version changes; the header only adds a comment for debug
-flag bit 4 (16), which marks a revalidated retained plan.
+- **Schedules/deadlines:** scheduled and urgent strategy entry, escape/orbit early
+  returns, forecast cadence, and attack/hunt/stage/recovery deadlines were checked.
+  Tactical response deadlines now advance only after tactics and finalist
+  generation run. Forecast revisions keep a separate performed-work cadence;
+  attack validity is checked each tick. Other timers are absolute tick comparisons,
+  and food progress advances only on observed progress; they do not discard pending
+  work. Recovery pauses can defer tactics but cannot permanently phase-starve it.
+- **Retained state:** active attacks, both alternatives, their prey identities,
+  heading/exit/turn/commitment/rush controls, and goal tracking were checked at hunt
+  expiry/lost advantage, dead/replaced prey, threat dodge, orbit/area recovery,
+  strategy early returns and pocket entry. All attack cancellations share
+  `clear_attacks`; finalists are decision-local. All attack consumers use
+  `attack_usable`. Dead/replaced prey also clears stale goal tracking.
+- **Geometry certification:** winning-head suppression, pursuit straightening
+  after forecast defeat, future necks, current bodies, own deposited trails and
+  response head scoring were checked. `head_contact` uses matching single-tick
+  sweeps in rollout and prey replies; neck safety runs before forecast defeat
+  suppresses later rival checks. Losing-head/neck/self aggregate sweeps remain
+  conservative rejection tests, never lethal-contact certificates. Current bodies
+  are never suppressed by a forecast defeat.
+- **World settings:** both current-own-body and deposited-own-trail reply tests,
+  both corresponding limited-prey benchmark tests, rollout body/self/area masks,
+  wall checks, and wrapping queries were checked. The four simulated-response
+  checks now read `self_collisions`; wall checks already read `deadly_walls`, and
+  geometry uses world displacement/canonicalization. Pocket pitch reserves are
+  intentionally conservative geometry constraints, not simulated self deaths.
 
-## Remaining work
+Six added regressions cover the four classes plus aligned/seam head contacts and
+shared attack identity/advantage/deadline checks. The four primary class tests
+fail on the original implementation in an isolated `/tmp` copy and pass after
+fixing; the copy adapts the newly added private Attack identity/cadence fields
+for compilation and omits the two helper-specific tests. The four primary
+behavioral assertions are unchanged. No mechanics, exported functions or
+`repr(C)` layouts changed.
 
-- **Self hits ≤5/run is unmet in ten configurations.** Coarse connectivity and
-  a 2.4-second single-maneuver horizon cannot reliably preserve an escape through
-  a growing self-made enclosure. Need trajectory-linked future occupancy and
-  multi-maneuver escape evaluation, with new perf evidence. The present data does
-  not prove the target infeasible, and unsuccessful replay probes do not justify
-  calling these deaths unavoidable.
-- Area is measured at candidate arrival, not continuously along every path;
-  neck/own-trail occupancy and coarse dilation can underestimate room, while
-  connectivity cannot prove curvature-constrained escape. Tail-growth/speed/radius
-  estimates remain conservative forecasts, especially when more food is eaten.
-- Rival plans may change next tick. The bounded widening envelope and known
-  turn schedule reduce misses but cannot predict adversarial decisions exactly.
-  Winning attacks still pass survival guards that assume the opponent persists.
-- Head/tail-only grid updates would be incorrect for these mechanics; a correct
-  moved-sample incremental index is still open if future profiling warrants it.
-- Opportunistic interception is not adversarial search or explicit body-placement
-  optimization. Lower mortality changes food supply; contest strength needs a
-  controlled independent benchmark as well as the natural ecosystem.
-- No subjective live screensaver visual validation. Review/publication are left
-  to the orchestrator. No commits or review loops were run by this worker.
+The first shared-response pilot measured 139 kills / 52 self deaths; separating
+performed forecast work from pending tactics measured 162 / 50; the final
+shared-control cancellation version measured 151 / 50. All have zero wall deaths.
+No unrelated behavioral tuning was retained to hide the safety regression.
 
-All task-started one-shot processes have finished. No servers/watchers remain.
+Final logs and immutable executables are in `/tmp/ai4-review-fixes`:
+`scorecard-final.txt`, `duels-final.txt`, `limited-final.txt`, `cargo.txt`,
+`ctest.txt`, `allocation-release.txt`, `cap-before-[1-3].txt`,
+`cap-after-[1-3].txt`, and `regressions-before.txt`.

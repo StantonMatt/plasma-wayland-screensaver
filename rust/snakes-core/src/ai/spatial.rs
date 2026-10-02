@@ -18,6 +18,9 @@ pub(super) struct Spatial {
     space_release: Vec<[f32; MAX_SNAKES]>,
     visited: Vec<u32>,
     area_seen: Vec<u32>,
+    future: Vec<u32>,
+    future_stamp: u32,
+    future_active: bool,
     area_label: Vec<usize>,
     area_stamp: u32,
     area_mask: u16,
@@ -159,7 +162,7 @@ impl Spatial {
         Self { heads: vec![-1; CELLS], next: vec![-1; MAX_SNAKES*MAX_SEGMENTS],
             food_heads: vec![-1; CELLS], food_next: [-1; MAX_FOOD], weight: vec![0.0; CELLS],
             occupied: vec![0; CELLS],navigable:vec![0;CELLS],release:vec![[0.0;MAX_SNAKES];CELLS],space_release:vec![[0.0;MAX_SNAKES];CELLS], visited: vec![0; CELLS], stamp: 0,
-            area_seen: vec![0;CELLS],area_label:vec![0;CELLS],area_stamp:0,area_mask:0,area_count:0,area_limit:FILL_LIMIT,area_time:-1.0,area_result:[(0,false);32],
+            area_seen: vec![0;CELLS],future:vec![0;CELLS],future_stamp:0,future_active:false,area_label:vec![0;CELLS],area_stamp:0,area_mask:0,area_count:0,area_limit:FILL_LIMIT,area_time:-1.0,area_result:[(0,false);32],
             queue: [0; FILL_LIMIT], parent: [0; FILL_LIMIT],depth:[0;FILL_LIMIT], cols: 1, rows: 1,
             dx: 1.0, dy: 1.0,max_motion:0.0, wrap: false }
     }
@@ -323,7 +326,31 @@ impl Spatial {
         }
         self.finish_area(write,false)
     }
+    /// Evaluate the enclosure made by this particular future trajectory.
+    /// The newest ten body samples are the collision-exempt neck; old
+    /// deposited samples disappear after the whole body has travelled past.
+    /// Scratch marks are stamped, so separate candidates never share trails.
+    pub fn trajectory_space(&mut self,start:Point,mask:u16,limit:usize,time:f64,
+        path:&[Point],neck_ticks:usize,body_ticks:usize)->(usize,bool) {
+        self.future_stamp=self.future_stamp.wrapping_add(1);
+        if self.future_stamp==0 {self.future.fill(0);self.future_stamp=1;}
+        let end=path.len().saturating_sub(neck_ticks+1);
+        let begin=path.len().saturating_sub(body_ticks+1);
+        if end>begin {
+            for &p in path[begin..end].iter().step_by(2) {
+                let key=self.key(p);
+                for y in -1..=1 {for x in -1..=1 {
+                    if let Some(k)=self.offset(key,x,y) {self.future[k]=self.future_stamp;}
+                }}
+            }
+        }
+        self.future_active=true;self.area_count=0;
+        let result=self.space(start,mask,limit,time);
+        self.future_active=false;self.area_count=0;
+        result
+    }
     fn physical_blocked(&self,key:usize,mask:u16,time:f64)->bool {
+        if self.future_active && self.future[key]==self.future_stamp {return true;}
         let mut bits=self.occupied[key]&mask;
         while bits!=0 {
             let id=bits.trailing_zeros() as usize;bits&=bits-1;
@@ -332,6 +359,7 @@ impl Spatial {
         false
     }
     fn blocked(&self,key:usize,mask:u16,time:f64)->bool {
+        if self.future_active && self.future[key]==self.future_stamp {return true;}
         if time<0.0 {return self.occupied[key]&mask!=0;}
         if !self.wrap && (key%self.cols==0 || key%self.cols+1==self.cols || key/self.cols==0 || key/self.cols+1==self.rows) {return true;}
         let mut bits=self.navigable[key]&mask;

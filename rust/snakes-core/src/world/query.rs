@@ -2,6 +2,39 @@
 //! Read-only observations used by controllers and diagnostics.
 use super::*;
 impl World {
+    /// Fixed diagnostic arena, never called by the simulation. Each tuple is
+    /// (head, heading, length, aggression); bodies start straight at radius 6.
+    /// Inactive slots cannot respawn during a benchmark. Normal mechanics,
+    /// including ambient replenishment and death food, still run unmodified.
+    pub fn diagnostic_arena(config: Config, snakes: &[(Point, f64, usize, f64)], food: &[Point]) -> Result<Self, &'static str> {
+        config.validate().map_err(|_| "invalid configuration")?;
+        if snakes.is_empty() || snakes.len()>config.snake_count() || food.len()>config.maximum_food()
+            || snakes.iter().any(|(p,a,len,aggression)| !p.x.is_finite() || !p.y.is_finite() || !a.is_finite()
+                || *len==0 || *len>MAX_SEGMENTS || !aggression.is_finite() || !(0.0..=1.0).contains(aggression))
+            || food.iter().any(|p| !p.x.is_finite() || !p.y.is_finite()) {
+            return Err("invalid fixture");
+        }
+        let mut w=Self::new(config).map_err(|_| "invalid configuration")?;
+        for s in &mut w.snakes {s.alive=false;s.len=0;s.respawn=1e9;}
+        for (id,&(head,angle,len,aggression)) in snakes.iter().enumerate() {
+            let s=&mut w.snakes[id];
+            *s=Snake {generation:1,alive:true,len,angle,desired:angle,base_radius:6.0,radius:6.0,
+                birth_len:len,color:id as u32,score:len as f64,
+                traits:Traits {speed_bias:1.0,aggression,..Traits::default()},..Snake::default()};
+            for j in 0..len {
+                let p=w.canonical_point(Point{x:head.x-angle.cos()*6.0*1.18*j as f64,y:head.y-angle.sin()*6.0*1.18*j as f64});
+                w.segments[id*MAX_SEGMENTS+j]=Segment {current:p,previous:p};
+            }
+            w.rebuild_trail(id);
+        }
+        w.food.clear();
+        for (i,&p) in food.iter().enumerate() {
+            w.food.push(Food {id:i as u64+1,p,value:1.0,life:1000.0,owner:-1,..Food::default()});
+        }
+        w.next_food=food.len() as u64+1;
+        w.growth_slots=config.maximum_world_segments().saturating_sub(w.stats().total_segments as usize);
+        Ok(w)
+    }
     /// Independent diagnostic snapshot. Allocates only when explicitly called;
     /// simulation and controller ticks never invoke it.
     pub fn diagnostic_snapshot(&self) -> Self {
@@ -23,6 +56,8 @@ impl World {
         copy.geometry_generation = self.geometry_generation;
         copy.growth_slots = self.growth_slots;
         copy.deaths = self.deaths;
+        copy.collisions = self.collisions;
+        copy.consumptions.clone_from(&self.consumptions);
         copy.generations = self.generations;
         #[cfg(feature = "parity")]
         {
@@ -33,6 +68,24 @@ impl World {
         copy
     }
 
+    /// Replace one diagnostic fixture's body with a measured curved trail.
+    /// Not a runtime control: call before constructing the fixture controller.
+    pub fn diagnostic_body(&mut self,id:usize,points:&[Point],angle:f64)->Result<(), &'static str> {
+        if id>=self.snakes.len() || points.is_empty() || points.len()>MAX_SEGMENTS || !angle.is_finite()
+            || points.iter().any(|p|!p.x.is_finite() || !p.y.is_finite()) {return Err("invalid body");}
+        let s=&mut self.snakes[id];
+        s.alive=true;s.len=points.len();s.birth_len=points.len();s.score=points.len() as f64;
+        s.angle=angle;s.desired=angle;s.growth=0.0;s.stretch=0.0;
+        for (j,&p) in points.iter().enumerate() {
+            let p=self.canonical_point(p);self.segments[id*MAX_SEGMENTS+j]=Segment {current:p,previous:p};
+        }
+        self.rebuild_trail(id);
+        self.growth_slots=self.config.maximum_world_segments().saturating_sub(self.stats().total_segments as usize);
+        Ok(())
+    }
+
+    /// Last applied rush, for prediction of a rival's observed motion.
+    pub fn observed_rush(&self,id:usize)->Option<f64> {self.snakes.get(id).map(|s|s.rush)}
     /// Exact mechanics speed/turn limits for a proposed rush. Recomputes the
     /// growth-block flag just as move_snake does, without changing the world.
     pub fn motion_limits(&self, id: usize, rush: f64) -> Option<(f64, f64)> {
@@ -59,6 +112,23 @@ impl World {
     /// Collision result of the latest tick; inspect newly dead slots before the next step.
     pub fn last_death_reason(&self, id: usize) -> Option<DeathReason> {
         self.snakes.get(id).map(|s| s.dying)
+    }
+    /// Latest tick's exact deaths, in slot order. No allocation and no effect
+    /// on simulation, RNG, collision precedence or stable C ABI.
+    pub fn collision_events(&self) -> impl Iterator<Item = &CollisionEvent> {
+        self.collisions.iter().filter(|e|e.reason != DeathReason::None)
+    }
+    /// Exact food consumptions in the latest step, in mechanics order:
+    /// (particle ID, eater slot, eater generation, particle position, value).
+    /// Expiry and death-food eviction never produce records. Storage is bounded
+    /// by MAX_FOOD and reused; observing it does not affect mechanics or RNG.
+    pub fn consumption_events(&self) -> impl Iterator<Item = (u64, u32, u32, Point, f64)> + '_ {
+        self.consumptions.iter().copied()
+    }
+    /// Latest head sweep, retained even when death clears the visible length.
+    /// Read immediately after step, before a later respawn replaces the slot.
+    pub fn collision_head(&self,id:usize)->Option<Segment> {
+        self.snakes.get(id).map(|_|self.segments[id*MAX_SEGMENTS])
     }
     pub fn displacement(&self, from: Point, to: Point) -> Point {
         self.config.geometry().delta(from, to)
