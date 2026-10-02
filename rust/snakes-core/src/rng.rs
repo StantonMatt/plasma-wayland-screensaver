@@ -3,19 +3,27 @@
 /// large signed 32-bit seeds lose low product bits before the modulo operation.
 #[derive(Clone, Copy, Debug)]
 pub struct WorldRng {
-    state: u32
+    state: u32,
+    #[cfg(feature = "parity")]
+    pub(crate) draws: u64,
 }
 impl WorldRng {
     pub fn new(seed: i32) -> Self {
         let state = (((seed as f64).abs()+1.0)*2654435761.0 % 4294967296.0) as u32;
         Self {
-            state: state.max(1)
+            state: state.max(1),
+            #[cfg(feature = "parity")]
+            draws: 0
         }
     }
+    #[cfg(feature = "parity")]
+    pub(crate) fn restore(state: u32, draws: u64) -> Self { Self { state, draws } }
     pub fn state(self) -> u32 {
         self.state
     }
     pub fn random(&mut self) -> f64 {
+        #[cfg(feature = "parity")]
+        { self.draws += 1; }
         self.state = self.state.wrapping_mul(1664525).wrapping_add(1013904223);
         self.state as f64/4294967296.0
     }

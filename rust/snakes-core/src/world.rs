@@ -32,7 +32,7 @@ impl Default for Config {
             scale: 100.0,
             speed: 100.0,
             intelligence: 75.0,
-            palette_size: 7,
+            palette_size: 6,
             self_collisions: false,
             deadly_walls: true
         }
@@ -227,6 +227,12 @@ pub struct World {
     pub(crate) geometry_generation: u64,
     growth_slots: usize,
     deaths: Stats,
+    #[cfg(feature = "parity")]
+    events: Vec<String>,
+    #[cfg(feature = "parity")]
+    parity_record: bool,
+    #[cfg(feature = "parity")]
+    parity_killers: Vec<Vec<usize>>,
     generations: [u32;
     MAX_SNAKES],
 }
@@ -255,6 +261,12 @@ impl World {
             geometry_generation: 1,
             growth_slots: 0,
             deaths: Stats::default(),
+            #[cfg(feature = "parity")]
+            events: Vec::new(),
+            #[cfg(feature = "parity")]
+            parity_record: false,
+            #[cfg(feature = "parity")]
+            parity_killers: Vec::new(),
             generations: [0;
             MAX_SNAKES]
         };
@@ -534,6 +546,8 @@ impl World {
             ..Snake::default()
         };
         self.rebuild_trail(i);
+        #[cfg(feature = "parity")]
+        self.parity_respawn(i);
     }
     fn trail_index(&self, i: usize, j: usize) -> usize {
         i*self.trail_capacity+((self.snakes[i].trail_start+j)&(self.trail_capacity-1))
@@ -724,13 +738,18 @@ impl World {
             self.growth_slots = self.growth_slots.saturating_sub(1);
             Self::update_radius(snake);
             self.place_segments(i);
+            #[cfg(feature = "parity")]
+            self.parity_growth(i);
         }
     }
     /// Requests every live snake's input against the same pre-movement world.
     /// Invalid controls are ignored; controllers cannot mutate world RNG.
     pub fn step<C: Controller+?Sized>(&mut self, controller: &mut C) {
-        self.time+=STEP_SECONDS;
-        self.update_food(STEP_SECONDS);
+        self.step_seconds(controller, STEP_SECONDS);
+    }
+    fn step_seconds<C: Controller+?Sized>(&mut self, controller: &mut C, seconds: f64) {
+        self.time+=seconds;
+        self.update_food(seconds);
         self.growth_slots = self.config.maximum_world_segments().saturating_sub(self.stats().total_segments as usize);
         let mut inputs = [Steering::default();
         MAX_SNAKES];
@@ -747,15 +766,15 @@ impl World {
         }
         for i in 0..self.snakes.len() {
             if !self.snakes[i].alive {
-                self.snakes[i].respawn-=STEP_SECONDS;
+                self.snakes[i].respawn-=seconds;
                 if self.snakes[i].respawn<=0.0 {
                     self.make_snake(i);
                 }
                 continue;
             }
-            self.move_snake(i, STEP_SECONDS);
+            self.move_snake(i, seconds);
         }
-        self.feed_snakes(STEP_SECONDS);
+        self.feed_snakes(seconds);
         self.mark_collisions();
         for i in 0..self.snakes.len() {
             if self.snakes[i].alive && self.snakes[i].dying!=DeathReason::None {
@@ -844,6 +863,8 @@ impl World {
     }
     fn consume_food(&mut self, i: usize, owner: usize) {
         let f = self.food[i];
+        #[cfg(feature = "parity")]
+        self.parity_eat(owner, f);
         let s = &mut self.snakes[owner];
         s.growth = (s.growth+f.value).min(Self::growth_cost(s)*12.0);
         s.score+=f.value;
@@ -1044,6 +1065,8 @@ impl World {
                 }
             }
         }
+        #[cfg(feature = "parity")]
+        self.parity_collisions();
     }
     fn death_particle_count(s: &Snake) -> usize {
         if s.len==0 {
@@ -1136,9 +1159,14 @@ impl World {
             DeathReason::SelfHit => self.deaths.self_deaths+=1,
             _ => self.deaths.body_deaths+=1
         };
+        #[cfg(feature = "parity")]
+        self.parity_death(i, s.dying, emitted);
         emitted
     }
 }
+#[cfg(feature = "parity")]
+#[path = "world/parity.rs"]
+pub mod parity;
 #[cfg(test)]
 #[path  =  "world/tests.rs"]
 pub(crate) mod tests;

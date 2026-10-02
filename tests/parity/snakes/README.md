@@ -231,9 +231,8 @@ rm -r tests/parity/snakes/.verify-a tests/parity/snakes/.verify-b
 
 `record.sh` publishes output only after all QML scenario assertions pass and the
 converter verifies 15 complete fixtures, complete event coverage, and total
-size below 3 MiB. It fails after 180 seconds if the runner hangs. This suite is
-self-contained and is not wired into existing CMake tests, as this task only
-adds files under `tests/parity/snakes/`.
+size below 3 MiB. It fails after 180 seconds if the runner hangs. The recording suite is self-contained; CTest replays the published fixtures
+without Qt recording or JavaScript AI.
 
 Verified on Qt 6.10.2: two independent full recordings each passed QTest
 (3 passed, 0 failed); all 15 fixture files were byte-identical. Published fixture
@@ -245,3 +244,59 @@ multi-owner collisions. The focused growth assertion checks object identity
 inside the recorder; the fixture itself records the resulting coordinate/length
 history. Standard feeding, ambient spawning and passive cluster annotation
 remain coupled to full steps rather than being artificially disabled.
+
+## Rust replay
+
+```sh
+/usr/bin/cargo build --frozen --offline --release \
+  --manifest-path rust/snakes-core/Cargo.toml --features parity --example parity
+python3 tests/parity/snakes/compare.py \
+  --binary rust/snakes-core/target/release/examples/parity
+ctest --test-dir build-parity --output-on-failure -R snakes-parity
+```
+
+The `snakes-parity-build` CMake target builds the example with the existing
+SnakesCore toolchain/profile/environment into the build directory's Cargo target
+directory. The `snakes-parity` CTest entry compares all 15 fixtures. No downloads,
+JSON crate, production public API, controller changes or C ABI changes are needed.
+`world/golden.rs` is not used as the replay oracle.
+
+`compare.py` converts each fixture to protocol version 1: whitespace-separated
+numbers, one per line. The order is version, Config fields, tick count, dt,
+collision-only flag, initial RNG state/draw count/time/IDs/growth budget, snake
+count and complete mechanics records (including previous positions and active
+trail points), food count and complete mechanics records, then commands for
+every tick. A command contains a sample flag, action count and actions
+(1=resize, 2=setHead, 3=setSegment), and the normalized desired angle for each
+slot. The Python encoder and Rust decoder explicitly declare the field order.
+No expected post-initialization outcomes enter the runner: sample ticks and the
+three documented input actions are the only data read from expected frames.
+
+The binary imports the full-precision initial snapshot once, advances every
+tick through the shared production mechanics, and emits unrounded JSON lines
+only at recorded sample ticks. Events accumulate across unsampled ticks.
+Killers are observed before any explosions, just as in the JS recorder.
+Respawns receive the tick's scripted angle without movement until the next tick.
+The collision-only trace uses the actual collision/explosion kernels; the vacuum
+trace uses its recorded dt. Instrumentation is compiled only with `parity` and
+is opt-in, so even feature-enabled ordinary worlds retain zero tick allocations.
+
+All discrete outcomes are exact, including sample RNG state and draw count,
+event order/tick/reason/victim/killer candidates, growth lengths, respawns, food
+IDs/array lengths/capture owners and next IDs. Continuous values must be finite
+and differ by at most **1e-6** across **every** sample, including the complete
+900-tick runs. This is stricter than allowing late chaotic divergence. Output
+reports maximum absolute error and its location, maximum through tick 300, and
+the first sample with any discrepancy. The suite grants no automatic roundoff
+exception: any such future divergence must be investigated before changing
+policy. Fixtures quantize outputs to six decimals, so an otherwise exact replay
+can have an error of 5e-7.
+
+The numerical mechanics needed no fixes for these recordings. The Rust default
+palette size was corrected from seven to six entries to match every JS palette;
+the replay explicitly configures six. There are no intentional behavior
+differences in the tested mechanics. AI, rendering, time accumulation and unrecorded settings
+remain outside this proof.
+
+See [RESULTS.md](RESULTS.md) for per-fixture errors, exact verification commands,
+the configuration fix and paired benchmark measurements.

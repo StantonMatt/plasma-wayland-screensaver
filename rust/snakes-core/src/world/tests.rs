@@ -47,6 +47,9 @@ fn close(a: f64, b: f64) {
     let w = world();
     assert_eq!(w.snake_count(), 9);
     assert_eq!(w.food.len(), 82);
+    // VisualUtils.colors provides six entries for every built-in JS palette.
+    assert_eq!(w.snakes().map(|s|s.color_index).collect::<Vec<_>>(), vec![0, 1, 2, 3, 4, 5, 0, 1, 2]);
+    assert!(w.foods().all(|f|f.color_index<6));
     for (i, s) in w.snakes.iter().enumerate() {
         assert!((14..=32).contains(&s.len));
         assert_eq!(s.generation, 1);

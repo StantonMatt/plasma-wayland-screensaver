@@ -61,3 +61,17 @@ add_test(NAME snakes-core-rust
     COMMAND "${CMAKE_COMMAND}" -E env ${SNAKES_CORE_CARGO_ENV}
         "${CARGO_EXECUTABLE}" test --frozen
         --manifest-path "${SNAKES_CORE_MANIFEST}" --profile "${SNAKES_CORE_PROFILE}")
+
+# Build fixture-only hooks separately; the production C ABI remains feature-free.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_custom_target(snakes-parity-build ALL
+    COMMAND "${CMAKE_COMMAND}" -E env ${SNAKES_CORE_CARGO_ENV}
+        "${CARGO_EXECUTABLE}" build --frozen --offline
+        --manifest-path "${SNAKES_CORE_MANIFEST}" --profile "${SNAKES_CORE_PROFILE}"
+        --features parity --example parity
+    BYPRODUCTS "${SNAKES_CORE_TARGET_DIR}/${SNAKES_CORE_CONFIG}/${SNAKES_CORE_PROFILE_DIR}/examples/parity"
+    VERBATIM)
+add_test(NAME snakes-parity
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/snakes/compare.py"
+        --binary "${SNAKES_CORE_TARGET_DIR}/${SNAKES_CORE_CONFIG}/${SNAKES_CORE_PROFILE_DIR}/examples/parity")
+set_tests_properties(snakes-parity PROPERTIES TIMEOUT 120)

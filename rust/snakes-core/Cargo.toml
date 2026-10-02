@@ -20,3 +20,10 @@ debug = "line-tables-only"
 [profile.dev]
 opt-level = 1
 panic = "abort"
+
+[features]
+parity = []
+
+[[example]]
+name = "parity"
+required-features = ["parity"]
