@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QHash>
 #include <QPointer>
+#include <QRect>
 #include <QtGlobal>
 #include <memory>
 
@@ -14,10 +15,12 @@ class QQuickView;
 class QScreen;
 class PresentationClock;
 class SnakeRenderer;
+class SnakeSimulation;
 
 class OverlayManager final : public QObject
 {
     Q_OBJECT
+    friend class OverlaySnakesTest;
 
 public:
     explicit OverlayManager(Configuration *configuration, QObject *parent = nullptr);
@@ -43,6 +46,7 @@ private:
     void updateAnimationState();
     void updatePresentationClocks();
     void configureSnakeRenderSharing();
+    void advanceSnakeSimulation(QScreen *screen, qreal deltaSeconds);
     void retireView(QQuickView *view);
     void reclaimReleasedMemory();
     bool isDismissEvent(const QEvent *event) const;
@@ -50,9 +54,13 @@ private:
     Configuration *m_configuration;
     AnimationState m_animationState;
     QHash<QScreen *, QQuickView *> m_views;
+    QHash<QScreen *, QRect> m_screenGeometries;
     QHash<QScreen *, PresentationClock *> m_presentationClocks;
     QHash<QScreen *, SnakeRenderer *> m_snakeRenderers;
-    QPointer<SnakeRenderer> m_snakeSimulationDriver;
+    QHash<QScreen *, SnakeSimulation *> m_snakeSimulations;
+    std::unique_ptr<SnakeSimulation> m_sharedSnakeSimulation;
+    QScreen *m_snakeArenaScreen = nullptr;
+    QString m_snakeBehavior;
     QScreen *m_animationDriverScreen = nullptr;
     qint64 m_animationEpochMs = 0;
     int m_pendingViewDeletions = 0;

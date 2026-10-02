@@ -20,6 +20,12 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.7.0" date="2026-10-02">
+      <description>
+        <p>Moves Slithering Snakes simulation and AI to Rust, reducing CPU use and improving pathfinding, collision avoidance, and open-space awareness. Bigger snakes contest food and cut rivals off, while smaller snakes avoid losing head-on encounters.</p>
+        <p>Keeps synchronized and seamless snake worlds alive across monitor removal and aligns frame pacing with display refresh for steadier animation across all visuals.</p>
+      </description>
+    </release>
     <release version="0.6.3" date="2026-09-08">
       <description>
         <p>Reliably re-arms idle activation after overlay dismissal on Plasma Wayland and preserves recovery when the active monitor layout disappears.</p>

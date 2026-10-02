@@ -36,6 +36,7 @@ Item {
     required property real virtualWidth
     required property real virtualHeight
     required property var animationState
+    property var snakeSimulation: null
     required property var presentationClock
 
     property double clockMotionNowMs: animationEpochMs

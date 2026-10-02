@@ -7,6 +7,9 @@ if [[ ! -x "$runner" ]]; then
     echo "Qt6 qmltestrunner not executable: $runner (set QMLTESTRUNNER)" >&2
     exit 1
 fi
+for source in Snakes.qml VisualUtils.js FrameClock.qml; do
+    [[ -r "$here/oracle/$source" ]] || { echo "Missing frozen oracle: $source" >&2; exit 1; }
+done
 output=${1:-"$here/fixtures"}
 # Temporary artifacts are confined to the authorized parity directory.
 tmp=$(mktemp -d "$here/.record.XXXXXX")
@@ -18,6 +21,12 @@ if ! QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QML_XHR_ALLOW_FILE_READ
     exit 1
 fi
 python3 "$here/fixtures.py" --record "$tmp/qtest.log" --output "$tmp/fixtures"
+if [[ "$output" == --check ]]; then
+    diff -qr -- "$here/fixtures" "$tmp/fixtures"
+    sed -n '/Totals:/p' "$tmp/qtest.log"
+    echo "All 15 fixtures are byte-identical to the frozen oracle recording."
+    exit 0
+fi
 mkdir -p -- "$output"
 for fixture in "$tmp/fixtures/"*; do
     stem=$(basename -- "$fixture")

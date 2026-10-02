@@ -4,13 +4,15 @@ Run from any directory:
 
 ```sh
 tests/parity/snakes/record.sh
+# Verify that a fresh recording is byte-identical, without replacing fixtures:
+tests/parity/snakes/record.sh --check
 ```
 
 Requires Qt **6** QML/QtTest modules, `/usr/lib/qt6/bin/qmltestrunner`, Python 3,
 GNU `timeout`, and Bash. Set `QMLTESTRUNNER` to another Qt6 runner if needed.
 The script sets `QT_QPA_PLATFORM=offscreen`, `QT_QUICK_BACKEND=software`, and
-`QML_XHR_ALLOW_FILE_READ=1`; it reads this checkout's `qml/visuals/Snakes.qml`,
-never an installed visual. Its optional first argument is the output directory.
+`QML_XHR_ALLOW_FILE_READ=1`; it reads the frozen JavaScript `oracle/Snakes.qml` and its sibling dependencies
+from commit `c846506`, independently of the native production visual. Its optional first argument is the output directory.
 Temporary recordings live under this directory and are removed on exit. There
 are no servers, timers advancing physics, or background workers. The QML item
 has `simulationDriver=false`, `reducedMotion=true`, and a no-op native renderer;
@@ -45,12 +47,13 @@ numbers to six decimal places. `initialState` retains full JS precision.
 ## Isolation and instrumentation
 
 Qt6 QML method properties are read-only from JS. `tst_record_snakes.qml` reads
-production QML using a synchronous local XMLHttpRequest, renames only the
+the frozen oracle using a synchronous local XMLHttpRequest, renames only the
 instrumented function declarations to `parityOriginal_NAME`, and appends
 wrappers dispatching through a writable `parityHooks` property. It creates the
-result with `Qt.createQmlObject` using the **original source URL** so production
+result with `Qt.createQmlObject` using the **oracle source URL** so its frozen
 `VisualUtils.js` and `FrameClock.qml` resolve correctly. No production file is
-modified. `sourceSha256` records those three production inputs. Declaration
+modified. `sourceSha256` hashes those three frozen oracle inputs under their historical
+production-path keys so existing fixtures remain byte-identical. Declaration
 renaming preserves original mechanics bodies and redirects their internal
 calls through instrumentation too.
 

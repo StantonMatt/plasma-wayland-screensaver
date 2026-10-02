@@ -1,3 +1,20 @@
+plasma-visual-screensaver (0.7.0-1) resolute; urgency=medium
+
+  * Move Slithering Snakes simulation and AI from QML JavaScript to a
+    zero-dependency Rust library driven natively from C++, reducing CPU use
+    and removing the Canvas fallback.
+  * Improve pathfinding, collision avoidance, and open-space awareness.
+    Bigger snakes contest food and cut rivals off, while smaller snakes
+    avoid losing head-on encounters.
+  * Keep shared snake worlds alive across monitor removal in synchronized
+    and seamless modes.
+  * Align presentation pacing with display refresh without drift for
+    steadier frames across all visuals.
+  * Add the Rust toolchain to builds and packaging, record Static-Built-Using,
+    and add a frame-timing measurement harness.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Fri, 02 Oct 2026 12:00:00 -0300
+
 plasma-visual-screensaver (0.6.3-1) resolute; urgency=medium
 
   * Reliably re-arm idle activation after dismissing the overlay on Plasma

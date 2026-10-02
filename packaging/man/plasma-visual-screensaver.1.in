@@ -1,4 +1,4 @@
-.TH PLASMA-VISUAL-SCREENSAVER 1 "August 2026" "plasma-visual-screensaver @PROJECT_VERSION@" "User Commands"
+.TH PLASMA-VISUAL-SCREENSAVER 1 "October 2026" "plasma-visual-screensaver @PROJECT_VERSION@" "User Commands"
 .SH NAME
 plasma-visual-screensaver \- non-locking visual screensaver for Plasma Wayland
 .SH SYNOPSIS

@@ -9,6 +9,8 @@
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <array>
+#include <span>
 
 namespace {
 using Vertex = QSGGeometry::ColoredPoint2D;
@@ -160,15 +162,17 @@ void appendSegment(QVector<Vertex> &vertices, const QPointF &a, const QPointF &b
 }
 
 void appendRibbon(QVector<Vertex> &vertices, const QVector<QPointF> &points,
+                  QVector<QPointF> &left, QVector<QPointF> &right, QVector<quint8> &valid,
                   qreal halfWidth, const QColor &color, const QSizeF &viewport)
 {
     if (points.size() < 2 || !std::isfinite(halfWidth) || halfWidth <= 0.0) {
         return;
     }
 
-    QVector<QPointF> left(points.size());
-    QVector<QPointF> right(points.size());
-    QVector<bool> valid(points.size(), false);
+    left.resize(points.size());
+    right.resize(points.size());
+    valid.resize(points.size());
+    std::fill(valid.begin(), valid.end(), 0);
     for (int index = 0; index < points.size(); ++index) {
         if (!finitePoint(points[index])) {
             continue;
@@ -223,21 +227,44 @@ QColor withAlpha(QColor color, int alpha)
     return color;
 }
 
-QVector<qreal> wrappingOffsets(qreal minimum, qreal maximum, qreal extent, qreal margin)
+struct Offsets {
+    int first = 0, last = 0;
+    qreal extent = 0;
+};
+Offsets wrappingOffsets(qreal minimum, qreal maximum, qreal extent, qreal margin)
 {
-    QVector<qreal> offsets;
-    if (extent <= 0.0) {
-        offsets.append(0.0);
-        return offsets;
-    }
-    const int first = int(std::ceil((-margin - maximum) / extent));
-    const int last = int(std::floor((extent + margin - minimum) / extent));
-    offsets.reserve(std::max(0, last - first + 1));
-    for (int multiple = first; multiple <= last; ++multiple) {
-        offsets.append(multiple * extent);
-    }
-    return offsets;
+    if (extent <= 0) return {};
+    return {int(std::ceil((-margin - maximum) / extent)),
+            int(std::floor((extent + margin - minimum) / extent)), extent};
 }
+
+struct GeometryNode : QSGGeometryNode {
+    QVector<Vertex> vertices;
+    QVector<QPointF> points, renderedPoints, left, right;
+    QVector<quint8> valid;
+};
+struct Segment {
+    QPointF position, previous;
+    Segment(const snakes_core_segment &s) : position(s.x, s.y), previous(s.previous_x, s.previous_y) {}
+};
+struct Snake {
+    std::span<const snakes_core_segment> segments;
+    qreal radius, angle, desiredAngle;
+    int colorIndex;
+    bool alive;
+    Snake(const snakes_core_snake &s, const SnakeFrame &frame)
+        : segments(std::span(frame.segments).subspan(s.segment_offset, s.segment_count)),
+          radius(s.radius), angle(s.angle), desiredAngle(s.desired_angle),
+          colorIndex(s.color_index), alive(s.alive) {}
+};
+struct Food {
+    QPointF position, attractionTarget;
+    qreal size, phase, attraction;
+    int colorIndex;
+    Food(const snakes_core_food &f) : position(f.x, f.y), attractionTarget(f.attraction_x, f.attraction_y),
+        size(f.size), phase(f.phase), attraction(f.attraction), colorIndex(f.color_index) {}
+};
+
 }
 
 SnakeRenderer::SnakeRenderer(QQuickItem *parent)
@@ -246,146 +273,50 @@ SnakeRenderer::SnakeRenderer(QQuickItem *parent)
     setFlag(ItemHasContents, true);
 }
 
-void SnakeRenderer::syncFrame(const QJSValue &snakeValues, const QJSValue &foodValues,
-                              const QJSValue &paletteValues, qreal simulationTime,
-                              qreal interpolation, qreal worldWidth, qreal worldHeight,
-                              qreal drawOffsetX, qreal drawOffsetY, bool deadlyWalls)
+void SnakeRenderer::setSimulation(SnakeSimulation *simulation)
 {
-    setDrawOffset(drawOffsetX, drawOffsetY);
-    if (m_source) {
-        m_snakes = m_source->m_snakes;
-        m_food = m_source->m_food;
-        m_palette = m_source->m_palette;
-        m_simulationTime = m_source->m_simulationTime;
-        m_interpolation = m_source->m_interpolation;
-        m_worldWidth = m_source->m_worldWidth;
-        m_worldHeight = m_source->m_worldHeight;
-        m_deadlyWalls = m_source->m_deadlyWalls;
-        update();
-        return;
+    if (m_simulation == simulation) return;
+    disconnect(m_presentedConnection);
+    disconnect(m_destroyedConnection);
+    m_simulation = simulation;
+    m_frame = nullptr;
+    if (simulation) {
+        const auto sync = [this, simulation] {
+            syncFrame(simulation->frame(), simulation->palette(), simulation->interpolation(),
+                      simulation->config().deadly_walls);
+        };
+        m_presentedConnection = connect(simulation, &SnakeSimulation::presented, this, sync);
+        m_destroyedConnection = connect(simulation, &QObject::destroyed, this, [this] {
+            m_frame = nullptr;
+            update();
+            Q_EMIT simulationChanged();
+        });
+        sync();
     }
+    update();
+    Q_EMIT simulationChanged();
+}
 
-    const QVector<Snake> previousSnakes = m_snakes;
-    const qreal elapsedSimulationTime = simulationTime - m_simulationTime;
-    const bool onePhysicsStep = elapsedSimulationTime > 0.0
-        && elapsedSimulationTime < 0.05;
-    QVector<Snake> snakes;
-    const int snakeCount = snakeValues.property(QStringLiteral("length")).toInt();
-    snakes.reserve(snakeCount);
-    for (int snakeIndex = 0; snakeIndex < snakeCount; ++snakeIndex) {
-        const QJSValue value = snakeValues.property(snakeIndex);
-        Snake snake;
-        snake.alive = value.property(QStringLiteral("alive")).toBool();
-        if (!snake.alive) {
-            snakes.append(std::move(snake));
-            continue;
-        }
-        snake.radius = value.property(QStringLiteral("radius")).toNumber();
-        snake.angle = value.property(QStringLiteral("angle")).toNumber();
-        const QJSValue desiredAngle = value.property(QStringLiteral("desiredAngle"));
-        snake.desiredAngle = desiredAngle.isNumber() ? desiredAngle.toNumber() : snake.angle;
-        snake.colorIndex = value.property(QStringLiteral("colorIndex")).toInt();
-        if (m_developerMode) {
-            const QJSValue pathValues = value.property(QStringLiteral("foodPathIds"));
-            const int pathCount = std::min(5, pathValues.property(
-                QStringLiteral("length")).toInt());
-            snake.foodPathIds.reserve(pathCount);
-            for (int pathIndex = 0; pathIndex < pathCount; ++pathIndex) {
-                snake.foodPathIds.append(pathValues.property(pathIndex).toInt());
-            }
-            const QJSValue plannedPath = value.property(QStringLiteral("debugPlannedPath"));
-            const int plannedPointCount = std::min(16, plannedPath.property(
-                QStringLiteral("length")).toInt());
-            snake.plannedPath.reserve(plannedPointCount);
-            for (int pointIndex = 0; pointIndex < plannedPointCount; ++pointIndex) {
-                const QJSValue point = plannedPath.property(pointIndex);
-                snake.plannedPath.append(QPointF(
-                    point.property(QStringLiteral("x")).toNumber(),
-                    point.property(QStringLiteral("y")).toNumber()));
-            }
-        }
-        const QJSValue segmentValues = value.property(QStringLiteral("segments"));
-        const int segmentCount = segmentValues.property(QStringLiteral("length")).toInt();
-        const Snake *previousSnake = onePhysicsStep && snakeIndex < previousSnakes.size()
-                && previousSnakes[snakeIndex].alive
-                && previousSnakes[snakeIndex].segments.size() == segmentCount
-            ? &previousSnakes[snakeIndex] : nullptr;
-        snake.segments.reserve(segmentCount);
-        for (int segmentIndex = 0; segmentIndex < segmentCount; ++segmentIndex) {
-            const QJSValue segmentValue = segmentValues.property(segmentIndex);
-            Segment segment;
-            segment.position = QPointF(segmentValue.property(QStringLiteral("x")).toNumber(),
-                                       segmentValue.property(QStringLiteral("y")).toNumber());
-            if (previousSnake) {
-                segment.previous = previousSnake->segments[segmentIndex].position;
-            } else {
-                const QJSValue previousX = segmentValue.property(QStringLiteral("previousX"));
-                const QJSValue previousY = segmentValue.property(QStringLiteral("previousY"));
-                segment.previous = QPointF(previousX.isNumber() ? previousX.toNumber()
-                                                                 : segment.position.x(),
-                                           previousY.isNumber() ? previousY.toNumber()
-                                                                 : segment.position.y());
-            }
-            snake.segments.append(segment);
-        }
-        snakes.append(std::move(snake));
-    }
-
-    QVector<Food> food;
-    const int foodCount = foodValues.property(QStringLiteral("length")).toInt();
-    food.reserve(foodCount);
-    for (int foodIndex = 0; foodIndex < foodCount; ++foodIndex) {
-        const QJSValue value = foodValues.property(foodIndex);
-        Food particle;
-        particle.id = value.property(QStringLiteral("id")).toInt();
-        particle.position = QPointF(value.property(QStringLiteral("x")).toNumber(),
-                                    value.property(QStringLiteral("y")).toNumber());
-        particle.size = value.property(QStringLiteral("size")).toNumber();
-        particle.phase = value.property(QStringLiteral("phase")).toNumber();
-        particle.attraction = value.property(QStringLiteral("attraction")).toNumber();
-        particle.attractionTarget = QPointF(
-            value.property(QStringLiteral("attractionX")).toNumber(),
-            value.property(QStringLiteral("attractionY")).toNumber());
-        particle.colorIndex = value.property(QStringLiteral("colorIndex")).toInt();
-        food.append(particle);
-    }
-
-    QVector<QColor> palette = m_palette;
-    if (palette.isEmpty()) {
-        const int colorCount = paletteValues.property(QStringLiteral("length")).toInt();
-        palette.reserve(colorCount);
-        for (int colorIndex = 0; colorIndex < colorCount; ++colorIndex) {
-            const QColor color(paletteValues.property(colorIndex).toString());
-            if (color.isValid()) {
-                palette.append(color);
-            }
-        }
-        if (palette.isEmpty()) {
-            palette = {QColor(QStringLiteral("#4de6ff")), QColor(QStringLiteral("#b86cff")),
-                       QColor(QStringLiteral("#ff4f8b"))};
-        }
-    }
-
-    m_snakes = std::move(snakes);
-    m_food = std::move(food);
-    m_palette = std::move(palette);
-    m_simulationTime = simulationTime;
+void SnakeRenderer::syncFrame(const SnakeFrame &frame, const QVector<QColor> &palette,
+                              qreal interpolation, bool deadlyWalls)
+{
+    m_frame = &frame;
+    m_palette = palette;
+    m_simulationTime = frame.info.simulation_time;
     m_interpolation = clamped(interpolation, 0.0, 1.0);
-    m_worldWidth = std::max(1.0, worldWidth);
-    m_worldHeight = std::max(1.0, worldHeight);
+    m_worldWidth = std::max(1.0, frame.info.world_width);
+    m_worldHeight = std::max(1.0, frame.info.world_height);
+    m_worldToViewX = m_simulation ? m_simulation->viewSize().width() / m_worldWidth : 1.0;
+    m_worldToViewY = m_simulation ? m_simulation->viewSize().height() / m_worldHeight : 1.0;
     m_deadlyWalls = deadlyWalls;
     update();
-    Q_EMIT frameSynchronized();
 }
 
 void SnakeRenderer::presentFrame(qreal simulationTime, qreal interpolation)
 {
-    if (!m_source) {
-        m_simulationTime = simulationTime;
-        m_interpolation = clamped(interpolation, 0.0, 1.0);
-    }
+    m_simulationTime = simulationTime;
+    m_interpolation = clamped(interpolation, 0.0, 1.0);
     update();
-    Q_EMIT frameSynchronized();
 }
 
 void SnakeRenderer::setDrawOffset(qreal drawOffsetX, qreal drawOffsetY)
@@ -417,43 +348,13 @@ void SnakeRenderer::setDeveloperMode(bool enabled)
     update();
 }
 
-void SnakeRenderer::follow(SnakeRenderer *source)
-{
-    if (m_source == source) {
-        return;
-    }
-    disconnect(m_sourceConnection);
-    m_source = source;
-    if (!source) {
-        m_sourceConnection = {};
-        return;
-    }
-    const auto copyFrame = [this, source] {
-        if (m_source != source) {
-            return;
-        }
-        m_snakes = source->m_snakes;
-        m_food = source->m_food;
-        m_palette = source->m_palette;
-        m_simulationTime = source->m_simulationTime;
-        m_interpolation = source->m_interpolation;
-        m_worldWidth = source->m_worldWidth;
-        m_worldHeight = source->m_worldHeight;
-        m_deadlyWalls = source->m_deadlyWalls;
-        update();
-    };
-    m_sourceConnection = connect(source, &SnakeRenderer::frameSynchronized,
-                                 this, copyFrame);
-    copyFrame();
-}
-
 QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
                                         UpdatePaintNodeData *updatePaintNodeData)
 {
     Q_UNUSED(updatePaintNodeData)
-    auto *node = static_cast<QSGGeometryNode *>(oldNode);
+    auto *node = static_cast<GeometryNode *>(oldNode);
     if (!node) {
-        node = new QSGGeometryNode;
+        node = new GeometryNode;
         auto *geometry = new QSGGeometry(QSGGeometry::defaultAttributes_ColoredPoint2D(), 0);
         geometry->setDrawingMode(QSGGeometry::DrawTriangles);
         geometry->setVertexDataPattern(QSGGeometry::DynamicPattern);
@@ -466,9 +367,13 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
         m_geometryCapacity = 0;
     }
 
-    QVector<Vertex> vertices;
+    auto &vertices = node->vertices;
+    vertices.clear();
+    const auto snakes = m_frame ? std::span(m_frame->snakes) : std::span<const snakes_core_snake>();
+    const auto food = m_frame ? std::span(m_frame->food) : std::span<const snakes_core_food>();
     qsizetype liveSegmentCount = 0;
-    for (const Snake &snake : std::as_const(m_snakes)) {
+    for (const auto &record : snakes) {
+        const Snake snake(record, *m_frame);
         if (snake.alive) {
             liveSegmentCount += snake.segments.size();
         }
@@ -476,45 +381,49 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
     // Body ribbons, join discs, markings, eyes and crowns average fewer than
     // 42 vertices per segment. Reserving from actual segment count prevents
     // repeated CPU-side reallocations as a champion grows.
-    const qsizetype estimatedVertices = m_food.size() * 72
-        + liveSegmentCount * 42 + m_snakes.size() * 180;
+    const qsizetype estimatedVertices = food.size() * 72
+        + liveSegmentCount * 42 + snakes.size() * 180;
     vertices.reserve(std::min<qsizetype>(estimatedVertices,
                                          std::numeric_limits<int>::max()));
     const QSizeF viewport(width(), height());
     const QPointF drawOffset(m_drawOffsetX, m_drawOffsetY);
     const qreal scaleX = m_scaleToViewport
-        ? viewport.width() / std::max(1.0, m_worldWidth) : 1.0;
+        ? viewport.width() / std::max(1.0, m_worldWidth) : m_worldToViewX;
     const qreal scaleY = m_scaleToViewport
-        ? viewport.height() / std::max(1.0, m_worldHeight) : 1.0;
+        ? viewport.height() / std::max(1.0, m_worldHeight) : m_worldToViewY;
     const qreal sizeScale = std::sqrt(scaleX * scaleY);
     const auto mapPoint = [drawOffset, scaleX, scaleY](const QPointF &point) {
-        return QPointF((point.x() + drawOffset.x()) * scaleX,
-                       (point.y() + drawOffset.y()) * scaleY);
+        return QPointF(point.x() * scaleX + drawOffset.x(),
+                       point.y() * scaleY + drawOffset.y());
     };
 
     // Avoid switching the complete food field between detail levels whenever
     // consumption and respawns hover around one exact particle count.
     if (m_denseFoodRendering) {
-        m_denseFoodRendering = m_food.size() >= 280;
+        m_denseFoodRendering = food.size() >= 280;
     } else {
-        m_denseFoodRendering = m_food.size() > 340;
+        m_denseFoodRendering = food.size() > 340;
     }
     const bool denseFood = m_denseFoodRendering;
-    for (const Food &particle : std::as_const(m_food)) {
+    for (const auto &record : food) {
+        const Food particle(record);
         const qreal pulse = 0.82 + std::sin(m_simulationTime * 3.0 + particle.phase) * 0.18;
         const qreal worldSize = particle.size * pulse;
         const qreal size = worldSize * sizeScale;
-        const QColor color = m_palette.at(particle.colorIndex % m_palette.size());
-        QVector<qreal> xOffsets{0.0};
-        QVector<qreal> yOffsets{0.0};
+        const QColor color = m_palette.isEmpty() ? QColor(Qt::cyan) : m_palette.at(particle.colorIndex % m_palette.size());
+        Offsets xOffsets, yOffsets;
         if (!m_deadlyWalls) {
-            if (particle.position.x() < worldSize * 3.2) xOffsets.append(m_worldWidth);
-            if (particle.position.x() > m_worldWidth - worldSize * 3.2) xOffsets.append(-m_worldWidth);
-            if (particle.position.y() < worldSize * 3.2) yOffsets.append(m_worldHeight);
-            if (particle.position.y() > m_worldHeight - worldSize * 3.2) yOffsets.append(-m_worldHeight);
+            xOffsets.extent = m_worldWidth;
+            if (particle.position.x() < worldSize * 3.2) xOffsets.last = 1;
+            if (particle.position.x() > m_worldWidth - worldSize * 3.2) xOffsets.first = -1;
+            yOffsets.extent = m_worldHeight;
+            if (particle.position.y() < worldSize * 3.2) yOffsets.last = 1;
+            if (particle.position.y() > m_worldHeight - worldSize * 3.2) yOffsets.first = -1;
         }
-        for (qreal xOffset : std::as_const(xOffsets)) {
-            for (qreal yOffset : std::as_const(yOffsets)) {
+        for (int xi = xOffsets.first; xi <= xOffsets.last; ++xi) {
+            const qreal xOffset = xi * xOffsets.extent;
+            for (int yi = yOffsets.first; yi <= yOffsets.last; ++yi) {
+                const qreal yOffset = yi * yOffsets.extent;
                 const QPointF center = mapPoint(particle.position + QPointF(xOffset, yOffset));
                 if (particle.attraction > 0.0) {
                     const QPointF worldPull(
@@ -548,18 +457,21 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
     }
 
     int leaderLength = 0;
-    for (const Snake &snake : std::as_const(m_snakes)) {
+    for (const auto &record : snakes) {
+        const Snake snake(record, *m_frame);
         if (snake.alive) {
             leaderLength = std::max(leaderLength, int(snake.segments.size()));
         }
     }
-    for (const Snake &snake : std::as_const(m_snakes)) {
+    for (const auto &record : snakes) {
+        const Snake snake(record, *m_frame);
         if (!snake.alive || snake.segments.size() < 2) {
             continue;
         }
-        QVector<QPointF> points;
+        auto &points = node->points;
+        points.clear();
         points.reserve(snake.segments.size());
-        for (const Segment &segment : snake.segments) {
+        for (const Segment segment : snake.segments) {
             qreal x = segment.previous.x()
                 + axisDelta(segment.previous.x(), segment.position.x(), m_worldWidth,
                             m_deadlyWalls) * m_interpolation;
@@ -591,24 +503,25 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
             minimumY = std::min(minimumY, point.y());
             maximumY = std::max(maximumY, point.y());
         }
-        QVector<qreal> xOffsets{0.0};
-        QVector<qreal> yOffsets{0.0};
+        Offsets xOffsets, yOffsets;
         if (!m_deadlyWalls) {
             const qreal margin = snake.radius * 3.0;
             xOffsets = wrappingOffsets(minimumX, maximumX, m_worldWidth, margin);
             yOffsets = wrappingOffsets(minimumY, maximumY, m_worldHeight, margin);
         }
 
-        const QColor color = m_palette.at(snake.colorIndex % m_palette.size());
+        const QColor color = m_palette.isEmpty() ? QColor(Qt::cyan) : m_palette.at(snake.colorIndex % m_palette.size());
         const QColor outline(5, 7, 16, 175);
         const qreal radius = snake.radius * sizeScale;
         const qreal bodyMargin = radius * 1.4;
-        for (qreal xOffset : std::as_const(xOffsets)) {
-            for (qreal yOffset : std::as_const(yOffsets)) {
+        for (int xi = xOffsets.first; xi <= xOffsets.last; ++xi) {
+            const qreal xOffset = xi * xOffsets.extent;
+            for (int yi = yOffsets.first; yi <= yOffsets.last; ++yi) {
+                const qreal yOffset = yi * yOffsets.extent;
                 const QPointF wrapOffset(xOffset, yOffset);
                 const QRectF copyBounds(
-                    (minimumX + xOffset + drawOffset.x()) * scaleX - bodyMargin,
-                    (minimumY + yOffset + drawOffset.y()) * scaleY - bodyMargin,
+                    (minimumX + xOffset) * scaleX + drawOffset.x() - bodyMargin,
+                    (minimumY + yOffset) * scaleY + drawOffset.y() - bodyMargin,
                     (maximumX - minimumX) * scaleX + bodyMargin * 2.0,
                     (maximumY - minimumY) * scaleY + bodyMargin * 2.0);
                 // In seamless mode most snakes are outside any one monitor.
@@ -617,16 +530,17 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
                 if (!visible(copyBounds, viewport)) {
                     continue;
                 }
-                QVector<QPointF> renderedPoints;
+                auto &renderedPoints = node->renderedPoints;
+                renderedPoints.clear();
                 renderedPoints.reserve(points.size());
                 for (const QPointF &point : std::as_const(points)) {
                     renderedPoints.append(mapPoint(point + wrapOffset));
                 }
-                appendRibbon(vertices, renderedPoints, radius * 1.275,
+                appendRibbon(vertices, renderedPoints, node->left, node->right, node->valid, radius * 1.275,
                              outline, viewport);
                 appendDisc(vertices, renderedPoints.constLast(), radius * 1.275,
                            outline, 12, viewport);
-                appendRibbon(vertices, renderedPoints, radius * 0.96,
+                appendRibbon(vertices, renderedPoints, node->left, node->right, node->valid, radius * 0.96,
                              withAlpha(color, 245), viewport);
                 appendDisc(vertices, renderedPoints.constLast(), radius * 0.96,
                            withAlpha(color, 245), 12, viewport);
@@ -656,7 +570,7 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
                 }
                 if (points.size() == leaderLength) {
                     const QPointF crownCenter = head - forward * (radius * 0.32);
-                    const QVector<QPointF> crown{
+                    const std::array<QPointF, 7> crown{
                         crownCenter - side * (radius * 0.82)
                             - forward * (radius * 0.42),
                         crownCenter - side * (radius * 0.82)
@@ -671,11 +585,11 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
                         crownCenter + side * (radius * 0.82)
                             - forward * (radius * 0.42)};
                     const QColor gold(QStringLiteral("#ffd84a"));
-                    for (int index = 0; index < crown.size(); ++index) {
+                    for (size_t index = 0; index < crown.size(); ++index) {
                         appendTriangle(vertices, crownCenter, crown[index],
                                        crown[(index + 1) % crown.size()], gold);
                     }
-                    for (int index = 0; index < crown.size(); ++index) {
+                    for (size_t index = 0; index < crown.size(); ++index) {
                         appendSegment(vertices, crown[index],
                                       crown[(index + 1) % crown.size()],
                                       std::max(0.65, radius * 0.09),
@@ -690,147 +604,29 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
     }
 
     if (m_developerMode) {
-        // Developer previews expose both layers of the brain: the colored
-        // polyline is the rolling food route, while the bright arrow is the
-        // immediate collision-aware steering decision. Render this from the
-        // same copied frame data as the snakes so synchronized follower
-        // monitors cannot display a trace from a different simulation.
-        for (const Snake &snake : std::as_const(m_snakes)) {
-            if (!snake.alive || snake.segments.isEmpty()) {
-                continue;
-            }
-            const Segment &headSegment = snake.segments.constFirst();
-            qreal headX = headSegment.previous.x()
-                + axisDelta(headSegment.previous.x(), headSegment.position.x(),
-                            m_worldWidth, m_deadlyWalls) * m_interpolation;
-            qreal headY = headSegment.previous.y()
-                + axisDelta(headSegment.previous.y(), headSegment.position.y(),
-                            m_worldHeight, m_deadlyWalls) * m_interpolation;
-            if (!m_deadlyWalls) {
-                headX = wrapped(headX, m_worldWidth);
-                headY = wrapped(headY, m_worldHeight);
-            }
-
-            QVector<QPointF> route{QPointF(headX, headY)};
-            route.reserve(snake.foodPathIds.size() + 1);
-            for (int pathId : snake.foodPathIds) {
-                const auto particle = std::find_if(
-                    m_food.cbegin(), m_food.cend(), [pathId](const Food &candidate) {
-                        return candidate.id == pathId;
-                    });
-                if (particle == m_food.cend()) {
-                    continue;
-                }
-                QPointF target = particle->position;
-                if (!m_deadlyWalls) {
-                    const QPointF previous = route.constLast();
-                    target = QPointF(
-                        previous.x() + axisDelta(wrapped(previous.x(), m_worldWidth),
-                                                  target.x(), m_worldWidth, false),
-                        previous.y() + axisDelta(wrapped(previous.y(), m_worldHeight),
-                                                  target.y(), m_worldHeight, false));
-                }
-                route.append(target);
-            }
-
-            QVector<QPointF> planned{QPointF(headX, headY)};
-            planned.reserve(snake.plannedPath.size() + 1);
-            for (int pointIndex = 1; pointIndex < snake.plannedPath.size(); ++pointIndex) {
-                QPointF point = snake.plannedPath[pointIndex];
-                if (!m_deadlyWalls) {
-                    const QPointF previous = planned.constLast();
-                    point = QPointF(
-                        previous.x() + axisDelta(wrapped(previous.x(), m_worldWidth),
-                                                  point.x(), m_worldWidth, false),
-                        previous.y() + axisDelta(wrapped(previous.y(), m_worldHeight),
-                                                  point.y(), m_worldHeight, false));
-                }
-                planned.append(point);
-            }
-
-            qreal minimumX = route.constFirst().x();
-            qreal maximumX = minimumX;
-            qreal minimumY = route.constFirst().y();
-            qreal maximumY = minimumY;
-            for (const QPointF &point : std::as_const(route)) {
-                minimumX = std::min(minimumX, point.x());
-                maximumX = std::max(maximumX, point.x());
-                minimumY = std::min(minimumY, point.y());
-                maximumY = std::max(maximumY, point.y());
-            }
-            for (const QPointF &point : std::as_const(planned)) {
-                minimumX = std::min(minimumX, point.x());
-                maximumX = std::max(maximumX, point.x());
-                minimumY = std::min(minimumY, point.y());
-                maximumY = std::max(maximumY, point.y());
-            }
-            QVector<qreal> xOffsets{0.0};
-            QVector<qreal> yOffsets{0.0};
-            if (!m_deadlyWalls) {
-                xOffsets = wrappingOffsets(minimumX, maximumX, m_worldWidth, 18.0);
-                yOffsets = wrappingOffsets(minimumY, maximumY, m_worldHeight, 18.0);
-            }
-
-            const QColor snakeColor = m_palette.at(snake.colorIndex % m_palette.size());
-            for (qreal xOffset : std::as_const(xOffsets)) {
-                for (qreal yOffset : std::as_const(yOffsets)) {
-                    const QPointF wrapOffset(xOffset, yOffset);
-                    QVector<QPointF> mappedRoute;
-                    mappedRoute.reserve(route.size());
-                    for (const QPointF &point : std::as_const(route)) {
-                        mappedRoute.append(mapPoint(point + wrapOffset));
-                    }
-                    QVector<QPointF> mappedPlanned;
-                    mappedPlanned.reserve(planned.size());
-                    for (const QPointF &point : std::as_const(planned)) {
-                        mappedPlanned.append(mapPoint(point + wrapOffset));
-                    }
-                    for (int index = 1; index < mappedRoute.size(); ++index) {
-                        appendSegment(vertices, mappedRoute[index - 1], mappedRoute[index],
-                                      std::max(0.75, 1.0 * sizeScale),
-                                      QColor(205, 215, 235, 105), viewport);
-                        const qreal markerRadius = std::max(
-                            4.0, (10.0 - std::min(index, 5)) * sizeScale);
-                        appendDisc(vertices, mappedRoute[index], markerRadius,
-                                   withAlpha(snakeColor, 120), 12, viewport);
-                        appendDisc(vertices, mappedRoute[index],
-                                   std::max(1.5, markerRadius * 0.28),
-                                   QColor(255, 255, 255, 235), 8, viewport);
-                    }
-                    for (int index = 1; index < mappedPlanned.size(); ++index) {
-                        appendSegment(vertices,
-                                      mappedPlanned[index - 1], mappedPlanned[index],
-                                      std::max(1.4, 2.4 * sizeScale),
-                                      withAlpha(snakeColor, 235), viewport);
-                        appendDisc(vertices, mappedPlanned[index],
-                                   std::max(1.6, 2.2 * sizeScale),
-                                   withAlpha(snakeColor, 230), 6, viewport);
-                    }
-
-                    const QPointF arrowStart = mappedRoute.constFirst();
-                    const qreal arrowWorldLength = std::max(52.0, snake.radius * 7.0);
-                    const QPointF arrowWorldDelta(std::cos(snake.desiredAngle)
-                                                      * arrowWorldLength,
-                                                  std::sin(snake.desiredAngle)
-                                                      * arrowWorldLength);
-                    const QPointF arrowEnd = arrowStart
-                        + QPointF(arrowWorldDelta.x() * scaleX,
-                                  arrowWorldDelta.y() * scaleY);
-                    const QColor arrowColor(255, 255, 255, 235);
-                    appendSegment(vertices, arrowStart, arrowEnd,
-                                  std::max(1.2, 1.9 * sizeScale),
-                                  arrowColor, viewport);
-                    const qreal arrowAngle = std::atan2(arrowEnd.y() - arrowStart.y(),
-                                                        arrowEnd.x() - arrowStart.x());
-                    const qreal arrowHeadLength = std::max(8.0, 11.0 * sizeScale);
-                    constexpr qreal pi = 3.14159265358979323846;
+        // The ABI exposes immediate steering, but no planned-route points.
+        for (const auto &record : snakes) {
+            const Snake snake(record, *m_frame);
+            if (!snake.alive || snake.segments.empty()) continue;
+            const Segment head(snake.segments.front());
+            QPointF start(head.previous.x() + axisDelta(head.previous.x(), head.position.x(), m_worldWidth, m_deadlyWalls) * m_interpolation,
+                          head.previous.y() + axisDelta(head.previous.y(), head.position.y(), m_worldHeight, m_deadlyWalls) * m_interpolation);
+            if (!m_deadlyWalls) start = QPointF(wrapped(start.x(), m_worldWidth), wrapped(start.y(), m_worldHeight));
+            const qreal length = std::max(52.0, snake.radius * 7.0);
+            const Offsets xs = m_deadlyWalls ? Offsets{} : Offsets{-1, 1, m_worldWidth};
+            const Offsets ys = m_deadlyWalls ? Offsets{} : Offsets{-1, 1, m_worldHeight};
+            for (int xi = xs.first; xi <= xs.last; ++xi) {
+                for (int yi = ys.first; yi <= ys.last; ++yi) {
+                    const QPointF mapped = mapPoint(start + QPointF(xi * xs.extent, yi * ys.extent));
+                    const QPointF end = mapped + QPointF(std::cos(snake.desiredAngle) * length * scaleX,
+                                                        std::sin(snake.desiredAngle) * length * scaleY);
+                    const QColor color(255, 255, 255, 235);
+                    appendSegment(vertices, mapped, end, std::max(1.2, 1.9 * sizeScale), color, viewport);
+                    const qreal angle = std::atan2(end.y() - mapped.y(), end.x() - mapped.x());
                     for (qreal side : {-0.62, 0.62}) {
-                        const QPointF wing(
-                            std::cos(arrowAngle + pi + side) * arrowHeadLength,
-                            std::sin(arrowAngle + pi + side) * arrowHeadLength);
-                        appendSegment(vertices, arrowEnd, arrowEnd + wing,
-                                      std::max(1.2, 1.9 * sizeScale),
-                                      arrowColor, viewport);
+                        const qreal wing = angle + 3.14159265358979323846 + side;
+                        appendSegment(vertices, end, end + QPointF(std::cos(wing), std::sin(wing)) * std::max(8.0, 11.0 * sizeScale),
+                                      std::max(1.2, 1.9 * sizeScale), color, viewport);
                     }
                 }
             }

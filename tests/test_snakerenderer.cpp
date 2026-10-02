@@ -1,241 +1,200 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "snakerenderer.h"
-
-#include <QJSEngine>
 #include <QSGGeometryNode>
 #include <QTest>
-
 #include <cmath>
 #include <limits>
 
 class SnakeRendererTest final : public QObject
 {
     Q_OBJECT
-
-private:
-    static QJSValue makeSnakes(QJSEngine &engine, int segmentCount,
-                               bool malformedSegment = false, qreal coordinateScale = 1.0,
-                               int snakeCount = 1)
+    static SnakeFrame makeFrame(int segments, int snakeCount = 1, int foodCount = 1,
+                                bool malformed = false, float coordinateScale = 1)
     {
-        QJSValue snakes = engine.newArray(snakeCount);
-        for (int snakeIndex = 0; snakeIndex < snakeCount; ++snakeIndex) {
-            QJSValue snake = engine.newObject();
-            snake.setProperty(QStringLiteral("alive"), true);
-            snake.setProperty(QStringLiteral("radius"), 8.0);
-            snake.setProperty(QStringLiteral("angle"), 0.0);
-            snake.setProperty(QStringLiteral("desiredAngle"), 0.0);
-            snake.setProperty(QStringLiteral("colorIndex"), 0);
-
-            QJSValue segments = engine.newArray(segmentCount);
-            const qreal offsetX = (snakeIndex % 4) * 780.0;
-            const qreal offsetY = (snakeIndex / 4) * 340.0;
-            for (int index = 0; index < segmentCount; ++index) {
-                QJSValue segment = engine.newObject();
-                const qreal x = (250.0 - index * 4.5 + offsetX) * coordinateScale;
-                const qreal y = (120.0 + std::sin(index * 0.08) * 18.0 + offsetY)
-                    * coordinateScale;
-                segment.setProperty(QStringLiteral("x"),
-                                    malformedSegment && index == 7
-                                        ? std::numeric_limits<qreal>::quiet_NaN() : x);
-                segment.setProperty(QStringLiteral("y"), y);
-                segment.setProperty(QStringLiteral("previousX"), x - 1.0);
-                segment.setProperty(QStringLiteral("previousY"), y);
-                segments.setProperty(index, segment);
+        SnakeFrame frame;
+        frame.info = {600, 20, 3440, 1440, 0};
+        for (int n = 0; n < snakeCount; ++n) {
+            frame.snakes.push_back({uint32_t(n), 1, 1, 0, 8, 0, 0.7,
+                                   uint32_t(frame.segments.size()), uint32_t(segments)});
+            for (int i = 0; i < segments; ++i) {
+                const float x = (250 - i * 4.5 + (n % 4) * 780) * coordinateScale;
+                const float y = (120 + std::sin(i * 0.08) * 18 + (n / 4) * 340) * coordinateScale;
+                frame.segments.push_back({malformed && i == 7 ? std::numeric_limits<float>::quiet_NaN() : x,
+                                          y, x - 1, y});
             }
-            snake.setProperty(QStringLiteral("segments"), segments);
-            snakes.setProperty(snakeIndex, snake);
         }
-        return snakes;
-    }
-
-    static QJSValue makeFood(QJSEngine &engine, int count = 1)
-    {
-        QJSValue food = engine.newArray(count);
-        for (int index = 0; index < count; ++index) {
-            QJSValue particle = engine.newObject();
-            particle.setProperty(QStringLiteral("id"), index + 1);
-            const qreal x = 12.0 + (index % 32) * 9.0;
-            const qreal y = 12.0 + (index / 32) * 9.0;
-            particle.setProperty(QStringLiteral("x"), x);
-            particle.setProperty(QStringLiteral("y"), y);
-            particle.setProperty(QStringLiteral("size"), 4.0);
-            particle.setProperty(QStringLiteral("phase"), 0.0);
-            particle.setProperty(QStringLiteral("attraction"), 0.0);
-            particle.setProperty(QStringLiteral("attractionX"), x);
-            particle.setProperty(QStringLiteral("attractionY"), y);
-            particle.setProperty(QStringLiteral("colorIndex"), 0);
-            food.setProperty(index, particle);
+        for (int i = 0; i < foodCount; ++i) {
+            const float x = 12 + (i % 32) * 9;
+            const float y = 12 + (i / 32) * 9;
+            frame.food.push_back({uint64_t(i + 1), x, y, 4, 0, 0, x, y, 0});
         }
-        return food;
+        return frame;
     }
-
+    const QVector<QColor> palette{QColor("#4de6ff")};
 private Q_SLOTS:
     void retainedGeometrySurvivesGrowthShrinkAndMalformedPrimitive()
     {
         SnakeRenderer renderer;
         renderer.setSize(QSizeF(320, 240));
-
-        QJSEngine engine;
-        QJSValue palette = engine.newArray(1);
-        palette.setProperty(0, QStringLiteral("#4de6ff"));
-        const QJSValue food = makeFood(engine);
-
+        SnakeFrame frame;
         QSGNode *node = nullptr;
-        const auto buildGeometry = [&](int segmentCount, bool malformed = false) {
-            renderer.syncFrame(makeSnakes(engine, segmentCount, malformed), food, palette,
-                               segmentCount / 30.0, 0.5, 320, 240, 0, 0, true);
+        const auto render = [&](int count, bool malformed = false) {
+            frame = makeFrame(count, 1, 1, malformed);
+            frame.info.world_width = 320; frame.info.world_height = 240;
+            renderer.syncFrame(frame, palette, 0.5, true);
             node = renderer.updatePaintNode(node, nullptr);
             return static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount();
         };
-
-        const int initialVertices = buildGeometry(24);
-        QVERIFY(initialVertices > 250);
-        QVERIFY(renderer.m_geometryCapacity >= initialVertices);
-
-        const int grownVertices = buildGeometry(420);
-        QVERIFY(grownVertices > initialVertices);
-        const int grownCapacity = renderer.m_geometryCapacity;
-        QVERIFY(grownCapacity >= grownVertices);
-
-        const int shrunkVertices = buildGeometry(16);
-        QVERIFY(shrunkVertices < grownVertices);
+        const int initial = render(24);
+        QVERIFY(initial > 250);
+        const int grown = render(420);
+        QVERIFY(grown > initial);
+        const int capacity = renderer.m_geometryCapacity;
+        const int shrunk = render(16);
+        QVERIFY(shrunk < grown);
 #if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
-        QCOMPARE(renderer.m_geometryCapacity, grownCapacity);
+        QCOMPARE(renderer.m_geometryCapacity, capacity);
 #else
-        QCOMPARE(renderer.m_geometryCapacity, shrunkVertices);
+        QCOMPARE(capacity, grown);
+        QCOMPARE(renderer.m_geometryCapacity, shrunk);
 #endif
-
-        const int guardedVertices = buildGeometry(80, true);
-        QVERIFY(guardedVertices > 250);
-        QCOMPARE(guardedVertices % 3, 0);
+        const int guarded = render(80, true);
+        QVERIFY(guarded > 250);
+        QCOMPARE(guarded % 3, 0);
         delete node;
     }
-
-    void sameTimestampResyncUsesRescaledPreviousPositions()
+    void resyncReadsNativePreviousPositions()
     {
         SnakeRenderer renderer;
-        QJSEngine engine;
-        const QJSValue empty = engine.newArray();
-
-        renderer.syncFrame(makeSnakes(engine, 12), empty, empty,
-                           4.0, 0.5, 320, 240, 0, 0, true);
-        renderer.syncFrame(makeSnakes(engine, 12, false, 2.0), empty, empty,
-                           4.0, 0.5, 640, 480, 0, 0, true);
-
-        QCOMPARE(renderer.m_snakes.size(), 1);
-        QCOMPARE(renderer.m_snakes[0].segments.size(), 12);
-        QCOMPARE(renderer.m_snakes[0].segments[0].position, QPointF(500.0, 240.0));
-        QCOMPARE(renderer.m_snakes[0].segments[0].previous, QPointF(499.0, 240.0));
+        auto frame = makeFrame(12);
+        renderer.syncFrame(frame, palette, 0.5, true);
+        auto scaled = makeFrame(12, 1, 1, false, 2);
+        renderer.syncFrame(scaled, palette, 0.5, true);
+        QCOMPARE(renderer.m_frame, &scaled);
+        QCOMPARE(renderer.m_frame->segments[0].x, 500.0f);
+        QCOMPARE(renderer.m_frame->segments[0].previous_x, 499.0f);
     }
-
     void denseFoodDetailUsesHysteresis()
     {
         SnakeRenderer renderer;
         renderer.setSize(QSizeF(320, 240));
-        QJSEngine engine;
-        QJSValue palette = engine.newArray(1);
-        palette.setProperty(0, QStringLiteral("#4de6ff"));
-        const QJSValue noSnakes = engine.newArray();
         QSGNode *node = nullptr;
-
-        const auto renderFoodCount = [&](int count) {
-            renderer.syncFrame(noSnakes, makeFood(engine, count), palette,
-                               1.0, 0.0, 320, 240, 0, 0, true);
+        SnakeFrame frame;
+        const auto render = [&](int count) {
+            frame = makeFrame(0, 0, count);
+            renderer.syncFrame(frame, palette, 0, true);
             node = renderer.updatePaintNode(node, nullptr);
         };
-
-        renderFoodCount(341);
-        QVERIFY(renderer.m_denseFoodRendering);
-        renderFoodCount(300);
-        QVERIFY(renderer.m_denseFoodRendering);
-        renderFoodCount(279);
-        QVERIFY(!renderer.m_denseFoodRendering);
+        render(341); QVERIFY(renderer.m_denseFoodRendering);
+        render(300); QVERIFY(renderer.m_denseFoodRendering);
+        render(279); QVERIFY(!renderer.m_denseFoodRendering);
         delete node;
     }
-
-    void developerModeCopiesAndRendersPlannedRoute()
+    void developerSteeringArrowAndViewportScaling()
     {
         SnakeRenderer renderer;
         renderer.setSize(QSizeF(320, 240));
-        renderer.setDeveloperMode(true);
-
-        QJSEngine engine;
-        QJSValue palette = engine.newArray(1);
-        palette.setProperty(0, QStringLiteral("#4de6ff"));
-        QJSValue snakes = makeSnakes(engine, 18);
-        QJSValue snake = snakes.property(0);
-        snake.setProperty(QStringLiteral("desiredAngle"), 0.7);
-        QJSValue path = engine.newArray(2);
-        path.setProperty(0, 1);
-        path.setProperty(1, 2);
-        snake.setProperty(QStringLiteral("foodPathIds"), path);
-        QJSValue plannedPath = engine.newArray(2);
-        for (int index = 0; index < 2; ++index) {
-            QJSValue point = engine.newObject();
-            point.setProperty(QStringLiteral("x"), 250.0 + index * 35.0);
-            point.setProperty(QStringLiteral("y"), 120.0 + index * 20.0);
-            plannedPath.setProperty(index, point);
-        }
-        snake.setProperty(QStringLiteral("debugPlannedPath"), plannedPath);
-
-        renderer.syncFrame(snakes, makeFood(engine, 2), palette,
-                           1.0, 0.5, 320, 240, 0, 0, true);
-        QCOMPARE(renderer.m_snakes[0].foodPathIds, QVector<int>({1, 2}));
-        QCOMPARE(renderer.m_snakes[0].plannedPath.size(), 2);
-        QVERIFY(std::abs(renderer.m_snakes[0].desiredAngle - 0.7) < 0.0001);
+        auto frame = makeFrame(18);
+        frame.info.world_width = 640; frame.info.world_height = 480;
+        renderer.setScaleToViewport(true);
+        renderer.syncFrame(frame, palette, 0.5, false);
         QSGNode *node = renderer.updatePaintNode(nullptr, nullptr);
-        const int developerVertices = static_cast<QSGGeometryNode *>(node)
-                                          ->geometry()->vertexCount();
-        delete node;
-
-        renderer.setDeveloperMode(false);
-        renderer.syncFrame(snakes, makeFood(engine, 2), palette,
-                           2.0, 0.5, 320, 240, 0, 0, true);
-        QVERIFY(renderer.m_snakes[0].foodPathIds.isEmpty());
-        node = renderer.updatePaintNode(nullptr, nullptr);
-        const int normalVertices = static_cast<QSGGeometryNode *>(node)
-                                       ->geometry()->vertexCount();
-        QVERIFY(developerVertices > normalVertices);
+        const int normal = static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount();
+        renderer.setDeveloperMode(true);
+        node = renderer.updatePaintNode(node, nullptr);
+        QVERIFY(static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount() > normal);
         delete node;
     }
-
+    void sharedNativeFrameAndDestruction()
+    {
+        auto *simulation = new SnakeSimulation({640, 480, 50, 35, 100, 100, 75, 1, 6, 0, 1});
+        SnakeRenderer a, b;
+        a.setSimulation(simulation); b.setSimulation(simulation);
+        simulation->advance(1.0 / 30);
+        QCOMPARE(a.m_frame, &simulation->frame());
+        QCOMPARE(b.m_frame, a.m_frame);
+        delete simulation;
+        QVERIFY(!a.m_frame); QVERIFY(!b.m_frame);
+        QVERIFY(!a.simulation()); QVERIFY(!b.simulation());
+    }
+    void abiLimitedArenaMapsToEveryViewport_data()
+    {
+        QTest::addColumn<QString>("behavior");
+        QTest::addColumn<QSizeF>("extent");
+        QTest::addColumn<bool>("deadly");
+        for (const QString &mode : {QStringLiteral("independent"), QStringLiteral("synchronized"), QStringLiteral("seamless")}) {
+            for (const QSizeF &extent : {QSizeF(24000, 1200), QSizeF(1600, 24000), QSizeF(24000, 20000)}) {
+                for (bool deadly : {true, false}) {
+                    const auto name = QStringLiteral("%1-%2x%3-%4").arg(mode).arg(extent.width()).arg(extent.height()).arg(deadly);
+                    QTest::newRow(qPrintable(name)) << mode << extent << deadly;
+                }
+            }
+        }
+    }
+    void abiLimitedArenaMapsToEveryViewport()
+    {
+        QFETCH(QString, behavior); QFETCH(QSizeF, extent); QFETCH(bool, deadly);
+        SnakeSimulation simulation({1280, 720, 50, 35, 100, 100, 75, 1, 6, 0, uint32_t(deadly)});
+        QVERIFY(simulation.resize(extent.width(), extent.height()));
+        const auto &config = simulation.config();
+        SnakeRenderer renderer;
+        renderer.setSimulation(&simulation);
+        const QSizeF viewport = behavior == QStringLiteral("independent") ? extent : QSizeF(800, 600);
+        renderer.setSize(viewport);
+        renderer.setScaleToViewport(behavior == QStringLiteral("synchronized"));
+        const QPointF offset = behavior == QStringLiteral("seamless")
+            ? QPointF(viewport.width() - extent.width(), viewport.height() - extent.height()) : QPointF();
+        renderer.setDrawOffset(offset.x(), offset.y());
+        // Put both food and a snake near the far desktop edge, beyond 16384
+        // logical pixels. They must remain visible on that edge's viewport.
+        const QPointF logical(extent.width() - 400, extent.height() - 300);
+        const float x = logical.x() * config.width / extent.width();
+        const float y = logical.y() * config.height / extent.height();
+        SnakeFrame frame;
+        frame.info = {0, 0, config.width, config.height, 0};
+        frame.food.push_back({1, x, y, 3, 0, 0, x, y, 0});
+        frame.snakes.push_back({0, 1, 1, 0, 6, 0, 0, 0, 2});
+        frame.segments.push_back({x, y, x, y});
+        frame.segments.push_back({x - 12, y, x - 12, y});
+        renderer.syncFrame(frame, palette, 0, deadly);
+        QSGNode *node = renderer.updatePaintNode(nullptr, nullptr);
+        auto *geometry = static_cast<QSGGeometryNode *>(node)->geometry();
+        QVERIFY(geometry->vertexCount() > 63); // Food plus the culled-copy snake path.
+        const auto &center = geometry->vertexDataAsColoredPoint2D()[0];
+        const QPointF expected = behavior == QStringLiteral("synchronized")
+            ? QPointF(logical.x() * viewport.width() / extent.width(), logical.y() * viewport.height() / extent.height())
+            : logical + offset;
+        QVERIFY(std::abs(center.x - expected.x()) < 0.01);
+        QVERIFY(std::abs(center.y - expected.y()) < 0.01);
+        const int normal = geometry->vertexCount();
+        renderer.setDeveloperMode(true);
+        node = renderer.updatePaintNode(node, nullptr);
+        QVERIFY(geometry->vertexCount() > normal);
+        delete node;
+    }
     void benchmarkMatureGeometry()
     {
         SnakeRenderer renderer;
         renderer.setSize(QSizeF(3440, 1440));
-        QJSEngine engine;
-        QJSValue palette = engine.newArray(1);
-        palette.setProperty(0, QStringLiteral("#4de6ff"));
-        renderer.syncFrame(makeSnakes(engine, 120, false, 1.0, 14),
-                           makeFood(engine, 400), palette,
-                           20.0, 0.5, 3440, 1440, 0, 0, true);
-
-        QSGNode *node = nullptr;
+        auto frame = makeFrame(120, 14, 400);
+        renderer.syncFrame(frame, palette, 0.5, true);
+        QSGNode *node = renderer.updatePaintNode(nullptr, nullptr);
         QBENCHMARK {
-            renderer.presentFrame(20.0, 0.5);
+            renderer.presentFrame(20, 0.5);
             node = renderer.updatePaintNode(node, nullptr);
         }
         delete node;
     }
-
     void benchmarkMatureSyncFrame()
     {
         SnakeRenderer renderer;
         renderer.setSize(QSizeF(3440, 1440));
-        QJSEngine engine;
-        QJSValue palette = engine.newArray(1);
-        palette.setProperty(0, QStringLiteral("#4de6ff"));
-        const QJSValue snakes = makeSnakes(engine, 120, false, 1.0, 14);
-        const QJSValue food = makeFood(engine, 400);
-        qreal simulationTime = 20.0;
-
+        auto frame = makeFrame(120, 14, 400);
         QBENCHMARK {
-            simulationTime += 1.0 / 30.0;
-            renderer.syncFrame(snakes, food, palette,
-                               simulationTime, 0.5, 3440, 1440, 0, 0, true);
+            frame.info.simulation_time += 1.0 / 30;
+            renderer.syncFrame(frame, palette, 0.5, true);
         }
     }
 };
-
 QTEST_MAIN(SnakeRendererTest)
 #include "test_snakerenderer.moc"

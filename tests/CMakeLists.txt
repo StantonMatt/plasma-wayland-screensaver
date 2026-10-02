@@ -33,25 +33,52 @@ add_test(NAME firefly-renderer COMMAND test-fireflyrenderer)
 set_tests_properties(firefly-renderer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
 
+add_executable(test-presentationclock
+    test_presentationclock.cpp
+    ../src/presentationclock.cpp
+    ../src/presentationclock.h
+)
+target_include_directories(test-presentationclock PRIVATE ../src)
+target_link_libraries(test-presentationclock PRIVATE Qt6::Quick Qt6::Test)
+add_test(NAME presentation-clock COMMAND test-presentationclock)
+set_tests_properties(presentation-clock PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+
 add_executable(test-snakerenderer
     test_snakerenderer.cpp
     ../src/snakerenderer.cpp
     ../src/snakerenderer.h
+    ../src/snakesimulation.cpp
+    ../src/snakesimulation.h
+    ../src/configuration.cpp
+    ../src/configuration.h
 )
 target_include_directories(test-snakerenderer PRIVATE ../src)
-target_link_libraries(test-snakerenderer PRIVATE Qt6::Qml Qt6::Quick Qt6::Test)
+target_link_libraries(test-snakerenderer PRIVATE Qt6::Qml Qt6::Quick Qt6::Test KF6::ConfigCore SnakesCore::snakes_core)
 add_test(NAME snake-renderer COMMAND test-snakerenderer)
 set_tests_properties(snake-renderer PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
 
-if(TARGET Qt6::qmltestrunner)
-    add_test(NAME snakes-qml
-        COMMAND Qt6::qmltestrunner -input "${CMAKE_CURRENT_SOURCE_DIR}/qml")
-    set_tests_properties(snakes-qml PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
-else()
-    message(FATAL_ERROR "Qt6 qmltestrunner is required for visual module tests")
-endif()
+add_executable(test-snakesimulation
+    test_snakesimulation.cpp
+    ../src/snakesimulation.cpp ../src/snakesimulation.h
+    ../src/snakerenderer.cpp ../src/snakerenderer.h
+    ../src/configuration.cpp ../src/configuration.h)
+target_include_directories(test-snakesimulation PRIVATE ../src)
+target_link_libraries(test-snakesimulation PRIVATE Qt6::Quick Qt6::Test KF6::ConfigCore SnakesCore::snakes_core)
+add_test(NAME snake-simulation COMMAND test-snakesimulation)
+set_tests_properties(snake-simulation PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+
+find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)
+add_executable(test-snakesqml
+    test_snakesqml.cpp
+    ../src/snakesimulation.cpp ../src/snakesimulation.h
+    ../src/snakerenderer.cpp ../src/snakerenderer.h
+    ../src/configuration.cpp ../src/configuration.h)
+target_include_directories(test-snakesqml PRIVATE ../src)
+target_link_libraries(test-snakesqml PRIVATE Qt6::Quick Qt6::Qml Qt6::QuickTest KF6::ConfigCore SnakesCore::snakes_core)
+add_test(NAME snakes-qml COMMAND test-snakesqml -input "${CMAKE_CURRENT_SOURCE_DIR}/qml")
+set_tests_properties(snakes-qml PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
 
 add_executable(test-snakescore-abi test_snakescore_abi.cpp)
 target_link_libraries(test-snakescore-abi PRIVATE Qt6::Core Qt6::Test SnakesCore::snakes_core)
@@ -75,3 +102,20 @@ add_test(NAME snakes-parity
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/snakes/compare.py"
         --binary "${SNAKES_CORE_TARGET_DIR}/${SNAKES_CORE_CONFIG}/${SNAKES_CORE_PROFILE_DIR}/examples/parity")
 set_tests_properties(snakes-parity PROPERTIES TIMEOUT 120)
+add_test(NAME snakes-parity-record
+    COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/parity/snakes/record.sh" --check)
+set_tests_properties(snakes-parity-record PROPERTIES TIMEOUT 240)
+add_executable(test-overlaysnakes
+    test_overlaysnakes.cpp
+    ../src/overlaymanager.cpp ../src/overlaymanager.h
+    ../src/animationstate.cpp ../src/animationstate.h
+    ../src/presentationclock.cpp ../src/presentationclock.h
+    ../src/snakesimulation.cpp ../src/snakesimulation.h
+    ../src/snakerenderer.cpp ../src/snakerenderer.h
+    ../src/fireflyrenderer.cpp ../src/fireflyrenderer.h
+    ../src/configuration.cpp ../src/configuration.h
+    ../src/resources.qrc)
+target_include_directories(test-overlaysnakes PRIVATE ../src)
+target_link_libraries(test-overlaysnakes PRIVATE Qt6::Quick Qt6::Test KF6::ConfigCore LayerShellQt::Interface SnakesCore::snakes_core)
+add_test(NAME overlay-snakes COMMAND test-overlaysnakes)
+set_tests_properties(overlay-snakes PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")

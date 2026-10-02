@@ -98,10 +98,10 @@ def summarize(directory, outputs, duration, rate, warmup):
     if len(windows) != outputs:
         raise RuntimeError(f"Expected {outputs} output windows, got {len(windows)}")
     app_log = (directory / "app.log").read_text()
-    renderer = re.findall(r".*(?:GL_RENDERER|GL_VENDOR|graphics API|backend|Graphics API).*", app_log, re.I)
+    renderer = re.findall(r".*(?:GL_RENDERER|GL_VENDOR|OpenGL VENDOR|graphics API|backend|Graphics API).*", app_log, re.I)
     if re.search(r"llvmpipe|softpipe|software rasterizer|software backend|Qt Quick software", app_log, re.I):
         rendering = "software"
-    elif re.search(r"GL_RENDERER|Vulkan device|D3D.*adapter|Metal device", app_log, re.I):
+    elif re.search(r"GL_RENDERER|OpenGL VENDOR|Vulkan device|D3D.*adapter|Metal device", app_log, re.I):
         rendering = "GPU (see renderer details)"
     else:
         rendering = "unknown; inspect app.log and compositor.log"
@@ -122,12 +122,34 @@ def summarize(directory, outputs, duration, rate, warmup):
                     "Simulation steps are measured from Snakes simulationTime / physicsStepSeconds; -1 means unavailable.",
                     "RSS peak is sampled once per second; CPU is process-wide, 100% equals one core; startup included.",
                     "In-memory CSV buffer contributes to RSS; trace writes on graceful exit.",
-                    "Snakes currently caps configured auto at 60 using the existing fixed timer pacing path."]}
+                    "Snakes caps configured auto at 60; swap feedback aligns pacing, with an absolute-timer fallback.",
+                    "Submission cadence and phase do not establish compositor refresh. Advertised refresh comes from QScreen; compositor.log has no presentation timestamps.",
+                    "Over-deadline counts measure lateness, not dropped frames. Skipped-slot estimates round to the nearest nominal interval; no scanout feedback is available.",
+                    "When a sync consumes multiple ticks, pacing timestamps describe its last tick; timer_fallbacks is a cumulative per-clock counter."]}
     for window in windows:
         selected = [r for r in frames if r["window"] == window]
         intervals = [int(r["interval_ns"]) / 1e6 for r in selected if int(r["interval_ns"]) > 0]
         if not intervals:
             raise RuntimeError(f"No frame intervals for window {window}")
+        timestamps = [int(r["timestamp_ns"]) for r in selected]
+        elapsed_ns = timestamps[-1] - timestamps[0]
+        refresh_match = re.search(rf"Frame trace window {window} .*refresh Hz ([\d.]+)", app_log)
+        refresh = float(refresh_match[1]) if refresh_match else None
+        cadence = {
+            "mean_interval_ms": round(sum(intervals) / len(intervals), 4),
+            "observed_submission_hz": round((len(timestamps) - 1) * 1e9 / elapsed_ns, 4) if elapsed_ns > 0 else None,
+            "advertised_refresh_hz": refresh,
+            "interval_histogram_0.5ms": {},
+        }
+        for value in intervals:
+            bucket = f"{math.floor(value * 2) / 2:.1f}"
+            cadence["interval_histogram_0.5ms"][bucket] = cadence["interval_histogram_0.5ms"].get(bucket, 0) + 1
+        cadence["interval_histogram_0.5ms"] = dict(sorted(cadence["interval_histogram_0.5ms"].items(), key=lambda pair: float(pair[0])))
+        if refresh and refresh >= 1:
+            refresh_ns = 1e9 / refresh
+            cadence["submission_phase_ms"] = percentiles([
+                ((timestamp - timestamps[0] + refresh_ns / 2) % refresh_ns - refresh_ns / 2) / 1e6
+                for timestamp in timestamps])
         # Exact nominal deadlines, avoiding the bias of rounding 16.666... to 16.67.
         misses = {}
         for hz in (60, 30):
@@ -136,16 +158,28 @@ def summarize(directory, outputs, duration, rate, warmup):
             misses[f"{1000 / hz:.2f}_ms"] = {
                 "intervals_over_deadline": len(missed),
                 "intervals_over_deadline_plus_1ms": sum(v > deadline + 1e6 for v in missed),
-                "estimated_skipped_slots_1ms_tolerance": sum(max(0, math.ceil((v - 1e6) / deadline) - 1) for v in missed)}
+                "estimated_skipped_slots_nearest_interval": sum(max(0, math.floor(v / deadline + .5) - 1) for v in missed)}
         ticks = [r for r in selected if int(r["tick_callbacks"]) > 0]
         report["windows"][window] = {
             "frames": len(selected), "frame_interval_ms": percentiles(intervals),
+            "cadence": cadence,
             "missed_deadlines": misses,
             "gui_tick_ms": percentiles([int(r["gui_tick_ns"]) / 1e6 for r in ticks]),
             "sync_ms": percentiles([int(r["sync_ns"]) / 1e6 for r in selected]),
             "render_ms": percentiles([int(r["render_ns"]) / 1e6 for r in selected]),
             "simulation_steps": sum(max(0, int(r["simulation_steps"])) for r in selected),
             "tick_callbacks": sum(int(r["tick_callbacks"]) for r in selected)}
+        if "tick_timestamp_ns" in selected[0]:
+            paced = [r for r in ticks if int(r["tick_timestamp_ns"]) > 0 and int(r["request_timestamp_ns"]) > 0]
+            def differences(end, start):
+                return percentiles([(int(r[end]) - int(r[start])) / 1e6 for r in paced if int(r[start]) > 0])
+            report["windows"][window]["pacing"] = {
+                "timer_fallbacks_total": max(int(r["timer_fallbacks"]) for r in selected),
+                "wake_lateness_ms": differences("tick_timestamp_ns", "wake_deadline_ns"),
+                "request_to_swap_ms": differences("timestamp_ns", "request_timestamp_ns"),
+                "swap_minus_prediction_ms": differences("timestamp_ns", "predicted_presentation_ns"),
+                "swap_callback_to_tick_ms": differences("tick_timestamp_ns", "swap_callback_ns"),
+            }
     result = json.dumps(report, indent=2)
     (directory / "summary.json").write_text(result + "\n")
     print(f"\n{directory}\n{result}", flush=True)
@@ -158,11 +192,20 @@ parser.add_argument("--outputs", type=int, nargs="+", default=[1, 2], choices=[1
 parser.add_argument("--rates", nargs="+", default=["30", "auto"], choices=["30", "auto"])
 parser.add_argument("--warmup", type=float, default=5, help="exclude initial seconds from frame percentiles")
 parser.add_argument("--output-dir", type=Path, default=Path("frame-timing-results"))
+parser.add_argument("--summarize-only", action="store_true", help="reanalyze existing runs in --output-dir without launching processes")
 args = parser.parse_args()
 if not 0 <= args.warmup < args.duration or args.duration * 1000 > 2147483647:
     parser.error("duration must exceed nonnegative warmup and fit a Qt timer")
-binary = args.binary.resolve(strict=True)
 root = args.output_dir.resolve()
+if args.summarize_only:
+    for outputs in dict.fromkeys(args.outputs):
+        for rate in dict.fromkeys(args.rates):
+            directory = root / f"{outputs}output-{rate}fps"
+            # Retain the original run's metadata when regenerating summaries.
+            previous = json.loads((directory / "summary.json").read_text()) if (directory / "summary.json").exists() else {}
+            summarize(directory, outputs, previous.get("duration_requested_s", args.duration), rate, args.warmup)
+    sys.exit(0)
+binary = args.binary.resolve(strict=True)
 root.mkdir(parents=True, exist_ok=True)
 (root / "invocation.json").write_text(json.dumps({"argv": sys.argv[1:], "binary": str(binary)}, indent=2) + "\n")
 for outputs in dict.fromkeys(args.outputs):

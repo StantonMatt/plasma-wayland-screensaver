@@ -11,7 +11,7 @@ import re
 import subprocess
 
 crate = Path(__file__).resolve().parents[1]
-source = (crate.parents[1] / 'qml/visuals/Snakes.qml').read_text()
+source = (crate.parents[1] / 'tests/parity/snakes/oracle/Snakes.qml').read_text()
 names = '''random clamp normalizeAngle distanceSquared wrapCoordinate axisDelta
 worldDistanceSquared worldSegmentDistanceSquared planarPointSegmentDistanceSquared
 crossProduct pointOnPlanarSegment worldSegmentsDistanceSquared baseRadius

@@ -4,7 +4,7 @@
 //! flags, IDs and insufficient capacities return status codes, without panic.
 use std::{ mem::{ align_of, size_of }, ptr };
 use crate::{ Config, World, MAX_SNAKES };
-use crate::controller::{ BaselineController, Controller, Steering };
+use crate::controller::{ Controller, Steering };
 pub const OK: i32 = 0;
 pub const INVALID_ARGUMENT: i32 = 1;
 pub const BUFFER_TOO_SMALL: i32 = 2;
@@ -139,17 +139,19 @@ pub struct WorldHandle {
     world: World,
     inputs: [Option<SteeringInput>;
     MAX_SNAKES],
-    scripted: bool
+    scripted: bool,
+    ai: crate::ai::AiController
 }
 struct InputController<'a> {
     inputs: &'a [Option<SteeringInput>;
     MAX_SNAKES],
-    scripted: bool
+    scripted: bool,
+    ai: &'a mut crate::ai::AiController
 }
 impl Controller for InputController<'_> {
     fn steer(&mut self, w: &World, s: crate::SnakeView<'_>) -> Steering {
         if !self.scripted {
-            return BaselineController.steer(w, s);
+            return self.ai.steer(w, s);
         }
         if let Some(i) = self.inputs[s.id as usize] {
             if i.generation==0 || i.generation==s.generation {
@@ -197,7 +199,8 @@ pub unsafe extern "C" fn snakes_core_create(config: *const CoreConfig, output: *
         world,
         inputs: [None;
         MAX_SNAKES],
-        scripted: false
+        scripted: false,
+        ai: crate::ai::AiController::new()
     });
     unsafe {
         ptr::write(output, Box::into_raw(h));
@@ -252,7 +255,7 @@ pub unsafe extern "C" fn snakes_core_resize(handle: *mut WorldHandle, width: f64
     }
 }
 /// Sets persistent per-slot controls. Generation zero matches any respawn;
-/// omitted slots continue straight. An empty table restores the baseline.
+/// omitted slots continue straight. An empty table restores the AI.
 /// # Safety
 /// Handle is live/exclusive; input is a readable aligned array of `length`
 /// records, disjoint from the handle. Null input is allowed for length zero.
@@ -294,7 +297,8 @@ pub unsafe extern "C" fn snakes_core_step(handle: *mut WorldHandle, ticks: u32) 
     };
     let mut controller = InputController {
         inputs: &h.inputs,
-        scripted: h.scripted
+        scripted: h.scripted,
+        ai: &mut h.ai
     };
     h.world.step_n(&mut controller, ticks);
     OK
@@ -434,4 +438,51 @@ const _: () =  {
     assert!(std::mem::offset_of!(SnakeRecord, segment_offset)==40);
     assert!(std::mem::offset_of!(FoodRecord, color_index)==36);
     assert!(std::mem::offset_of!(CoreStats, deaths)==16);
+};
+
+/// Developer-overlay record. No existing ABI record or version is changed.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AiDebugPoint { pub x: f32, pub y: f32 }
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AiDebugRecord {
+    pub id: u32,
+    pub generation: u32,
+    pub target_count: u32,
+    pub path_count: u32,
+    pub flags: u32,
+    pub reachable_cells: u32,
+    pub safe_seconds: f64,
+    pub target_food_ids: [u64; 5],
+    pub path: [AiDebugPoint; 16],
+}
+/// Exports one slot's last AI decision. Scripted mode, dead slots, or a new
+/// generation without a decision return a zero-count record. Flags: 1 area
+/// capped, 2 safety capped, 4 no full-horizon safe route, 8 interception.
+/// # Safety
+/// Handle is live/readable and output is aligned writable memory disjoint
+/// from the handle. Calls on a handle are serialized.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snakes_core_ai_debug(handle: *const WorldHandle, id: u32, output: *mut AiDebugRecord) -> i32 {
+    if !valid(handle) || !valid(output) {return INVALID_ARGUMENT;}
+    let h=unsafe {&*handle};
+    let Some(s)=h.world.snake(id as usize) else {return INVALID_ARGUMENT;};
+    let mut record=AiDebugRecord {id,generation:s.generation,..AiDebugRecord::default()};
+    let d=h.ai.debug(id as usize).unwrap();
+    if !h.scripted && s.alive && d.generation==s.generation {
+        record.target_count=d.target_count;record.path_count=d.path_count;
+        record.flags=d.flags;record.reachable_cells=d.reachable_cells;
+        record.safe_seconds=d.safe_seconds;record.target_food_ids=d.target_food_ids;
+        for (p,q) in record.path.iter_mut().zip(d.path) {*p=AiDebugPoint {x:q.x as f32,y:q.y as f32};}
+    }
+    unsafe {ptr::write(output,record);}
+    OK
+}
+const _: () = {
+    assert!(size_of::<AiDebugPoint>()==8);
+    assert!(size_of::<AiDebugRecord>()==200);
+    assert!(align_of::<AiDebugRecord>()==8);
+    assert!(std::mem::offset_of!(AiDebugRecord,target_food_ids)==32);
+    assert!(std::mem::offset_of!(AiDebugRecord,path)==72);
 };

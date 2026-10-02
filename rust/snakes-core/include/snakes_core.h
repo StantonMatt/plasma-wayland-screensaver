@@ -67,6 +67,21 @@ int32_t snakes_core_export_frame(const snakes_core_world *world,
     snakes_core_segment *segments, size_t segment_capacity,
     snakes_core_food *food, size_t food_capacity, snakes_core_frame_info *info);
 int32_t snakes_core_stats(const snakes_core_world *world, snakes_core_statistics *output);
+/* New optional AI overlay API. Empty steering tables now restore the smart
+ * default AI. Existing ABI records and ABI version remain unchanged. */
+typedef struct snakes_core_ai_debug_point { float x, y; } snakes_core_ai_debug_point;
+typedef struct snakes_core_ai_debug_record {
+    uint32_t id, generation, target_count, path_count, flags, reachable_cells;
+    double safe_seconds;
+    uint64_t target_food_ids[5];
+    snakes_core_ai_debug_point path[16];
+} snakes_core_ai_debug_record;
+/* Flags: 1 capped area, 2 capped safety, 4 no safe horizon, 8 interception.
+ * Dead/unplanned/scripted slots have zero counts. Invalid IDs return INVALID. */
+/* Additional flag: 16 means the retained plan was checked against current
+ * hazards and reused until the next strategy decision. */
+int32_t snakes_core_ai_debug(const snakes_core_world *world, uint32_t id,
+                           snakes_core_ai_debug_record *output);
 #ifdef __cplusplus
 }
 #endif
@@ -86,5 +101,9 @@ SNAKES_CORE_ASSERT(sizeof(snakes_core_statistics) == 56);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, radius) == 16);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_food, color_index) == 36);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_statistics, deaths) == 16);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_ai_debug_point) == 8);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_ai_debug_record) == 200);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_ai_debug_record, target_food_ids) == 32);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_ai_debug_record, path) == 72);
 #undef SNAKES_CORE_ASSERT
 #endif

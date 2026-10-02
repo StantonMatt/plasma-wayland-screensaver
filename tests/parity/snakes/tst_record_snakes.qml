@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtTest
-import "../../../qml/visuals"
+import "oracle"
 import "Recorder.js" as Recorder
 
 TestCase {
@@ -35,9 +35,9 @@ TestCase {
 
     // Qt 6 QML methods are read-only from JS. Rename instrumented entry
     // points in an in-memory copy, then delegate through writable hook slots.
-    // Relative production imports still resolve beside the real Snakes.qml.
+    // Relative imports resolve beside the frozen JavaScript oracle.
     function createInstrumentedVisual() {
-        const url = Qt.resolvedUrl("../../../qml/visuals/Snakes.qml")
+        const url = Qt.resolvedUrl("oracle/Snakes.qml")
         const request = new XMLHttpRequest()
         request.open("GET", url, false)
         request.send()

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+mod query;
 use std::f64::consts::TAU;
 use crate::{ Point, WorldRng, normalize_angle };
 use crate::math::Geometry;

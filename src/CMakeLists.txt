@@ -18,6 +18,8 @@ set(screensaver_sources
     presentationclock.h
     screensaverstatemachine.cpp
     screensaverstatemachine.h
+    snakesimulation.cpp
+    snakesimulation.h
     snakerenderer.cpp
     snakerenderer.h
     resources.qrc

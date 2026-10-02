@@ -53,9 +53,9 @@ def transform_coordinates(fixture, decode=False):
 
 def record(log, output):
     output.mkdir(parents=True, exist_ok=True)
-    repo = HERE.parents[2]
+    # Keep historical fixture keys, hashing the frozen oracle at those origins.
     sources = {
-        name: hashlib.sha256((repo / name).read_bytes()).hexdigest()
+        name: hashlib.sha256((HERE / "oracle" / Path(name).name).read_bytes()).hexdigest()
         for name in ("qml/visuals/Snakes.qml", "qml/visuals/VisualUtils.js", "qml/visuals/FrameClock.qml")
     }
     fixture = None

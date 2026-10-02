@@ -58,9 +58,9 @@ opens the latest GitHub release instead.
 - Animation and background are independent. Replaceable animation modules
   provide None, Aurora Drift, Floating Orbs, Bouncing Balls, Hyperspace,
   Digital Rain, Kaleidoscope, Fireflies, Neon Ribbons, Constellations, and
-  Slithering Snakes (with adjustable predictive AI, visibly magnetic food,
-  single-target pursuit of the closest turn-reachable food anywhere around
-  the snake, collision-aware curved approaches,
+  Slithering Snakes (with adjustable AI that plans paths, avoids collisions,
+  and seeks open space; bigger snakes contest food and cut rivals off, while
+  smaller snakes avoid losing head-on encounters; visibly magnetic food,
   collision-safe spawning, exact head-path body following, outward self-tail
   escapes, swept neck/body collision detection, forward growth, persistent
   food vacuum locks, optional self-collision, deadly or wraparound edges, and
@@ -75,27 +75,23 @@ opens the latest GitHub release instead.
   automatic mode that follows each output's presentation rate independently.
   Every module also honors the static reduced-motion setting.
 - `PresentationClock` gives each overlay window its own frame cadence. It uses
-  the output refresh rate and sub-millisecond `QChronoTimer` precision to
-  schedule `QWindow::requestUpdate()`, advancing motion from measured elapsed
-  time rather than assuming an ideal interval.
+  swap feedback to align `QWindow::requestUpdate()` with the output's refresh
+  cycle, keeping an absolute pacing grid to avoid drift. If swap feedback is
+  unavailable, it falls back to absolute `QChronoTimer` deadlines. Motion
+  advances from measured elapsed time rather than assuming an ideal interval.
   This avoids Qt Quick's approximately 60 Hz global animation timer fallback
   when multiple windows are visible, while fixed caps still reduce GPU use.
 - Digital Rain builds each glyph stream once as cached Qt Quick text and only
   changes column transforms per frame. It avoids repainting thousands of glyphs
   through JavaScript Canvas on every update.
-- Slithering Snakes uses a native Qt Quick scene-graph renderer instead of a
-  full-screen JavaScript Canvas. It batches the ecosystem into compact GPU
-  triangle geometry, runs physics at 30 Hz with smooth 60 Hz interpolation, and
-  shares one simulation across all outputs in synchronized and seamless modes.
-  Its scene-graph geometry retains grow-only buffer capacity as the visible
-  vertex count changes, uses continuous joined body ribbons, and isolates
-  malformed primitives instead of allowing one to invalidate a complete frame.
-  Mature death-food populations are bounded while folding the defeated snake's
-  edible value into the available particles; dense feasts also use simplified
-  particle glow and less frequent cluster rescoring. The JavaScript Canvas
-  fallback is unloaded whenever native rendering is available. This avoids
-  recomputing identical AI, reallocating the GPU stream on routine growth, or
-  redrawing multi-megapixel textures at 175–240 Hz.
+- Slithering Snakes runs simulation and AI in the Rust core, owned by a native
+  `SnakeSimulation`. Physics advances at 30 Hz from the presentation clock,
+  with interpolated rendering capped at 60 Hz. Synchronized and seamless modes
+  share one world that survives individual monitor removal. Each renderer reads
+  the same exported ABI frame directly, with reusable frame and geometry buffers,
+  continuous joined body ribbons, food halos, magnetic streaks, eyes, crowns,
+  and wrap copies. `Snakes.qml` only binds the native scene-graph item; there is
+  no JavaScript simulation or Canvas fallback. Reduced motion pauses the world.
 - `AnimationState` advances seamless moving objects once per frame and collides
   them against the union of the actual `QScreen` geometries. Different output
   sizes, vertical offsets, and gaps therefore form real boundaries while an
@@ -161,15 +157,11 @@ plasma-visual-screensaver --quit
 ./build/bin/plasma-visual-screensaver --preview --dev
 ```
 
-For Slithering Snakes, the thin translucent line points to its single food
-target: the closest available particle outside the head's current turning
-pocket, including particles behind it. The bold colored curve is the
-collision-aware trajectory the planner
-currently predicts the snake will travel. The bright white arrow shows its
-immediate steering direction. A curved trajectory can therefore collect the
-marked particle even when the head is not pointing straight at it. Input
-dismisses the preview as usual. Developer tracing is never enabled for automatic
-idle activation and adds no rendering work to the normal screensaver.
+For Slithering Snakes, the bright white arrow shows each snake's immediate
+steering direction. The current Rust ABI does not export food routes or planned
+trajectories. Input dismisses the preview as usual. Developer tracing is never
+enabled for automatic idle activation and adds no rendering work to the normal
+screensaver.
 
 ## Install from source
 
@@ -228,7 +220,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.6.2`, publishes the verified
+matching the CMake project version, such as `v0.7.0`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 
@@ -280,8 +272,11 @@ autoactivation disabled, fresh config/home/runtime directories, and no inherited
 desktop display or bus. Failure stops the run; there is no real-desktop fallback.
 Use `--outputs 1` or `--rates 30` to select a subset, and `--binary PATH` for a
 binary outside `build-frametiming/bin/`. Each run saves raw CSV, logs and a JSON
-summary with per-window interval/tick/sync/render percentiles, deadline counts,
-RSS and process CPU usage. Initial five seconds are excluded from frame metrics.
+summary with per-window interval/tick/sync/render percentiles, interval histograms,
+mean intervals, observed submission rates, deadline counts, RSS and process CPU
+usage. Initial five seconds are excluded from frame metrics. Reanalyze saved CSV
+and logs with `--summarize-only --output-dir PATH` (use `--warmup` to override the
+exclusion period).
 
 `PVS_FRAME_TRACE=/path/frames.csv` enables buffered tracing; unset, no timing
 hooks or resource timer are installed. `PVS_FRAME_TRACE_DURATION_MS` additionally
@@ -291,40 +286,42 @@ work and physics steps consumed by scene-graph synchronization. Sync includes
 `updatePaintNode`; render measures CPU command recording. These are swap/submission
 measurements on virtual outputs, not physical scanout or GPU execution times.
 Raw deadline counts include sub-millisecond jitter, so summaries also report a
-1 ms tolerance. Auto retains the existing Snakes 60 FPS cap and timer pacing.
+1 ms tolerance. A late interval does not establish a skipped frame; the slot
+estimate rounds to the nearest nominal interval. Compare the mean and histogram
+with the median: periodic short corrections can preserve average FPS while
+most intervals are late. Advertised refresh comes from `QScreen`; swap cadence
+alone cannot establish the virtual compositor's actual refresh.
+
+Auto retains the Snakes 60 FPS cap. The clock keeps an absolute refresh grid
+anchored at its first swap and starts work one refresh before each selected
+presentation slot. Later submissions do not move that grid, since submission
+latency is not display phase. Missing swap feedback uses absolute timer pacing;
+feedback recovery or an advertised refresh change establishes a fresh grid.
+Traces additionally record the wake deadline, tick and update-request timestamps,
+predicted presentation, queued swap-callback timestamp and cumulative timer
+fallback count. Summaries show wake lateness, request-to-swap time and prediction
+error; pacing timestamps describe the last tick consumed by a sync. These fields
+distinguish scheduling delay from backend latency without physical presentation
+feedback.
 The buffer is written at graceful exit and contributes to sampled RSS.
 
 ## Long-run Slithering Snakes benchmark
 
-Use the deterministic soak benchmark when investigating performance that
-changes as snakes grow, die, and create food. It simulates eight minutes at
-30 Hz using the largest monitor's 3440x1440 geometry and the maximum density,
-trail, intelligence, and self-collision settings:
+Run the Rust simulation benchmark and native renderer benchmarks:
 
 ```bash
 ./scripts/benchmark-snakes.sh
 ```
 
-Each simulated minute reports wall-clock cost alongside live segment, food,
-trail-storage, death, and estimated renderer-vertex counts. The command saves
-the complete Qt Test log, a machine-readable window CSV, a mature-state phase
-profile, fixed-fixture planner and feeding CSVs, and a renderer CSV under the ignored
-`benchmark-results/` directory. Compare the
-per-window `ms_per_step` and `realtime_ratio` columns rather than only the total
-runtime; a rising curve reveals long-session degradation that a short
-throughput test can hide. The profile divides a final 30 seconds between food
-analysis, AI planning, movement, food capture, and collisions/explosions.
-The fixed planner fixture repeats identical plans for fourteen 120-segment
-snakes among 400 food particles, so its `ms_per_plan` is the less noisy metric
-for comparing AI implementation changes that alter the evolving ecosystem.
-The feeding fixture measures a stable 400-particle by 14-snake capture search;
-body-placement and collision-grid fixtures track length-sensitive movement and
-collision work for fourteen 120-segment snakes. A near-field safety fixture
-tracks the predictive guard that runs between full AI plans.
-When a configured `build/` directory is available, the command also builds and
-runs three-sample CPU scene-graph geometry and QML-to-C++ synchronization
-benchmarks for a mature 14-snake, 400-particle frame. These renderer metrics do
-not include GPU driver or compositor time.
+The script configures a Release build under `build-snakes-benchmark`, runs the
+Rust `bench_mechanics` (mechanics only) and `ai_scorecard` (production AI)
+examples with the distribution toolchain in frozen/offline mode, and measures native frame synchronization and scene-graph geometry for a
+mature 14-snake, 400-particle fixture. It saves a log and three-sample renderer
+CSV under `benchmark-results/`. Set `SNAKE_BENCHMARK_BUILD_DIR` to reuse another
+Release build, or `SNAKE_BENCHMARK_RESULTS_DIR` to select the output directory.
+Geometry measurements include interpolation and CPU tessellation; they exclude
+GPU execution and compositor time. Frame synchronization reads caller-owned ABI
+records without QML conversion or per-viewport simulation copies.
 
 ## Manual Wayland test checklist
 
