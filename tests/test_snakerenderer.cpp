@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "snakerenderer.h"
+#include "configuration.h"
+#include <QTemporaryDir>
+#include <QSignalSpy>
 #include <QSGGeometryNode>
 #include <QTest>
 #include <cmath>
@@ -32,6 +35,49 @@ class SnakeRendererTest final : public QObject
     }
     const QVector<QColor> palette{QColor("#4de6ff")};
 private Q_SLOTS:
+    void perWindowPredictionSurvivesAnotherWindowStepping()
+    {
+        const snakes_core_config config{320, 240, 50, 35, 100, 100, 75, 1, 6, 0, 1};
+        SnakeSimulation sim(config);
+        SnakeRenderer first, second;
+        first.setSize(QSizeF(320, 240)); second.setSize(QSizeF(320, 240));
+        first.setSimulation(&sim); second.setSimulation(&sim);
+        constexpr qint64 origin = 1'000'000'000;
+        sim.advanceTo(origin);
+        sim.advanceTo(origin + 30'000'000);
+        first.presentAt(origin + 30'000'000);
+        // Cross a physics boundary before the first window's scene-graph sync.
+        sim.advanceTo(origin + 40'000'000);
+        second.presentAt(origin + 40'000'000);
+        auto *firstNode = first.updatePaintNode(nullptr, nullptr);
+        auto *secondNode = second.updatePaintNode(nullptr, nullptr);
+        QCOMPARE(first.m_frame->info.tick, 0U);
+        QCOMPARE(second.m_frame->info.tick, 1U);
+        QVERIFY(std::abs(first.m_interpolation - 0.9) < 1e-9);
+        QVERIFY(std::abs(second.m_interpolation - 0.2) < 1e-9);
+        QVERIFY(std::abs(first.m_simulationTime - 0.03) < 1e-9);
+        QVERIFY(std::abs(second.m_simulationTime - 0.04) < 1e-9);
+        delete firstNode; delete secondNode;
+    }
+
+    void pendingPresentationSurvivesHistoryRecycling()
+    {
+        SnakeSimulation sim({320, 240, 50, 35, 100, 100, 75, 1, 6, 0, 1});
+        SnakeRenderer view;
+        view.setSize(QSizeF(320, 240)); view.setSimulation(&sim);
+        constexpr qint64 origin = 1'000'000'000;
+        sim.advanceTo(origin);
+        sim.advanceTo(origin + 30'000'000);
+        view.presentAt(origin + 30'000'000);
+        // A window can wait arbitrarily long for scene-graph sync. Its pending
+        // sample must survive even when every history buffer has been recycled.
+        for (int i = 1; i <= 100; ++i) sim.advanceTo(origin + i * 33'333'334LL);
+        auto *node = view.updatePaintNode(nullptr, nullptr);
+        QCOMPARE(view.m_frame->info.tick, 0U);
+        QVERIFY(std::abs(view.m_simulationTime - 0.03) < 1e-9);
+        delete node;
+    }
+
     void retainedGeometrySurvivesGrowthShrinkAndMalformedPrimitive()
     {
         SnakeRenderer renderer;
@@ -105,6 +151,38 @@ private Q_SLOTS:
         QVERIFY(static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount() > normal);
         delete node;
     }
+    void pausedSharedStateReachesEveryRenderer()
+    {
+        SnakeSimulation simulation({640, 480, 50, 35, 100, 100, 75, 1, 6, 0, 1});
+        simulation.setPaused(true);
+        SnakeRenderer first, second;
+        first.setSize(QSizeF(320, 240)); second.setSize(QSizeF(320, 240));
+        first.setSimulation(&simulation); second.setSimulation(&simulation);
+        first.setDeveloperMode(true); second.setDeveloperMode(true);
+        QSignalSpy updates(&simulation, &SnakeSimulation::presented);
+        QVERIFY(simulation.resize(800, 600));
+        QCOMPARE(updates.count(), 1);
+        for (auto *renderer : {&first, &second}) {
+            QCOMPARE(renderer->m_frame, &simulation.frame());
+            QCOMPARE(renderer->m_frame->info.world_width, 800);
+            QCOMPARE(renderer->m_frame->info.world_height, 600);
+        }
+        QTemporaryDir dir;
+        Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
+        settings.setReducedMotion(true);
+        settings.setAnimationPalette(QStringLiteral("ember"));
+        simulation.applySettings(settings);
+        QCOMPARE(updates.count(), 2);
+        QCOMPARE(simulation.frame().info.tick, 0U);
+        for (auto *renderer : {&first, &second}) {
+            QCOMPARE(renderer->m_palette, SnakeSimulation::colors(QStringLiteral("ember")));
+            QCOMPARE(renderer->m_frame, &simulation.frame());
+            auto *node = renderer->updatePaintNode(nullptr, nullptr);
+            QVERIFY(static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount() > 0);
+            delete node;
+        }
+    }
+
     void sharedNativeFrameAndDestruction()
     {
         auto *simulation = new SnakeSimulation({640, 480, 50, 35, 100, 100, 75, 1, 6, 0, 1});

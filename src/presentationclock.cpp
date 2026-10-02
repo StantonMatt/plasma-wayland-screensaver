@@ -23,11 +23,16 @@ qreal PresentationPacing::validRefreshRate(qreal refreshRate)
     return std::isfinite(refreshRate) && refreshRate >= 1.0 ? refreshRate : 60.0;
 }
 
-long double PresentationPacing::periodNanoseconds(int targetFrameRate, qreal refreshRate)
+int PresentationPacing::refreshDivisor(int targetFrameRate, qreal refreshRate)
 {
     const qreal refresh = validRefreshRate(refreshRate);
-    const qreal rate = targetFrameRate > 0 ? std::min<qreal>(targetFrameRate, refresh) : refresh;
-    return 1'000'000'000.0L / rate;
+    return targetFrameRate > 0 ? std::max(1, int(std::ceil(refresh / targetFrameRate))) : 1;
+}
+
+long double PresentationPacing::periodNanoseconds(int targetFrameRate, qreal refreshRate)
+{
+    return 1'000'000'000.0L * refreshDivisor(targetFrameRate, refreshRate)
+        / validRefreshRate(refreshRate);
 }
 
 PresentationPacing::Schedule PresentationPacing::schedule(
@@ -242,6 +247,18 @@ PresentationClock::PresentationClock(QQuickWindow *window, int targetFrameRate, 
 
 PresentationClock::~PresentationClock() = default;
 
+void PresentationClock::setTargetFrameRate(int targetFrameRate)
+{
+    if (m_targetFrameRate == targetFrameRate) return;
+    m_targetFrameRate = targetFrameRate;
+    if (m_running) {
+        const qint64 now = traceNow();
+        m_nextTargetNanoseconds = now
+            + PresentationPacing::periodNanoseconds(m_targetFrameRate, m_refreshRate);
+        if (!m_waitingForSwap) scheduleNextFrame();
+    }
+}
+
 void PresentationClock::setTraceSimulationSource(QObject *source)
 {
     if (m_trace) {
@@ -354,6 +371,7 @@ void PresentationClock::tickAndRequestUpdate(qint64 presentationNanoseconds)
             const qreal before = source ? source->property("simulationTime").toDouble() : 0;
             const qreal step = source ? source->property("physicsStepSeconds").toDouble() : 0;
             const qint64 start = traceNow();
+            Q_EMIT presentationTick(presentationNanoseconds);
             Q_EMIT frameTick(deltaSeconds);
             const qint64 duration = traceNow() - start;
             const qreal after = source ? source->property("simulationTime").toDouble() : 0;
@@ -362,6 +380,7 @@ void PresentationClock::tickAndRequestUpdate(qint64 presentationNanoseconds)
             ++m_trace->pending.ticks;
             if (step > 0) m_trace->pending.steps += std::max<qint64>(0, qRound64((after - before) / step));
         } else {
+            Q_EMIT presentationTick(presentationNanoseconds);
             Q_EMIT frameTick(deltaSeconds);
         }
     }

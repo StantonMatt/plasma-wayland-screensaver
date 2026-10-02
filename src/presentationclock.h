@@ -17,6 +17,9 @@ struct Schedule {
 };
 
 qreal validRefreshRate(qreal refreshRate);
+// Smallest whole number of refreshes whose rate does not exceed the cap.
+// Auto has no cap here; OverlayManager retains the snakes-specific 60 FPS cap.
+int refreshDivisor(int targetFrameRate, qreal refreshRate);
 long double periodNanoseconds(int targetFrameRate, qreal refreshRate);
 // The phase anchor stays fixed between bootstrap, refresh changes and feedback
 // recovery. A later submission timestamp must not replace it each frame.
@@ -39,10 +42,13 @@ public:
 
     ~PresentationClock() override;
     void setRunning(bool running);
+    void setTargetFrameRate(int targetFrameRate);
     void setTraceSimulationSource(QObject *source);
 
 Q_SIGNALS:
     void frameTick(qreal deltaSeconds);
+    // Absolute CLOCK_MONOTONIC time; shared worlds must not sum window deltas.
+    void presentationTick(qint64 presentationNanoseconds);
 
 private:
     void handleFrameSwapped();

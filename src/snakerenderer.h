@@ -23,6 +23,7 @@ public:
     void syncFrame(const SnakeFrame &frame, const QVector<QColor> &palette,
                    qreal interpolation, bool deadlyWalls);
     void presentFrame(qreal simulationTime, qreal interpolation);
+    void presentAt(qint64 presentationNanoseconds);
     void setDrawOffset(qreal x, qreal y);
     qreal drawOffsetX() const { return m_drawOffsetX; }
     qreal drawOffsetY() const { return m_drawOffsetY; }
@@ -37,8 +38,12 @@ Q_SIGNALS:
 protected:
     QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *data) override;
 private:
+    void loadFrame(const SnakeFrame &frame, const QVector<QColor> &palette,
+                   qreal interpolation, bool deadlyWalls);
     const SnakeFrame *m_frame = nullptr;
+    std::shared_ptr<const SnakeFrame> m_retainedFrame;
     QPointer<SnakeSimulation> m_simulation;
+    std::optional<qint64> m_presentationNanoseconds;
     QMetaObject::Connection m_presentedConnection;
     QMetaObject::Connection m_destroyedConnection;
     QVector<QColor> m_palette;

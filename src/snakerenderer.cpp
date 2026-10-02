@@ -280,14 +280,19 @@ void SnakeRenderer::setSimulation(SnakeSimulation *simulation)
     disconnect(m_destroyedConnection);
     m_simulation = simulation;
     m_frame = nullptr;
+    m_retainedFrame.reset();
+    m_presentationNanoseconds.reset();
     if (simulation) {
         const auto sync = [this, simulation] {
             syncFrame(simulation->frame(), simulation->palette(), simulation->interpolation(),
                       simulation->config().deadly_walls);
+            m_retainedFrame = simulation->retainFrame();
         };
         m_presentedConnection = connect(simulation, &SnakeSimulation::presented, this, sync);
         m_destroyedConnection = connect(simulation, &QObject::destroyed, this, [this] {
             m_frame = nullptr;
+            m_retainedFrame.reset();
+            m_presentationNanoseconds.reset();
             update();
             Q_EMIT simulationChanged();
         });
@@ -300,6 +305,15 @@ void SnakeRenderer::setSimulation(SnakeSimulation *simulation)
 void SnakeRenderer::syncFrame(const SnakeFrame &frame, const QVector<QColor> &palette,
                               qreal interpolation, bool deadlyWalls)
 {
+    m_retainedFrame.reset();
+    m_presentationNanoseconds.reset();
+    loadFrame(frame, palette, interpolation, deadlyWalls);
+    update();
+}
+
+void SnakeRenderer::loadFrame(const SnakeFrame &frame, const QVector<QColor> &palette,
+                              qreal interpolation, bool deadlyWalls)
+{
     m_frame = &frame;
     m_palette = palette;
     m_simulationTime = frame.info.simulation_time;
@@ -309,6 +323,16 @@ void SnakeRenderer::syncFrame(const SnakeFrame &frame, const QVector<QColor> &pa
     m_worldToViewX = m_simulation ? m_simulation->viewSize().width() / m_worldWidth : 1.0;
     m_worldToViewY = m_simulation ? m_simulation->viewSize().height() / m_worldHeight : 1.0;
     m_deadlyWalls = deadlyWalls;
+}
+
+void SnakeRenderer::presentAt(qint64 presentationNanoseconds)
+{
+    if (!m_simulation) return;
+    m_presentationNanoseconds = presentationNanoseconds;
+    double alpha = 0;
+    m_retainedFrame = m_simulation->retainFrameAt(presentationNanoseconds, alpha);
+    loadFrame(*m_retainedFrame, m_simulation->palette(), alpha, m_simulation->config().deadly_walls);
+    m_simulationTime += alpha * SnakeSimulation::physicsStepSeconds();
     update();
 }
 
@@ -352,6 +376,8 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
                                         UpdatePaintNodeData *updatePaintNodeData)
 {
     Q_UNUSED(updatePaintNodeData)
+    // presentAt leases immutable history on the GUI thread. Later window
+    // ticks cannot recycle this buffer before or after scene-graph sync.
     auto *node = static_cast<GeometryNode *>(oldNode);
     if (!node) {
         node = new GeometryNode;

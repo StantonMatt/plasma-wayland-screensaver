@@ -2,19 +2,8 @@
 import QtQuick
 import "VisualUtils.js" as Utils
 
-Canvas {
+VisualCanvas {
     id: canvas
-    property var context
-    property int frameRate: 30
-    property bool reducedMotion: false
-    property int seed: 1
-    property double animationEpochMs: Date.now()
-    property real phase: 0
-
-    renderTarget: Canvas.Image
-    renderStrategy: Canvas.Cooperative
-    onWidthChanged: requestPaint()
-    onHeightChanged: requestPaint()
     onPaint: {
         const painter = getContext("2d")
         painter.reset()

@@ -46,7 +46,7 @@ private:
     void updateAnimationState();
     void updatePresentationClocks();
     void configureSnakeRenderSharing();
-    void advanceSnakeSimulation(QScreen *screen, qreal deltaSeconds);
+    void advanceSnakeSimulation(QScreen *screen, qint64 presentationNanoseconds);
     void retireView(QQuickView *view);
     void reclaimReleasedMemory();
     bool isDismissEvent(const QEvent *event) const;
@@ -62,6 +62,7 @@ private:
     QScreen *m_snakeArenaScreen = nullptr;
     QString m_snakeBehavior;
     QScreen *m_animationDriverScreen = nullptr;
+    QScreen *m_ballArenaScreen = nullptr;
     qint64 m_animationEpochMs = 0;
     int m_pendingViewDeletions = 0;
     bool m_visible = false;

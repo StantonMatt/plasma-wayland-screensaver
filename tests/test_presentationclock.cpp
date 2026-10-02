@@ -22,6 +22,45 @@ class PresentationClockTest final : public QObject
     Q_OBJECT
 
 private Q_SLOTS:
+    void divisorSelection_data()
+    {
+        QTest::addColumn<qreal>("refresh");
+        QTest::addColumn<int>("target");
+        QTest::addColumn<int>("divisor");
+        const qreal refreshes[] = {99.946, 174.962, 239.761, 59.94, 144, 165, 120, 75};
+        const int at60[] = {2, 3, 4, 1, 3, 3, 2, 2};
+        const int at30[] = {4, 6, 8, 2, 5, 6, 4, 3};
+        for (int i = 0; i < 8; ++i) {
+            for (int target : {0, 30, 60}) {
+                const auto name = QStringLiteral("%1-at-%2").arg(refreshes[i]).arg(target).toLatin1();
+                QTest::newRow(name.constData()) << refreshes[i] << target
+                    << (target == 0 ? 1 : target == 30 ? at30[i] : at60[i]);
+            }
+        }
+    }
+
+    void divisorSelection()
+    {
+        QFETCH(qreal, refresh);
+        QFETCH(int, target);
+        QFETCH(int, divisor);
+        QCOMPARE(PresentationPacing::refreshDivisor(target, refresh), divisor);
+        const long double period = periodNanoseconds(target, refresh);
+        QVERIFY(std::abs(period - divisor * 1e9L / refresh) < 1e-6L);
+        if (target > 0) {
+            QVERIFY(refresh / divisor <= target);
+            QVERIFY(divisor == 1 || refresh / (divisor - 1) > target);
+        }
+        constexpr qint64 origin = 987'654'321'000'000;
+        long double ideal = origin + period;
+        qint64 previous = origin;
+        for (int i = 0; i < 3000; ++i) {
+            const auto next = schedule(previous + 200'000, ideal, target, refresh, origin);
+            QVERIFY(std::abs(next.presentationNanoseconds - previous - period) < 2);
+            previous = next.presentationNanoseconds;
+            ideal = next.nextTargetNanoseconds;
+        }
+    }
     void steadyCadence_data()
     {
         QTest::addColumn<qreal>("refresh");
@@ -34,12 +73,12 @@ private Q_SLOTS:
         QTest::newRow("144-auto") << 144.0 << 0 << 1 << 1;
         QTest::newRow("144-144") << 144.0 << 144 << 1 << 1;
         QTest::newRow("144-240-capped") << 144.0 << 240 << 1 << 1;
-        QTest::newRow("144-60") << 144.0 << 60 << 2 << 3;
-        QTest::newRow("144-30") << 144.0 << 30 << 4 << 5;
-        QTest::newRow("75-30") << 75.0 << 30 << 2 << 3;
-        QTest::newRow("75-60") << 75.0 << 60 << 1 << 2;
+        QTest::newRow("144-60") << 144.0 << 60 << 3 << 3;
+        QTest::newRow("144-30") << 144.0 << 30 << 5 << 5;
+        QTest::newRow("75-30") << 75.0 << 30 << 3 << 3;
+        QTest::newRow("75-60") << 75.0 << 60 << 2 << 2;
         QTest::newRow("75-auto") << 75.0 << 0 << 1 << 1;
-        QTest::newRow("59.94-30") << 59.94 << 30 << 1 << 2;
+        QTest::newRow("59.94-30") << 59.94 << 30 << 2 << 2;
     }
 
     void steadyCadence()
@@ -79,7 +118,7 @@ private Q_SLOTS:
         QCOMPARE(totalSlots, expectedSlots);
     }
 
-    void oddRefreshUsesNearestVsync()
+    void oddRefreshUsesEvenDivisor()
     {
         constexpr qint64 origin = 1'000'000'000;
         const long double period = periodNanoseconds(30, 75);
@@ -88,11 +127,11 @@ private Q_SLOTS:
         long double ideal = origin + period;
         qint64 previousSlot = 0;
         for (int frame = 1; frame <= 20; ++frame) {
-            const auto next = schedule(swap, ideal, 30, 75, swap);
+            const auto next = schedule(swap, ideal, 30, 75, origin);
             const qint64 slot = std::llround((next.presentationNanoseconds - origin) / refreshPeriod);
-            const qint64 nearestSlot = std::llround(frame * 2.5L);
+            const qint64 nearestSlot = std::llround(frame * 3.0L);
             QCOMPARE(slot, nearestSlot);
-            QCOMPARE(slot - previousSlot, frame % 2 ? 3 : 2);
+            QCOMPARE(slot - previousSlot, 3LL);
             previousSlot = slot;
             ideal = next.nextTargetNanoseconds;
             swap = std::llround(origin + nearestSlot * refreshPeriod);
@@ -383,6 +422,31 @@ private Q_SLOTS:
         for (int index = 0; index < firstListener.count(); ++index) {
             QCOMPARE(firstListener.at(index).at(0), secondListener.at(index).at(0));
         }
+    }
+
+    void targetChangesKeepPresentationTimeMonotonic()
+    {
+        QQuickWindow window;
+        PresentationClock clock(&window, 30);
+        QSignalSpy ticks(&clock, &PresentationClock::frameTick);
+        QSignalSpy presentations(&clock, &PresentationClock::presentationTick);
+        clock.setRunning(true);
+        QTRY_VERIFY(ticks.count() >= 3);
+        clock.setTargetFrameRate(60);
+        const int changedAt = ticks.count();
+        QTRY_VERIFY(ticks.count() >= changedAt + 8);
+        clock.setRunning(false);
+        QCOMPARE(ticks.count(), presentations.count());
+        for (int i = 1; i < presentations.count(); ++i) {
+            const qint64 previous = presentations.at(i - 1).at(0).toLongLong();
+            const qint64 current = presentations.at(i).at(0).toLongLong();
+            QVERIFY(current > previous);
+            QVERIFY(std::abs(ticks.at(i).at(0).toDouble() - (current - previous) / 1e9) < 1e-9);
+        }
+        const int end = presentations.count() - 1;
+        const double mean = (presentations.at(end).at(0).toLongLong()
+            - presentations.at(end - 4).at(0).toLongLong()) / 4e9;
+        QVERIFY(mean > 0.014 && mean < 0.020);
     }
 
     void renderedFeedbackIncludesStallTime()

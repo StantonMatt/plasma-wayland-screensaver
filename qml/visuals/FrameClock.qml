@@ -7,13 +7,17 @@ Item {
 
     property bool running: false
     property var presentationClock
-    signal tick(real deltaSeconds)
+    property double presentationNanoseconds: 0
+    signal tick(real deltaSeconds, real presentationNanoseconds)
 
     Connections {
         target: root.presentationClock
         enabled: root.running && root.presentationClock !== null
+        function onPresentationTick(presentationNanoseconds) {
+            root.presentationNanoseconds = presentationNanoseconds
+        }
         function onFrameTick(deltaSeconds) {
-            root.tick(deltaSeconds)
+            root.tick(deltaSeconds, root.presentationNanoseconds)
         }
     }
 }

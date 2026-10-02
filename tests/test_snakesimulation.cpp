@@ -8,12 +8,160 @@
 #include <limits>
 #include <cmath>
 #include <algorithm>
+#include <array>
+#include <vector>
 
 class SnakeSimulationTest final : public QObject
 {
     Q_OBJECT
     static snakes_core_config defaults() { return {1280, 720, 50, 35, 100, 100, 75, 1, 6, 0, 1}; }
 private Q_SLOTS:
+    void mixedRefreshWindowsShareAbsoluteTimeline_data()
+    {
+        QTest::addColumn<double>("phase");
+        QTest::newRow("aligned-slow-output") << 0.0;
+        QTest::newRow("eighth-refresh-phase") << 0.125;
+        QTest::newRow("half-refresh-phase") << 0.5;
+        QTest::newRow("late-refresh-phase") << 0.875;
+    }
+    void mixedRefreshWindowsShareAbsoluteTimeline()
+    {
+        QFETCH(double, phase);
+        struct Request { qint64 wake, presentation; int window; };
+        constexpr qint64 origin = 987'654'321'000'000;
+        const double refresh[] = {24, 60, 100, 144, 175, 240};
+        const int divisor[] = {1, 1, 2, 3, 3, 4};
+        std::vector<Request> requests;
+        for (int window = 0; window < 6; ++window) {
+            const double refreshPeriod = 1e9 / refresh[window];
+            for (int frame = 1; frame <= 500; ++frame) {
+                const qint64 presentation = origin + std::llround((frame * divisor[window] + window * 0.37 + phase * window * 0.173) * refreshPeriod);
+                requests.push_back({presentation - std::llround(refreshPeriod), presentation, window});
+            }
+        }
+        std::sort(requests.begin(), requests.end(), [](const auto &a, const auto &b) { return a.wake < b.wake; });
+        SnakeSimulation sim(defaults());
+        sim.setPresentationLead(41'666'667);
+        sim.advanceTo(origin);
+        std::array<SnakeRenderer, 6> views;
+        for (auto &view : views) view.setSimulation(&sim);
+        QSignalSpy fanout(&sim, &SnakeSimulation::presented);
+        qint64 highWater = origin;
+        int backwardsRequests = 0, historyReads = 0;
+        for (const auto &request : requests) {
+            const auto previousTick = sim.frame().info.tick;
+            sim.advanceTo(request.presentation);
+            if (request.presentation < highWater) {
+                ++backwardsRequests;
+                QCOMPARE(sim.frame().info.tick, previousTick);
+            }
+            highWater = std::max(highWater, request.presentation);
+            views[request.window].presentAt(request.presentation);
+            double alpha = 0;
+            const auto &frame = sim.frameAt(request.presentation, alpha);
+            if (frame.info.tick < sim.frame().info.tick) ++historyReads;
+            const double time = (request.presentation - origin) / 1e9;
+            QVERIFY(std::abs(frame.info.simulation_time + alpha * sim.physicsStepSeconds() - time) < 1e-8);
+            QCOMPARE(sim.frame().info.tick, uint64_t(std::floor((highWater - origin) / 1e9 * 30 + 1e-10)));
+        }
+        QVERIFY(backwardsRequests > 0);
+        QVERIFY(historyReads > 0);
+        QCOMPARE(fanout.count(), 0); // Other windows must not submit on this tick.
+        const auto tick = sim.frame().info.tick;
+        sim.advanceTo(highWater); sim.advanceTo(origin);
+        QCOMPARE(sim.frame().info.tick, tick);
+        // Removing a view or changing its refresh does not reset shared time.
+        views[0].setSimulation(nullptr);
+        sim.advanceTo(highWater + 40'000'000);
+        QCOMPARE(sim.frame().info.tick, uint64_t(std::floor((highWater + 40'000'000 - origin) / 1e9 * 30)));
+    }
+
+    void absoluteTimelineStallPauseAndStorageReuse()
+    {
+        SnakeSimulation sim(defaults());
+        constexpr qint64 origin = 1'000'000'000;
+        sim.advanceTo(origin);
+        sim.advanceTo(origin + 2'000'000'000);
+        QCOMPARE(sim.frame().info.tick, 3U); // One clamp, regardless of view count.
+        double alpha = 0;
+        const auto &previous = sim.frameAt(origin + 1'990'000'000, alpha);
+        QCOMPARE(previous.info.tick, 2U);
+        QVERIFY(std::abs(alpha - 0.7) < 1e-9);
+        sim.setPaused(true);
+        sim.advanceTo(origin + 3'000'000'000);
+        sim.advanceTo(origin + 4'000'000'000);
+        QCOMPARE(sim.frame().info.tick, 3U);
+        sim.setPaused(false);
+        sim.advanceTo(origin + 5'000'000'000);
+        sim.advanceTo(origin + 5'033'333'334);
+        QCOMPARE(sim.frame().info.tick, 4U);
+        // Warm every ring export buffer to the mature world's high water.
+        qint64 time = origin + 5'033'333'334;
+        for (int i = 0; i < 3000; ++i) sim.advanceTo(time += 33'333'334);
+        std::array<const snakes_core_segment *, SnakeSimulation::maximumHistoryFrames> segments;
+        std::array<size_t, SnakeSimulation::maximumHistoryFrames> capacity;
+        for (int i = 0; size_t(i) < segments.size(); ++i) {
+            sim.advanceTo(time += 33'333'334);
+            segments[i] = sim.frame().segments.data();
+            capacity[i] = sim.frame().segments.capacity();
+        }
+        for (int i = 0; i < 100; ++i) {
+            sim.advanceTo(time += 33'333'334);
+            QCOMPARE(sim.frame().segments.data(), segments[i % segments.size()]);
+            QCOMPARE(sim.frame().segments.capacity(), capacity[i % capacity.size()]);
+        }
+    }
+
+    void leasedHistoryStorageStaysBoundedAndReusesEveryBuffer()
+    {
+        SnakeSimulation sim(defaults());
+        sim.setPresentationLead(41'666'667); // Slowest supported output in this fixture: 24 Hz.
+        SnakeRenderer delayed, current;
+        delayed.setSimulation(&sim); current.setSimulation(&sim);
+        qint64 time = 1'000'000'000;
+        sim.advanceTo(time);
+        for (int i = 0; i < 4000; ++i) {
+            sim.advanceTo(time += 33'333'334);
+            delayed.presentAt(time); current.presentAt(time);
+        }
+        // Leave one renderer's request pending while the other wraps the ring.
+        for (int i = 0; i < 10; ++i) {
+            sim.advanceTo(time += 33'333'334);
+            current.presentAt(time);
+        }
+        QCOMPARE(sim.m_historyLimit, size_t(4));
+        QVERIFY(sim.m_storage.size() <= 6); // Four history frames + two viewport leases.
+        const size_t poolSize = sim.m_storage.size();
+        struct Storage { const void *snakes, *segments, *food; size_t a, b, c; };
+        std::vector<Storage> buffers;
+        for (const auto &frame : sim.m_storage)
+            buffers.push_back({frame->snakes.data(), frame->segments.data(), frame->food.data(),
+                               frame->snakes.capacity(), frame->segments.capacity(), frame->food.capacity()});
+        for (int i = 0; i < 200; ++i) {
+            sim.advanceTo(time += 33'333'334);
+            current.presentAt(time);
+        }
+        QCOMPARE(sim.m_storage.size(), poolSize); // No new frame/control-block allocations.
+        for (size_t i = 0; i < poolSize; ++i) {
+            const auto &frame = sim.m_storage[i];
+            QCOMPARE(frame->snakes.data(), buffers[i].snakes);
+            QCOMPARE(frame->segments.data(), buffers[i].segments);
+            QCOMPARE(frame->food.data(), buffers[i].food);
+            QCOMPARE(frame->snakes.capacity(), buffers[i].a);
+            QCOMPARE(frame->segments.capacity(), buffers[i].b);
+            QCOMPARE(frame->food.capacity(), buffers[i].c);
+        }
+        const auto newest = sim.frame().info.tick;
+        sim.setPresentationLead(4'166'667); // Refresh change to 240 Hz.
+        sim.advanceTo(time + 33'333'334);
+        QCOMPARE(sim.frame().info.tick, newest + 1);
+        delayed.setSimulation(nullptr); // Removal releases the pending lease.
+        sim.setPaused(true); sim.setPaused(false);
+        double alpha = 0;
+        QCOMPARE(sim.frameAt(0, alpha).info.tick, sim.frame().info.tick);
+        QCOMPARE(alpha, 0.0); // Old history cannot leak through pause/resume.
+    }
+
     void configMapping()
     {
         QTemporaryDir dir;
@@ -143,7 +291,7 @@ private Q_SLOTS:
         const auto *snakes = sim.frame().snakes.data();
         const auto *segments = sim.frame().segments.data();
         const auto *food = sim.frame().food.data();
-        for (int i = 0; i < 30; ++i) sim.advance(1.0 / 60);
+        for (int i = 0; i < 100; ++i) sim.advance(1.0 / 60);
         QCOMPARE(sim.frame().snakes.capacity(), snakesCapacity);
         QCOMPARE(sim.frame().segments.capacity(), segmentsCapacity);
         QCOMPARE(sim.frame().food.capacity(), foodCapacity);

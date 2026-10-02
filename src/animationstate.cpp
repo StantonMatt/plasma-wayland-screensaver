@@ -15,6 +15,7 @@ AnimationState::AnimationState(QObject *parent)
     connect(&m_timer, &QTimer::timeout, this, &AnimationState::advanceFrame);
     m_clock.velocity = QPointF(31.0, 23.0);
     m_clock.size = QSizeF(360.0, 145.0);
+    resetHistory();
 }
 
 void AnimationState::configure(const QList<QScreen *> &screens, bool animateBall,
@@ -46,11 +47,14 @@ void AnimationState::configureGeometries(const QList<QRect> &geometries, bool an
         region += geometry;
         shortestEdge = std::min(shortestEdge, std::min(geometry.width(), geometry.height()));
     }
+    const bool geometryChanged = region != m_screenRegion;
     m_screenRegion = region;
     m_screenGeometries = geometries;
 
     const qreal scale = std::clamp(ballScale, 25, 200) / 100.0;
     const qreal newBallSize = std::clamp(shortestEdge * 0.075 * scale, 24.0, 220.0);
+    const bool ballsChanged = m_balls.size() != std::clamp(ballCount, 1, 20)
+        || (!m_balls.isEmpty() && !qFuzzyCompare(m_balls.constFirst().size.width(), newBallSize * 0.78));
     rebuildBalls(std::clamp(ballCount, 1, 20), newBallSize);
     const QPointF clockOffset = geometries.isEmpty() ? QPointF(180.0, 140.0)
         : QPointF(geometries.constFirst().width() * 0.28,
@@ -79,6 +83,11 @@ void AnimationState::configureGeometries(const QList<QRect> &geometries, bool an
     m_clock.velocity = QPointF(31.0 * speedMultiplier * xDirection,
                                23.0 * speedMultiplier * yDirection);
 
+    if (geometryChanged || ballsChanged || m_animateBall != animateBall || m_animateClock != animateClock) {
+        m_presentationNanoseconds.reset();
+        m_timelineTime = m_physicsTime;
+        resetHistory();
+    }
     m_animateBall = animateBall;
     m_animateClock = animateClock;
     m_timer.setInterval(std::max(1, qRound(1000.0 / std::max(1, frameRate))));
@@ -92,6 +101,9 @@ void AnimationState::stop()
     m_elapsed.invalidate();
     m_animateBall = false;
     m_animateClock = false;
+    m_presentationNanoseconds.reset();
+    m_timelineTime = m_physicsTime;
+    resetHistory();
 }
 
 bool AnimationState::containsRect(const QRectF &rect) const
@@ -102,10 +114,15 @@ bool AnimationState::containsRect(const QRectF &rect) const
 
 QVariantList AnimationState::balls() const
 {
+    return ballList(m_balls.constData(), int(m_balls.size()));
+}
+
+QVariantList AnimationState::ballList(const Body *balls, int count)
+{
     QVariantList result;
-    result.reserve(m_balls.size());
-    for (qsizetype i = 0; i < m_balls.size(); ++i) {
-        const Body &body = m_balls.at(i);
+    result.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        const Body &body = balls[i];
         result.append(QVariantMap{
             {QStringLiteral("x"), body.position.x()},
             {QStringLiteral("y"), body.position.y()},
@@ -133,6 +150,7 @@ void AnimationState::setClockSize(qreal width, qreal height)
     }
     m_clock.size = size;
     ensureValid(m_clock, QPointF(180.0, 140.0));
+    resetHistory();
     Q_EMIT frameChanged();
 }
 
@@ -207,7 +225,7 @@ void AnimationState::advanceBody(Body &body, qreal seconds, bool applyGravity)
 void AnimationState::rebuildBalls(int count, qreal size)
 {
     if (m_balls.size() == count && !m_balls.isEmpty()
-        && qFuzzyCompare(m_balls.constFirst().size.width(), size)) {
+        && qFuzzyCompare(m_balls.constFirst().size.width(), size * 0.78)) {
         return;
     }
     m_balls.clear();
@@ -265,24 +283,88 @@ void AnimationState::advanceFrame()
     advance(seconds);
 }
 
+void AnimationState::recordFrame()
+{
+    auto &frame = m_history[m_historyHead];
+    frame.count = int(m_balls.size());
+    std::copy(m_balls.cbegin(), m_balls.cend(), frame.balls.begin());
+    frame.clock = m_clock;
+    frame.time = m_physicsTime;
+    m_historyHead = (m_historyHead + 1) % historySize;
+    m_historyCount = std::min(m_historyCount + 1, historySize);
+}
+
+void AnimationState::resetHistory()
+{
+    m_historyHead = m_historyCount = 0;
+    recordFrame();
+}
+
+void AnimationState::stepPhysics()
+{
+    if (m_animateBall) {
+        for (Body &ball : m_balls) advanceBody(ball, physicsStep * m_motionSpeed, true);
+        if (m_ballCollisions) resolveBallCollisions();
+    }
+    if (m_animateClock) advanceBody(m_clock, physicsStep, false);
+    m_physicsTime += physicsStep;
+    recordFrame();
+}
+
 void AnimationState::advance(qreal seconds)
 {
-    seconds = std::clamp(seconds, 0.0, 0.05);
-    if (seconds <= 0.0) {
+    if (!std::isfinite(seconds) || seconds <= 0) return;
+    m_timelineTime += std::min(seconds, 0.1);
+    while (m_physicsTime + physicsStep <= m_timelineTime + 1e-10) stepPhysics();
+    Q_EMIT frameChanged();
+}
+
+void AnimationState::advanceTo(qint64 presentationNanoseconds)
+{
+    if (!m_presentationNanoseconds) {
+        m_presentationNanoseconds = presentationNanoseconds;
         return;
     }
-    if (m_animateBall) {
-        for (Body &ball : m_balls) {
-            advanceBody(ball, seconds * m_motionSpeed, true);
-        }
-        if (m_ballCollisions) {
-            resolveBallCollisions();
-        }
+    if (presentationNanoseconds <= *m_presentationNanoseconds) return;
+    const qreal delta = (presentationNanoseconds - *m_presentationNanoseconds) / 1e9;
+    m_presentationNanoseconds = presentationNanoseconds;
+    m_timelineTime += std::min(delta, 0.1);
+    // Export the upper endpoint too: interpolation at a given timestamp is
+    // identical whether or not another output has already advanced farther.
+    while (m_physicsTime < m_timelineTime - 1e-10) stepPhysics();
+    // Each QML window samples on its own tick; there is no render fanout.
+}
+
+AnimationState::Frame AnimationState::sample(qint64 presentationNanoseconds) const
+{
+    const qreal offset = m_presentationNanoseconds
+        ? (presentationNanoseconds - *m_presentationNanoseconds) / 1e9 : 0;
+    const qreal time = m_timelineTime + offset;
+    const Frame *upper = &m_history[(m_historyHead + historySize - 1) % historySize];
+    const Frame *lower = upper;
+    for (size_t age = 0; age < m_historyCount; ++age) {
+        lower = &m_history[(m_historyHead + historySize - 1 - age) % historySize];
+        if (lower->time <= time + 1e-10) break;
+        upper = lower;
     }
-    if (m_animateClock) {
-        advanceBody(m_clock, seconds, false);
-    }
-    Q_EMIT frameChanged();
+    Frame result = *lower;
+    const qreal alpha = upper->time > lower->time
+        ? std::clamp((time - lower->time) / (upper->time - lower->time), 0.0, 1.0) : 0;
+    for (int i = 0; i < result.count; ++i)
+        result.balls[i].position += (upper->balls[i].position - lower->balls[i].position) * alpha;
+    result.clock.position += (upper->clock.position - lower->clock.position) * alpha;
+    return result;
+}
+
+QVariantList AnimationState::ballsAt(qint64 presentationNanoseconds) const
+{
+    const auto frame = sample(presentationNanoseconds);
+    return ballList(frame.balls.data(), frame.count);
+}
+
+QPointF AnimationState::clockAt(qint64 presentationNanoseconds) const
+{
+    return sample(presentationNanoseconds).clock.position;
 }
 
 void AnimationState::updateTimer()

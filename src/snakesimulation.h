@@ -7,12 +7,14 @@
 #include <QSizeF>
 #include <QVector>
 #include <memory>
+#include <array>
+#include <optional>
 #include <vector>
 
 class Configuration;
 
 // Caller-owned ABI records. Storage grows only when the world's high-water
-// count increases, and every viewport reads the same exported frame.
+// count increases, and every viewport reads the same exported history.
 struct SnakeFrame {
     std::vector<snakes_core_snake> snakes;
     std::vector<snakes_core_segment> segments;
@@ -23,6 +25,7 @@ struct SnakeFrame {
 class SnakeSimulation final : public QObject
 {
     Q_OBJECT
+    friend class SnakeSimulationTest;
     Q_PROPERTY(double simulationTime READ simulationTime NOTIFY presented)
     Q_PROPERTY(double physicsStepSeconds READ physicsStepSeconds CONSTANT)
     Q_PROPERTY(double interpolation READ interpolation NOTIFY presented)
@@ -32,15 +35,24 @@ public:
     static snakes_core_config configuration(const Configuration &settings, double width,
                                              double height, quint32 seed);
     static QVector<QColor> colors(const QString &palette);
-    const SnakeFrame &frame() const { return m_frame; }
+    const SnakeFrame &frame() const { return *m_frame; }
+    std::shared_ptr<const SnakeFrame> retainFrame() const { return m_frame; }
     const snakes_core_config &config() const { return m_config; }
     // Logical overlay extent, before enforcing the C ABI's arena limits.
     QSizeF viewSize() const { return m_viewSize; }
     const QVector<QColor> &palette() const { return m_palette; }
-    double simulationTime() const { return m_frame.info.simulation_time; }
+    double simulationTime() const { return m_frame->info.simulation_time; }
     static constexpr double physicsStepSeconds() { return 1.0 / 30.0; }
     double interpolation() const { return m_accumulator / physicsStepSeconds(); }
     void advance(double deltaSeconds);
+    // Requests from all view clocks share a high-water presentation timeline.
+    // Older/duplicate requests interpolate history without stepping again.
+    void advanceTo(qint64 presentationNanoseconds);
+    const SnakeFrame &frameAt(qint64 presentationNanoseconds, double &alpha) const;
+    // Immutable leases pin pending render requests independently of history.
+    std::shared_ptr<const SnakeFrame> retainFrameAt(qint64 presentationNanoseconds, double &alpha) const;
+    void setPresentationLead(qint64 nanoseconds);
+    static constexpr size_t maximumHistoryFrames = 32;
     bool resize(double width, double height);
     bool reconfigure(const snakes_core_config &config);
     void applySettings(const Configuration &settings);
@@ -53,7 +65,18 @@ private:
     std::unique_ptr<snakes_core_world, decltype(&snakes_core_destroy)> m_world{nullptr, snakes_core_destroy};
     snakes_core_config m_config{};
     QSizeF m_viewSize;
-    SnakeFrame m_frame;
+    // The pacing clock predicts at most one refresh ahead (refresh >= 1 Hz).
+    // ceil(1 second / physicsStep) + two boundary frames covers every phase.
+    // Storage is reused only when neither history nor a renderer leases it;
+    // pool size is bounded by history high water plus pending viewport count.
+    std::shared_ptr<SnakeFrame> m_frame;
+    std::array<std::shared_ptr<SnakeFrame>, maximumHistoryFrames> m_history;
+    std::vector<std::shared_ptr<SnakeFrame>> m_storage;
+    size_t m_historyCount = 0;
+    size_t m_historyHead = 0;
+    size_t m_historyLimit = maximumHistoryFrames;
+    std::optional<qint64> m_presentationNanoseconds;
+    void clearHistory();
     QVector<QColor> m_palette = colors(QStringLiteral("ocean"));
     double m_accumulator = 0;
     bool m_paused = false;

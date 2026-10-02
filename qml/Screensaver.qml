@@ -29,6 +29,7 @@ Item {
     required property string monitorBehavior
     required property int seed
     required property double animationEpochMs
+    // Configured viewport origin and union, rather than QScreen geometry.
     required property real screenX
     required property real screenY
     required property real virtualX
@@ -40,6 +41,24 @@ Item {
     required property var presentationClock
 
     property double clockMotionNowMs: animationEpochMs
+    property real sharedClockX: 0
+    property real sharedClockY: 0
+
+    function sampleSharedClock(presentationNanoseconds) {
+        if (!root.animationState) return
+        const position = presentationNanoseconds
+            ? root.animationState.clockAt(presentationNanoseconds)
+            : {x: root.animationState.clockX, y: root.animationState.clockY}
+        root.sharedClockX = position.x
+        root.sharedClockY = position.y
+    }
+    onAnimationStateChanged: sampleSharedClock()
+    onReducedMotionChanged: if (reducedMotion) sampleSharedClock()
+    Connections {
+        target: root.animationState
+        enabled: root.reducedMotion
+        function onFrameChanged() { root.sampleSharedClock() }
+    }
 
     function visualSource() {
         switch (root.visualModule) {
@@ -98,7 +117,7 @@ Item {
         if (root.clockMovement !== "bounce" || root.reducedMotion)
             return (root.width - itemWidth) / 2
         if (root.monitorBehavior === "seamless")
-            return root.animationState.clockX - root.screenX
+            return root.sharedClockX - root.screenX
         const elapsed = Math.max(0, root.clockMotionNowMs - root.animationEpochMs) / 1000
         const offset = root.seed * 19.37
         return root.pingPong(elapsed * 31 * root.clockSpeedMultiplier() + offset,
@@ -109,7 +128,7 @@ Item {
         if (root.clockMovement !== "bounce" || root.reducedMotion)
             return (root.height - itemHeight) / 2
         if (root.monitorBehavior === "seamless")
-            return root.animationState.clockY - root.screenY
+            return root.sharedClockY - root.screenY
         const elapsed = Math.max(0, root.clockMotionNowMs - root.animationEpochMs) / 1000
         const offset = root.seed * 11.83
         return root.pingPong(elapsed * 23 * root.clockSpeedMultiplier() + offset,
@@ -184,8 +203,12 @@ Item {
     FrameClock {
         presentationClock: root.presentationClock
         running: root.showClock && root.clockMovement === "bounce" && !root.reducedMotion
-                 && root.monitorBehavior !== "seamless"
-        onTick: function(deltaSeconds) { root.clockMotionNowMs = Date.now() }
+        onTick: function(deltaSeconds, presentationNanoseconds) {
+            root.clockMotionNowMs = Date.now()
+            if (root.monitorBehavior === "seamless") {
+                root.sampleSharedClock(presentationNanoseconds)
+            }
+        }
     }
 
     Timer {

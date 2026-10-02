@@ -2,24 +2,9 @@
 import QtQuick
 import "VisualUtils.js" as Utils
 
-Canvas {
+VisualCanvas {
     id: canvas
-    property var context
-    property int frameRate: 30
-    property bool reducedMotion: false
-    property int seed: 1
-    property double animationEpochMs: Date.now()
-    property real phase: (seed % 1000) / 159.0
-
-    // Qt 6 renders Canvas through an in-memory image. Use the shared render
-    // thread so repeated fullscreen sessions do not leave private Canvas
-    // worker caches behind in the idle daemon.
-    renderTarget: Canvas.Image
-    renderStrategy: Canvas.Cooperative
-
-    onWidthChanged: requestPaint()
-    onHeightChanged: requestPaint()
-    onSeedChanged: requestPaint()
+    phase: (seed % 1000) / 159.0
 
     onPaint: {
         const ctx = getContext("2d")

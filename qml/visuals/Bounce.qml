@@ -13,15 +13,49 @@ Item {
     property int seed: 1
     property double animationEpochMs: Date.now()
     property var localBalls: []
-    property double previousMs: animationEpochMs
+    property var sharedBalls: []
+    property real physicsAccumulator: 0
     property real priorWidth: 0
     property real priorHeight: 0
 
     readonly property bool seamless: context && context.monitorBehavior === "seamless"
+    readonly property bool sharedMotion: context && context.monitorBehavior !== "independent"
+    readonly property var sharedState: context ? context.animationState : null
     readonly property var palette: Utils.colors(context ? context.animationPalette : "ocean")
 
+    function sampleSharedBalls(presentationNanoseconds) {
+        root.sharedBalls = root.sharedMotion && root.sharedState
+            ? (presentationNanoseconds ? root.sharedState.ballsAt(presentationNanoseconds)
+                                       : root.sharedState.balls) : []
+    }
+    onContextChanged: initializeBalls()
+    onSharedStateChanged: sampleSharedBalls()
+    onSharedBallsChanged: if (!seamless) localCanvas.requestPaint()
+    onLocalBallsChanged: if (!seamless) localCanvas.requestPaint()
+    onSeamlessChanged: if (!seamless) localCanvas.requestPaint()
+    onSeedChanged: initializeBalls()
+    onSharedMotionChanged: { sampleSharedBalls(); initializeBalls() }
+    onReducedMotionChanged: { physicsAccumulator = 0; if (reducedMotion) sampleSharedBalls() }
+
+    Connections {
+        target: root.sharedState
+        enabled: root.reducedMotion
+        function onFrameChanged() {
+            root.sampleSharedBalls()
+            // Bounds can change while the ball snapshot remains identical.
+            if (!root.seamless) localCanvas.requestPaint()
+        }
+    }
+
+    Connections {
+        target: root.context
+        ignoreUnknownSignals: true
+        function onBallCountChanged() { root.initializeBalls() }
+        function onAnimationScaleChanged() { root.initializeBalls() }
+    }
+
     function initializeBalls() {
-        if (!context || width <= 0 || height <= 0 || seamless)
+        if (!context || width <= 0 || height <= 0 || sharedMotion)
             return
         const count = context.ballCount
         const baseSize = Math.max(24, Math.min(220, Math.min(width, height) * 0.075
@@ -37,10 +71,9 @@ Item {
             items.push({ x: x, y: y, vx: dx, vy: dy, size: size, trail: [] })
         }
         localBalls = items
-        previousMs = Date.now()
+        physicsAccumulator = 0
         priorWidth = width
         priorHeight = height
-        localCanvas.requestPaint()
     }
 
     function stepPhysics(seconds) {
@@ -109,24 +142,36 @@ Item {
         }
     }
 
-    Canvas {
+    VisualCanvas {
         id: localCanvas
         anchors.fill: parent
         visible: !root.seamless
-        renderTarget: Canvas.Image
-        renderStrategy: Canvas.Cooperative
+        context: root.context
+        seed: root.seed
+        reducedMotion: root.reducedMotion
         onPaint: {
             const painter = getContext("2d")
             painter.reset()
             painter.clearRect(0, 0, width, height)
-            for (let i = 0; i < root.localBalls.length; ++i) {
-                const ball = root.localBalls[i]
+            if (root.sharedMotion) {
+                painter.scale(root.width / Math.max(1, root.context.animationState.bounds.width),
+                              root.height / Math.max(1, root.context.animationState.bounds.height))
+            }
+            const balls = root.sharedMotion ? root.sharedBalls : root.localBalls
+            for (let i = 0; i < balls.length; ++i) {
+                const ball = balls[i]
                 const color = root.palette[i % root.palette.length]
-                for (let t = ball.trail.length - 1; t >= 0; --t) {
-                    painter.globalAlpha = (1 - t / Math.max(1, ball.trail.length)) * 0.16
+                const trailLength = ball.trail ? ball.trail.length : Math.round(root.context.trailAmount / 12)
+                const velocityLength = Math.max(1, Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy))
+                for (let t = trailLength - 1; t >= 0; --t) {
+                    const trailX = ball.trail ? ball.trail[t].x
+                        : ball.x - ball.vx / velocityLength * (t + 1) * ball.size * 0.28
+                    const trailY = ball.trail ? ball.trail[t].y
+                        : ball.y - ball.vy / velocityLength * (t + 1) * ball.size * 0.28
+                    painter.globalAlpha = (1 - t / Math.max(1, trailLength)) * 0.16
                     painter.fillStyle = color
                     painter.beginPath()
-                    painter.arc(ball.trail[t].x + ball.size / 2, ball.trail[t].y + ball.size / 2,
+                    painter.arc(trailX + ball.size / 2, trailY + ball.size / 2,
                                 ball.size * 0.42, 0, Math.PI * 2)
                     painter.fill()
                 }
@@ -147,35 +192,38 @@ Item {
         }
     }
 
-    Repeater {
-        model: root.seamless && root.context ? root.context.animationState.balls : []
-        Rectangle {
-            id: seamlessBall
-            required property var modelData
-            readonly property real velocityLength: Math.max(1, Math.sqrt(modelData.vx * modelData.vx
-                                                                         + modelData.vy * modelData.vy))
-            x: modelData.x - root.context.screenX
-            y: modelData.y - root.context.screenY
-            width: modelData.size
-            height: width
-            radius: width / 2
-            border.width: Math.max(1, width * 0.025)
-            border.color: "#80ffffff"
-            color: root.palette[modelData.colorIndex % root.palette.length]
+    Item {
+        visible: root.seamless
+        Repeater {
+            model: root.seamless ? root.sharedBalls : []
+            Rectangle {
+                id: seamlessBall
+                required property var modelData
+                readonly property real velocityLength: Math.max(1, Math.sqrt(modelData.vx * modelData.vx
+                                                                             + modelData.vy * modelData.vy))
+                x: modelData.x - (root.seamless ? root.context.screenX : 0)
+                y: modelData.y - (root.seamless ? root.context.screenY : 0)
+                width: modelData.size
+                height: width
+                radius: width / 2
+                border.width: Math.max(1, width * 0.025)
+                border.color: "#80ffffff"
+                color: root.palette[modelData.colorIndex % root.palette.length]
 
-            Repeater {
-                model: root.context ? Math.round(root.context.trailAmount / 20) : 0
-                Rectangle {
-                    required property int index
-                    z: -1
-                    readonly property real distance: (index + 1) * seamlessBall.width * 0.28
-                    x: -seamlessBall.modelData.vx / seamlessBall.velocityLength * distance
-                    y: -seamlessBall.modelData.vy / seamlessBall.velocityLength * distance
-                    width: seamlessBall.width * (0.72 - index * 0.08)
-                    height: width
-                    radius: width / 2
-                    color: seamlessBall.color
-                    opacity: Math.max(0.04, 0.22 - index * 0.035)
+                Repeater {
+                    model: root.context ? Math.round(root.context.trailAmount / 20) : 0
+                    Rectangle {
+                        required property int index
+                        z: -1
+                        readonly property real distance: (index + 1) * seamlessBall.width * 0.28
+                        x: -seamlessBall.modelData.vx / seamlessBall.velocityLength * distance
+                        y: -seamlessBall.modelData.vy / seamlessBall.velocityLength * distance
+                        width: seamlessBall.width * (0.72 - index * 0.08)
+                        height: width
+                        radius: width / 2
+                        color: seamlessBall.color
+                        opacity: Math.max(0.04, 0.22 - index * 0.035)
+                    }
                 }
             }
         }
@@ -183,14 +231,16 @@ Item {
 
     FrameClock {
         presentationClock: root.context ? root.context.presentationClock : null
-        running: !root.reducedMotion && !root.seamless
-        onTick: function(deltaSeconds) {
-            if (root.context && root.context.monitorBehavior === "synchronized") {
-                root.stepPhysics(deltaSeconds)
-            } else {
-                const now = Date.now()
-                root.stepPhysics((now - root.previousMs) / 1000)
-                root.previousMs = now
+        running: !root.reducedMotion
+        onTick: function(deltaSeconds, presentationNanoseconds) {
+            if (root.sharedMotion) {
+                root.sampleSharedBalls(presentationNanoseconds)
+                return
+            }
+            root.physicsAccumulator += Math.min(0.1, deltaSeconds)
+            while (root.physicsAccumulator + 1e-10 >= 1 / 60) {
+                root.stepPhysics(1 / 60)
+                root.physicsAccumulator -= 1 / 60
             }
             localCanvas.requestPaint()
         }

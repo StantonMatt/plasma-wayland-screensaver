@@ -23,6 +23,7 @@
 #include <QVariant>
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 #if defined(__GLIBC__)
@@ -90,6 +91,7 @@ void OverlayManager::hide()
     }
     m_visible = false;
     m_animationState.stop();
+    m_ballArenaScreen = nullptr;
     m_sharedAnimationActive = false;
     m_animationDriverScreen = nullptr;
     m_snakeSimulations.clear();
@@ -145,12 +147,10 @@ bool OverlayManager::addScreen(QScreen *screen)
         presentationRate = 60;
     }
     auto *presentationClock = new PresentationClock(view, presentationRate, view);
-    connect(presentationClock, &PresentationClock::frameTick, this,
-            [this, screen](qreal deltaSeconds) {
-                if (m_sharedAnimationActive && screen == m_animationDriverScreen) {
-                    m_animationState.advance(deltaSeconds);
-                }
-                advanceSnakeSimulation(screen, deltaSeconds);
+    connect(presentationClock, &PresentationClock::presentationTick, this,
+            [this, screen](qint64 presentationNanoseconds) {
+                if (m_sharedAnimationActive) m_animationState.advanceTo(presentationNanoseconds);
+                advanceSnakeSimulation(screen, presentationNanoseconds);
             });
 
     const uint seed = m_configuration->monitorBehavior() == QStringLiteral("synchronized")
@@ -259,7 +259,7 @@ bool OverlayManager::addScreen(QScreen *screen)
     // Layer-shell configure events can shrink/move the overlay around panels
     // without changing QScreen geometry. Recompute every snake mode from the
     // resulting windows, without sending another full-screen size request.
-    const auto viewportChanged = [this] { configureSnakeRenderSharing(); };
+    const auto viewportChanged = [this] { updateAnimationState(); };
     connect(view, &QWindow::widthChanged, this, viewportChanged);
     connect(view, &QWindow::heightChanged, this, viewportChanged);
     connect(view, &QWindow::xChanged, this, viewportChanged);
@@ -273,6 +273,7 @@ void OverlayManager::removeScreen(QScreen *screen)
 {
     m_snakeSimulations.remove(screen);
     if (m_snakeArenaScreen == screen) m_snakeArenaScreen = nullptr;
+    if (m_ballArenaScreen == screen) m_ballArenaScreen = nullptr;
     m_presentationClocks.remove(screen);
     m_snakeRenderers.remove(screen);
     if (m_animationDriverScreen == screen) {
@@ -346,7 +347,7 @@ void OverlayManager::updateAnimationState()
 {
     const bool seamless = m_configuration->monitorBehavior() == QStringLiteral("seamless");
     const bool motionAllowed = !m_configuration->reducedMotion();
-    const bool animateBall = seamless && motionAllowed
+    const bool animateBall = m_configuration->monitorBehavior() != QStringLiteral("independent") && motionAllowed
         && m_configuration->visualModule() == QStringLiteral("bounce");
     const bool animateClock = seamless && motionAllowed && m_configuration->showClock()
         && m_configuration->clockMovement() == QStringLiteral("bounce");
@@ -362,7 +363,36 @@ void OverlayManager::updateAnimationState()
             simulationRate = 60;
         }
     }
-    m_animationState.configure(QGuiApplication::screens(), animateBall, animateClock,
+    if (!m_ballArenaScreen || !m_views.contains(m_ballArenaScreen)) {
+        m_ballArenaScreen = m_views.contains(QGuiApplication::primaryScreen())
+            ? QGuiApplication::primaryScreen() : (m_views.isEmpty() ? nullptr : m_views.constBegin().key());
+    }
+    QList<QRect> geometries;
+    QRect virtualGeometry;
+    for (auto *view : std::as_const(m_views)) {
+        geometries.append(view->geometry());
+        virtualGeometry = virtualGeometry.united(view->geometry());
+    }
+    // World coordinates and every QML world-to-view transform use configured
+    // overlay viewports, including panel insets and negative desktop origins.
+    // Window configure signals enter here without any QScreen geometry change.
+    for (auto *view : std::as_const(m_views)) {
+        if (QObject *root = view->rootObject()) {
+            root->setProperty("screenX", view->x());
+            root->setProperty("screenY", view->y());
+            root->setProperty("virtualX", virtualGeometry.x());
+            root->setProperty("virtualY", virtualGeometry.y());
+            root->setProperty("virtualWidth", virtualGeometry.width());
+            root->setProperty("virtualHeight", virtualGeometry.height());
+        }
+    }
+    if (!seamless) {
+        geometries.clear();
+        const QSize size = m_views.contains(m_ballArenaScreen) ? m_views.value(m_ballArenaScreen)->size()
+            : (QGuiApplication::primaryScreen() ? QGuiApplication::primaryScreen()->size() : QSize(1920, 1080));
+        geometries.append(QRect(QPoint(0, 0), size));
+    }
+    m_animationState.configureGeometries(geometries, animateBall, animateClock,
                                m_configuration->clockSpeed(), simulationRate,
                                m_configuration->ballCount(), m_configuration->animationSpeed(),
                                m_configuration->animationScale(), m_configuration->ballGravity(),
@@ -375,7 +405,10 @@ void OverlayManager::updateAnimationState()
 void OverlayManager::updatePresentationClocks()
 {
     m_animationDriverScreen = nullptr;
-    qreal fastestRefreshRate = 0.0;
+    int presentationRate = m_configuration->frameRate();
+    if (m_configuration->visualModule() == QStringLiteral("snakes")
+        && (presentationRate == 0 || presentationRate > 60)) presentationRate = 60;
+    long double fastestPeriod = std::numeric_limits<long double>::max();
     for (QScreen *screen : m_presentationClocks.keys()) {
         if (!screen) {
             continue;
@@ -383,12 +416,18 @@ void OverlayManager::updatePresentationClocks()
         if (!m_animationDriverScreen) {
             m_animationDriverScreen = screen;
         }
-        if (screen->refreshRate() > fastestRefreshRate) {
-            fastestRefreshRate = screen->refreshRate();
+        const auto period = PresentationPacing::periodNanoseconds(presentationRate, screen->refreshRate());
+        if (period < fastestPeriod) {
+            fastestPeriod = period;
             m_animationDriverScreen = screen;
         }
     }
 
+    qint64 predictionLead = 0;
+    for (QScreen *screen : m_presentationClocks.keys()) {
+        predictionLead = std::max(predictionLead, qint64(std::ceil(1e9 /
+            PresentationPacing::validRefreshRate(screen ? screen->refreshRate() : 60.0))));
+    }
     const bool seamless = m_configuration->monitorBehavior() == QStringLiteral("seamless");
     const bool visualUsesClock = m_configuration->visualModule() != QStringLiteral("none")
         && !(seamless && m_configuration->visualModule() == QStringLiteral("bounce"));
@@ -396,32 +435,25 @@ void OverlayManager::updatePresentationClocks()
         && m_configuration->clockMovement() == QStringLiteral("bounce");
     const bool perWindowMotion = !m_configuration->reducedMotion()
         && (visualUsesClock || clockUsesClock);
-    PresentationClock *sharedClock = m_presentationClocks.value(m_animationDriverScreen);
-    const bool synchronized = m_configuration->monitorBehavior() == QStringLiteral("synchronized");
-    const bool sharedQmlMotion = synchronized
-        || (seamless && m_configuration->visualModule() == QStringLiteral("snakes"));
+    configureSnakeRenderSharing();
+    for (auto *simulation : std::as_const(m_snakeSimulations)) simulation->setPresentationLead(predictionLead);
     for (auto it = m_presentationClocks.cbegin(); it != m_presentationClocks.cend(); ++it) {
-        const bool drivesPerWindowMotion = perWindowMotion
-            && (!sharedQmlMotion || it.key() == m_animationDriverScreen);
-        it.value()->setRunning(drivesPerWindowMotion
-                               || (m_sharedAnimationActive && it.key() == m_animationDriverScreen));
+        it.value()->setTargetFrameRate(presentationRate);
+        it.value()->setRunning(perWindowMotion || m_sharedAnimationActive);
         if (QQuickView *view = m_views.value(it.key())) {
             if (QObject *root = view->rootObject()) {
-                PresentationClock *clock = sharedQmlMotion && sharedClock ? sharedClock : it.value();
                 root->setProperty("presentationClock",
-                                  QVariant::fromValue(static_cast<QObject *>(clock)));
+                                  QVariant::fromValue(static_cast<QObject *>(it.value())));
             }
         }
     }
-    configureSnakeRenderSharing();
 }
 
-void OverlayManager::advanceSnakeSimulation(QScreen *screen, qreal deltaSeconds)
+void OverlayManager::advanceSnakeSimulation(QScreen *screen, qint64 presentationNanoseconds)
 {
     if (auto *simulation = m_snakeSimulations.value(screen)) {
-        if (!m_sharedSnakeSimulation || screen == m_animationDriverScreen) {
-            simulation->advance(deltaSeconds);
-        }
+        simulation->advanceTo(presentationNanoseconds);
+        if (auto *renderer = m_snakeRenderers.value(screen)) renderer->presentAt(presentationNanoseconds);
     }
 }
 
@@ -485,21 +517,12 @@ void OverlayManager::updateViewGeometry(QScreen *screen)
         return;
     }
     const QRect screenGeometry = screen->geometry();
-    const QRect virtualGeometry = screen->virtualGeometry();
     view->setScreen(screen);
     if (m_screenGeometries.value(screen) != screenGeometry) {
         m_screenGeometries.insert(screen, screenGeometry);
         view->setGeometry(screenGeometry);
     }
     LayerShellQt::Window::get(view)->setExclusiveZone(m_configuration->coverPanels() ? -1 : 0);
-    if (QObject *root = view->rootObject()) {
-        root->setProperty("screenX", screenGeometry.x());
-        root->setProperty("screenY", screenGeometry.y());
-        root->setProperty("virtualX", virtualGeometry.x());
-        root->setProperty("virtualY", virtualGeometry.y());
-        root->setProperty("virtualWidth", virtualGeometry.width());
-        root->setProperty("virtualHeight", virtualGeometry.height());
-    }
 }
 
 bool OverlayManager::eventFilter(QObject *watched, QEvent *event)
