@@ -20,6 +20,11 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.7.3" date="2026-10-02">
+      <description>
+        <p>Noticeably reduces Slithering Snakes CPU use by rebuilding snake bodies more efficiently and skipping redundant AI work. Snake behavior stays the same, with steadier frame timing.</p>
+      </description>
+    </release>
     <release version="0.7.2" date="2026-10-02">
       <description>
         <p>Makes Slithering Snakes hunt rivals, predicting their movement from what they can see and reacting at individual speeds. Bursts of speed let snakes cut across rivals' paths, and long snakes can trap smaller ones against walls.</p>

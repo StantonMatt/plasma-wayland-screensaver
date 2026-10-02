@@ -220,7 +220,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.7.2`, publishes the verified
+matching the CMake project version, such as `v0.7.3`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 
