@@ -287,6 +287,11 @@ fn diagnostics_and_profiling_do_not_change_decisions() {
             assert_eq!(sa.angle,sb.angle,"tick {} snake {}",a.tick(),sa.id);
             assert_eq!(sa.segments,sb.segments);
             assert_eq!(a.nutrition(sa.id as usize),b.nutrition(sb.id as usize));
+            let decision=observed.decision(sa.id as usize);
+            if decision.reused_plan {
+                assert!(decision.candidates.iter().all(|c|c.area>0),
+                    "diagnostics must evaluate every candidate even when reusing slot 1");
+            }
         }
         for (fa,fb) in a.foods().zip(b.foods()) {assert_eq!(fa.id,fb.id);assert_eq!(fa.position,fb.position);}
     }
@@ -1043,4 +1048,41 @@ fn advisory_reply_checks_current_self_geometry_on_previously_skipped_ticks() {
     assert!(!ai.reply_blocked(&w,w.snake(0).unwrap(),&c,w.snake(1).unwrap(),0.0,0,0.0,&distance));
     w.config.self_collisions=false;
     assert!(ai.reply_blocked(&w,w.snake(0).unwrap(),&c,w.snake(1).unwrap(),0.0,0,0.0,&distance));
+}
+
+#[test]
+fn bounded_angle_fast_path_matches_general_remainder_bit_for_bit() {
+    use std::f64::consts::{PI,TAU};
+    for angle in [-0.0,0.0,PI,-PI,TAU,-TAU,TAU-f64::EPSILON*4.0,
+                  -TAU+f64::EPSILON*4.0,1e300,-1e300] {
+        assert_eq!(normalize_angle(angle).to_bits(),crate::normalize_angle(angle).to_bits());
+    }
+    for i in -10000..=10000 {
+        let angle=i as f64*TAU/1001.0;
+        assert_eq!(normalize_angle(angle).to_bits(),crate::normalize_angle(angle).to_bits());
+    }
+    for angle in [f64::NAN,f64::INFINITY,f64::NEG_INFINITY] {
+        assert!(normalize_angle(angle).is_nan());
+    }
+}
+
+#[test]
+fn candidate_scratch_never_reads_a_previous_decisions_unused_path() {
+    let cfg=Config {width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,
+        deadly_walls:false,self_collisions:true,seed:20260814,..Config::default()};
+    let mut a=World::new(cfg).unwrap();let mut b=a.diagnostic_snapshot();
+    let mut plain=AiController::new();let mut poisoned=AiController::new();
+    for _ in 0..3000 {
+        for c in poisoned.candidates.as_mut().unwrap().iter_mut() {
+            c.path.fill(Point{x:f64::NAN,y:f64::NAN});
+            c.steps=STEPS;c.score=f64::NAN;c.area=usize::MAX;c.checked=true;
+        }
+        poisoned.rollout_distance.fill(f64::NAN);
+        a.step(&mut plain);b.step(&mut poisoned);
+        assert_eq!(a.stats(),b.stats());assert_eq!(a.rng_state(),b.rng_state());
+        for (sa,sb) in a.snakes().zip(b.snakes()) {
+            assert_eq!(sa.angle,sb.angle,"tick {} snake {}",a.tick(),sa.id);
+            assert_eq!(sa.segments,sb.segments);
+        }
+    }
 }

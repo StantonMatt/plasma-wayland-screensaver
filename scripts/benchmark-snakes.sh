@@ -25,7 +25,7 @@ RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc CARGO_HOME="${build_dir}/cargo-hom
 CARGO_TARGET_DIR="${build_dir}/cargo-target/Release" CARGO_NET_OFFLINE=true \
     /usr/bin/cargo run --frozen --offline --release \
     --manifest-path "${project_root}/rust/snakes-core/Cargo.toml" \
-    --example ai_scorecard | tee -a "${log_file}"
+    --example ai_scorecard -- --ai-only | tee -a "${log_file}"
 
 printf 'run,geometry_ms_per_frame,sync_ms_per_step\n' > "${renderer_csv}"
 for run in 1 2 3; do
@@ -33,7 +33,12 @@ for run in 1 2 3; do
         "${build_dir}/bin/test-snakerenderer" benchmarkMatureGeometry -iterations 1000 -o -,txt)
     sync_output=$(QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
         "${build_dir}/bin/test-snakerenderer" benchmarkMatureSyncFrame -iterations 100000 -o -,txt)
-    printf '%s\n%s\n' "${geometry_output}" "${sync_output}" | tee -a "${log_file}"
+    # Real six-minute ecosystems: separate simulation, export, and both
+    # identical viewports. Geometry is deliberately rebuilt at each sample;
+    # the synthetic benchmark alone cannot expose mature AI/body costs.
+    pipeline_output=$(QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+        "${build_dir}/bin/test-snakerenderer" benchmarkEcosystemPhases -o -,txt)
+    printf '%s\n%s\n%s\n' "${geometry_output}" "${sync_output}" "${pipeline_output}" | tee -a "${log_file}"
     geometry_ms=$(awk '/msecs per iteration/ { print $1; exit }' <<< "${geometry_output}")
     sync_ms=$(awk '/msecs per iteration/ { print $1; exit }' <<< "${sync_output}")
     printf '%s,%s,%s\n' "${run}" "${geometry_ms}" "${sync_ms}" >> "${renderer_csv}"

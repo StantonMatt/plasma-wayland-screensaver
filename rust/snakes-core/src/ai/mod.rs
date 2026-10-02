@@ -5,7 +5,7 @@ mod spatial;
 mod attack;
 mod pocket;
 use attack::Attack;
-use crate::{normalize_angle, Point, SnakeView, World, MAX_FOOD, MAX_SEGMENTS, MAX_SNAKES, STEP_SECONDS};
+use crate::{Point, SnakeView, World, MAX_FOOD, MAX_SEGMENTS, MAX_SNAKES, STEP_SECONDS};
 use crate::controller::{Controller, Steering};
 use spatial::Spatial;
 const STEPS: usize = 138;
@@ -14,6 +14,18 @@ const CANDIDATES: usize = 11;
 const STRATEGY_QUOTA: usize = 2;
 const URGENT_QUOTA: usize = 2;
 const NARROW_LIMIT: usize = 4096;
+
+// Controller headings are normally within one revolution. Avoid libm's
+// general remainder in the inner forecast loops, preserving its exact result
+// (including signed zero) and retaining the general path for external angles.
+fn normalize_angle(angle: f64) -> f64 {
+    use std::f64::consts::{PI,TAU};
+    if angle.abs() < TAU {
+        if angle > PI { angle-TAU }
+        else if angle < -PI { angle+TAU }
+        else { angle }
+    } else { crate::normalize_angle(angle) }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DebugInfo {
@@ -192,6 +204,8 @@ pub struct DecisionDiagnostic {
 pub struct AiController {
     spatial: Spatial,
     body_cache: [BodyCache;256],
+    candidates: Option<Box<[Candidate;CANDIDATES]>>,
+    rollout_distance: [f64;STEPS+1],
     cache_epoch: u64,
     diagnostic_enabled: bool,
     profile_enabled: bool,
@@ -213,7 +227,7 @@ pub struct AiController {
 impl Default for AiController {fn default() -> Self {Self::new()}}
 impl AiController {
     pub fn new() -> Self {
-        Self {spatial:Spatial::new(),body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,profile:[0;5], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],
+        Self {spatial:Spatial::new(),candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,profile:[0;5], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],
             rivals:[Rival::default();MAX_SNAKES], food:[None;MAX_FOOD],
             tick:u64::MAX,geometry:0,seed:0,rng:0x9e3779b97f4a7c15,urgent_used:0,max_radius:0.0,planning_speed:[0.0;MAX_SNAKES],observed_angles:[0.0;MAX_SNAKES],observed_generations:[0;MAX_SNAKES]}
     }
@@ -262,7 +276,11 @@ impl AiController {
             let mut direction=Point {x:angle.cos(),y:angle.sin()};
             for j in 1..=STEPS {
                 let t=j as f64*STEP_SECONDS;
-                r.envelope[j]=(speed*t*(turn*t).min(1.2).sin()*0.3).min(s.radius*2.0+12.0);
+                // The envelope is monotone and capped. Once capped, later
+                // entries are exactly the cap and need no trigonometry.
+                let cap=s.radius*2.0+12.0;
+                r.envelope[j]=if r.envelope[j-1]==cap {cap}
+                    else {(speed*t*(turn*t).min(1.2).sin()*0.3).min(cap)};
                 // Extrapolate recently observed curvature for 0.3s, then
                 // straighten. No desired heading, retained exit or orbit data.
                 let desired=angle+observed_turn*(1.0-(j-1) as f64/9.0).max(0.0);
@@ -644,7 +662,13 @@ impl AiController {
         }
         result
     }
+    #[cfg(test)]
     fn rollout(&mut self,w:&World,s:SnakeView<'_>,state:State,kind:usize,horizon:usize) -> Candidate {
+        let mut candidate=Candidate::default();
+        self.rollout_into(w,s,state,kind,horizon,&mut candidate);
+        candidate
+    }
+    fn rollout_into(&mut self,w:&World,s:SnakeView<'_>,state:State,kind:usize,horizon:usize,c:&mut Candidate) {
         let proposed=if kind==1 {state.attack} else if kind==7 || kind==8 {state.attack_options[kind-7]} else {Attack::default()};
         let attack=if self.attack_usable(w,s,state,proposed) {proposed} else {Attack::default()};
         let rush=if attack.valid {attack.control(w.tick()).1} else {state.rush};
@@ -653,7 +677,12 @@ impl AiController {
         let crossing_limits=if attack.valid {w.motion_limits(s.id as usize,attack.crossing_rush).unwrap()} else {(speed,turn)};
         self.planning_speed[s.id as usize]=if attack.valid {maximum_speed} else {speed};
         let tracks_goal=!attack.valid && ((kind==0 && (state.coil_radius>0.0 || state.track_goal)) || (kind==1 && state.track_goal));
-        let mut c=Candidate {angle:s.angle, clearance:200.0,attack,rush,tracks_goal,..Candidate::default()};
+        // Reset metadata only. Every path/distance entry that can be read is
+        // overwritten by this rollout; clearing the unused horizon for every
+        // candidate used to stream hundreds of KB of zeros per snake/tick.
+        c.checked=false;c.tracks_goal=tracks_goal;c.desired=0.0;c.exit_angle=0.0;
+        c.angle=s.angle;c.steps=0;c.score=0.0;c.clearance=200.0;
+        c.capped=false;c.area=0;c.uncertain=false;c.attack=attack;c.rush=rush;
         c.path[0]=s.segments[0].current;
         let goal=state.waypoint.unwrap_or(state.goal);
         let d=w.displacement(c.path[0],goal);
@@ -667,7 +696,7 @@ impl AiController {
         let mut trajectory_state=state;
         let mut direction=Point {x:s.angle.cos(),y:s.angle.sin()};
         let mut rotation=(turn*STEP_SECONDS).sin_cos();
-        let mut distance=[0.0;STEPS+1];
+        self.rollout_distance[0]=0.0;
         let mut checked=0;
         let max_curve=if attack.valid {let limits=w.motion_limits(s.id as usize,attack.burst).unwrap();
             (limits.0*limits.1).max(crossing_limits.0*crossing_limits.1)} else {speed*turn};
@@ -713,7 +742,7 @@ impl AiController {
             // Even a first-step collision is checked. A tactic feasibility
             // rejection before constructing that step is not a fallback.
             c.checked=true;
-            distance[j]=distance[j-1]+speed*STEP_SECONDS;
+            self.rollout_distance[j]=self.rollout_distance[j-1]+speed*STEP_SECONDS;
             let cfg=w.config();
             if cfg.deadly_walls {
                 let wall=p.x.min(cfg.width-p.x).min(p.y).min(cfg.height-p.y);
@@ -745,14 +774,16 @@ impl AiController {
                 if hit {break;}
             }
             let mut hit=false;
-            for (other,r) in self.rivals.iter().enumerate() {
-                if !sweep || (j>1 && !state.revise_opponents) || near&(1<<other)==0 || defeated&(1<<other)!=0 {continue;}
+            let mut active=if sweep && (j==1 || state.revise_opponents) {near & !defeated} else {0};
+            while active!=0 {
+                let other=active.trailing_zeros() as usize;active&=active-1;
+                let r=&self.rivals[other];
                 let winning=s.segments.len()>=r.len+6;
                 let reach=(s.radius+r.radius)*0.82;
                 // A bounded turn envelope widens with time, but not into an
                 // arbitrary reachable disk that would paralyze all pursuit.
                 let envelope=r.envelope[j]+padding+r.speed*r.turn*span*span/8.0;
-                let head_near=w.distance_squared(p,r.path[j])<(reach+envelope+3.0+distance[j]-distance[from_index]+r.speed*span).powi(2);
+                let head_near=w.distance_squared(p,r.path[j])<(reach+envelope+3.0+self.rollout_distance[j]-self.rollout_distance[from_index]+r.speed*span).powi(2);
                 if !winning && head_near && w.segments_distance_squared(c.path[from_index],p,r.path[from_index],r.path[j])<(reach+envelope+3.0).powi(2) {hit=true;break;}
                 let lethal_head=winning && head_near && Self::head_contact(w,&c.path,&r.path,from_index,j,reach);
                 // Future rival neck deposition is lethal even for a winner.
@@ -761,7 +792,7 @@ impl AiController {
                 if sweep && j>neck_steps && w.distance_squared(p,r.path[0])<(r.speed*t+reach+speed*STEP_SECONDS).powi(2) {
                     for k in (1..=j-neck_steps).step_by(3) {
                         let end=(k+2).min(j-neck_steps);
-                        if w.distance_squared(p,r.path[end])<(reach+2.0+distance[j]-distance[from_index]+3.0*r.speed*STEP_SECONDS).powi(2)
+                        if w.distance_squared(p,r.path[end])<(reach+2.0+self.rollout_distance[j]-self.rollout_distance[from_index]+3.0*r.speed*STEP_SECONDS).powi(2)
                             && w.segments_distance_squared(c.path[from_index],p,r.path[k-1],r.path[end])<(reach+2.0).powi(2) {hit=true;break;}
                     }
                 }
@@ -776,9 +807,9 @@ impl AiController {
                 if sweep && j>age {
                     for k in (0..j-age).step_by(3) {
                         let end=(k+3).min(j-age);
-                        if distance[j]-distance[end]<s.radius*1.18*10.0 {continue;}
+                        if self.rollout_distance[j]-self.rollout_distance[end]<s.radius*1.18*10.0 {continue;}
                         let reach=s.radius*1.48+3.0+max_curve*(4.0*STEP_SECONDS).powi(2)/8.0;
-                        if w.distance_squared(p,c.path[end])<(reach+distance[j]-distance[from_index]).powi(2)
+                        if w.distance_squared(p,c.path[end])<(reach+self.rollout_distance[j]-self.rollout_distance[from_index]).powi(2)
                             && w.segments_distance_squared(c.path[from_index],p,c.path[k],c.path[end])<reach*reach {hit=true;break;}
                     }
                 }
@@ -842,7 +873,6 @@ impl AiController {
                 c.score+=(normalize_angle(d.y.atan2(d.x)-c.angle).cos()*2.0-2.0)*(margin-wall);
             }
         }
-        c
     }
 }
 impl Controller for AiController {
@@ -929,14 +959,16 @@ impl Controller for AiController {
         let horizon=if extended {STEPS} else {NORMAL_STEPS};
         let strategy_time=clock.map(|c|c.elapsed().as_nanos());
         if let Some(t)=strategy_time {self.profile[1]+=t-prepared.unwrap();}
-        let mut candidates=[Candidate::default();CANDIDATES];
-        candidates[1]=self.rollout(w,s,state,1,horizon);
+        // Temporarily lease the preallocated scratch so rollout methods can
+        // also mutably access shared caches. No allocation or array reset.
+        let mut candidates=self.candidates.take().expect("non-reentrant controller");
+        self.rollout_into(w,s,state,1,horizon,&mut candidates[1]);
         if !strategic && (candidates[1].steps<horizon || (state.target==0 && state.prey==0 && w.tick().saturating_sub(state.last_strategy)>6)) && self.urgent_used<URGENT_QUOTA {
             self.urgent_used+=1;strategic=true;
             self.strategy(w,s,&mut state,intelligence);
             state.rush=self.rush_for(w,s,state);
             self.planning_speed[id]=w.motion_limits(id,state.rush).unwrap().0;
-            candidates[1]=self.rollout(w,s,state,1,horizon);
+            self.rollout_into(w,s,state,1,horizon,&mut candidates[1]);
         }
         let need=(s.segments.len() as f64*s.radius*s.radius*8.0/(self.spatial.dx*self.spatial.dy)).ceil().max(24.0) as usize;
         let (area,capped)=if enclosure_risk && strategic {
@@ -959,9 +991,11 @@ impl Controller for AiController {
                 if kind>=9 && !extended {candidates[kind]=candidates[2];continue;}
                 if kind==2 && candidates[1].checked && !candidates[1].attack.valid && !state.track_goal && state.turn_until==u64::MAX && normalize_angle(state.desired-s.angle).abs()<1e-12 {
                     candidates[kind]=candidates[1];
-                } else {candidates[kind]=self.rollout(w,s,state,kind,horizon);}
+                } else {self.rollout_into(w,s,state,kind,horizon,&mut candidates[kind]);}
             }
-        } else {let retained=candidates[1];candidates.fill(retained);}
+        }
+        // A reused decision selects only slot 1. Leave other scratch slots
+        // untouched instead of copying its full path into ten unused slots.
         if strategic && !reuse_plan {
             for kind in [7,8] {
                 if candidates[kind].attack.valid && candidates[kind].steps==horizon {
@@ -973,7 +1007,8 @@ impl Controller for AiController {
         let safe=candidates.iter().filter(|c|c.steps==horizon).count();
         let rollout_time=clock.map(|c|c.elapsed().as_nanos());
         if let Some(t)=rollout_time {self.profile[2]+=t-strategy_time.unwrap();}
-        for c in &mut candidates {
+        for (index,c) in candidates.iter_mut().enumerate() {
+            if reuse_plan && !self.diagnostic_enabled && index!=1 {continue;}
             if c.area==0 {
                 let (area,capped)=if extended && normalize_angle(c.angle-s.angle).abs()>0.7 {
                     let rate=s.radius*1.18/(w.motion_limits(id,state.rush).unwrap().0*STEP_SECONDS).max(0.1);
@@ -1009,7 +1044,7 @@ impl Controller for AiController {
             }
             self.decisions[id]=d;
         }
-        let c=candidates[best];
+        let c=&candidates[best];
         if !c.tracks_goal {state.clear_coil(s.angle);}
         if best!=1 {
             state.attack=c.attack;
@@ -1042,6 +1077,7 @@ impl Controller for AiController {
         if c.steps<horizon {state.debug.flags|=4;}
         if reuse_plan {state.debug.flags|=16;}
         self.states[id]=state;
+        self.candidates=Some(candidates);
         if let Some(c)=clock {self.profile[4]+=c.elapsed().as_nanos();}
         Steering {desired_angle:state.desired,rush:state.rush}
     }

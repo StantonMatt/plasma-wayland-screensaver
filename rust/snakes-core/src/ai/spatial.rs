@@ -14,6 +14,9 @@ pub(super) struct Spatial {
     pub weight: Vec<f64>,
     pub occupied: Vec<u16>,
     navigable: Vec<u16>,
+    neighbours: Vec<[usize; 4]>,
+    boundary: Vec<bool>,
+    topology: (usize, usize, bool),
     release: Vec<[f32; MAX_SNAKES]>,
     space_release: Vec<[f32; MAX_SNAKES]>,
     visited: Vec<u32>,
@@ -43,6 +46,40 @@ pub(super) struct Spatial {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sparse_release_initialization_matches_full_table_clears() {
+        use crate::{Config,controller::BaselineController};
+        let mut world=World::new(Config {width:3440.0,height:1440.0,density:100.0,
+            trails:100.0,self_collisions:true,..Config::default()}).unwrap();
+        let mut sparse=Spatial::new();let mut cleared=Spatial::new();
+        // Stale values must be ignored even after geometry/settings change.
+        sparse.release.fill([1e20;MAX_SNAKES]);
+        sparse.space_release.fill([1e20;MAX_SNAKES]);
+        for tick in 0..200 {
+            if tick==100 {world.reconfigure(Config {width:640.0,height:360.0,
+                deadly_walls:false,..world.config()}).unwrap();}
+            world.step(&mut BaselineController);
+            cleared.release.fill([0.0;MAX_SNAKES]);
+            cleared.space_release.fill([0.0;MAX_SNAKES]);
+            sparse.rebuild(&world);cleared.rebuild(&world);
+            let n=sparse.cols*sparse.rows;
+            assert_eq!(sparse.occupied[..n],cleared.occupied[..n]);
+            assert_eq!(sparse.navigable[..n],cleared.navigable[..n]);
+            for key in 0..n {for id in 0..MAX_SNAKES {
+                if sparse.occupied[key]&(1<<id)!=0 {
+                    assert_eq!(sparse.release[key][id],cleared.release[key][id]);
+                }
+                if sparse.navigable[key]&(1<<id)!=0 {
+                    assert_eq!(sparse.space_release[key][id],cleared.space_release[key][id]);
+                }
+            }}
+            for key in (0..n).step_by(37) {
+                let start=sparse.center(key);
+                assert_eq!(sparse.space(start,u16::MAX,128,1.0),cleared.space(start,u16::MAX,128,1.0));
+            }
+        }
+    }
 
     #[test]
     fn rectangular_queries_cover_unique_buckets_on_both_axes() {
@@ -161,10 +198,28 @@ impl Spatial {
     pub fn new() -> Self {
         Self { heads: vec![-1; CELLS], next: vec![-1; MAX_SNAKES*MAX_SEGMENTS],
             food_heads: vec![-1; CELLS], food_next: [-1; MAX_FOOD], weight: vec![0.0; CELLS],
-            occupied: vec![0; CELLS],navigable:vec![0;CELLS],release:vec![[0.0;MAX_SNAKES];CELLS],space_release:vec![[0.0;MAX_SNAKES];CELLS], visited: vec![0; CELLS], stamp: 0,
+            occupied: vec![0; CELLS],navigable:vec![0;CELLS],
+            neighbours:vec![[usize::MAX;4];CELLS],boundary:vec![false;CELLS],topology:(0,0,false),release:vec![[0.0;MAX_SNAKES];CELLS],space_release:vec![[0.0;MAX_SNAKES];CELLS], visited: vec![0; CELLS], stamp: 0,
             area_seen: vec![0;CELLS],future:vec![0;CELLS],future_stamp:0,future_active:false,area_label:vec![0;CELLS],area_stamp:0,area_mask:0,area_count:0,area_limit:FILL_LIMIT,area_time:-1.0,area_result:[(0,false);32],
             queue: [0; FILL_LIMIT], parent: [0; FILL_LIMIT],depth:[0;FILL_LIMIT], cols: 1, rows: 1,
             dx: 1.0, dy: 1.0,max_motion:0.0, wrap: false }
+    }
+    // Arena topology is invariant across ticks. Preserve the original cardinal
+    // order and small wrapped-axis deduplication, without dividing each BFS
+    // node by the grid width or allocating any search storage.
+    fn prepare_topology(&mut self) {
+        if self.topology == (self.cols,self.rows,self.wrap) { return; }
+        self.topology = (self.cols,self.rows,self.wrap);
+        for key in 0..self.cols*self.rows {
+            let mut neighbours = [usize::MAX;4];
+            for (index,(x,y)) in self.neighbour_offsets().enumerate() {
+                neighbours[index] = self.offset(key,x,y).unwrap_or(usize::MAX);
+            }
+            self.neighbours[key] = neighbours;
+            self.boundary[key] = !self.wrap && (key%self.cols==0 || key%self.cols+1==self.cols
+                || key/self.cols==0 || key/self.cols+1==self.rows);
+        }
+        self.area_count=0;
     }
     pub fn rebuild(&mut self, w: &World) {
         self.area_mask=0;
@@ -174,11 +229,14 @@ impl Spatial {
         self.rows = (c.height/side).ceil().clamp(1.0,128.0) as usize;
         self.dx = c.width/self.cols as f64; self.dy = c.height/self.rows as f64;
         self.wrap = !c.deadly_walls;
+        self.prepare_topology();
         let n = self.cols*self.rows;
         self.heads[..n].fill(-1); self.food_heads[..n].fill(-1);
         self.occupied[..n].fill(0); self.weight[..n].fill(0.0);
-        self.navigable[..n].fill(0);self.release[..n].fill([0.0;MAX_SNAKES]);
-        self.space_release[..n].fill([0.0;MAX_SNAKES]);
+        self.navigable[..n].fill(0);
+        // Release slots are valid only under their occupancy bit. Initialize
+        // on first insertion instead of clearing two large sparse tables each
+        // tick; every read below checks the corresponding mask first.
         let mut motion_squared=0.0_f64;
         for s in w.snakes().filter(|s|s.alive) {
             let speed=w.motion_limits(s.id as usize,0.0).unwrap().0;
@@ -191,9 +249,11 @@ impl Spatial {
                 self.next[encoded] = self.heads[key]; self.heads[key] = encoded as i32;
                 // Own neck exclusion is dealt with separately in exact safety.
                 // Keep the neck in the occupancy mask for OTHER snakes.
-                self.occupied[key] |= 1 << s.id;
+                let bit=1 << s.id;
+                let first=self.occupied[key]&bit==0;
+                self.occupied[key] |= bit;
                 let release=((s.segments.len()-j) as f64*rate+growth_delay+0.15) as f32;
-                self.release[key][s.id as usize]=self.release[key][s.id as usize].max(release);
+                self.release[key][s.id as usize]=if first {release} else {self.release[key][s.id as usize].max(release)};
             }
         }
         self.max_motion=motion_squared.sqrt();
@@ -205,11 +265,12 @@ impl Spatial {
             let (xs,ys)=self.local_spans(1);
             for y in ys {for x in xs.clone() {
                 if let Some(k)=self.offset(key,x,y) {
+                    let previous=self.navigable[k];
                     self.navigable[k]|=mask;
                     let mut bits=mask;
                     while bits!=0 {
                         let id=bits.trailing_zeros() as usize;bits&=bits-1;
-                        self.space_release[k][id]=self.space_release[k][id].max(self.release[key][id]);
+                        self.space_release[k][id]=if previous&(1<<id)==0 {self.release[key][id]} else {self.space_release[k][id].max(self.release[key][id])};
                     }
                 }
             }}
@@ -225,6 +286,7 @@ impl Spatial {
         let y = ((p.y/self.dy).floor() as isize).clamp(0,self.rows as isize-1) as usize;
         y*self.cols+x
     }
+    #[inline(always)]
     pub fn offset(&self,key:usize,x:isize,y:isize) -> Option<usize> {
         let mut cx = (key%self.cols) as isize+x;
         let mut cy = (key/self.cols) as isize+y;
@@ -298,6 +360,7 @@ impl Spatial {
         self.space(start,mask,limit,-1.0)
     }
     pub fn space(&mut self,start:Point,mask:u16,limit:usize,time:f64)->(usize,bool) {
+        self.prepare_topology();
         let limit=limit.clamp(1,FILL_LIMIT);
         let root=self.key(start);
         if self.area_count==0 || self.area_mask!=mask || self.area_limit!=limit || self.area_time!=time || self.area_count==self.area_result.len() {
@@ -311,8 +374,8 @@ impl Spatial {
         let mut read=0; let mut write=1;
         while read<write {
             let key=self.queue[read];let depth=self.depth[read];read+=1;
-            for (x,y) in self.neighbour_offsets() {
-                if let Some(k)=self.offset(key,x,y) {
+            for k in self.neighbours[key] {
+                if k!=usize::MAX {
                     // A checked heading may leave a narrow starting cell
                     // through two physically free cells before reaching room
                     // to turn. Do not declare that starting cell a sealed pocket.
@@ -361,7 +424,7 @@ impl Spatial {
     fn blocked(&self,key:usize,mask:u16,time:f64)->bool {
         if self.future_active && self.future[key]==self.future_stamp {return true;}
         if time<0.0 {return self.occupied[key]&mask!=0;}
-        if !self.wrap && (key%self.cols==0 || key%self.cols+1==self.cols || key/self.cols==0 || key/self.cols+1==self.rows) {return true;}
+        if self.boundary[key] {return true;}
         let mut bits=self.navigable[key]&mask;
         while bits!=0 {
             let id=bits.trailing_zeros() as usize;bits&=bits-1;
@@ -384,6 +447,7 @@ impl Spatial {
     /// Bounded coarse BFS; the returned waypoint is guidance, never a safety
     /// certificate. Exact continuous rollouts validate every published move.
     pub fn waypoint(&mut self,start:Point,goal:Point,mask:u16) -> Option<Point> {
+        self.prepare_topology();
         let root=self.key(start); let target=self.key(goal);
         if root==target {return None;}
         self.begin_search(root);
@@ -397,8 +461,8 @@ impl Spatial {
                 if depth>=2 {at=nodes[depth-2];}
                 return Some(self.center(self.queue[at]));
             }
-            for (x,y) in self.neighbour_offsets() {
-                if let Some(k)=self.offset(key,x,y) {
+            for k in self.neighbours[key] {
+                if k!=usize::MAX {
                     if self.visited[k]!=self.stamp && self.occupied[k]&mask==0 {
                         if write==FILL_LIMIT {return None;}
                         self.visited[k]=self.stamp; self.queue[write]=k;

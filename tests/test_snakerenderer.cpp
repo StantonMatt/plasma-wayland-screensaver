@@ -5,6 +5,9 @@
 #include <QSignalSpy>
 #include <QSGGeometryNode>
 #include <QTest>
+#include <QElapsedTimer>
+#include <QCryptographicHash>
+#include <numeric>
 #include <cmath>
 #include <limits>
 
@@ -250,6 +253,89 @@ private Q_SLOTS:
         QVERIFY(geometry->vertexCount() > normal);
         delete node;
     }
+    void geometryFingerprint_data()
+    {
+        QTest::addColumn<bool>("deadly");
+        QTest::addColumn<bool>("developer");
+        QTest::addColumn<double>("alpha");
+        QTest::addColumn<QByteArray>("expected");
+        QTest::newRow("walls") << true << false << 0.5 << QByteArray("55e68e536a65e2ceb3d5c1258b9a887ef679ae972608acc65bdd7c7c7dc691af");
+        QTest::newRow("wrapping") << false << false << 0.9 << QByteArray("3c7f9798331487979dc67386d05e72b9a0a49737525cac1e1289f449243e7b03");
+        QTest::newRow("developer") << true << true << 0.1 << QByteArray("a7558b4dbf84d518ba4f4de41d104643c2a11a936c7667945212818e05b81ee0");
+    }
+    void geometryFingerprint()
+    {
+        QFETCH(bool,deadly);QFETCH(bool,developer);QFETCH(double,alpha);
+        QFETCH(QByteArray,expected);
+        SnakeRenderer renderer;
+        renderer.setSize(QSizeF(3440,1440));
+        renderer.setDeveloperMode(developer);
+        auto frame=makeFrame(120,14,400,true);
+        renderer.syncFrame(frame,palette,alpha,deadly);
+        auto *node=static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr,nullptr));
+        auto *g=node->geometry();
+        const auto bytes=QByteArrayView(reinterpret_cast<const char *>(g->vertexData()),
+            g->vertexCount()*g->sizeOfVertex());
+        const auto hash=QCryptographicHash::hash(bytes,QCryptographicHash::Sha256).toHex();
+        qInfo() << "geometry" << QTest::currentDataTag() << g->vertexCount() << hash;
+        QCOMPARE(hash,expected);
+        delete node;
+    }
+    void benchmarkEcosystemPhases_data()
+    {
+        QTest::addColumn<bool>("deadly");
+        QTest::newRow("walls") << true;
+        QTest::newRow("wrapping") << false;
+    }
+    void benchmarkEcosystemPhases()
+    {
+        QFETCH(bool,deadly);
+        snakes_core_config config{3440,1440,100,100,100,100,100,20260814,6,1,uint32_t(deadly)};
+        snakes_core_world *handle=nullptr;
+        QCOMPARE(snakes_core_create(&config,&handle),SNAKES_CORE_OK);
+        std::unique_ptr<snakes_core_world,decltype(&snakes_core_destroy)> world(handle,snakes_core_destroy);
+        QVERIFY(world);
+        QCOMPARE(snakes_core_step(world.get(),6*1800),SNAKES_CORE_OK);
+        SnakeRenderer first,second;
+        first.setSize(QSizeF(3440,1440));second.setSize(QSizeF(3440,1440));
+        SnakeFrame frame;
+        QSGNode *nodes[2]{};
+        std::array<std::vector<double>,4> times;
+        for (auto &sample:times) sample.reserve(1800);
+        uint64_t vertices=0,segments=0,foods=0;
+        QElapsedTimer timer;
+        for (int tick=0;tick<1800;++tick) {
+            timer.start();
+            QCOMPARE(snakes_core_step(world.get(),1),SNAKES_CORE_OK);
+            times[0].push_back(timer.nsecsElapsed()/1e6);
+            timer.restart();
+            snakes_core_frame_sizes sizes{};
+            QCOMPARE(snakes_core_get_frame_sizes(world.get(),&sizes),SNAKES_CORE_OK);
+            frame.snakes.resize(sizes.snakes);frame.segments.resize(sizes.segments);frame.food.resize(sizes.food);
+            QCOMPARE(snakes_core_export_frame(world.get(),frame.snakes.data(),frame.snakes.size(),
+                frame.segments.data(),frame.segments.size(),frame.food.data(),frame.food.size(),&frame.info),SNAKES_CORE_OK);
+            times[1].push_back(timer.nsecsElapsed()/1e6);
+            segments+=sizes.segments;foods+=sizes.food;
+            int index=0;
+            for (auto *view:{&first,&second}) {
+                timer.restart();
+                view->syncFrame(frame,palette,0.5,deadly);
+                nodes[index]=view->updatePaintNode(nodes[index],nullptr);
+                times[2+index].push_back(timer.nsecsElapsed()/1e6);
+                if (!index) vertices+=static_cast<QSGGeometryNode *>(nodes[index])->geometry()->vertexCount();
+                ++index;
+            }
+        }
+        const char *names[]{"step_ms","export_ms","first_window_ms","second_window_ms"};
+        for (size_t i=0;i<times.size();++i) {
+            auto &sample=times[i];const double mean=std::accumulate(sample.begin(),sample.end(),0.0)/sample.size();
+            std::sort(sample.begin(),sample.end());
+            qInfo() << names[i] << "mean" << mean << "p50" << sample[900] << "p95" << sample[1710];
+        }
+        qInfo() << "mean_segments" << segments/1800.0 << "mean_food" << foods/1800.0 << "mean_vertices" << vertices/1800.0;
+        delete nodes[0];delete nodes[1];
+    }
+
     void benchmarkMatureGeometry()
     {
         SnakeRenderer renderer;
