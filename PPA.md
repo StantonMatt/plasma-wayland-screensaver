@@ -81,10 +81,10 @@ version:
 - `data/metainfo/org.kde.plasmavisualscreensaver.metainfo.xml`; and
 - `debian/changelog`.
 
-Use a PPA version such as `0.7.0-1ppa1~resolute1`. Increase `ppa1` when
+Use a PPA version such as `0.7.1-1ppa1~resolute1`. Increase `ppa1` when
 re-uploading changed packaging for the same app version; Launchpad never
 accepts the same source version twice. The PPA version is deliberately newer
-than the corresponding standalone `0.7.0-1` GitHub package, allowing existing
+than the corresponding standalone `0.7.1-1` GitHub package, allowing existing
 users to migrate without a forced downgrade.
 
 Build, sign, lint, and upload with:

@@ -20,6 +20,12 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.7.1" date="2026-10-02">
+      <description>
+        <p>Paces each display at the highest rate up to the configured FPS that divides its refresh rate evenly, removing judder on mixed-refresh setups. Synchronized and seamless visuals keep one shared simulation sampled by each display, and shared Bounce physics keeps synchronized monitors in step.</p>
+        <p>Positions overlays correctly when panels are not covered and repaints paused and reduced-motion visuals when their state changes.</p>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-10-02">
       <description>
         <p>Moves Slithering Snakes simulation and AI to Rust, reducing CPU use and improving pathfinding, collision avoidance, and open-space awareness. Bigger snakes contest food and cut rivals off, while smaller snakes avoid losing head-on encounters.</p>
