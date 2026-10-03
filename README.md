@@ -62,11 +62,18 @@ opens the latest GitHub release instead.
   and seeks open space; bigger snakes contest food and cut rivals off, while
   smaller snakes avoid losing head-on encounters; short boosts for cut-offs,
   escapes and food races cost tail segments dropped as edible pellets and
-  need time to cool down; visibly magnetic food,
-  collision-safe spawning, exact head-path body following, outward self-tail
-  escapes, swept neck/body collision detection, forward growth, persistent
-  food vacuum locks, optional self-collision, deadly or wraparound edges, and
-  size-proportional edible death particles). Snake length uses adaptive
+  need time to cool down; glossy, shaded, glowing bodies with pointed tails,
+  chevrons, saddle bands and glowing spine lights on the biggest snakes;
+  spade-shaped heads with eyes that follow movement, blinking and tongue
+  flicks; a gold crown for the leader, boost bow waves and contrails, sparks
+  on kills, bodies that dissolve into shards, and new food sprites; visibly
+  magnetic food, collision-safe spawning, exact head-path body following,
+  outward self-tail escapes, swept neck/body collision detection that follows
+  the tapered body, forward growth, persistent food vacuum locks, optional
+  self-collision, deadly or wraparound edges, and
+  size-proportional edible death particles). Rendering costs less, with the
+  previous look kept automatically on systems without shader support. A soft
+  shadow keeps the clock readable over busy scenes. Snake length uses adaptive
   individual and arena-wide painted-area budgets rather than a small fixed cap,
   with progressively more food required for extreme late-game growth. Ambient
   food expires after a randomized 34–46 seconds and is replenished elsewhere
@@ -222,7 +229,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.8.0`, publishes the verified
+matching the CMake project version, such as `v0.9.0`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 

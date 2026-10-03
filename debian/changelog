@@ -1,3 +1,17 @@
+plasma-visual-screensaver (0.9.0-1ppa1~resolute1) resolute; urgency=medium
+
+  * Give Slithering Snakes glossy, shaded, glowing bodies with pointed tails,
+    chevrons, saddle bands and glowing spine lights on the biggest snakes.
+    Add spade-shaped heads with eyes that follow movement, blinking, tongue
+    flicks and a gold crown for the leader.
+  * Add new food sprites, boost bow waves and contrails, sparks on kills and
+    bodies that dissolve into shards. Make collisions follow the tapered body.
+  * Keep the clock readable over busy scenes with a soft shadow. Reduce
+    rendering cost and keep the previous look as an automatic fallback on
+    systems without shader support.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Sat, 03 Oct 2026 04:07:08 -0300
+
 plasma-visual-screensaver (0.8.0-1ppa1~resolute1) resolute; urgency=medium
 
   * Give Slithering Snakes short boosts for cut-offs, escapes and food races,

@@ -20,6 +20,12 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.9.0" date="2026-10-03">
+      <description>
+        <p>Gives Slithering Snakes glossy, shaded, glowing bodies with pointed tails, chevrons, saddle bands and glowing spine lights on the biggest snakes. Adds spade-shaped heads with eyes that follow movement, blinking, tongue flicks and a gold crown for the leader.</p>
+        <p>Adds new food sprites, boost bow waves and contrails, sparks on kills and bodies that dissolve into shards. Collisions follow the tapered body. A soft shadow keeps the clock readable over busy scenes. Reduces rendering cost and keeps the previous look as an automatic fallback on systems without shader support.</p>
+      </description>
+    </release>
     <release version="0.8.0" date="2026-10-02">
       <description>
         <p>Gives Slithering Snakes short boosts for cut-offs, escapes and food races. Each boost costs tail segments dropped as edible pellets and needs time to cool down. Hunts are faster and more decisive, with fewer self-inflicted deaths.</p>
