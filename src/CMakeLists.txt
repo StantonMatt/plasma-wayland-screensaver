@@ -8,7 +8,14 @@ find_path(SNAKES_QT_RHI_INCLUDE_DIR rhi/qrhi.h
 if(NOT SNAKES_QT_RHI_INCLUDE_DIR)
     message(FATAL_ERROR "QShader/QRhi headers are required; install qt6-base-private-dev matching QtGui")
 endif()
-add_library(SnakeMaterial STATIC snakematerial.cpp snakematerial.h)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(snakes_atlas_header "${CMAKE_CURRENT_BINARY_DIR}/snakes_atlas.h")
+add_custom_command(OUTPUT "${snakes_atlas_header}"
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/generate-snakes-atlas.py" "${snakes_atlas_header}"
+    DEPENDS "${PROJECT_SOURCE_DIR}/scripts/generate-snakes-atlas.py"
+    VERBATIM)
+add_library(SnakeMaterial STATIC snakematerial.cpp snakematerial.h "${snakes_atlas_header}")
+target_include_directories(SnakeMaterial PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 set_target_properties(SnakeMaterial PROPERTIES AUTOMOC OFF)
 target_include_directories(SnakeMaterial SYSTEM PUBLIC "${SNAKES_QT_RHI_INCLUDE_DIR}")
 target_link_libraries(SnakeMaterial PUBLIC Qt6::Quick SnakesCore::snakes_core)

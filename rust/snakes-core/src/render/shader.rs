@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Single-pass sprites/ribbon. No allocation after Renderer::new, including growth.
-//! Bytes: kind, tier (low 2 bits)/reserved effect (high bits), flags, wave/look.
+//! Bytes: kind, tier (low 2 bits)/active effect (bits 2..4), flags, wave/look.
+//! Body-only flag bits 1, 4, 5 encode the originating wave (0 none, 1..5 item,
+//! 6 white, 7 crown). The vertex shader decodes before interpolation.
 //! Kind 8 is prism fruit, 10 is continuous contrail; 11..31 reserve future sprites.
 use super::*;
-mod bounds;
+pub(super) mod bounds;
 use bounds::*;
 
 #[repr(C)]
@@ -18,13 +20,16 @@ pub struct ShaderVertex {
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct Effect {
-    p: P, time: f64, radius: f64, color: u32, kind: u8, active: bool,
+    pub(super) p: P, pub(super) time: f64, pub(super) radius: f64, pub(super) color: u32, pub(super) kind: u8, pub(super) active: bool,
     snake_id: u32, generation: u32, seed: u8,
 }
 #[derive(Clone, Copy, Default)]
-pub(super) struct Wave { time: f64, active: bool }
+pub(super) struct Wave { pub(super) time: f64, pub(super) active: bool, pub(super) kind: u8 }
 
-struct SpriteSink<'a> { out: &'a mut [ShaderVertex], count: usize, view: P }
+#[inline(always)]
+fn wave_flags(origin:u8)->u8 { ((origin&1)<<1)|((origin&6)<<3) }
+
+pub(super) struct SpriteSink<'a> { pub(super) out: &'a mut [ShaderVertex], pub(super) count: usize, pub(super) view: P }
 impl SpriteSink<'_> {
     #[inline]
     fn make_vertex(p:P, u:f64, v:f64, color:Color, params:[u8;4])->ShaderVertex {
@@ -56,8 +61,9 @@ impl SpriteSink<'_> {
         self.push_quad(std::array::from_fn(|i|Self::make_vertex(pts[i],uv[i][0],uv[i][1],c,params)));
     }
     #[inline(always)]
-    fn ribbon_edge(&mut self, pts:[P;4], across:[f64;2], tapers:[u8;2], along:[f64;2], c:Color, params:[u8;4], end_wave:u8) {
+    fn ribbon_edge(&mut self, pts:[P;4], across:[f64;2], tapers:[u8;2], along:[f64;2], c:Color, params:[u8;4], end_wave:u8,end_origin:Option<u8>) {
         let mut end=params;end[3]=end_wave;
+        if let Some(origin)=end_origin {end[2]=(end[2]&!50)|origin;}
         let c0=c.alpha(tapers[0]);
         let c1=c.alpha(tapers[1]);
         self.push_quad([
@@ -68,26 +74,26 @@ impl SpriteSink<'_> {
         ]);
     }
     #[inline]
-    fn sprite(&mut self, center:P, radius:f64, c:Color, params:[u8;4]) {
+    pub(super) fn sprite(&mut self, center:P, radius:f64, c:Color, params:[u8;4]) {
         if !center.finite() || radius<=0.0 || !visible(center.x-radius,center.y-radius,radius*2.0,radius*2.0,self.view) { return; }
         self.quad_unchecked([center-P::new(radius,radius),center+P::new(radius,-radius),center+P::new(-radius,radius),center+P::new(radius,radius)],
             [[-1.0,-1.0],[1.0,-1.0],[-1.0,1.0],[1.0,1.0]],c,params);
     }
-    fn effect_sprite(&mut self, center:P, radius:f64, extent:f64, c:Color, params:[u8;4]) {
+    pub(super) fn effect_sprite(&mut self, center:P, radius:f64, extent:f64, c:Color, params:[u8;4]) {
         if !center.finite() || radius<=0.0 || !visible(center.x-radius,center.y-radius,radius*2.0,radius*2.0,self.view) { return; }
         self.quad_unchecked([center-P::new(radius,radius),center+P::new(radius,-radius),center+P::new(-radius,radius),center+P::new(radius,radius)],
             [[-extent,-extent],[extent,-extent],[-extent,extent],[extent,extent]],c,params);
     }
     #[inline(always)]
-    fn body_edge(&mut self,a:P,b:P,an:P,bn:P,width:f64,across:[f64;2],tapers:[u8;2],along:[f64;2],c:Color,params:[u8;4],end_wave:u8) {
+    fn body_edge(&mut self,a:P,b:P,an:P,bn:P,width:f64,across:[f64;2],tapers:[u8;2],along:[f64;2],c:Color,params:[u8;4],end_wave:u8,end_origin:Option<u8>) {
         if !visible(a.x.min(b.x)-width,a.y.min(b.y)-width,(b.x-a.x).abs()+width*2.0,(b.y-a.y).abs()+width*2.0,self.view) { return; }
-        self.ribbon_edge([a+an,a-an,b+bn,b-bn],across,tapers,along,c,params,end_wave);
+        self.ribbon_edge([a+an,a-an,b+bn,b-bn],across,tapers,along,c,params,end_wave,end_origin);
     }
     // Ordinary wall-bounded live bodies share every corner with the next
     // edge. Convert each point's pair once; retain the other walk for drifting
     // corpse pieces and exact f64 translated wrap copies.
-    fn live_ribbon(&mut self, points:&[P], normals:&[P], valid:&[bool], widths:&[f64],
-                   taper_bytes:&[u8], brightness:&[u8], r:f64, c:Color, params:[u8;4]) {
+    fn live_ribbon<const MIXED:bool>(&mut self, points:&[P], normals:&[P], valid:&[bool], widths:&[f64],
+                   taper_bytes:&[u8], brightness:&[u8], origins:&[u8], r:f64, c:Color, params:[u8;4]) {
         let mut previous=[ShaderVertex::default();2];
         let mut previous_valid=false;let mut previous_cached=false;
         let mut previous_width=0.0_f64;let mut a=P::default();
@@ -106,13 +112,17 @@ impl SpriteSink<'_> {
                 let along=(points.len()-1-i) as f64;
                 if !previous_cached {
                     let normal=normals[i-1]*previous_width;
-                    let cc=c.alpha(taper_bytes[i-1]);packed[3]=brightness[i-1];
+                    let cc=c.alpha(taper_bytes[i-1]);
+                    packed[3]=brightness[i-1];
+                    if MIXED {packed[2]=(packed[2]&!50)|origins[i-1];}
                     previous=[Self::make_vertex(a+normal,widths[i-1],along+1.0,cc,packed),
                               Self::make_vertex(a-normal,-widths[i-1],along+1.0,cc,packed)];
                 } else {
                     previous[0].params[1]=packed[1];previous[1].params[1]=packed[1];
                 }
-                let normal=normals[i]*w;let cc=c.alpha(taper_bytes[i]);packed[3]=brightness[i];
+                let normal=normals[i]*w;let cc=c.alpha(taper_bytes[i]);
+                packed[3]=brightness[i];
+                if MIXED {packed[2]=(packed[2]&!50)|origins[i];}
                 let current=[Self::make_vertex(b+normal,widths[i],along,cc,packed),
                              Self::make_vertex(b-normal,-widths[i],along,cc,packed)];
                 self.push_quad([previous[0],previous[1],current[0],current[1]]);
@@ -210,7 +220,7 @@ impl Renderer {
         self.effects[self.effect_head]=effect;
         self.effect_head=(self.effect_head+1)%self.effects.len();
     }
-    fn shader_history(&mut self, info:&FrameInfo, snakes:&[SnakeRecord], segments:&[SegmentRecord], events:&[EventRecord]) {
+    pub(super) fn shader_history(&mut self, info:&FrameInfo, snakes:&[SnakeRecord], segments:&[SegmentRecord], events:&[EventRecord]) {
         if self.last_frame.is_some_and(|(tick,g)|info.tick<tick || g!=info.geometry_generation) { self.reset(); }
         if self.last_frame==Some((info.tick,info.geometry_generation)) { return; }
         for s in snakes {
@@ -236,9 +246,18 @@ impl Renderer {
                     color:e.color_index,kind:if e.kind==0 { 6 } else { 7 },active:true,
                     snake_id:e.snake_id,generation:0,seed:(e.tick as u8).wrapping_add((e.snake_id as u8).wrapping_mul(13)) });
             }
+            if matches!(e.kind,2|6|7) {
+                self.effect(Effect {p:P::new(e.x as f64,e.y as f64),time,radius,
+                    color:e.other_snake_id,kind:if e.kind==2 {12} else {13},active:true,
+                    snake_id:e.snake_id,generation:0,seed:e.tick as u8});
+                if e.kind==2 && (e.snake_id as usize)<MAX_SNAKES {
+                    let waves=&mut self.waves[e.snake_id as usize];
+                    waves[1]=waves[0];waves[0]=Wave {time,active:true,kind:e.other_snake_id as u8};
+                }
+            }
             if e.kind==0 && (e.other_snake_id as usize)<MAX_SNAKES {
                 let waves=&mut self.waves[e.other_snake_id as usize];
-                waves[1]=waves[0];waves[0]=Wave { time,active:true };
+                waves[1]=waves[0];waves[0]=Wave { time,active:true,kind:0 };
             }
         }
         for s in snakes {
@@ -336,6 +355,7 @@ impl Renderer {
             }
             prepare_shader(mapped,&mut self.normals[..n],&mut self.valid[..n],&mut self.shader_limits[..n],widths,r*BODY);
             let tier=if n<24 { 0 } else if n<100 { 1 } else if n<250 { 2 } else { 3 };
+            let active_kind=if s.alive!=0 && !corpse && s.effect_ticks>0 {s.effect_kind&7} else {0};
             let flags=s.flags as u8;let c=color(s.color_index);
             if moving(s) && s.flags&flags::BOOSTING!=0 {
                 let trail=&self.trails[id];let mut prev:Option<(P,f64)>=None;
@@ -351,36 +371,49 @@ impl Renderer {
             }
             let age=if corpse { ((p.presentation_time-self.corpses[id].time)/(0.55*motion_scale)).clamp(0.0,1.0) } else { 0.0 };
             // Select at most two waves once per snake, not once per vertex.
-            let mut waves=[(0.0_f64,0.0_f64);2];let mut wave_count=0;
+            let mut waves=[(0.0_f64,0.0_f64,0_u8);2];let mut wave_count=0;
             for w in self.waves[id] {
-                let center=(p.presentation_time-w.time)/motion_scale*1.1*(n-1) as f64;
+                let center=(p.presentation_time-w.time)/motion_scale*if w.kind==0 {1.1} else {1.3}*(n-1) as f64;
                 if w.active && center>=-3.5 && center<(n as f64+3.5) {
-                    waves[wave_count]=(center,1.0);wave_count+=1;
+                    waves[wave_count]=(center,if w.kind==0 {1.0} else {0.95},if w.kind==0 {6} else {w.kind});wave_count+=1;
                 }
             }
             if s.flags&flags::BOOSTING!=0 {
                 let phase=(p.presentation_time/0.11).fract();
-                for j in 0..2-wave_count { waves[wave_count+j]=((phase+j as f64)*0.11*2.4*(n-1) as f64/motion_scale,0.55); }
+                for j in 0..2-wave_count { waves[wave_count+j]=((phase+j as f64)*0.11*2.4*(n-1) as f64/motion_scale,0.55,6); }
                 wave_count=2;
             } else if s.flags&flags::LEADER!=0 && wave_count<2 {
                 let center=(p.presentation_time%4.0)/motion_scale*0.75*(n-1) as f64;
-                if center<(n as f64+3.5) { waves[wave_count]=(center,0.5);wave_count+=1; }
+                if center<(n as f64+3.5) { waves[wave_count]=(center,0.5,7);wave_count+=1; }
             }
-            let white_wave=s.flags&flags::BOOSTING!=0 || waves[..wave_count].iter().any(|&(_,strength)|strength==1.0);
+            let common_origin=waves[0].2;
+            let mixed=wave_count==2 && waves[1].2!=common_origin;
+            let body_flags=(flags & !50)|if mixed {0} else {wave_flags(common_origin)};
             self.brightness[..n].fill(0);
-            for &(center,strength) in &waves[..wave_count] {
+            if mixed {self.wave_origins[..n].fill(0);}
+            for &(center,strength,kind) in &waves[..wave_count] {
+                let origin=wave_flags(kind);
                 let first=(center-3.5).max(0.0).ceil() as usize;
                 let last=(center+3.5).max(0.0).floor() as usize;
                 for j in first..=last.min(n-1) {
-                    self.brightness[j]=self.brightness[j].max(((1.0-(j as f64-center).abs()/3.5).max(0.0)*strength*255.0).round() as u8);
+                    let light=((1.0-(j as f64-center).abs()/3.5).max(0.0)*strength*255.0).round() as u8;
+                    if mixed {
+                        // Newest wins ties, independently of the active effect.
+                        if light>self.brightness[j] {self.brightness[j]=light;self.wave_origins[j]=origin;}
+                    } else {self.brightness[j]=self.brightness[j].max(light);}
                 }
             }
             // Body envelope includes waves, breathing and taper quantization. Per-edge seam selection
             // bounds even multi-lap bodies, and normals are computed only once.
             if walls && !corpse {
-                let params=[0,tier|((s.effect_kind&7)<<2)|if white_crown { 64 } else { 0 }|if white_wave { 128 } else { 0 },flags,0];
-                sink.live_ribbon(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
-                    taper_bytes,&self.brightness[..n],r,c,params);
+                let params=[0,tier|(active_kind<<2)|if white_crown { 64 } else { 0 },body_flags,0];
+                if mixed {
+                    sink.live_ribbon::<true>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
+                        taper_bytes,&self.brightness[..n],&self.wave_origins[..n],r,c,params);
+                } else {
+                    sink.live_ribbon::<false>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
+                        taper_bytes,&self.brightness[..n],&[],r,c,params);
+                }
             } else { for i in 1..n {
                 if !self.valid[i-1] || !self.valid[i] { continue; }
                 let a=points[i-1];let b=points[i];
@@ -398,7 +431,9 @@ impl Renderer {
                     let drift=normal*(local*r*CORPSE_DRIFT*if piece%2==0 { 1.0 } else { -1.0 });
                     ma=ma+drift;mb=mb+drift;an=an*(1.0-local*0.5);bn=bn*(1.0-local*0.5);
                 }
-                let params=[0,tier|((s.effect_kind&7)<<2)|if i<=3 { 32 } else { 0 }|if white_crown { 64 } else { 0 }|if white_wave { 128 } else { 0 },flags,if corpse { (alpha*255.0).round() as u8 } else { self.brightness[i-1] }];
+                let mut params=[0,tier|(active_kind<<2)|if i<=3 { 32 } else { 0 }|if white_crown { 64 } else { 0 },body_flags,
+                    if corpse { (alpha*255.0).round() as u8 } else {self.brightness[i-1]}];
+                if !corpse && mixed {params[2]|=self.wave_origins[i-1];}
                 let cc=if corpse && age<0.08/0.55 { Color::new(255,255,255,c.alpha) } else if corpse { c.boost() } else { c };
                 let shrink=if corpse { 1.0-(1.0-alpha)*0.5 } else { 1.0 };
                 // Cached bytes remove round() from every ordinary body edge.
@@ -408,15 +443,16 @@ impl Renderer {
                 // Physical UV remains correct at the shader's compact glow edge.
                 let across=[u0*shrink,u1*shrink];
                 let end_wave=if corpse { params[3] } else { self.brightness[i] };
+                let end_origin=if !corpse && mixed {Some(self.wave_origins[i])} else {None};
                 let width=w0.max(w1);let along=[(n-i) as f64,(n-1-i) as f64];
                 if walls {
-                    sink.body_edge(ma,mb,an,bn,width,across,tapers,along,cc,params,end_wave);
+                    sink.body_edge(ma,mb,an,bn,width,across,tapers,along,cc,params,end_wave,end_origin);
                 } else {
                     let margin=P::new((width+r*CORPSE_DRIFT)/sx,(width+r*CORPSE_DRIFT)/sy);
                     let (xs,ys)=copies(P::new(a.x.min(b.x),a.y.min(b.y)),P::new(a.x.max(b.x),a.y.max(b.y)),margin,arena,false);
                     for x in xs.first..=xs.last { for y in ys.first..=ys.last {
                         let shift=P::new(x as f64*xs.extent*sx,y as f64*ys.extent*sy);
-                        sink.body_edge(ma+shift,mb+shift,an,bn,width,across,tapers,along,cc,params,end_wave);
+                        sink.body_edge(ma+shift,mb+shift,an,bn,width,across,tapers,along,cc,params,end_wave,end_origin);
                     }}
                 }
 
@@ -441,7 +477,8 @@ impl Renderer {
             let look=(head_angle_delta(s.desired_angle-angle).clamp(-0.9,0.9)/0.9*127.0+128.0).round() as u8;
             let hash=((s.id.wrapping_mul(73)^s.generation.wrapping_mul(151))%16) as u8;
             let flare=self.waves[id].iter().any(|w|w.active && (0.0..0.5*motion_scale).contains(&(p.presentation_time-w.time)));
-            let params=[1,tier|(hash<<2)|if white_crown { 64 } else { 0 }|if flare { 128 } else { 0 },flags,look];
+            let head_flags=(flags & !(flags::PHASED as u8)) | if active_kind==3 {flags::PHASED as u8} else {0};
+            let params=[1,tier|(hash<<2)|if white_crown { 64 } else { 0 }|if flare { 128 } else { 0 },head_flags,look];
             let margin=P::new(hr*(HEAD_FRONT*HEAD_FRONT+half_width*half_width).sqrt()/sx,hr*(HEAD_FRONT*HEAD_FRONT+half_width*half_width).sqrt()/sy);let (xs,ys)=copies(head,head,margin,arena,walls);
             for x in xs.first..=xs.last { for y in ys.first..=ys.last {
                 let shift=P::new(x as f64*xs.extent*sx,y as f64*ys.extent*sy);
@@ -465,15 +502,71 @@ impl Renderer {
             }
 
         }
-        for e in self.effects {
-            let duration=(if e.kind==6 { 0.5 } else if e.kind==9 { 0.28 } else { 0.6 })*motion_scale;let age=p.presentation_time-e.time;
+        self.shader_items(info,p,palette,&mut sink);
+        let mut effect_budget=EffectBudget::default();
+        for age_index in 0..self.effects.len() {
+            let e=self.effects[(self.effect_head+self.effects.len()-1-age_index)%self.effects.len()];
+            let duration=(if e.kind==6 { 0.5 } else if e.kind==9 { 0.28 } else if e.kind>=12 {0.5} else { 0.6 })*motion_scale;let age=p.presentation_time-e.time;
             if !e.active || !(0.0..duration).contains(&age) { continue; }
             let extent=if e.kind==6 { IMPACT } else { RING };
             let r=e.radius*scale*extent;let (xs,ys)=copies(e.p,e.p,P::new(r/sx,r/sy),arena,walls);
             for x in xs.first..=xs.last { for y in ys.first..=ys.last {
-                sink.effect_sprite(map(e.p+P::new(x as f64*xs.extent,y as f64*ys.extent)),r,extent,color(e.color),[e.kind,if e.kind==7 && white_crown { e.seed|64 } else if e.kind==7 { e.seed&!64 } else { e.seed },0,(age/duration*255.0).round() as u8]);
+                if effect_budget.full() {continue;}
+                let before=sink.count;
+                sink.effect_sprite(map(e.p+P::new(x as f64*xs.extent,y as f64*ys.extent)),r,extent,if e.kind>=12 {items::accent(e.color as u8,palette)} else {color(e.color)},[e.kind,if e.kind==7 && white_crown { e.seed|64 } else if e.kind==7 { e.seed&!64 } else { e.seed },0,(age/duration*255.0).round() as u8]);
+                effect_budget.emitted(before,sink.count);
+            }}
+        }
+        // Persistent expiry warning shares the eight-quad effect budget.
+        for s in snakes {
+            if effect_budget.full() || !snake_valid(s) || s.alive==0 || s.segment_count==0 || s.effect_kind==0
+                || s.effect_ticks==0 || s.effect_ticks>crate::effects::WARNING_TICKS {continue;}
+            let head=position(&segments[s.segment_offset as usize],moving(s),info,p);
+            let r=s.radius*scale*RING;
+            let (xs,ys)=copies(head,head,P::new(r/sx,r/sy),arena,walls);
+            for x in xs.first..=xs.last {for y in ys.first..=ys.last {
+                if effect_budget.full() {continue;}
+                let before=sink.count;
+                sink.effect_sprite(map(head+P::new(x as f64*xs.extent,y as f64*ys.extent)),r,RING,
+                    items::accent(s.effect_kind,palette),[14,s.effect_kind,0,
+                    ((1.0-s.effect_ticks as f64/36.0)*255.0).round() as u8]);
+                effect_budget.emitted(before,sink.count);
+            }}
+        }
+        // Magnet shares the transient/warning cap; warnings have priority.
+        for s in snakes {
+            if effect_budget.full() || !snake_valid(s) || s.alive==0 || s.segment_count==0
+                || s.effect_kind!=2 || s.effect_ticks==0 {continue;}
+            let head=position(&segments[s.segment_offset as usize],moving(s),info,p);
+            let r=s.radius*scale*MAGNET;
+            let (xs,ys)=copies(head,head,P::new(r/sx,r/sy),arena,walls);
+            for x in xs.first..=xs.last {for y in ys.first..=ys.last {
+                if effect_budget.full() {continue;}
+                let before=sink.count;
+                sink.effect_sprite(map(head+P::new(x as f64*xs.extent,y as f64*ys.extent)),r,MAGNET,
+                    items::accent(2,palette),[15,2,0,0]);
+                effect_budget.emitted(before,sink.count);
             }}
         }
         Output { vertex_count:sink.count,..Output::default() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn wave_origins_round_trip_without_changing_body_flags_or_light() {
+        for origin in 0..8 {
+            for light in 0..=255 {
+                let base=[0,3|12|64,1|4|8|64|128,0];
+                let packed=[base[0],base[1],base[2]|wave_flags(origin),light as u8];
+                let decoded=((packed[2]>>1)&1)|((packed[2]>>3)&6);
+                assert_eq!(decoded,origin);
+                assert_eq!(packed[2]&!50,base[2]);
+                assert_eq!(packed[3],light as u8);
+                assert_eq!(packed[1],base[1]);
+            }
+        }
     }
 }

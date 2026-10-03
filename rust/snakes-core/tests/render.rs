@@ -453,11 +453,12 @@ fn wrap_copies_cover_full_effect_extents_on_edges_and_corners() {
     assert_eq!(RenderHandle::new().build(&i,&[],&[],&[],&[e],&palette(),&p,&mut out).vertex_count,180);
     p.deadly_walls = 1;
     assert_eq!(RenderHandle::new().build(&i,&[],&[],&[],&[e],&palette(),&p,&mut out).vertex_count,72);
-    // Oversized effects include every copy of the outer and inner discs.
+    // Oversized transient effects stop after eight visible logical copies.
+    // In this ordering only the outer discs of the first eight are visible.
     p.deadly_walls=0; p.viewport_width=10.0; p.viewport_height=10.0;
     i.world_width=10.0; i.world_height=10.0;
     let e=EventRecord{x:5.0,y:5.0,..e};
-    assert_eq!(RenderHandle::new().build(&i,&[],&[],&[],&[e],&palette(),&p,&mut out).vertex_count,2088);
+    assert_eq!(RenderHandle::new().build(&i,&[],&[],&[],&[e],&palette(),&p,&mut out).vertex_count,8*36);
 }
 
 #[test]
@@ -718,12 +719,14 @@ fn oversized_primitives_match_complete_tiling_in_small_scaled_arenas() {
             let events=if primitive==1 {std::slice::from_ref(&e)} else {&[]};
             let actual=RenderHandle::new().build(&i,snakes,&b,food,events,&palette(),&p,&mut out).vertex_count;
             assert!(actual<=out.len());
-            let mut expected=0;
+            let mut expected=0;let mut effect_copies=0;
             let mut tile=p;tile.deadly_walls=1;
             for x in -10..=10 {for y in -10..=10 {
                 tile.offset_x=x as f64*10.0*sx;
                 tile.offset_y=y as f64*10.0*sy;
-                expected+=RenderHandle::new().build(&i,snakes,&b,food,events,&palette(),&tile,&mut out).vertex_count;
+                let n=RenderHandle::new().build(&i,snakes,&b,food,events,&palette(),&tile,&mut out).vertex_count;
+                if primitive!=1 || effect_copies<8 {expected+=n;}
+                if n>0 {effect_copies+=1;}
             }}
             assert_eq!(actual,expected,"primitive={primitive}, scale={sx},{sy}");
         }
@@ -867,12 +870,15 @@ fn shader_fingerprint(vertices:&[ShaderRenderVertex])->u64 {
 #[test]
 fn shader_geometry_fingerprints() {
     let (s,b,f)=mature_fixture();let mut out=vec![ShaderRenderVertex::default();200000];
-    for (walls,alpha,expected) in [(true,0.5,0x0a2b4e7bb3e4aa0au64),(false,0.9,0xd185295f64764c96u64)] {
+    // Common-colour waves carry one origin across the entire ribbon; the
+    // vertex shader suppresses zero-strength light before interpolation.
+    let actual=[(true,0.5),(false,0.9)].map(|(walls,alpha)| {
         let p=RenderParams{deadly_walls:walls as u32,interpolation:alpha,..params()};
         let n=RenderHandle::new().build_shader(&info(),&s,&b,&f,&[],&palette(),&p,&mut out).vertex_count;
-        let actual=shader_fingerprint(&out[..n]);
-        assert_eq!(actual,expected,"walls={walls}, count={n}, hash={actual:#x}");
-    }
+        (n,shader_fingerprint(&out[..n]))
+    });
+    assert_eq!(actual,[(10896,0x0a9a46fc82e9c96eu64),(12804,0xa160b80bf7465416u64)]);
+
 }
 #[test]
 fn shader_render_growth_effects_and_ffi_are_allocation_free() {
@@ -1198,6 +1204,13 @@ fn shader_all_primitive_wrap_bounds_match_independent_tiling() {
                     assert!(n <= out.len());
                     for (total, count) in expected.iter_mut().zip(counts(&out[..n])) { *total += count; }
                 }}
+                // Wrapped copies share the eight-visible-quad budget; newer
+                // boost and succession rings have priority over the impact.
+                let mut remaining=8*6;
+                for kind in [9,7,6] {
+                    expected[kind]=expected[kind].min(remaining);
+                    remaining-=expected[kind];
+                }
                 assert_eq!(actual, expected,
                     "arena={width}x{height}, head={x},{y}, angle={angle}, scale={sx},{sy}, corpse={corpse}");
             }
@@ -1355,5 +1368,286 @@ fn shader_compact_streak_support_and_minimum_pixel_width_fit_emitted_bounds() {
         assert!(((q[0].y-q[1].y).abs()-1.0).abs()<0.0001);
         assert!((q[0].x-q[2].x-0.94).abs()<0.0001);
         for v in q { assert_eq!(v.across.abs(),1.0); assert!((0.0..=1.0).contains(&v.along)); }
+    }
+}
+
+#[test]
+fn items_are_six_vertex_sprites_and_allocation_free_with_bounded_effects() {
+    let mut renderer=RenderHandle::new();let info=info();let p=params();let pal=palette();
+    let items:[ItemRecord;3]=std::array::from_fn(|i|ItemRecord {id:i as u64+1,x:200.0+i as f32*100.0,y:200.0,
+        kind:i as u8+1,age_ticks:0,life_ticks:750,..Default::default()});
+    let mut out=[ShaderRenderVertex::default();256];
+    COUNT.with(|c|c.set(Some(0)));
+    unsafe {assert_eq!(snakes_core_render_set_items(&mut renderer,items.as_ptr(),items.len(),12.0),OK);}
+    let n=renderer.build_shader(&info,&[],&[],&[],&[],&pal,&p,&mut out).vertex_count;
+    let allocations=COUNT.with(|c|c.replace(None).unwrap());assert_eq!(allocations,0);
+    assert_eq!(n,18);assert!(out[..n].iter().all(|v|v.params[0]==11));
+    let before=out;
+    let invalid=ItemRecord{x:f32::NAN,..items[0]};
+    unsafe {assert_eq!(snakes_core_render_set_items(&mut renderer,&invalid,1,12.0),INVALID_ARGUMENT);}
+    assert_eq!(renderer.build_shader(&info,&[],&[],&[],&[],&pal,&p,&mut out).vertex_count,n);
+    assert_eq!(out,before);
+    let events:[EventRecord;32]=std::array::from_fn(|i|EventRecord {tick:info.tick+1,x:200.0,y:200.0,
+        snake_id:0,other_snake_id:i as u32%3+1,kind:if i%2==0 {2} else {6},..Default::default()});
+    let next=FrameInfo{tick:info.tick+1,simulation_time:info.simulation_time+1.0/30.0,..info};
+    let p=RenderParams{presentation_time:next.simulation_time,..p};
+    let n=renderer.build_shader(&next,&[],&[],&[],&events,&pal,&p,&mut out).vertex_count;
+    assert_eq!(out[..n].iter().filter(|v|v.params[0]>=12).count(),48);
+    assert_eq!(n,18+48);
+    let mut classic=[RenderVertex::default();4096];
+    assert!(renderer.build(&next,&[],&[],&[],&events,&pal,&p,&mut classic).vertex_count>0);
+}
+
+#[test]
+fn active_body_effects_preserve_vertex_budget_and_expiry_clears_payload() {
+    let mut renderer=RenderHandle::new();let i=info();let p=params();let pal=palette();
+    let mut s=snake();let b=body();let mut out=[ShaderRenderVertex::default();256];
+    let baseline=renderer.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+    for kind in 1..=3 {
+        s.effect_kind=kind;s.effect_ticks=90;
+        let n=renderer.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+        assert_eq!(n,baseline+if kind==2 {6} else {0});
+        for v in &out[..n] {
+            if v.params[0]==0 {assert_eq!((v.params[1]>>2)&7,kind);}
+            if v.params[0]==1 {assert_eq!(v.params[2]&flags::PHASED as u8,if kind==3 {32} else {0});}
+        }
+        s.effect_ticks=0;
+        let n=renderer.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+        assert_eq!(n,baseline);
+        assert!(out[..n].iter().filter(|v|v.params[0]==0).all(|v|v.params[1]&28==0));
+        assert!(out[..n].iter().filter(|v|v.params[0]==1).all(|v|v.params[2]&32==0));
+    }
+    s.effect_kind=3;s.effect_ticks=90;s.alive=0;s.flags=flags::CORPSE|flags::PHASED;
+    let n=renderer.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+    assert!(out[..n].iter().all(|v|v.params[0]==0 && v.params[1]&28==0));
+}
+
+#[test]
+fn active_effect_wrap_bounds_match_independent_tiling_and_share_quad_cap() {
+    let counts=|v:&[ShaderRenderVertex]| {
+        let mut counts=[0usize;16];for v in v {counts[v.params[0] as usize]+=1;}counts
+    };
+    for (width,height,x,y) in [(640.0,360.0,630.0,350.0),(100.0,100.0,90.0,90.0),(10.0,10.0,5.0,5.0)] {
+        for (sx,sy) in [(1.0,1.0),(2.0,0.5),(0.5,2.0)] {
+            let i=FrameInfo{world_width:width,world_height:height,..info()};
+            let p=RenderParams{viewport_width:width*sx,viewport_height:height*sy,
+                scale_x:sx,scale_y:sy,interpolation:1.0,deadly_walls:0,..params()};
+            let b=std::array::from_fn::<_,3,_>(|j|SegmentRecord{x:x as f32-j as f32,y:y as f32,
+                previous_x:x as f32-j as f32,previous_y:y as f32});
+            let mut renderer=RenderHandle::new();let mut tiled=RenderHandle::new();
+            let mut out=vec![ShaderRenderVertex::default();20000];
+            for kind in 1..=3 {
+                let s=SnakeRecord{effect_kind:kind,effect_ticks:24,..snake()};
+                let n=renderer.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+                assert!(n<=out.len());let actual=counts(&out[..n]);
+                let mut expected=[0usize;16];let mut tile=RenderParams{deadly_walls:1,..p};
+                for tx in -16..=16 {for ty in -16..=16 {
+                    tile.offset_x=tx as f64*width*sx;tile.offset_y=ty as f64*height*sy;
+                    let n=tiled.build_shader(&i,&[s],&b,&[],&[],&palette(),&tile,&mut out).vertex_count;
+                    assert!(n<=out.len());
+                    for (total,count) in expected.iter_mut().zip(counts(&out[..n])) {*total+=count;}
+                }}
+                expected[14]=expected[14].min(48);expected[15]=expected[15].min(48-expected[14]);
+                assert_eq!(actual,expected,"kind={kind}, arena={width}x{height}, scale={sx},{sy}");
+            }
+        }
+    }
+}
+
+#[test]
+fn active_effects_are_allocation_free_and_classic_freezes_motion() {
+    let mut renderer=RenderHandle::new();let pal=palette();let mut i=info();let mut p=params();
+    let mut s=SnakeRecord{effect_ticks:24,..snake()};let b=body();
+    let mut shader=[ShaderRenderVertex::default();256];let mut classic=[RenderVertex::default();4096];
+    COUNT.with(|c|c.set(Some(0)));
+    for tick in 0..1000 {
+        i.tick+=1;i.simulation_time+=1.0/30.0;p.presentation_time=i.simulation_time;
+        s.effect_kind=1+(tick%3) as u8;
+        let n=renderer.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut shader).vertex_count;
+        assert!(n<=shader.len());assert!(shader[..n].iter().filter(|v|v.params[0]>=12).count()<=48);
+        assert!(renderer.build(&i,&[s],&b,&[],&[],&pal,&p,&mut classic).vertex_count<=classic.len());
+    }
+    assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+    unsafe {assert_eq!(snakes_core_render_set_reduced_motion(&mut renderer,1),OK);}
+    for kind in 1..=3 {
+        s.effect_kind=kind;s.effect_ticks=90;
+        let n=renderer.build(&i,&[s],&b,&[],&[],&pal,&p,&mut classic).vertex_count;
+        let before=classic;
+        p.presentation_time+=0.1;
+        let next=renderer.build(&i,&[s],&b,&[],&[],&pal,&p,&mut classic).vertex_count;
+        assert_eq!(n,next);assert_eq!(&before[..n],&classic[..n]);
+    }
+}
+
+#[test]
+fn classic_stroked_capsules_and_transients_match_independent_edge_corner_tiling() {
+    // Wall-bounded draws on independently shifted tiles are the oracle. Tiny
+    // capsules exercise minimum-pixel strokes; rings exercise the outer stroke.
+    for (sx,sy) in [(1.0_f64,1.0_f64),(0.01,0.02),(0.02,0.01)] {
+        let scale: f64=(sx*sy).sqrt();
+        let i=FrameInfo{world_width:1000.0,world_height:1000.0,..info()};
+        let p=RenderParams{scale_x:sx,scale_y:sy,viewport_width:1000.0*sx,
+            viewport_height:1000.0*sy,deadly_walls:0,interpolation:1.0,..params()};
+        for fixture in 0..4 {
+            for corner in [false,true] {
+                let radius=if fixture==0 {4.0} else {8.0};
+                let screen_x=if fixture==0 {0.45} else {
+                    // Between the centreline and its stroked edge.
+                    radius*scale*if fixture==1 {1.0} else {2.5}+0.2*(radius*scale*0.1).max(0.5)
+                };
+                let x=(screen_x/sx) as f32;
+                let y=if corner {(screen_x/sy) as f32} else {500.0};
+                let item=ItemRecord{id:1,kind:2,x,y,age_ticks:0,life_ticks:750,..Default::default()};
+                let event=EventRecord{tick:i.tick,snake_id:u32::MAX,other_snake_id:2,x,y,
+                    kind:if fixture==1 {2} else if fixture==2 {6} else {7},..Default::default()};
+                let events=if fixture==0 {&[][..]} else {std::slice::from_ref(&event)};
+                let mut wrapped=RenderHandle::new();let mut tiled=RenderHandle::new();
+                if fixture==0 {for r in [&mut wrapped,&mut tiled] {
+                    unsafe {assert_eq!(snakes_core_render_set_items(r,&item,1,radius),OK);}
+                }}
+                let mut out=vec![RenderVertex::default();20000];
+                let actual=wrapped.build(&i,&[],&[],&[],events,&palette(),&p,&mut out).vertex_count;
+                let mut expected=0;
+                for tx in -3..=3 {for ty in -3..=3 {
+                    let tile=RenderParams{deadly_walls:1,offset_x:tx as f64*i.world_width*sx,
+                        offset_y:ty as f64*i.world_height*sy,..p};
+                    expected+=tiled.build(&i,&[],&[],&[],events,&palette(),&tile,&mut out).vertex_count;
+                }}
+                assert!(actual>0);
+                assert_eq!(actual,expected,"fixture={fixture}, corner={corner}, scale={sx},{sy}");
+            }
+        }
+    }
+}
+
+#[test]
+fn offscreen_transients_do_not_consume_either_paths_warning_and_magnet_budget() {
+    let i=info();let p=RenderParams{viewport_width:400.0,viewport_height:400.0,..params()};
+    let s=SnakeRecord{effect_kind:2,effect_ticks:24,..snake()};let b=body();
+    for kind in [0,2,6,7] {
+        let events:[EventRecord;8]=std::array::from_fn(|_|EventRecord{tick:i.tick,x:1000.0,y:1000.0,
+            kind,snake_id:u32::MAX,other_snake_id:u32::MAX,..Default::default()});
+        let mut a=RenderHandle::new();let mut z=RenderHandle::new();
+        let mut classic=[RenderVertex::default();4096];let mut expected=classic;
+        let n=a.build(&i,&[s],&b,&[],&events,&palette(),&p,&mut classic).vertex_count;
+        let m=z.build(&i,&[s],&b,&[],&[],&palette(),&p,&mut expected).vertex_count;
+        assert_eq!(&classic[..n],&expected[..m],"classic kind={kind}");
+        let mut shader=[ShaderRenderVertex::default();256];let mut expected=shader;
+        let n=a.build_shader(&i,&[s],&b,&[],&events,&palette(),&p,&mut shader).vertex_count;
+        let m=z.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut expected).vertex_count;
+        assert_eq!(&shader[..n],&expected[..m],"shader kind={kind}");
+        assert_eq!(shader[..n].iter().filter(|v|matches!(v.params[0],14|15)).count(),12);
+    }
+}
+
+#[test]
+fn wrapped_transients_share_eight_visible_copies_newest_first_and_retry_stably() {
+    // Three corner events would cost twelve copies. At most the two newest
+    // fit, leaving no budget for the live warning/Magnet on either path.
+    let i=FrameInfo{world_width:300.0,world_height:300.0,..info()};
+    let p=RenderParams{viewport_width:300.0,viewport_height:300.0,deadly_walls:0,
+        presentation_time:20.05,..params()};
+    let s=SnakeRecord{effect_kind:2,effect_ticks:24,..snake()};let b=body();
+    for mixed in [false,true] {
+        let events:[EventRecord;3]=std::array::from_fn(|j|EventRecord{tick:i.tick,x:0.0,y:0.0,
+            kind:if mixed {match j {1=>0,2=>2,_=>6}} else {6},
+            snake_id:u32::MAX,other_snake_id:if mixed && j==1 {u32::MAX} else {j as u32+1},..Default::default()});
+        for shader in [false,true] {
+            let mut r=RenderHandle::new();let mut reference=RenderHandle::new();
+            let newest=[events[1],events[2]];
+            if shader {
+                let mut out=[ShaderRenderVertex::default();512];let mut expected=out;
+                let n=r.build_shader(&i,&[s],&b,&[],&events,&palette(),&p,&mut out).vertex_count;
+                let m=reference.build_shader(&i,&[s],&b,&[],&newest,&palette(),&p,&mut expected).vertex_count;
+                assert_eq!(&out[..n],&expected[..m]);
+                let copies:Vec<_>=out[..n].chunks_exact(6).filter(|q|matches!(q[0].params[0],6|7|9|12..=15)).collect();
+                assert_eq!(copies.len(),8);
+                assert!(copies[..4].iter().all(|q|q[0].color.blue==255));
+                if mixed {
+                    assert!(copies[..4].iter().all(|q|q[0].params[0]==12));
+                    assert!(copies[4..].iter().all(|q|q[0].params[0]==6));
+                } else {assert!(copies[4..].iter().all(|q|q[0].color.green==95));}
+                let mut short=[ShaderRenderVertex::default();1];
+                assert_eq!(r.build_shader(&i,&[s],&b,&[],&events,&palette(),&p,&mut short).vertex_count,n);
+                assert_eq!(short[0],out[0]);
+            } else {
+                let mut out=[RenderVertex::default();4096];let mut expected=out;
+                let n=r.build(&i,&[s],&b,&[],&events,&palette(),&p,&mut out).vertex_count;
+                let m=reference.build(&i,&[s],&b,&[],&newest,&palette(),&p,&mut expected).vertex_count;
+                assert_eq!(&out[..n],&expected[..m]);
+                let mut short=[RenderVertex::default();1];
+                assert_eq!(r.build(&i,&[s],&b,&[],&events,&palette(),&p,&mut short).vertex_count,n);
+                assert_eq!(short[0],out[0]);
+            }
+        }
+    }
+}
+
+#[test]
+fn replacement_pickup_waves_retain_each_origin_after_replacement_and_expiry() {
+    for walls in [0,1] {
+        for reduced in [0,1] {
+            for flags in [0,flags::BOOSTING,flags::LEADER] {
+                let mut r=RenderHandle::new();
+                unsafe {assert_eq!(snakes_core_render_set_reduced_motion(&mut r,reduced),OK);}
+                let mut i=info();let mut p=RenderParams{deadly_walls:walls,interpolation:1.0,..params()};
+                let mut s=SnakeRecord{flags,segment_count:40,effect_kind:1,effect_ticks:90,..snake()};
+                let b:Vec<_>=(0..40).map(|j|SegmentRecord{x:700.0-j as f32*8.0,y:300.0,
+                    previous_x:700.0-j as f32*8.0,previous_y:300.0}).collect();
+                let mut out=[ShaderRenderVertex::default();512];
+                let event=EventRecord{tick:i.tick,kind:2,snake_id:0,other_snake_id:1,x:700.0,y:300.0,..Default::default()};
+                COUNT.with(|c|c.set(Some(0)));
+                r.build_shader(&i,&[s],&b,&[],&[event],&palette(),&p,&mut out);
+                i.tick+=6;i.simulation_time+=0.2;p.presentation_time=i.simulation_time;
+                s.effect_kind=2;
+                let next=EventRecord{tick:i.tick,other_snake_id:2,..event};
+                r.build_shader(&i,&[s],&b,&[],&[next],&palette(),&p,&mut out);
+                for ticks in [90,0] {
+                    s.effect_ticks=ticks;p.presentation_time=i.simulation_time+0.03;
+                    let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+                    let mut origins=[0usize;8];
+                    for v in &out[..n] {if v.params[0]==0 && v.params[3]>0 {
+                        let origin=((v.params[2]>>1)&1)|((v.params[2]>>3)&6);
+                        origins[origin as usize]+=1;
+                        assert_eq!((v.params[1]>>2)&7,if ticks>0 {2} else {0});
+                    }}
+                    assert!(origins[1]>0 && origins[2]>0,"walls={walls}, reduced={reduced}, ticks={ticks}, {origins:?}");
+                    assert_eq!(origins[0],0);
+                }
+                // Classic also retains both pickup origins, choosing the strongest
+                // at each edge rather than replacing the whole wave with the newest.
+                let mut classic=[RenderVertex::default();4096];
+                let n=r.build(&i,&[s],&b,&[],&[],&palette(),&p,&mut classic).vertex_count;
+                assert!(classic[..n].iter().any(|v|v.color.red>180 && v.color.green>200 && v.color.blue<180));
+                assert!(classic[..n].iter().any(|v|v.color.red>180 && v.color.green<160 && v.color.blue>180));
+                assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+            }
+        }
+    }
+}
+
+#[test]
+fn shader_capsules_of_every_kind_and_age_match_independent_tiling() {
+    for (sx,sy) in [(1.0,1.0),(0.01,0.02),(2.0,0.5)] {
+        let i=FrameInfo{world_width:300.0,world_height:200.0,..info()};
+        let p=RenderParams{scale_x:sx,scale_y:sy,viewport_width:300.0*sx,
+            viewport_height:200.0*sy,deadly_walls:0,..params()};
+        let mut out=[ShaderRenderVertex::default();4096];
+        for kind in 1..=5 {for age_ticks in [0,7,15] {for corner in [false,true] {
+            let item=ItemRecord{id:1,kind,age_ticks,x:1.0,y:if corner {1.0} else {100.0},life_ticks:750,..Default::default()};
+            let mut r=RenderHandle::new();let mut tiled=RenderHandle::new();
+            for r in [&mut r,&mut tiled] {
+                unsafe {assert_eq!(snakes_core_render_set_items(r,&item,1,12.0),OK);}
+            }
+            let n=r.build_shader(&i,&[],&[],&[],&[],&palette(),&p,&mut out).vertex_count;
+            assert!(out[..n].iter().all(|v|v.params[0]==11));
+            let mut expected=0;
+            for x in -4..=4 {for y in -4..=4 {
+                let tile=RenderParams{deadly_walls:1,offset_x:x as f64*i.world_width*sx,
+                    offset_y:y as f64*i.world_height*sy,..p};
+                expected+=tiled.build_shader(&i,&[],&[],&[],&[],&palette(),&tile,&mut out).vertex_count;
+            }}
+            assert_eq!(n,expected,"kind={kind}, age={age_ticks}, corner={corner}, scale={sx},{sy}");
+        }}}
     }
 }

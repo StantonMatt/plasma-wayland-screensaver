@@ -148,3 +148,33 @@ fn output_records_accept_uninitialized_storage() {
         snakes_core_destroy(handle);
     }
 }
+
+#[test]
+fn items_export_round_trip_failure_atomicity_and_disable() {
+    use snakes_core::{RuleSet,MAX_ITEMS,MAX_EVENTS};
+    let cfg=Config {rules:RuleSet::V2,deadly_walls:false,..Config::default()};
+    let mut expected=World::new(cfg).unwrap();let mut ai=snakes_core::ai::AiController::new();
+    unsafe {
+        let mut handle=ptr::null_mut();assert_eq!(snakes_core_create(&CoreConfig::from(cfg),&mut handle),OK);
+        let mut sizes=FrameSizes::default();
+        for _ in 0..900 {
+            expected.step(&mut ai);assert_eq!(snakes_core_step(handle,1),OK);
+            assert_eq!(snakes_core_get_frame_sizes(handle,&mut sizes),OK);
+            if sizes.items>0 {break;}
+        }
+        assert_eq!(sizes.items as usize,expected.items().len());assert!(sizes.items>0);
+        let mut items=[ItemRecord::default();MAX_ITEMS];let mut events=[EventRecord::default();MAX_EVENTS];
+        items[0].id=u64::MAX;events[0].tick=u64::MAX;
+        assert_eq!(snakes_core_export_extras(handle,items.as_mut_ptr(),0,events.as_mut_ptr(),events.len()),BUFFER_TOO_SMALL);
+        assert_eq!(items[0].id,u64::MAX);assert_eq!(events[0].tick,u64::MAX);
+        assert_eq!(snakes_core_export_extras(handle,items.as_mut_ptr(),items.len(),events.as_mut_ptr(),events.len()),OK);
+        for (record,item) in items.iter().zip(expected.items()) {
+            assert_eq!(record.id,item.id);assert_eq!(record.kind,item.kind as u8);
+            assert_eq!(record.x,item.position.x as f32);assert_eq!(snakes_core_item_radius(handle),item.radius);
+            assert_eq!(record.age_ticks,item.age_ticks);assert_eq!(record.life_ticks,item.life_ticks);
+        }
+        assert_eq!(snakes_core_reconfigure(handle,&CoreConfig::from(Config{power_ups:false,..cfg})),OK);
+        assert_eq!(snakes_core_get_frame_sizes(handle,&mut sizes),OK);assert_eq!(sizes.items,0);
+        snakes_core_destroy(handle);
+    }
+}

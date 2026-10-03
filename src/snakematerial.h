@@ -8,11 +8,27 @@ class QQuickWindow;
 class QShader;
 class QRhi;
 class QRhiRenderTarget;
+class QSGTexture;
 
 class SnakeMaterial final : public QSGMaterial
 {
 public:
+    static constexpr int UniformBinding = 0;
+    static constexpr int IconAtlasBinding = 1;
+    // std140 layout shared by both baked stages. RHI buffers round up to 16 bytes.
+    struct UniformData {
+        float matrix[16];
+        float opacity;
+        float time;
+        float light[2];
+        float animationTime;
+        float motionScale;
+        float paletteMode;
+    };
+    static constexpr int UniformBufferSize = (sizeof(UniformData) + 15) & ~15;
     SnakeMaterial();
+    ~SnakeMaterial() override;
+    QSGTexture *iconAtlas() const { return m_iconAtlas; }
     QSGMaterialType *type() const override;
     QSGMaterialShader *createShader(QSGRendererInterface::RenderMode) const override;
     int compare(const QSGMaterial *other) const override;
@@ -23,7 +39,9 @@ public:
     float time = 0;
     float animationTime = 0;
     float motionScale = 1;
+    float paletteMode = 0;
 private:
+    QSGTexture *m_iconAtlas = nullptr;
     friend class SnakeRendererTest;
     static bool shadersSupported(const QShader &vertex, const QShader &fragment,
                                  QSGRendererInterface::GraphicsApi api,

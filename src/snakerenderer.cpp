@@ -224,12 +224,17 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
         node->setFlag(QSGNode::OwnsMaterial);
         m_geometryCapacity = 0;
     }
+    // Freeze all presentation-time animation at the same boundary for both
+    // geometry formats, including transient ages and discrete head animation.
+    snakes_core_render_set_reduced_motion(node->renderer.get(), uint32_t(m_shaderTimeFrozen));
+    const qreal animationTime = m_shaderTimeFrozen ? m_frozenShaderTime : m_shaderTime;
     if (shader) {
         auto *material = static_cast<SnakeMaterial *>(node->material());
-        material->time = float(m_shaderTimeFrozen ? m_frozenShaderTime : m_shaderTime);
-        material->animationTime = float(m_shaderTime);
+        material->time = float(animationTime);
+        material->animationTime = float(animationTime);
         material->motionScale = m_shaderTimeFrozen ? 0.6f : 1.0f;
-        snakes_core_render_set_reduced_motion(node->renderer.get(), uint32_t(m_shaderTimeFrozen));
+        material->paletteMode = !m_palette.isEmpty() && m_palette.first() == QColor(255, 255, 255) ? 1.0f
+            : !m_palette.isEmpty() && m_palette.first() == QColor(255, 200, 221) ? 2.0f : 0.0f;
         node->markDirty(QSGNode::DirtyMaterial);
     }
     if (node->epoch != m_renderEpoch) {
@@ -242,14 +247,15 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
         width(), height(),
         m_scaleToViewport ? width() / m_worldWidth : m_worldToViewX,
         m_scaleToViewport ? height() / m_worldHeight : m_worldToViewY,
-        m_drawOffsetX, m_drawOffsetY, m_interpolation, m_simulationTime,
+        m_drawOffsetX, m_drawOffsetY, m_interpolation,
+        m_shaderTimeFrozen ? m_frozenShaderTime : m_simulationTime,
         uint32_t(m_deadlyWalls), uint32_t(m_developerMode)};
     // GUI-side compact copies keep intermediate ticks until scene-graph sync. Feed
     // history without tessellation: zero scale exits after consuming history.
     // Kill flashes, corpse fade starts and boost trail samples keep their
     // original physics timestamps. The final frame is consumed by build below.
     auto shaderParams = params;
-    shaderParams.presentation_time = m_shaderTime;
+    shaderParams.presentation_time = animationTime;
     auto historyParams = shader ? shaderParams : params;
     historyParams.scale_x = historyParams.scale_y = 0;
     // Keep the compact ring after sync so a recreated scene graph can restore
@@ -280,6 +286,8 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
         }
     }
     auto *geometry = node->geometry();
+    snakes_core_render_set_items(node->renderer.get(),
+        m_frame ? m_frame->items.data() : nullptr, m_frame ? m_frame->items.size() : 0, m_frame ? m_frame->itemRadius : 0);
     snakes_core_render_output result{};
     const auto build = [&] {
         if (shader) return snakes_core_render_build_shader(node->renderer.get(), &info,

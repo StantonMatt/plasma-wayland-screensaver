@@ -6,8 +6,10 @@ layout(location=1) in vec4 base;
 layout(location=2) in vec4 packed;
 layout(location=3) in vec2 screenPosition;
 layout(location=4) in float ribbonLimit;
+layout(location=5) in vec3 waveLight;
 layout(location=0) out vec4 fragColor;
-layout(std140,binding=0) uniform buf { mat4 matrix; float opacity; float time; vec2 light; float animationTime; float motionScale; } ub;
+layout(binding=1) uniform sampler2D iconAtlas;
+layout(std140,binding=0) uniform buf { mat4 matrix; float opacity; float time; vec2 light; float animationTime; float motionScale; float paletteMode; } ub;
 // Geometry contract: literal constants are also read at Rust compile time by
 // render/shader/bounds.rs. UV mapping, extrusion and copy selection share these values.
 const float BOUNDS_AA = 0.04; // effect coordinates: 7 body radii per unit
@@ -25,6 +27,8 @@ const float BOUNDS_FOOD_PIXEL = 0.6;
 const float BOUNDS_EFFECT_UNITS = 7.0;
 const float BOUNDS_IMPACT = 10.2;
 const float BOUNDS_RING = 7.0;
+const float BOUNDS_MAGNET = 10.2;
+const float BOUNDS_CAPSULE = 3.4;
 const float BOUNDS_CONTRAIL = 0.465;
 const float BOUNDS_VACUUM = 0.65;
 const float BOUNDS_DEVELOPER = 1.2;
@@ -53,6 +57,23 @@ float falloff(float u) { u=1.0-clamp(u,0.0,1.0); return u*u; }   // matches the 
 // Premultiplied over; `glow` is additive outside opaque coverage, `over` is additive on top.
 vec4 composite(vec3 rgb,float a,vec3 glow,vec3 over,float fade) { return vec4(rgb*a+glow*(1.0-a)+over,a)*fade*ub.opacity; }
 const float SEG=1.18;  // segment spacing in body radii (world.rs spacing = radius*1.18)
+vec3 itemAccent(int k) {
+    vec3 a;
+    if(k==1) a=vec3(1.0,0.88235,0.30196);
+    else if(k==2) a= vec3(1.0,0.37255,0.82353);
+    else if(k==3) a= vec3(0.66275,0.54510,1.0);
+    else if(k==4) a= vec3(0.61569,1.0,0.22745);
+    else a=vec3(0.74118,0.95294,1.0);
+    if(ub.paletteMode==1.0) a=mix(a,vec3(dot(a,vec3(0.2126,0.7152,0.0722))),0.88);
+    if(ub.paletteMode==2.0) a=mix(a,vec3(1),0.3);
+    return a;
+}
+float hexagon(vec2 p,float r) {
+    const vec3 k=vec3(-0.8660254,0.5,0.5773503);
+    p=abs(p);p-=2.0*min(dot(k.xy,p),0.0)*k.xy;
+    p-=vec2(clamp(p.x,-k.z*r,k.z*r),r);
+    return length(p)*sign(p.y);
+}
 void main() {
     int kind=int(packed.x+0.5), tier=int(packed.y+0.5)&3, flags=int(packed.z+0.5);
     bool boosting=(flags&1)!=0, hunting=(flags&4)!=0, trapped=(flags&8)!=0, leader=(flags&64)!=0;
@@ -62,6 +83,57 @@ void main() {
     // Palette identity is packed by Rust, independent of an individual colour.
     if((kind==0 || kind==1 || kind==7) && (int(packed.y+0.5)&64)!=0) gold=mix(gold,white,0.85);
     float t=ub.time;
+    if(kind==11) {
+        vec2 p=coord*BOUNDS_CAPSULE;float angle=t*0.18;
+        vec2 q=mat2(cos(angle),-sin(angle),sin(angle),cos(angle))*p;
+        float h=hexagon(q,0.8660254);
+        float body=mask(h);
+        float rim=mask(abs(h)-0.035);
+        float inner=mask(abs(hexagon(q,0.675))-0.015)*0.35;
+        vec3 accent=base.rgb;
+        vec3 rgb=mix(vec3(0.022,0.029,0.055),accent,max(rim,inner));
+        // The padded 32px tile maps the icon's [-1,1] local square. Exactly
+        // one R8 SDF sample, with a derivative-sized contour for stable AA.
+        int icon=int(packed.y+0.5)-1;
+        vec2 tile=vec2(float(icon%4),float(icon/4));
+        vec2 iconCoord=clamp(p/0.66,-1.0,1.0)*0.5+0.5;
+        vec2 atlasCoord=(tile*32.0+vec2(0.5)+iconCoord*31.0)/128.0;
+        float distance=texture(iconAtlas,atlasCoord).r-0.5;
+        float iconMask=smoothstep(-max(fwidth(distance),0.025),max(fwidth(distance),0.025),distance);
+        iconMask*=float(max(abs(p.x),abs(p.y))<0.66);
+        rgb=mix(rgb,mix(accent,white,0.35),iconMask);
+        float orbit=t*2.2;
+        float spark=falloff(length(p-vec2(cos(orbit),sin(orbit))*1.3)/0.5);
+        vec3 glow=accent*(falloff(length(p)/BOUNDS_CAPSULE)*0.32+spark*0.8);
+        float birth=packed.z/255.0;
+        if(birth<1.0) glow+=accent*mask(abs(length(p)-(3.0-2.0*birth))-0.035)*(1.0-birth)*0.7;
+        float life=packed.w/255.0*25.0;
+        float blink=life<3.0?0.65+0.35*sin(t*(18.0+24.0*(1.0-life/3.0))):1.0;
+        fragColor=composite(rgb,body,min(glow,vec3(0.9)),vec3(0),blink);return;
+    }
+    if(kind==12 || kind==13 || kind==14) {
+        float age=packed.w/255.0;float r=length(coord);vec3 accent=base.rgb;
+        float radius=kind==12?1.0+5.0*(1.0-pow(1.0-age,2.0)):kind==14?2.0:2.5*(1.0-age);
+        float ring=mask(abs(r-radius)-0.08)*(kind==14?1.0:1.0-age)*0.8;
+        vec3 glow=accent*ring;
+        if(kind==12) glow+=white*mask(abs(r-radius*0.65)-0.055)*(1.0-age)*0.85;
+        if(kind==14) glow*=0.5+0.5*sin(t*22.0);
+        fragColor=vec4(min(glow,vec3(0.9))*base.a*ub.opacity,0);return;
+    }
+    if(kind==15) {
+        // One head-centred quad, in body radii. The reach stays exactly 9r.
+        float radius=length(coord);
+        float angle=atan(coord.y,coord.x)-t*1.2;
+        float dash=step(0.75,fract(angle*9.0/3.141593));
+        float ring=mask(abs(radius-9.0)-0.08)*dash*0.4;
+        vec3 glow=base.rgb*ring;
+        for(int k=0;k<3;k++) {
+            float a=t*1.2+float(k)*2.094395;
+            float spark=length(coord-vec2(cos(a),sin(a))*9.0);
+            glow+=base.rgb*falloff(spark/1.1)*0.9;
+        }
+        fragColor=vec4(min(glow,vec3(0.9))*base.a*ub.opacity,0);return;
+    }
     if(kind==0) {
         // uv.x = +-taper at each vertex, colour alpha = taper. acrossR is the true signed
         // distance from the centre line in radii (affine, no trapezoid kink); w is the local half-width.
@@ -100,10 +172,9 @@ void main() {
         float sheen=coverage(abs(across-lit*0.50)-0.20,aaA)*0.55;
         tube=mix(tube,mix(c,white,0.62),sheen);
         bool corpse=(flags&128)!=0;
-        float wave=corpse?0.0:packed.w/255.0;
         // waves are additive light (prototype: glow sprite 2.4w, alpha 0.5*strength), not a flat tint.
-        vec3 waveColor=leader && (int(packed.y+0.5)&128)==0?gold:mix(c,white,0.75);
-        over+=waveColor*wave*0.5*falloff(abs(acrossR)/(2.4*w));
+        int effectKind=(int(packed.y+0.5)>>2)&7;
+        over+=waveLight*0.5*falloff(abs(acrossR)/(2.4*w));
         float extent=tier==0?1.75:tier==1?1.85:tier==2?2.0:2.15;
         float strength=(tier==1?0.09:tier==3?0.13:0.11)+(boosting?0.14:0.0)+(leader?0.04:0.0);
         if(trapped) strength*=0.65+0.45*abs(sin(t*12.0));
@@ -117,6 +188,36 @@ void main() {
             vec3 lc=mix(c,white,0.7);
             over+=lc*(mask(dd-0.15)*(0.4+0.6*ripple)+falloff(dd/1.2)*0.5*ripple)*body;
         }
+        float activeFade=1.0;
+        if(!corpse && effectKind==1) {
+            // Prototype: a 30% chance every two segments, three edges long,
+            // 18 Hz reseeding, and a 1.2 screen-pixel stroke at 85% brightness.
+            // Two candidates cover overlapping arcs without extra vertices.
+            float frame=floor(t*18.0);
+            float pixelR=max(length(vec2(dFdx(acrossR),dFdy(acrossR))),0.0001);
+            float arc=0.0;
+            for(int k=0;k<2;k++) {
+                float start=floor((coord.y-1.0)/2.0)*2.0+1.0-float(k)*2.0;
+                float local=coord.y-start;
+                float seed=frame*13.0+start+base.r*71.0;
+                float side=hash(frame+start*3.0)>0.5?1.0:-1.0;
+                float edge=clamp(floor(local),0.0,2.0);
+                float a=(1.05+0.35*hash(frame*7.0+start+edge*2.0))*side*w;
+                float b=(1.05+0.35*hash(frame*7.0+start+(edge+1.0)*2.0))*side*w;
+                float distance=line(vec2(acrossR,local*SEG),vec2(a,edge*SEG),
+                                    vec2(b,(edge+1.0)*SEG),0.6*pixelR);
+                float stroke=coverage(distance,max(fwidth(distance),pixelR*0.5));
+                stroke*=step(hash(seed),0.30)*step(1.0,start)*step(0.0,local)*step(local,3.0);
+                arc=max(arc,stroke);
+            }
+            over+=mix(itemAccent(1),white,0.4)*arc*0.85;
+        } else if(!corpse && effectKind==3) {
+            activeFade=0.45+0.06*sin(t*9.0);
+            float dash=step(0.55,fract(coord.y*SEG/1.1-t*2.0));
+            float outline=coverage(abs(abs(across)-1.2)-0.06,aaA)*dash;
+            float scan=coverage(abs(mod(coord.y+t*14.0,5.0)-2.5)*SEG-0.125,aaA)*body;
+            over+=itemAccent(3)*outline*0.75+mix(itemAccent(3),white,0.5)*scan*0.5;
+        }
         float alpha=max(body,shadow);
         vec3 rgb=mix(vec3(0.008,0.012,0.031),tube,body/max(alpha,0.0001));
         // Curvature-limited ribbons retain the original tube width; taper the
@@ -125,7 +226,7 @@ void main() {
         float edge=ribbonLimit*BOUNDS_BODY;
         // Handle degenerate helper-lane envelopes after every derivative.
         float edgeFade=edge>0.0?1.0-smoothstep(max(0.0,edge-BOUNDS_AA),edge,abs(acrossR)):0.0;
-        fragColor=composite(rgb,alpha,glow,over,corpse?packed.w/255.0:1.0)*edgeFade;return;
+        fragColor=composite(rgb,alpha,glow,over,corpse?packed.w/255.0:activeFade)*edgeFade;return;
     }
     if(kind==1) {
         vec2 p=coord;float seed=float((int(packed.y+0.5)>>2)&15);
@@ -218,7 +319,7 @@ void main() {
             float b2=mask(s2-0.08)*step(1.0,y)*step(y,2.4);
             glow+=mix(c,white,0.55)*b1*0.6+c*b2*0.3;
         }
-        fragColor=composite(rgb,alpha,glow,over,1.0);return;
+        fragColor=composite(rgb,alpha,glow,over,(flags&32)!=0?0.45+0.06*sin(t*9.0):1.0);return;
     }
     if(kind==5 || kind==10) {
         float streak=max(0.0,1.0-abs(coord.x));

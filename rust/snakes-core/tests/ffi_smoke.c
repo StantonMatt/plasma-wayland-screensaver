@@ -4,7 +4,7 @@
 #include <stdlib.h>
 int main(void) {
     assert(snakes_core_abi_version() == SNAKES_CORE_ABI_VERSION);
-    snakes_core_config config = {1280,720,50,35,100,100,75,73,7,0,1,SNAKES_CORE_RULE_DEFAULT,0};
+    snakes_core_config config = {1280,720,50,35,100,100,75,73,7,0,1,SNAKES_CORE_RULE_DEFAULT,{0}};
     snakes_core_world *world = NULL;
     assert(snakes_core_create(&config, &world) == SNAKES_CORE_OK);
     snakes_core_frame_sizes sizes = {0};

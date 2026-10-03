@@ -863,3 +863,248 @@ read the same candidate fields. Scratch-slot aliases and boosted continuations
 therefore retain the maneuver whose path was checked. Narrow-space escape
 bookkeeping applies only to nontracking, nonattack fallbacks, since entering
 escape mode invalidates the goal, pocket and attack dependencies of a rollout.
+
+## R3 power-ups
+
+Food and capsules share target scoring, rival arrival estimates, persistence,
+routing and the checked rollout. Magnet adds temporary scavenging utility only
+when the food can be reached before expiry. Its five finalists use the ordinary
+turnaround-space query to discount enclosed death fields. Food already inside
+Magnet's pull radius needs no steering detour. These checks use the existing
+fixed shortlist and shared spatial storage.
+
+Surge's cutoff admission and forecasts use free burst pricing. Each attack
+records whether its initial burst was free, so later validation retains the
+original payment schedule even after the effect ends. Candidate scoring uses
+the same world-owned burst cost. Phased rivals provide no immediate prey bonus.
+
+Phase removes body/head/self obstacles only for the corresponding forecast
+steps. The rollout checks both sides of expiry and extends the horizon through
+expiry plus eighteen tangible steps, bounded by the existing 138-step limit.
+Walls remain physical. No effect changes scripted controls or Classic rules.
+
+## Forecast counter and query invariants
+
+The world decrements effect counters before steering. The shared AI effect
+clock uses step one for this movement, and step `ticks + 1` for the first
+expired movement. `effects::forecast_motion` and cached
+`Motion` schedules share that convention, latch burst price when it starts,
+and retain physical motion through effect and boost expiry. The public World
+forecast API accepts pre-tick counters instead; do not use it inside steering.
+Cooldown advancement and Frost cancellation follow the same mechanics order.
+
+Phase contact lethality requires both snakes to be tangible at the contact
+step. This applies to cutoff replies (including victim self contacts), rollout
+heads/current bodies/deposited bodies/self trails, pocket admission/retention,
+food competition's head-size advantage, and pursuit pressure/barrier valuation.
+Forecast sweeps split at every snake's Phase expiry and first tangible movement.
+Phase does not prevent eating food, racing for food, or hitting walls.
+
+`spatial::query_radius` derives broad bounds from the narrow contact threshold,
+safety margin, effect reserve, and motion. Bucket body queries use maximum body
+widths and margins, include Surge's scaled margin, and cover observed first-step
+motion. Future deposited edges include both swept paths' traveled distances.
+Magnet food reach includes the particle radius; food ring discovery uses unique
+buckets with an explicit search budget rather than a contact-radius cutoff.
+
+## R3 aggression after effect/contact correctness fixes
+
+Keep the shared post-decrement effect schedules, both-party Phase contact
+checks, and broad-phase bounds covering every narrow-phase threshold. Raise the
+reward for a physically blocked sampled reply from 100 to 150 progress units;
+reply deaths from self/walls and intangible contacts still earn no attack reward.
+Retained cutoffs now account for their planned Surge speed expiry without
+repricing a free burst or accepting an unplanned motion change. Storage remains
+preallocated; the existing simultaneous-effect and cap allocation gates pass.
+
+An immutable, CPU-8-pinned, eight-minute 12-config comparison repeats in
+before/after then after/before order. Exact kills change **141 → 162**, self
+deaths **22 → 17**, and wall deaths remain **0**. All outcomes reproduce in both
+repeats. Equal-weight mean tick changes **0.246250 → 0.253738 ms (+0.007488 ms)**,
+inside the requested +0.01 ms gate. Shared-host timing varies: the two individual
+paired differences are +0.011987 and +0.002990 ms. No stronger CPU bound is claimed.
+
+Fresh release build, **744 Cargo test executions**, and **14/14 CTest tests**
+in `build-fix` pass, including Classic and recorded parity. A duel-accounting
+regression now forces an unrelated body death on tick one, so its continuation
+assertion does not depend on the former AI's exact tick-38 trajectory; the
+ordinary benchmark scenarios remain unchanged.
+
+The legacy public pre-tick forecast APIs remain a scope issue in
+`world/query.rs`. A test-only pre-tick adapter uses the shared single-burst
+state calculation and passes the effect/Phase expiry, payment and cooldown
+matrix. Routing the public APIs through it is prepared and verified separately,
+but is not applied within the current allowlist. Optional `r3_scorecard`
+`--attack-diagnostics` and `--death-diagnostics` runs are separate from timing
+runs because they compute extra candidates and replay alternatives.
+
+## Post-movement capture and replacement classes
+
+Capsule replacement is forecast at pickup, before the same movement's collision
+checks. The shared all-snake three-item forecast handles incidental capsules, expiry,
+refresh/replacement order, and one collection per item. Its Phase result governs
+current bodies, rival heads, deposited necks, self trails, pursuit valuation and
+endpoint occupancy. Cutoff replies include every live snake's pickups and
+resolve shared capsules in World snake-ID order. Pickup transitions split the
+batched sweep; a newly tangible sweep starts at the preceding movement point.
+Regression siblings cover Surge/Magnet replacement versus Phase refresh, wrap
+seams, all five positions around a four-step sweep, losing heads, self contacts,
+item lifetimes, multiple capsules and reply ownership.
+
+Pending food/capsule overlap remains a pursuit until a post-movement capture or
+an existing food ownership claim. Steering can finish early when its proposed
+straight movement still captures the target, preserving safe Magnet passes.
+Selection, retained control, rollout tracking and capture scoring follow that
+rule. Regressions run lateral boundary overlaps through World::step for Spark,
+Shard/death fields, Pellet, Prism and capsules, with and without Magnet; ownership,
+Magnet expiry and routing waypoints remain independent checks. Typed contact
+reach and arrival-to-capture valuation from the preceding fixes remain intact.
+
+Both ecosystem scorecards count Phase use only for otherwise-lethal contacts.
+A head encounter won by at least four segments contributes no use, while rival
+body and enabled self contacts remain independent. Example regressions compare
+winning, tied and losing head encounters with World outcomes and preserve the
+independent body/self checks. Attack diagnostics report rejected viable attacks
+by physical blocked-reply count and their score deficit; combat attribution
+continues to use exact World collision events.
+
+
+Near-term attack opportunities use V2 arrival windows at 12/18/24 ticks instead
+of 18/24/36. The number of refinements/finalists, exact blocked-reply reward
+(150), physical safety gates and Classic windows remain unchanged. The
+`v2_near_term_cutoff_is_safe_and_produces_an_exact_opponent_kill` regression
+covers mirrored wall/wrap crossings, checks the full 72-step safety horizon,
+and verifies an actual World body kill with exactly the attacker's owner bit.
+Rejected-attack diagnostics motivated the timing experiment: 2,926 viable
+positive-reply candidates lost ranking with a mean deficit of 150.886 units;
+raising that reward alone failed the combined outcome gates.
+
+Acquiring Phase must also preserve prior corporeal checks. The fixed pickup
+forecast requests individual sweeps while approaching a Phase capsule, using
+the same already-computed distance and a four-step maximum-motion reserve.
+`phase_acquisition_does_not_hide_the_preceding_corporeal_sweep` verifies an
+actual second-step body death before a third-step Phase pickup. Body-cache
+entries include candidate tangibility; the cache regression alternates tangible
+and intangible queries at identical geometry to prevent unsafe reuse.
+
+
+## Shared all-snake effect forecast
+
+`forecast::{Forecast, Timeline}` is the single AI effect clock. It starts from
+steering's post-decrement observation for every live snake. At each movement it
+uses `before` for motion and food capture, resolves all endpoint capsule contacts
+in World item order with lowest-live-snake-ID ownership, applies replacement and
+Surge's unpaid-burst forgiveness, then exposes `at`/Phase masks for collisions.
+Capsule lifetime, refresh, consumption and expiry share this clock. No future
+spawns, future food growth or private rival controls are assumed. Fixed three-item
+transitions and masks use controller-owned storage; no rollout allocates.
+Conservative per-item travel bounds prune unreachable owners once. Candidate
+rivals reuse observed paths until ownership changes their movement; only then
+is that rival copied into the reusable scratch storage.
+`Items` builds nominal/boosted reach bounds, prefix owner masks and nominal
+endpoint contest masks once per observation. Each candidate tests only its own
+endpoints and rivals whose movement diverges. If the candidate cannot reach a
+capsule within its horizon, it reuses the shared timeline, rival paths and
+motion limits directly; ordinary candidates use nominal reach bounds. Shared
+preparation integrates one independent snake track at a time, then rebuilds
+only rows with movement-changing pickups. Candidate records
+retain compact pickup events rather than full per-step effect mask arrays.
+Motion/radius reconstruction after Surge is cached by movement state and the
+first unpaid-burst forgiveness event; Phase/Magnet alone do not rebuild motion.
+
+Phase approach guards use cached upcoming endpoint hits for unchanged rivals,
+and radial motion reserves for changed participants. Merely passing near a
+Phase capsule does not force one-tick sweeps of every candidate. Known Phase,
+Surge and movement-changing pickup events finish the prior sweep before
+changing its geometry. Rival sweep curvature and deposited-neck exemptions
+use actual forecast motion and traveled distance; possible Surge speed widens
+only the broad-phase search bound.
+
+Physical simulation and opportunity valuation share the observation/expiry
+primitives but answer different questions. Strategy's `opportunities` clock
+includes observed effects and unavoidable movement-one pickups under all
+steering/boost options and lower-ID contests. A merely possible later rival
+pickup must not erase a chase, food advantage or free-burst opportunity.
+Collision rollouts still resolve actual endpoint pickups exactly. Checked free
+Surge attacks value blocked replies more highly while retaining the same
+collision, horizon and room gates. Old-neck tangibility uses actual traveled
+distance, including burst/effect expiry, rather than future maximum speed.
+
+Call sites moved to the shared forecast:
+
+- `prepare`/`advance_rivals`/`update_envelopes`: synchronized observed rival paths,
+  motion after pickups, Surge reach and Phase transitions.
+- `rollout_simulation` (all thirteen candidate kinds, retained attacks, compound
+  escape/boost and pocket tracking): own and rival pickups, both-party head and
+  current/deposited body contacts, self trails, motion boundaries and safe scoring.
+- `body_blocked_phase`/`cached_body_blocked_phase`: rival tangibility and Surge
+  bounds/margins; cache keys include all snakes' Phase and Surge masks.
+- `phase_mask`/`candidate_mask`: strategy/routing space and endpoint area queries.
+- `cutoffs`: each refinement simulates all snakes' item ownership and movement;
+  `reply_blocked`/`reply_simulation` include every live snake in each sampled response, including
+  third-party capsule ownership, victim self contacts and attacker barriers.
+- `pocket`/`pocket_usable`, `tactics` and retained-prey validation: both-party Phase
+  contacts, threat/escape reach and prey eligibility.
+- `target_arrival`/`target_score`/`food_race`, target shortlist/routing/retained
+  steering and rollout capture/progress: shared effect tracks for Magnet reach,
+  food/capsule competition, head-size advantage and scavenging room discounts.
+- `Motion::forecast`, Phase horizon and observed Surge policy use the common
+  observation/expiry primitives; retained attack limits use the same effect clock.
+
+The seeded World-step oracle checks 96 worlds × four live IDs × 138 movements
+(**52,992 snake-step observations**), including curved movement, wrap seams,
+effect and item expiry, ordered replacements, free/paid boosts and Surge pickup
+forgiveness. Separate World-backed regressions cover rival Phase replacement at
+head/body contacts in both owner orders and geometries, all five sweep-boundary positions, three-way
+ownership, third-party reply pickup, cache reuse across rival replacement and
+rebuilding rival motion when a candidate changes capsule ownership. The primary
+rival regression fails against the immutable pre-fix source snapshot.
+Cached versus uncached alternative-control tests add **119,232 effect
+comparisons** across both geometries, candidate IDs, boost modes and ordered
+capsule replacements. Opportunity-clock regressions distinguish unavoidable
+pickups from steering/contest possibilities. Shared-path equivalence tests
+cover curved long snakes across Surge and burst expiry, where reduced turn
+limits must clamp the previously observed curvature in both builders.
+
+The pre-forecast input reproduces **161/19/0** kills/self/wall deaths and
+**12/74 intended Surge uses (16.22%)**. Its simulation source and binary are
+preserved under `/tmp/snakes-class-forecast/before`.
+
+The last complete worker verification passed **908 Cargo test executions**,
+including all allocation checks and the World oracle, plus a fresh native
+build and **14/14 CTests** (133.97 seconds). CPU-8 alternating paired means
+were **0.299335 → 0.280459 ms (−0.018876 ms)**, meeting the +0.01 ms gate.
+Combat passed at **167/19/0** kills/self/wall deaths. Intended Surge use remained
+below acceptance: **8/68 uses (11.76%)**, with no chained episodes. That frozen
+source and its results are archived under
+`/tmp/snakes-class-forecast/worker-event-gate`.
+
+Shared capsule winner/timing metadata now gates rival movement updates. Matching
+contests reuse the prepared paths and limits; a changed outcome marks only
+movement-affected owners. A separate opportunity path cache keeps speculative
+Surge acceleration out of prey admission, leading, cutoff targets and barrier
+valuation. Physical collision/reply simulations retain the exact effect clock.
+
+The current additional change gives observed free Surge cutoffs the same
+three-window budget at 18/30/42 movements, rather than paid bursts' 12/18/24.
+It preserves exact motion, collision and room validation. All **18 forecast
+tests** and **8 Surge policy tests** pass. In the focused 20260814/IQ50/wrap
+case, intended uses rose from 1 to 3 and one chained episode returned, while
+self deaths rose from 0 to 2; this is not aggregate acceptance evidence.
+The focused first-decision/pickup/expiry/cutoff allocation check also passes.
+The current full matrix timed out after 30 minutes waiting for a `heavy` slot
+(exit 124; no matrix execution). Aggregate behavior and performance of this
+final policy change remain **unverified**.
+
+Or run the complete verification directly:
+
+```sh
+/home/mjstanton/.local/bin/heavy python3 /tmp/snakes-class-forecast/verify-worker.py
+```
+
+The complete script runs frozen/offline release Cargo tests, the release
+scorecard build, `cmake --build build-r3 -j 4`, full CTest, CPU-8 one-minute
+stage/call-site profiles, and the original alternating eight-minute 12-config
+paired protocol. Profile stages are prepare/strategy/rollout/final-area/total;
+forecast call sites are reach bounds/shared paths/contests/candidate setup/
+participant updates. Per-case diagnostic runs accept `--case=seed,iq,walls`.

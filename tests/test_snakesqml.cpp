@@ -8,7 +8,7 @@
 class SnakeQmlSetup : public QObject
 {
     Q_OBJECT
-    SnakeSimulation simulation{{640, 360, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0}};
+    SnakeSimulation simulation{{640, 360, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, {0}}};
 public:
     Q_INVOKABLE bool hasNativeProperty(QObject *target, const QString &name) const
     {

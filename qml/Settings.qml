@@ -36,6 +36,7 @@ ApplicationWindow {
             snakeIntelligence: Math.round(snakeIntelligence.value),
             snakeSelfCollisions: snakeSelfCollisions.checked,
             snakeDeadlyWalls: snakeDeadlyWalls.checked,
+            snakePowerUps: snakePowerUps.checked,
             showClock: showClock.checked,
             clockMovement: clockMovement.currentValue,
             clockSpeed: clockSpeed.currentValue,
@@ -328,6 +329,14 @@ ApplicationWindow {
                         horizontalAlignment: Text.AlignRight
                     }
 
+                    CheckBox {
+                        id: snakePowerUps
+                        Layout.columnSpan: 3
+                        text: qsTr("Power-ups")
+                        checked: window.screensaverConfig.snakePowerUps
+                        visible: visual.currentValue === "snakes"
+                    }
+
                     Label {
                         text: qsTr("Self collision")
                         visible: visual.currentValue === "snakes"
@@ -558,6 +567,7 @@ ApplicationWindow {
                         snakeIntelligence.value = 75
                         snakeSelfCollisions.checked = false
                         snakeDeadlyWalls.checked = true
+                        snakePowerUps.checked = true
                         showClock.checked = true
                         clockMovement.currentIndex = clockMovement.indexOfValue("bounce")
                         clockSpeed.currentIndex = clockSpeed.indexOfValue("normal")

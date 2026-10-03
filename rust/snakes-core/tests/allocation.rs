@@ -108,6 +108,7 @@ fn zero_allocations_v2_boost_pellets_events_corpses_and_ffi_export() {
     let mut boost=controller::ScriptedController::new(|_,s:SnakeView<'_>|controller::Steering{desired_angle:s.angle,rush:1.0});
     let mut snakes=[SnakeRecord::default();MAX_SNAKES];
     let mut segments=vec![SegmentRecord::default();MAX_SNAKES*MAX_SEGMENTS];
+    let mut items=[ItemRecord::default();MAX_ITEMS];
     let mut food=[FoodRecord::default();MAX_FOOD];let mut events=[EventRecord::default();MAX_EVENTS];
     // Use the public FFI path separately with preallocated high-water buffers.
     let cfg=CoreConfig::from(Config{rules:RuleSet::V2,self_collisions:true,seed:73,..Config::default()});
@@ -123,7 +124,7 @@ fn zero_allocations_v2_boost_pellets_events_corpses_and_ffi_export() {
             assert_eq!(snakes_core_step(handle,1),OK);
             assert_eq!(snakes_core_export_frame(handle,snakes.as_mut_ptr(),snakes.len(),segments.as_mut_ptr(),segments.len(),food.as_mut_ptr(),food.len(),&mut info),OK);
             let mut sizes=FrameSizes::default();assert_eq!(snakes_core_get_frame_sizes(handle,&mut sizes),OK);
-            assert_eq!(snakes_core_export_extras(handle,std::ptr::null_mut(),0,events.as_mut_ptr(),events.len()),OK);
+            assert_eq!(snakes_core_export_extras(handle,items.as_mut_ptr(),items.len(),events.as_mut_ptr(),events.len()),OK);
             seen_pellet|=food[..sizes.food as usize].iter().any(|f|f.kind==FoodKind::Pellet as u8);
             seen_event|=sizes.events>0;
             seen_corpse|=snakes[..sizes.snakes as usize].iter().any(|s|s.flags & flags::CORPSE != 0);
@@ -132,4 +133,64 @@ fn zero_allocations_v2_boost_pellets_events_corpses_and_ffi_export() {
     ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
     assert!(seen_pellet && seen_event && seen_corpse);
     unsafe {snakes_core_destroy(handle);}
+}
+
+#[test]
+fn zero_allocations_items_pickups_replacement_expiry_and_settings_off() {
+    let mut w=World::new(Config {rules:RuleSet::V2,deadly_walls:false,..Config::default()}).unwrap();
+    let mut ai=ai::AiController::new();
+    // Include the very first spawn, pickup, replacement and expiry. The
+    // fixture injection itself reuses the same three-record reserved storage.
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    for tick in 0..1200 {
+        if tick==0 || tick==30 || tick==60 {
+            w.items.clear();
+            let s=w.snake(0).unwrap();
+            w.items.push(Item {id:tick as u64+1,kind:effects::ENABLED_KINDS[tick/30],position:s.segments[0].current,
+                age_ticks:0,life_ticks:750,radius:w.config.base_radius()*2.1});
+        }
+        w.step(&mut ai);
+    }
+    w.reconfigure(Config {power_ups:false,..w.config()}).unwrap();
+    ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
+    assert_eq!(w.items().len(),0);assert!(w.snakes().all(|s|s.effect_ticks==0 && s.effect_kind==0));
+}
+
+#[test]
+fn zero_allocations_with_all_r3_effects_simultaneously_active() {
+    let mut w=World::new(Config {rules:RuleSet::V2,width:3440.0,height:1440.0,
+        density:100.0,trails:100.0,intelligence:100.0,self_collisions:true,
+        deadly_walls:false,seed:73,..Config::default()}).unwrap();
+    let mut ai=ai::AiController::new();
+    let mut observed=[false;4];let mut simultaneous=false;
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    for tick in 0..2400 {
+        if tick%360==0 {
+            // Real pickups on separate live snakes exercise simultaneous
+            // effects, replacement, activation and the first AI decision.
+            w.items.clear();
+            for id in 0..3 {
+                if w.snakes[id].alive {
+                    let kind=effects::ENABLED_KINDS[(id+tick/360)%3];
+                    w.items.push(Item {id:(tick+id+1) as u64,kind,
+                        position:w.segments[id*MAX_SEGMENTS].current,
+                        life_ticks:750,radius:w.config.base_radius()*2.1,..Item::default()});
+                }
+            }
+        }
+        let mut active=0u8;
+        for s in w.snakes().filter(|s|s.alive && s.effect_ticks>0) {
+            active|=1<<s.effect_kind;
+            observed[s.effect_kind as usize]=true;
+        }
+        simultaneous|=active&14==14;
+        w.step(&mut ai);
+    }
+    w.reconfigure(Config {power_ups:false,..w.config()}).unwrap();
+    w.step_n(&mut ai,60);
+    ENABLED.with(|e|e.set(false));
+    assert_eq!(COUNT.with(Cell::get),0);
+    assert!(observed[1..].iter().all(|&seen|seen));
+    assert!(simultaneous,"all three effects must coexist during measured ticks");
+    assert!(w.snakes().all(|s|s.effect_ticks==0));
 }

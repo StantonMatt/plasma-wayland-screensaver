@@ -41,6 +41,8 @@ pub(super) const HEAD_BOOST_SIDE: f64 = value("BOUNDS_HEAD_BOOST_SIDE");
 pub(super) const FOOD: f64 = value("BOUNDS_FOOD");
 pub(super) const IMPACT: f64 = value("BOUNDS_IMPACT");
 pub(super) const RING: f64 = value("BOUNDS_RING");
+pub(in crate::render) const CAPSULE: f64 = value("BOUNDS_CAPSULE");
+pub(super) const MAGNET: f64 = value("BOUNDS_MAGNET");
 pub(super) const CONTRAIL: f64 = value("BOUNDS_CONTRAIL");
 pub(super) const VACUUM: f64 = value("BOUNDS_VACUUM");
 pub(super) const DEVELOPER: f64 = value("BOUNDS_DEVELOPER");
@@ -94,6 +96,33 @@ mod tests {
         let spark_extent = spark_end + (0.012 + aa) * value("BOUNDS_EFFECT_UNITS");
         assert!(IMPACT >= spark_extent);
         assert!(RING >= 6.0 + (0.012 + aa) * value("BOUNDS_EFFECT_UNITS"));
+        // Magnet reach 9r plus the compact 1.1r spark halo; angular dashes
+        // have no extra radial support. Rim/scan lights remain inside BODY.
+        for expression in ["mask(abs(radius-9.0)-0.08)", "falloff(spark/1.1)",
+            "vec2(cos(a),sin(a))*9.0", "1.05+0.35*hash",
+            "vec2(b,(edge+1.0)*SEG),0.6*pixelR)",
+            "abs(abs(across)-1.2)-0.06", "scan=coverage("] {
+            assert!(SHADER.contains(expression), "rederive active support: {expression}");
+        }
+        // Capsule birth ring includes its stroke + bounded AA; the halo is
+        // compact at CAPSULE and the orbit spark ends at 1.3 + .5 radii.
+        for expression in ["coord*BOUNDS_CAPSULE", "abs(length(p)-(3.0-2.0*birth))-0.035",
+            "falloff(length(p)/BOUNDS_CAPSULE)", "vec2(cos(orbit),sin(orbit))*1.3)/0.5",
+            "abs(h)-0.035", "abs(hexagon(q,0.675))-0.015",
+            "kind==12?1.0+5.0", "abs(r-radius)-0.08", "abs(r-radius*0.65)-0.055"] {
+            assert!(SHADER.contains(expression), "rederive item/effect support: {expression}");
+        }
+        assert!(CAPSULE >= 3.0+0.035+aa);
+        assert!(CAPSULE >= 1.3+0.5);
+        assert!(CAPSULE >= 1.0+(0.035+aa)/0.8660254);
+        assert!(RING >= 6.0+0.08+aa);
+        assert!(MAGNET >= (9.0+0.08+aa).max(9.0+1.1));
+        // Arc centres remain <=1.4w. Their 1.2px stroke and derivative AA
+        // are compacted by the existing ribbon edgeFade even at tiny radii.
+        assert!(BODY >= 1.4*breath*(1.0+0.5/255.0/0.22));
+        // Body derivative AA and curvature are compacted by edgeFade above.
+        assert!(SHADER.contains("fragColor=composite(rgb,alpha,glow,over,corpse?packed.w/255.0:activeFade)*edgeFade"));
+
         assert!(SHADER.contains("smoothstep(6.0,BOUNDS_RING,length(coord))"));
 
         assert!(HEAD_FRONT >= 1.30 + 1.32 + 0.045 + head_aa); // tongue capsule + AA

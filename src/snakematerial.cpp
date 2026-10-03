@@ -2,6 +2,8 @@
 #include "snakematerial.h"
 #include "snakes_core.h"
 #include <QSGMaterialShader>
+#include <QSGTexture>
+#include "snakes_atlas.h"
 #include <QFile>
 #include <QOpenGLContext>
 #include <QQuickWindow>
@@ -9,6 +11,7 @@
 #include <memory>
 #include <algorithm>
 #include <cstring>
+#include <cstddef>
 
 static void initializeSnakeShaders() { Q_INIT_RESOURCE(snakes_shaders); }
 
@@ -44,6 +47,30 @@ bool hasPair(const QShader &vertex, const QShader &fragment,
     return fragmentKeys.contains(key) && !fragment.shader(key).shader().isEmpty();
 }
 
+// One immutable R8 texture per scene-graph material, uploaded once. No runtime
+// image conversion or atlas generation; QSGTexture owns the RHI lifecycle.
+class IconAtlas final : public QSGTexture
+{
+public:
+    IconAtlas() { setFiltering(Linear); }
+    qint64 comparisonKey() const override { return qint64(quintptr(this)); }
+    QRhiTexture *rhiTexture() const override { return m_texture.get(); }
+    QSize textureSize() const override { return {128, 128}; }
+    bool hasAlphaChannel() const override { return false; }
+    bool hasMipmaps() const override { return false; }
+    void commitTextureOperations(QRhi *rhi, QRhiResourceUpdateBatch *updates) override
+    {
+        if (m_texture) return;
+        m_texture.reset(rhi->newTexture(QRhiTexture::R8, {128, 128}));
+        if (!m_texture->create()) { m_texture.reset(); return; }
+        const QByteArray pixels(reinterpret_cast<const char *>(snakesIconAtlas), sizeof(snakesIconAtlas));
+        updates->uploadTexture(m_texture.get(), QRhiTextureUploadDescription({
+            QRhiTextureUploadEntry(0, 0, QRhiTextureSubresourceUploadDescription(pixels))}));
+    }
+private:
+    std::unique_ptr<QRhiTexture> m_texture;
+};
+
 class SnakeShader final : public QSGMaterialShader
 {
 public:
@@ -51,6 +78,16 @@ public:
     {
         setShader(VertexStage, shaderPack().vertex);
         setShader(FragmentStage, shaderPack().fragment);
+    }
+    void updateSampledImage(RenderState &state, int binding, QSGTexture **texture,
+                            QSGMaterial *newMaterial, QSGMaterial *) override
+    {
+        if (binding == SnakeMaterial::IconAtlasBinding) {
+            *texture = static_cast<SnakeMaterial *>(newMaterial)->iconAtlas();
+            // Custom materials must enqueue their texture creation/upload here;
+            // returning a QSGTexture alone does not commit its RHI operations.
+            (*texture)->commitTextureOperations(state.rhi(), state.resourceUpdateBatch());
+        }
     }
     bool updateUniformData(RenderState &state, QSGMaterial *newMaterial, QSGMaterial *oldMaterial) override
     {
@@ -64,31 +101,37 @@ public:
         }
         if (state.isOpacityDirty()) {
             const float opacity = state.opacity();
-            std::memcpy(data->data() + 64, &opacity, 4);
+            std::memcpy(data->data() + offsetof(SnakeMaterial::UniformData, opacity), &opacity, 4);
             changed = true;
         }
         // Qt may reuse the same material pointer between updates. Compare the
         // retained uniform bytes so in-place time changes still reach the GPU.
-        if (!old || std::memcmp(data->constData() + 68, &material->time, 4) != 0) {
-            std::memcpy(data->data() + 68, &material->time, 4);
+        if (!old || std::memcmp(data->constData() + offsetof(SnakeMaterial::UniformData, time), &material->time, 4) != 0) {
+            std::memcpy(data->data() + offsetof(SnakeMaterial::UniformData, time), &material->time, 4);
             changed = true;
         }
-        if (!old || std::memcmp(data->constData() + 80, &material->animationTime, 4) != 0
-                || std::memcmp(data->constData() + 84, &material->motionScale, 4) != 0) {
-            std::memcpy(data->data() + 80, &material->animationTime, 4);
-            std::memcpy(data->data() + 84, &material->motionScale, 4);
+        if (!old || std::memcmp(data->constData() + offsetof(SnakeMaterial::UniformData, animationTime), &material->animationTime, 4) != 0
+                || std::memcmp(data->constData() + offsetof(SnakeMaterial::UniformData, motionScale), &material->motionScale, 4) != 0) {
+            std::memcpy(data->data() + offsetof(SnakeMaterial::UniformData, animationTime), &material->animationTime, 4);
+            std::memcpy(data->data() + offsetof(SnakeMaterial::UniformData, motionScale), &material->motionScale, 4);
+            changed = true;
+        }
+        if (!old || std::memcmp(data->constData() + offsetof(SnakeMaterial::UniformData, paletteMode), &material->paletteMode, 4) != 0) {
+            std::memcpy(data->data() + offsetof(SnakeMaterial::UniformData, paletteMode), &material->paletteMode, 4);
             changed = true;
         }
         if (!old) {
             const float light[] = {-0.55f, -0.83f};
-            std::memcpy(data->data() + 72, light, 8);
+            std::memcpy(data->data() + offsetof(SnakeMaterial::UniformData, light), light, 8);
             changed = true;
         }
         return changed;
     }
 };
 }
-SnakeMaterial::SnakeMaterial() { setFlag(Blending); }
+SnakeMaterial::SnakeMaterial() : m_iconAtlas(new IconAtlas) { setFlag(Blending); }
+SnakeMaterial::~SnakeMaterial() { delete m_iconAtlas; }
+
 QSGMaterialType *SnakeMaterial::type() const { static QSGMaterialType type; return &type; }
 QSGMaterialShader *SnakeMaterial::createShader(QSGRendererInterface::RenderMode) const { return new SnakeShader; }
 int SnakeMaterial::compare(const QSGMaterial *other) const
@@ -97,7 +140,8 @@ int SnakeMaterial::compare(const QSGMaterial *other) const
     if (time != otherTime) return time < otherTime ? -1 : 1;
     const auto *material = static_cast<const SnakeMaterial *>(other);
     if (animationTime != material->animationTime) return animationTime < material->animationTime ? -1 : 1;
-    return motionScale < material->motionScale ? -1 : motionScale > material->motionScale ? 1 : 0;
+    if (motionScale != material->motionScale) return motionScale < material->motionScale ? -1 : 1;
+    return paletteMode < material->paletteMode ? -1 : paletteMode > material->paletteMode ? 1 : 0;
 }
 const QSGGeometry::AttributeSet &SnakeMaterial::attributes()
 {
@@ -168,11 +212,16 @@ bool SnakeMaterial::probePipelines(QRhi *rhi, QRhiRenderTarget *target,
     if (!rhi || !target || !target->renderPassDescriptor() || !vertex.isValid() || !fragment.isValid()) return false;
     // Use the window's actual render pass and sample count, not a new device or
     // a guessed offscreen format. Nothing is submitted and no pixels are read.
-    std::unique_ptr<QRhiBuffer> uniforms(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 96));
+    std::unique_ptr<QRhiBuffer> uniforms(rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, UniformBufferSize));
     if (!uniforms->create()) return false;
+    std::unique_ptr<QRhiTexture> atlas(rhi->newTexture(QRhiTexture::R8, {128, 128}));
+    std::unique_ptr<QRhiSampler> sampler(rhi->newSampler(QRhiSampler::Linear, QRhiSampler::Linear,
+        QRhiSampler::None, QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge));
+    if (!atlas->create() || !sampler->create()) return false;
     std::unique_ptr<QRhiShaderResourceBindings> bindings(rhi->newShaderResourceBindings());
-    bindings->setBindings({QRhiShaderResourceBinding::uniformBuffer(0,
-        QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, uniforms.get())});
+    bindings->setBindings({QRhiShaderResourceBinding::uniformBuffer(UniformBinding,
+        QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage, uniforms.get()),
+        QRhiShaderResourceBinding::sampledTexture(IconAtlasBinding, QRhiShaderResourceBinding::FragmentStage, atlas.get(), sampler.get())});
     if (!bindings->create()) return false;
 
     for (auto variant : {QShader::StandardShader, QShader::BatchableVertexShader}) {

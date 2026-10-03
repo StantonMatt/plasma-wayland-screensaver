@@ -154,7 +154,10 @@ mod tests {
     fn food_cutoff_continues_after_the_third_snakes_first_death() {
         let cfg=Config {width:1600.0,height:1000.0,density:0.0,trails:0.0,scale:70.0,seed:73,
             intelligence:100.0,self_collisions:true,deadly_walls:true,..Default::default()};
-        let snakes=[(p(760.0,456.5),0.0,72,1.0),(p(910.0,630.0),-FRAC_PI_2,24,0.6),(p(1100.0,500.0),PI,32,0.2)];
+        // Put the unrelated snake on the attacker's existing full-width
+        // body, facing away from its head. Its real tick-one body death must
+        // not end the designated duel, regardless of later AI tuning.
+        let snakes=[(p(760.0,456.5),0.0,72,1.0),(p(910.0,630.0),-FRAC_PI_2,24,0.6),(p(650.0,456.5),0.0,32,0.2)];
         let food:Vec<_>=(0..28).map(|i|p(850.0+(i%7) as f64*8.0-24.0,510.0+(i/7) as f64*8.0-12.0)).collect();
         let mut w=World::diagnostic_arena(cfg,&snakes,&food).unwrap();
         let mut c=Competition {ai:AiController::new(),limited:true,attacker:0,goal:p(850.0,510.0),held:[0.0,-FRAC_PI_2,PI]};
@@ -171,7 +174,7 @@ mod tests {
             }
             if outcome.finished(0,1) {break;}
         }
-        assert_eq!(third_death,Some(38));assert!(ticks>38);
+        assert_eq!(third_death,Some(1));assert!(ticks>1);
         assert!(outcome.finished(0,1) || ticks==600);
         assert!(outcome.kills<=1);assert_eq!(outcome.other_kills,1);
     }

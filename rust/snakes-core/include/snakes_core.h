@@ -30,8 +30,21 @@ extern "C" {
 #define SNAKES_CORE_MAX_EVENTS 32u
 #define SNAKES_CORE_MAX_SNAKES 14u
 #define SNAKES_CORE_MAX_FOOD 480u
-/* Effect/item kinds reserved for R3/R4: none 0, Surge 1, Magnet 2,
- * Phase 3, Venom 4, Frost 5. Reserved fields must be zero. */
+#define SNAKES_CORE_MAX_ITEMS 3u
+#define SNAKES_CORE_POWER_UPS_DEFAULT 0u
+#define SNAKES_CORE_POWER_UPS_ON 0u
+#define SNAKES_CORE_POWER_UPS_OFF 0x80000000u
+#define SNAKES_CORE_EFFECT_NONE 0u
+#define SNAKES_CORE_EFFECT_SURGE 1u
+#define SNAKES_CORE_EFFECT_MAGNET 2u
+#define SNAKES_CORE_EFFECT_PHASE 3u
+#define SNAKES_CORE_EFFECT_VENOM 4u
+#define SNAKES_CORE_EFFECT_FROST 5u
+#define SNAKES_CORE_EVENT_ITEM_SPAWN 5u
+#define SNAKES_CORE_EVENT_ITEM_EXPIRY 6u
+#define SNAKES_CORE_EVENT_EFFECT_EXPIRY 7u
+/* Config bit 31 disables power-ups; other reserved bits/fields must be zero.
+ * R3 uses the reserved config word, preserving all ABI v2 sizes and offsets. */
 #define SNAKES_CORE_OK 0
 #define SNAKES_CORE_INVALID_ARGUMENT 1
 #define SNAKES_CORE_BUFFER_TOO_SMALL 2
@@ -46,7 +59,8 @@ typedef struct snakes_core_config {
     double width, height, density, trails, scale, speed, intelligence;
     int32_t seed;
     uint32_t palette_size, self_collisions, deadly_walls;
-    uint32_t rule_set, reserved;
+    uint32_t rule_set;
+    union { uint32_t reserved; uint32_t power_ups; }; /* 0 default/on, bit 31 off */
 } snakes_core_config;
 typedef struct snakes_core_steering_input {
     uint32_t id, generation;
@@ -72,7 +86,7 @@ typedef struct snakes_core_item {
     uint64_t id;
     float x, y;
     uint8_t kind, reserved_byte;
-    uint16_t age_ticks, life_ticks, reserved;
+    uint16_t age_ticks, life_ticks, reserved; /* life_ticks: remaining */
 } snakes_core_item;
 typedef struct snakes_core_event {
     uint64_t tick;
@@ -113,9 +127,12 @@ int32_t snakes_core_export_frame(const snakes_core_world *world,
     snakes_core_snake *snakes, size_t snake_capacity,
     snakes_core_segment *segments, size_t segment_capacity,
     snakes_core_food *food, size_t food_capacity, snakes_core_frame_info *info);
+/* Shared physical capsule radius; invalid/null world returns zero. */
+double snakes_core_item_radius(const snakes_core_world *world);
 /* Latest tick's event ring, oldest first, at most MAX_EVENTS. Reading does not
  * consume it; step(world,n) retains only the last tick. Overflow evicts oldest.
- * Items are reserved and always empty in R1. Failure changes no output. */
+ * Failure changes no output. For pickup/spawn/item expiry/effect expiry,
+ * other_snake_id is the effect kind; snake_id is UINT32_MAX for field items. */
 int32_t snakes_core_export_extras(const snakes_core_world *world,
     snakes_core_item *items, size_t item_capacity,
     snakes_core_event *events, size_t event_capacity);
@@ -129,7 +146,8 @@ typedef struct snakes_core_ai_debug_record {
     snakes_core_ai_debug_point path[16];
 } snakes_core_ai_debug_record;
 /* Flags: 1 capped area, 2 capped safety, 4 no safe horizon, 8 interception.
- * Dead/unplanned/scripted slots have zero counts. Invalid IDs return INVALID. */
+ * Dead/unplanned/scripted slots have zero counts. Invalid IDs return INVALID.
+ * target_food_ids with bit 63 set identify items (lower bits are item ID). */
 /* Additional flag: 16 means the retained plan was checked against current
  * hazards and reused until the next strategy decision. 32 means trapped. */
 int32_t snakes_core_ai_debug(const snakes_core_world *world, uint32_t id,
@@ -171,6 +189,10 @@ int32_t snakes_core_render_build_shader(snakes_core_renderer *renderer,
     const snakes_core_render_color *palette, size_t palette_count,
     const snakes_core_render_params *params, snakes_core_shader_vertex *vertices,
     size_t vertex_capacity, snakes_core_render_output *output);
+/* Fixed per-renderer snapshot. Call before build; count <= MAX_ITEMS.
+ * Radius is snakes_core_item_radius(world); coordinates are world space. */
+int32_t snakes_core_render_set_items(snakes_core_renderer *renderer,
+    const snakes_core_item *items, size_t count, double radius);
 snakes_core_renderer *snakes_core_render_create(void);
 void snakes_core_render_destroy(snakes_core_renderer *renderer);
 int32_t snakes_core_render_reset(snakes_core_renderer *renderer);
@@ -205,6 +227,7 @@ SNAKES_CORE_ASSERT(offsetof(snakes_core_statistics, deaths) == 16);
 SNAKES_CORE_ASSERT(sizeof(snakes_core_item) == 24);
 SNAKES_CORE_ASSERT(sizeof(snakes_core_event) == 32);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_config, rule_set) == 72);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_config, power_ups) == 76);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, flags) == 48);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, effect_ticks) == 52);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, effect_kind) == 54);

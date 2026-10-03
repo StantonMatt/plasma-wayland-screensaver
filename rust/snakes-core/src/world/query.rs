@@ -42,6 +42,10 @@ impl World {
         copy.snakes.clone_from(&self.snakes);
         copy.segments.clone_from(&self.segments);
         copy.food.clone_from(&self.food);
+        copy.items.clone_from(&self.items);
+        copy.item_timer = self.item_timer;
+        copy.next_item = self.next_item;
+        copy.last_item_kind = self.last_item_kind;
         copy.trails.clone_from(&self.trails);
         copy.trail_capacity = self.trail_capacity;
         copy.grid_heads.clone_from(&self.grid_heads);
@@ -94,7 +98,7 @@ impl World {
     pub fn boost_segment_cost(&self,id:usize)->Option<usize> {
         self.snakes.get(id).map(|s|if s.boost_ticks>0 {
             s.boost_cost.saturating_sub(s.boost_paid) as usize
-        } else {2+s.len/100})
+        } else if effects::modifiers(s.effect_kind,s.effect_ticks).free_boost {0} else {2+s.len/100})
     }
     /// Exact mechanics speed/turn limits for a proposed rush. Recomputes the
     /// growth-block flag just as move_snake does, without changing the world.
@@ -111,39 +115,17 @@ impl World {
     /// `offset=0` is the next executed tick (active counters decrement first).
     pub fn forecast_motion_limits(&self, id: usize, rush: f64, offset: usize) -> Option<(f64, f64)> {
         if self.config.rules == RuleSet::Classic { return self.motion_limits(id,rush); }
-        let mut s=*self.snakes.get(id)?;
-        let frozen=s.effect_kind==5 && s.effect_ticks>0;
-        let ticks=if frozen {0} else if s.boost_ticks>0 {s.boost_ticks.saturating_sub(1) as usize}
-            else if rush>0.0 && self.boost_ready(id) {24} else {0};
-        let cost=if s.boost_ticks>0 {s.boost_cost as usize} else {2+s.len/100};
-        let due=if ticks>0 {cost*(25-ticks+offset).min(21)/21} else {s.boost_paid as usize};
-        let paid=if ticks>0 {due.saturating_sub(if s.boost_ticks>0 {s.boost_paid as usize} else {0})} else {0};
-        s.len=s.len.saturating_sub(paid);
-        if paid>0 {Self::update_radius(&mut s);}
-        s.rush=if offset<ticks {0.6} else {0.0};
-        s.blocked=s.len>=self.maximum_snake_segments(&s) || self.growth_slots==0;
-        Some((self.speed(&s),self.turn_rate(&s)))
+        self.snakes.get(id)?;
+        Some(effects::forecast_motion_before_tick(self,id,rush,offset))
     }
     /// The same single-burst forecast through expiry. Recompute expensive
-    /// turning-radius limits only when a payment or expiry changes motion.
+    /// turning-radius limits only when payment or expiry changes motion.
     pub fn forecast_motion_schedule(&self,id:usize,rush:f64)->Option<[(f64,f64);25]> {
-        let s=self.snakes.get(id)?;
-        let first=self.forecast_motion_limits(id,rush,0)?;
-        let mut schedule=[first;25];
-        if self.config.rules==RuleSet::Classic {return Some(schedule);}
-        let ticks=if s.effect_kind==5 && s.effect_ticks>0 {0}
-            else if s.boost_ticks>0 {s.boost_ticks.saturating_sub(1) as usize}
-            else if rush>0.0 && self.boost_ready(id) {24} else {0};
-        if ticks==0 {return Some(schedule);}
-        let cost=if s.boost_ticks>0 {s.boost_cost as usize} else {2+s.len/100};
-        let mut paid=cost*(25-ticks).min(21)/21;
-        for j in 1..=24 {
-            let due=cost*(25-ticks+j).min(21)/21;
-            schedule[j]=if due!=paid || j==ticks {self.forecast_motion_limits(id,rush,j)?} else {schedule[j-1]};
-            paid=due;
-        }
-        Some(schedule)
+        self.snakes.get(id)?;
+        if self.config.rules==RuleSet::Classic {return Some([self.motion_limits(id,rush)?;25]);}
+        Some(effects::forecast_schedule_before_tick(self,id,rush))
     }
+
     /// Conservative time to spend the current growth reserve. Growth consumes
     /// nutrition only after stretch reaches one segment, not once per tick.
     /// Accounts for the exact cost/stretch rule; 65% speed allows for slowing

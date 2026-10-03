@@ -39,7 +39,8 @@ snakes_core_config SnakeSimulation::configuration(const Configuration &settings,
             double(settings.trailAmount()), double(settings.animationScale()),
             double(settings.animationSpeed()), double(settings.snakeIntelligence()),
             std::bit_cast<qint32>(seed), 6, uint32_t(settings.snakeSelfCollisions()),
-            uint32_t(settings.snakeDeadlyWalls()), SNAKES_CORE_RULE_DEFAULT, 0};
+            uint32_t(settings.snakeDeadlyWalls()), SNAKES_CORE_RULE_DEFAULT,
+            {settings.snakePowerUps() ? SNAKES_CORE_POWER_UPS_ON : SNAKES_CORE_POWER_UPS_OFF}};
 }
 
 QVector<QColor> SnakeSimulation::colors(const QString &palette)
@@ -107,6 +108,7 @@ bool SnakeSimulation::exportFrame()
     m_frame->events.reserve(SNAKES_CORE_MAX_EVENTS);
     grow(m_frame->events, sizes.events);
     grow(m_frame->items, sizes.items);
+    m_frame->itemRadius = snakes_core_item_radius(m_world.get());
     if (snakes_core_export_frame(m_world.get(), m_frame->snakes.data(), m_frame->snakes.size(),
                                 m_frame->segments.data(), m_frame->segments.size(),
                                 m_frame->food.data(), m_frame->food.size(), &m_frame->info) != SNAKES_CORE_OK)

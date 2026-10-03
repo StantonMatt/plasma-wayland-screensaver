@@ -9,6 +9,7 @@ pub const OK: i32 = 0;
 pub const INVALID_ARGUMENT: i32 = 1;
 pub const BUFFER_TOO_SMALL: i32 = 2;
 pub const ABI_VERSION: u32 = 2;
+pub const POWER_UPS_OFF: u32 = 0x8000_0000;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CoreConfig {
@@ -28,7 +29,7 @@ pub struct CoreConfig {
 }
 impl CoreConfig {
     fn checked(self) -> Option<Config> {
-        if self.self_collisions>1 || self.deadly_walls>1 || self.rule_set>2 || self.reserved!=0 {
+        if self.self_collisions>1 || self.deadly_walls>1 || self.rule_set>2 || !matches!(self.reserved,0 | POWER_UPS_OFF) {
             return None;
         }
         let c = Config {
@@ -43,6 +44,7 @@ impl CoreConfig {
             palette_size: self.palette_size,
             self_collisions: self.self_collisions!=0,
             deadly_walls: self.deadly_walls!=0,
+            power_ups: self.reserved != POWER_UPS_OFF,
             rules: if self.rule_set == 1 { crate::RuleSet::Classic } else { crate::RuleSet::V2 }
         };
         c.validate().ok().map(|()|c)
@@ -63,7 +65,7 @@ impl From<Config> for CoreConfig {
             self_collisions: c.self_collisions as u32,
             deadly_walls: c.deadly_walls as u32,
             rule_set: if c.rules == crate::RuleSet::Classic { 1 } else { 2 },
-            reserved: 0
+            reserved: if c.power_ups { 0 } else { POWER_UPS_OFF },
         }
     }
 }
@@ -351,7 +353,7 @@ pub unsafe extern "C" fn snakes_core_get_frame_sizes(handle: *const WorldHandle,
             snakes: w.snake_count() as u32,
             segments: w.exported_segment_count() as u32,
             food: stats.food,
-            items: 0,
+            items: w.items().len() as u32,
             events: w.frame_events().len() as u32,
             reserved: 0
         });
@@ -434,7 +436,7 @@ pub unsafe extern "C" fn snakes_core_export_frame(handle: *const WorldHandle, sn
     }
     OK
 }
-/// Exports ABI v2's bounded event ring and reserved item array (currently empty).
+/// Exports ABI v2's bounded event ring and live items atomically.
 /// Failure leaves all outputs untouched. Events belong to the latest tick only;
 /// read/export does not consume them. Excess events evict the oldest entry.
 /// # Safety
@@ -446,8 +448,12 @@ pub unsafe extern "C" fn snakes_core_export_extras(handle: *const WorldHandle,
     if !valid(handle) { return INVALID_ARGUMENT; }
     let w = &unsafe { &*handle }.world;
     let count = w.frame_events().len();
-    if event_capacity < count { return BUFFER_TOO_SMALL; }
-    if !buffer(items, item_capacity, 0) || !buffer(events, event_capacity, count) { return INVALID_ARGUMENT; }
+    if item_capacity < w.items().len() || event_capacity < count { return BUFFER_TOO_SMALL; }
+    if !buffer(items, item_capacity, w.items().len()) || !buffer(events, event_capacity, count) { return INVALID_ARGUMENT; }
+    for (i,item) in w.items().enumerate() {
+        unsafe { ptr::write(items.add(i), ItemRecord {id:item.id,x:item.position.x as f32,y:item.position.y as f32,
+            kind:item.kind as u8,reserved_byte:0,age_ticks:item.age_ticks,life_ticks:item.life_ticks,reserved:0}); }
+    }
     for (i,e) in w.frame_events().enumerate() {
         unsafe { ptr::write(events.add(i), EventRecord { tick: e.tick,
             x: e.position.x as f32, y: e.position.y as f32, snake_id: e.snake_id,
@@ -782,4 +788,25 @@ pub unsafe extern "C" fn snakes_core_render_set_reduced_motion(renderer: *mut Re
     if !valid(renderer) || enabled>1 { return INVALID_ARGUMENT; }
     unsafe { &mut *renderer }.reduced_motion=enabled!=0;
     OK
+}
+
+/// Copies at most three immutable item records into fixed renderer storage.
+/// # Safety
+/// Live exclusive renderer; items is a readable, aligned, disjoint array.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snakes_core_render_set_items(renderer: *mut RenderHandle, items: *const ItemRecord, count: usize, radius: f64) -> i32 {
+    if !valid(renderer) || count>crate::MAX_ITEMS || (count>0 && (!valid(items) || !(0.0..=crate::render::NUMERIC_LIMIT).contains(&radius))) { return INVALID_ARGUMENT; }
+    let records=if count==0 {&[]} else {unsafe {std::slice::from_raw_parts(items,count)}};
+    if !records.iter().all(crate::render::items::valid_item) { return INVALID_ARGUMENT; }
+    unsafe { &mut *renderer }.set_items(records,radius);
+    OK
+}
+
+/// Shared physical radius of this world's item capsules.
+/// # Safety
+/// Handle is live/readable and calls on it are serialized. Invalid pointer returns zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snakes_core_item_radius(handle: *const WorldHandle) -> f64 {
+    if !valid(handle) {return 0.0;}
+    unsafe { &*handle }.world.config().base_radius()*2.1
 }

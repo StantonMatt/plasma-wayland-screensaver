@@ -24,6 +24,7 @@ impl AiController {
         // this body size. Do not reuse that reserve after shrinking/resizing.
         if state.coil_body.is_some_and(|body|body!=(s.segments.len(),s.radius)) {return false;}
         let Some(victim)=w.snake(state.prey-1).filter(|v|v.alive && v.generation==state.prey_generation) else {return false;};
+        if !self.effects.contact(s.id as usize,victim.id as usize,1) {return false;}
         let (speed,turn)=w.motion_limits(s.id as usize,0.0).unwrap();
         let min_radius=(speed/turn*1.15+s.radius+victim.radius).max(if w.config().rules==crate::RuleSet::V2 {4.2*s.radius} else {0.0});
         let lo=s.radius*1.48+2.0;let hi=2.0*(s.radius+victim.radius)*0.78-2.0;
@@ -35,7 +36,8 @@ impl AiController {
             && w.tick()<=state.coil_until
     }
     pub(super) fn pocket(&self,w:&World,s:SnakeView<'_>,state:&mut State)->bool {
-        let head=s.segments[0].current;let victim=&self.rivals[state.prey-1];
+        let head=s.segments[0].current;let victim=self.opportunity_rival(state.prey-1);
+        if !self.effects.contact(s.id as usize,state.prey-1,1) {state.clear_coil(s.angle);return false;}
         let (speed,turn)=w.motion_limits(s.id as usize,0.0).unwrap();
         let min_radius=(speed/turn*1.15+s.radius+victim.radius).max(if w.config().rules==crate::RuleSet::V2 {4.2*s.radius} else {0.0});
         let lo=s.radius*1.48+2.0;let hi=2.0*(s.radius+victim.radius)*0.78-2.0;

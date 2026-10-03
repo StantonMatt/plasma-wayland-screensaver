@@ -235,7 +235,7 @@ Body along coordinates count from the tail. The four params bytes mean:
 
 | Primitive | kind | byte 1 | byte 2 | byte 3 |
 |---|---:|---|---|---|
-| Body | 0 | tier bits 0–1, effect bits 2–4, neck-marking suppression bit 5, white crown palette bit 6, white wave bit 7 | simulation flags | interpolated wave brightness, or corpse fade |
+| Body | 0 | tier bits 0–1, active effect bits 2–4, neck-marking suppression bit 5, white crown palette bit 6, reserved bit 7 | simulation flags except bits 1/4/5 encode wave origin (1..5 item, 6 white, 7 crown, 0 none) | interpolated wave brightness, or corpse fade |
 | Head | 1 | tier bits 0–1, deterministic phase bits 2–5, white crown palette bit 6, kill flare bit 7 | simulation flags | desired-heading offset |
 | Spark / shard / pellet | 2 / 3 / 4 | phase | remaining life fraction | reserved |
 | Vacuum / debug direction | 5 | reserved | reserved | reserved |
@@ -265,10 +265,13 @@ Rust. The software backend and unavailable shader resources use the unchanged
 classic generator and its original geometry fingerprints.
 
 The host can call `SnakeRenderer::setShaderTimeFrozen(bool)` (QML property
-`shaderTimeFrozen`). The material's procedural time freezes while a separate
-simulation/presentation animation time keeps discrete blinks/tongue flicks
-running at 60% duration. `snakes_core_render_set_reduced_motion` shortens
-renderer-managed waves, rings and corpse dissolution without changing classic.
+`shaderTimeFrozen`). The host freezes both material clocks and the geometry's
+presentation time at the captured instant, including discrete blinks/tongue
+flicks, transient rings, waves, contrails, flashes and corpse dissolution.
+It forwards `snakes_core_render_set_reduced_motion` for both geometry formats
+from the same place. The Rust flag selects reduced-motion styling/durations;
+callers must also hold presentation time fixed to pause animation. Simulation
+snapshots and interpolation remain independent of this render-time clock.
 No overlay, clock or setting code is changed by the render implementation.
 
 The material uses `qt_add_shaders(BATCHABLE ...)` and the `qt6-shadertools-dev`
@@ -444,3 +447,112 @@ vertices and UV scale, sweep all 256 effect-age bytes, and check the newly
 covered impact edge/corner copies. Existing independent-tiling tests cover every
 primitive, anisotropic projections, corpses, and arenas spanning multiple copies.
 The allocation regression continues to exercise growth, effects and resets.
+
+
+## R3 active effects
+
+Surge/Phase use the existing body effect bits without adding ribbon vertices.
+Surge starts a three-edge rim arc every two segments with 30% probability,
+reseeded at 18 Hz, with the prototype's 1.2px stroke and 85% brightness. Phase
+fades tube/head coverage to 45% with a +/-6% flicker and adds a moving dashed
+outline and scan bands. Head
+PHASED is derived from the live effect record for rendering; corpse/expired
+records never retain an active look. Classic fallback tints Surge's existing
+outline, fades Phase with an accent outline, and draws a dashed Magnet ring.
+Palette accents retain the item system's mono/pastel adjustments.
+
+Sprite kind **15** is the Magnet ring: coordinates in body radii, exact 9r reach,
+three rotating compact 1.1r spark halos, and a 10.2r quad extent from the shared
+GLSL/Rust bounds contract. It costs six vertices per visible copy. Transients,
+expiry warnings and Magnet rings share the eight-visible-quad cap in that
+priority order. Warning amplitude now remains visible through expiry instead
+of fading away as the counter approaches zero. Existing food vacuum streaks
+already match the prototype's `size * (3 + attraction * 8)` length; the mechanics'
+9r attraction reach exposes those streaks throughout the Magnet ring.
+
+Every new procedural shader animation reads the existing frozen `time` uniform;
+classic active effects similarly freeze their time under reduced motion. Wrap
+bounds, including tiny arenas and anisotropic projection, are checked against
+independent wall-bounded tiling. A 1000-frame active-effect regression builds
+both render paths with zero allocations.
+
+The native capture test has a **powerups** row with a boosted Surge and its
+expiry warning, Magnet with twelve incoming food streaks, and Phase crossing a
+solid rival. Capture it on the real desktop:
+
+```sh
+QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl \
+  SNAKES_CAPTURE_PATH=/tmp/snakes-r3.png \
+  build-vis/bin/test-snakerenderer captureShaderFixture:powerups
+```
+
+The row saves `/tmp/snakes-r3.png.powerups.png`. Ordinary CTest skips captures
+unless the capture path is set; the fixture's active payload and vertex budgets
+are separately tested with the software backend. `benchmarkPowerupGeometry`
+adds active effects to the same 14-snake/400-food mature benchmark fixture.
+
+The custom material commits the immutable R8 atlas in `updateSampledImage`,
+before Quick reads its RHI texture. Returning the wrapper alone leaves the
+texture uncreated/unuploaded; a successful pipeline probe does not test that
+upload lifecycle. The first commit creates/uploads the atlas, and subsequent
+calls return immediately without allocation. The capsule glow uses the
+prototype's 3.4R / 0.32 halo and 0.5R / 0.8 orbiting spark.
+
+`bakedShaderResourceLayout` checks reflected uniform binding 0, every std140
+member offset against the material's upload layout, and the sole atlas sampler
+at binding 1. Every successful shader capture also requires at least six bright
+pixels in each capsule's central icon square, excluding the rim, halo and spark.
+Run the capture row on both GLES (`QSG_RHI_BACKEND=opengl`) and Vulkan
+(`QSG_RHI_BACKEND=vulkan`) to validate native texture upload and sampling.
+
+
+Worker verification: Release build and full CTest in `build-vis` passed **14/14**
+in 91.74 s, including **441 Rust test executions**, unchanged Classic parity,
+and the new active-effect allocation/bounds cases. Three CPU-8 samples of
+100000 iterations measured median geometry **0.02963 ms** for the staged
+foundation baseline, **0.02930 ms** for final inactive (-1.11%), and
+**0.03039 ms** for final active (+2.56%), within the 5% gate. The active mature
+fixture uploads **11094 vertices / 266256 bytes**, versus **11064 / 265536**
+without active effects. Raw paired logs, exact commands and the worker report
+are in `build-vis/bench-*.txt`, `benchmark-active.sh` and `WORKER_REPORT.md`.
+Real-GPU appearance remains for the orchestrator's desktop capture.
+
+The visual-defect follow-up passed full CTest **14/14** in 80.86 s. A fresh
+normal-scheduler paired benchmark (three 100000-iteration samples) measured
+**0.02833 ms** baseline, **0.02866 ms** inactive, and **0.02928 ms** active:
++3.35% versus the fresh baseline and -1.18% versus the historical 0.02963 ms
+baseline. CPU-8 was contended during the first pinned attempt; both sets of
+logs and exact commands are retained in `build-vis/WORKER_VISUAL_FIX_REPORT.md`.
+Native GLES/Vulkan recaptures remain for the orchestrator; this sandbox cannot
+create their display/context. Each capture now checks the central icon pixels.
+
+
+## Render advisory classes
+
+Copy bounds cover complete emitted geometry: classic capsule hex strokes include
+both pixel minimums, and pickup/expiry rings include their outer stroke. Shader
+capsule support joins the compile-time GLSL bounds contract. Sibling primitives
+(food/highlights/vacuum, body/eyes/crown, contrails, death flashes, steering,
+warning and Magnet rings, shader heads/corpses/impact/succession/boost rings) retain
+their full geometry bounds and independent tiling/analytic regressions.
+
+Both paths use one eight-visible-copy effect budget. Transients walk shared
+history newest first, then warnings, then Magnet. Classic death flashes now use
+the same history as pickup/expiry rings; offscreen geometry and expired history
+consume no budget. Triangle count does not affect a logical copy's cost, and
+required vertices count even when the caller's buffer needs a retry. Shader
+impact, succession and boost rings obey this same budget; classic does not emit
+succession or boost rings. Capsule birth rings are part of persistent items.
+
+Traveling waves retain their origin even after replacement or expiry of the
+active effect. Each body sample chooses the strongest retained wave (newest wins
+ties); classic tints each edge from that origin. Shader vertices encode the
+origin separately from active-effect bits. The vertex shader converts it to
+premultiplied RGB light before interpolation, preventing interpolated bit fields
+from changing colours/flags between wave origins. Kill and boost light remains
+white, crown light remains gold, and pickup light keeps its originating accent.
+The vertex ABI stays 24 bytes; no vertices, draw calls or per-frame allocations
+are added. A retained origin byte array is touched only when different-colour
+waves coexist. Single-colour waves retain the original brightness-only emission,
+with a constant origin in the body payload (zero-strength light is suppressed
+in the vertex shader).

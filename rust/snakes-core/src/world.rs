@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 mod query;
+mod broad_phase;
+pub mod effects;
+mod items;
 pub(crate) mod taper;
+pub use items::{Item, MAX_ITEMS};
 use std::f64::consts::TAU;
 use crate::{ Point, WorldRng, normalize_angle };
 use crate::math::Geometry;
@@ -27,7 +31,7 @@ pub mod flags {
 pub enum FoodKind { #[default] Spark, Shard, Pellet, Prism }
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum EventKind { #[default] Kill, Sever, Pickup, Nova, Succession }
+pub enum EventKind { #[default] Kill, Sever, Pickup, Nova, Succession, ItemSpawn, ItemExpiry, EffectExpiry }
 pub const MAX_EVENTS: usize = 32;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FrameEvent {
@@ -48,6 +52,7 @@ pub struct Config {
     pub self_collisions: bool,
     pub deadly_walls: bool,
     pub rules: RuleSet,
+    pub power_ups: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -63,7 +68,8 @@ impl Default for Config {
             palette_size: 6,
             self_collisions: false,
             deadly_walls: true,
-            rules: RuleSet::Classic
+            rules: RuleSet::Classic,
+            power_ups: true,
         }
     }
 }
@@ -277,6 +283,10 @@ pub struct World {
     pub(crate) snakes: Vec<Snake>,
     pub(crate) segments: Vec<Segment>,
     pub(crate) food: Vec<Food>,
+    pub(crate) items: Vec<Item>,
+    item_timer: u16,
+    next_item: u64,
+    last_item_kind: effects::EffectKind,
     trails: Vec<TrailPoint>,
     trail_capacity: usize,
     grid_heads: Vec<i32>,
@@ -317,6 +327,10 @@ impl World {
             segments: vec![Segment::default();
             MAX_SNAKES*MAX_SEGMENTS],
             food: Vec::with_capacity(MAX_FOOD),
+            items: Vec::with_capacity(MAX_ITEMS),
+            item_timer: 0,
+            next_item: 1,
+            last_item_kind: effects::EffectKind::None,
             trails: Vec::new(),
             trail_capacity: 0,
             grid_heads: Vec::new(),
@@ -455,6 +469,10 @@ impl World {
         self.collisions.fill(CollisionEvent::default());
         self.consumptions.clear();
         self.food.clear();
+        self.items.clear();
+        self.next_item = 1;
+        self.last_item_kind = effects::EffectKind::None;
+        self.item_timer = 0;
         self.leader = None;
         self.event_start = 0;
         self.event_count = 0;
@@ -470,6 +488,7 @@ impl World {
         for _ in 0..self.config.food_count() {
             self.add_ambient_food();
         }
+        if self.items_enabled() { self.reset_item_timer(); }
     }
     /// Density-count or seed changes restart the world (as QML initialization
     /// does). Other controls preserve live state; geometry rescales positions.
@@ -491,7 +510,10 @@ impl World {
         }
         let old = self.config;
         self.config = config;
+        if !self.items_enabled() { self.clear_items_and_effects(); }
+        else if !old.power_ups { self.reset_item_timer(); }
         self.scale_geometry(old.width, old.height);
+        for item in &mut self.items { item.radius=config.base_radius()*2.1; }
         self.prepare_storage();
         if old.deadly_walls!=config.deadly_walls {
             for i in 0..self.snakes.len() {
@@ -544,6 +566,11 @@ impl World {
             event.position.x *= sx;
             event.position.y *= sy;
         }
+        for item in &mut self.items {
+            item.position.x *= sx;
+            item.position.y *= sy;
+            item.radius = self.config.base_radius() * 2.1;
+        }
         for f in &mut self.food {
             f.p.x*=sx;
             f.p.y*=sy;
@@ -556,7 +583,11 @@ impl World {
     fn spawn_position(&mut self, radius: f64, len: usize) -> (Point, f64) {
         let g = self.config.geometry();
         let margin = (radius*5.0).max(18.0);
-        let clearance = (g.width.min(g.height)*0.22).min(170.0_f64.max(radius*20.0));
+        // Spawn clearance is an exhaustive, stationary endpoint query (no
+        // bucket/range reject and no sweep contact rule). Keep its zero-sweep
+        // bound and Classic RNG/candidate ordering exactly as before.
+        let clearance = Self::sweep_search_radius(
+            (g.width.min(g.height)*0.22).min(170.0_f64.max(radius*20.0)), 0.0);
         let mut best = (Point {
             x: g.width/2.0,
             y: g.height/2.0
@@ -782,6 +813,7 @@ impl World {
             0.0
         };
         (52.0+self.config.speed*0.66)*s.traits.speed_bias*(1.0+s.rush+boost)/(1.0+s.len.saturating_sub(24) as f64*0.004)
+            * effects::modifiers(s.effect_kind,s.effect_ticks).speed
     }
     fn minimum_turn_radius(s: &Snake) -> f64 {
         s.radius*(3.15+((s.len as f64/20.0).max(1.0).ln()/25.0_f64.ln()).clamp(0.0, 1.0)*1.35)
@@ -846,6 +878,7 @@ impl World {
         self.event_count = 0;
         self.time+=seconds;
         self.update_food(seconds);
+        if self.items_enabled() { self.advance_items_and_effects(); }
         self.growth_slots = self.config.maximum_world_segments().saturating_sub(self.stats().total_segments as usize);
         let mut inputs = [Steering::default();
         MAX_SNAKES];
@@ -885,6 +918,7 @@ impl World {
             self.move_snake(i, seconds);
         }
         self.feed_snakes(seconds);
+        if self.items_enabled() { self.pickup_items(); }
         self.mark_collisions();
         for i in 0..self.snakes.len() {
             if self.snakes[i].alive && self.snakes[i].dying!=DeathReason::None {
@@ -916,7 +950,7 @@ impl World {
     fn snake_flags(&self, id: usize) -> u32 {
         let s = &self.snakes[id];
         if !s.alive { return if s.corpse_ticks > 0 { flags::CORPSE } else { 0 }; }
-        s.intent_flags | if s.boost_ticks > 0 { flags::BOOSTING } else { 0 }
+        s.intent_flags | effects::modifiers(s.effect_kind,s.effect_ticks).flags | if s.boost_ticks > 0 { flags::BOOSTING } else { 0 }
             | if s.cooldown_ticks > 0 { flags::COOLDOWN } else { 0 }
             | if s.effect_kind == 5 && s.effect_ticks > 0 { flags::FROZEN } else { 0 }
             | if self.leader == Some(id) { flags::LEADER } else { 0 }
@@ -950,18 +984,18 @@ impl World {
     }
     fn advance_boost(&mut self, i: usize, request: bool) {
         let s = &mut self.snakes[i];
+        let effect = effects::modifiers(s.effect_kind,s.effect_ticks);
         let frozen = s.effect_kind == 5 && s.effect_ticks > 0;
-        if frozen && s.boost_ticks > 0 { s.boost_ticks = 0; s.cooldown_ticks = 36; }
-        else if s.boost_ticks == 1 { s.boost_ticks = 0; s.cooldown_ticks = 36; }
+        if frozen && s.boost_ticks > 0 { s.boost_ticks = 0; s.cooldown_ticks = effect.boost_cooldown; }
+        else if s.boost_ticks == 1 { s.boost_ticks = 0; s.cooldown_ticks = effect.boost_cooldown; }
         else if s.boost_ticks > 1 { s.boost_ticks -= 1; }
         else if s.cooldown_ticks > 0 { s.cooldown_ticks -= 1; }
         if request && !frozen && s.boost_ticks == 0 && s.cooldown_ticks == 0 && s.len >= 12 {
             s.boost_ticks = 24;
-            s.boost_cost = (2+s.len/100) as u8;
+            s.boost_cost = if effect.free_boost {0} else {(2+s.len/100) as u8};
             s.boost_paid = 0;
         }
         s.rush = if s.boost_ticks > 0 { 0.6 } else { 0.0 };
-        if s.effect_ticks > 0 { s.effect_ticks -= 1; }
         let due = if s.boost_ticks > 0 { s.boost_cost as usize * (25-s.boost_ticks as usize).min(21) / 21 } else { s.boost_paid as usize };
         while (self.snakes[i].boost_paid as usize) < due {
             let s = &mut self.snakes[i];
@@ -1061,7 +1095,21 @@ impl World {
         self.food.remove(i);
     }
     fn feed_snakes(&mut self, seconds: f64) {
+        if self.config.rules == RuleSet::V2 { self.feed_snakes_for_rules::<true>(seconds); }
+        else { self.feed_snakes_for_rules::<false>(seconds); }
+    }
+    fn feed_snakes_for_rules<const V2: bool>(&mut self, seconds: f64) {
         let g = self.config.geometry();
+        let head_sweep = if V2 { self.head_sweeps().into_iter().fold(0.0_f64, f64::max) } else { 0.0 };
+        // Effects cannot change during feeding. Cache their contact/search
+        // radii once, rather than matching the same effect for every particle.
+        let mut food_capture = [0.0; MAX_SNAKES];
+        let mut food_search = [0.0; MAX_SNAKES];
+        for (id, s) in self.snakes.iter().enumerate() {
+            if !s.alive { continue; }
+            food_capture[id] = s.radius * effects::modifiers(s.effect_kind, s.effect_ticks).food_reach;
+            if V2 { food_search[id] = Self::sweep_search_radius(food_capture[id], head_sweep); }
+        }
         for i in (0..self.food.len()).rev() {
             let mut f = self.food[i];
             let mut eater = None;
@@ -1083,9 +1131,10 @@ impl World {
                         continue;
                     }
                     let p = self.segments[j*MAX_SEGMENTS].current;
-                    let reach = s.radius*3.0+f.size;
+                    let reach = food_capture[j]+f.size;
                     let d = g.delta(f.p, p);
-                    if d.x.abs()>reach || d.y.abs()>reach {
+                    let search = if V2 { food_search[j]+f.size } else { reach };
+                    if d.x.abs()>search || d.y.abs()>search {
                         continue;
                     }
                     let ds = d.x*d.x+d.y*d.y;
@@ -1113,7 +1162,7 @@ impl World {
                 self.consume_food(i, owner);
                 continue;
             }
-            let pull = (1.0-(distance-eating)/(s.radius*1.84).max(1.0)).clamp(0.08, 1.0);
+            let pull = (1.0-(distance-eating)/(s.radius*(effects::modifiers(s.effect_kind,s.effect_ticks).food_reach-1.16)).max(1.0)).clamp(0.08, 1.0);
             let speed = (240.0+pull*420.0).max(self.speed(&s)*1.8);
             let travel = (distance-eating).min(speed*seconds);
             if travel>=distance-eating-0.001 {
@@ -1129,13 +1178,23 @@ impl World {
             self.food[i] = f;
         }
     }
+    #[cfg(test)]
     fn cell(&self, p: Point) -> (usize, usize) {
+        if self.config.rules == RuleSet::V2 { self.cell_for_rules::<true>(p) }
+        else { self.cell_for_rules::<false>(p) }
+    }
+    #[inline]
+    fn cell_for_rules<const V2: bool>(&self, p: Point) -> (usize, usize) {
         let g = self.config.geometry();
         let p = if g.deadly {
             Point {
                 x: p.x.clamp(0.0, g.width-0.001),
                 y: p.y.clamp(0.0, g.height-0.001)
             }
+        } else if V2 && p.x >= 0.0 && p.x < g.width && p.y >= 0.0 && p.y < g.height {
+            // Runtime movement already wraps every endpoint. Avoid four more
+            // floating-point remainders per body point just to index it.
+            p
         } else {
             g.wrap(p)
         };
@@ -1148,9 +1207,13 @@ impl World {
             return true;
         }
         let travel = g.distance2(a.previous, a.current).sqrt()+g.distance2(b.previous, b.current).sqrt();
-        distance<(reach+travel).powi(2) && g.segments_distance2(a.previous, a.current, b.previous, b.current)<squared
+        distance<Self::sweep_search_radius(reach, travel).powi(2) && g.segments_distance2(a.previous, a.current, b.previous, b.current)<squared
     }
     fn mark_collisions(&mut self) {
+        if self.config.rules == RuleSet::V2 { self.mark_collisions_for_rules::<true>(); }
+        else { self.mark_collisions_for_rules::<false>(); }
+    }
+    fn mark_collisions_for_rules<const V2: bool>(&mut self) {
         let g = self.config.geometry();
         self.collisions.fill(CollisionEvent::default());
         for (i, s) in self.snakes.iter_mut().enumerate() {
@@ -1165,12 +1228,12 @@ impl World {
         }
         for left in 0..self.snakes.len() {
             let a = self.snakes[left];
-            if !a.alive {
+            if !a.alive || effects::modifiers(a.effect_kind,a.effect_ticks).intangible {
                 continue;
             }
             for right in left+1..self.snakes.len() {
                 let b = self.snakes[right];
-                if !b.alive {
+                if !b.alive || effects::modifiers(b.effect_kind,b.effect_ticks).intangible {
                     continue;
                 }
                 if Self::swept_hit(g, self.segments[left*MAX_SEGMENTS], self.segments[right*MAX_SEGMENTS], (a.radius+b.radius)*0.82) {
@@ -1194,71 +1257,48 @@ impl World {
         // Linked buckets, in JS occupant order: insert reversed, then walk
         // forwards. No bucket Vec can grow during a tick.
         self.grid_heads.fill(-1);
+        // Measure endpoints while indexing them, rather than predicting from
+        // speed. This includes boost, Surge (and their product), growth/radius
+        // changes, and stretch repayment. Only one square root per head query.
+        let mut maximum_body_sweep2 = 0.0_f64;
+        let mut maximum_body_radius = 0.0_f64;
         for i in (0..self.snakes.len()).rev() {
-            if !self.snakes[i].alive {
+            if !self.snakes[i].alive || effects::modifiers(self.snakes[i].effect_kind,self.snakes[i].effect_ticks).intangible {
                 continue;
             }
+            if V2 { maximum_body_radius = maximum_body_radius.max(self.snakes[i].radius); }
             for j in (1..self.snakes[i].len).rev() {
                 let index = i*MAX_SEGMENTS+j;
-                let (x, y) = self.cell(self.segments[index].current);
+                if V2 {
+                    let segment = self.segments[index];
+                    maximum_body_sweep2 = maximum_body_sweep2.max(g.distance2(segment.previous, segment.current));
+                }
+                let (x, y) = self.cell_for_rules::<V2>(self.segments[index].current);
                 let key = y*self.grid_columns+x;
                 self.grid_next[index] = self.grid_heads[key];
                 self.grid_heads[key] = index as i32;
             }
         }
+        let maximum_body_sweep = maximum_body_sweep2.sqrt();
+        let neighboring_reach = if V2 {
+            (g.width / self.grid_columns as f64).min(g.height / self.grid_rows as f64)
+        } else { 0.0 };
         for i in 0..self.snakes.len() {
             let s = self.snakes[i];
-            if !s.alive || s.dying!=DeathReason::None {
+            if !s.alive || s.dying!=DeathReason::None || effects::modifiers(s.effect_kind,s.effect_ticks).intangible {
                 continue;
             }
             let head = self.segments[i*MAX_SEGMENTS];
-            let (hx, hy) = self.cell(head.current);
-            let mut visited = [usize::MAX;
-            9];
-            let mut count = 0;
-            'search: for ox in -1..=1 {
-                for oy in -1..=1 {
-                    let mut x = hx as isize+ox;
-                    let mut y = hy as isize+oy;
-                    if !g.deadly {
-                        x = x.rem_euclid(self.grid_columns as isize);
-                        y = y.rem_euclid(self.grid_rows as isize);
-                    }
-                    else if x<0 || y<0 || x>=self.grid_columns as isize || y>=self.grid_rows as isize {
-                        continue;
-                    }
-                    let key = y as usize*self.grid_columns+x as usize;
-                    if visited[..count].contains(&key) {
-                        continue;
-                    }
-                    visited[count] = key;
-                    count+=1;
-                    let mut occupant = self.grid_heads[key];
-                    while occupant>=0 {
-                        let encoded = occupant as usize;
-                        let other = encoded/MAX_SEGMENTS;
-                        let j = encoded%MAX_SEGMENTS;
-                        occupant = self.grid_next[encoded];
-                        let same = i==other;
-                        if same && (!self.config.self_collisions || j<10) {
-                            continue;
-                        }
-                        let body = self.snakes[other];
-                        let radius = if self.config.rules == RuleSet::V2 {
-                            taper::body_radius(body.radius, j as f64, body.len)
-                        } else { body.radius };
-                        let reach = taper::contact_radius(self.config.rules, s.radius, radius, same);
-                        if Self::swept_hit(g, head, self.segments[encoded], reach) {
-                            self.snakes[i].dying = if same {
-                                DeathReason::SelfHit
-                            } else {
-                                DeathReason::Body
-                            };
-                            self.collisions[i].owner_mask = 1 << other;
-                            break 'search;
-                        }
-                    }
-                }
+            // Full body width bounds every taper tier. Classic uses its
+            // historical loop; V2 widens only when this tick's bound needs it.
+            let search = if V2 {
+                Self::sweep_search_radius((s.radius + maximum_body_radius) * 0.78,
+                    g.distance2(head.previous, head.current).sqrt() + maximum_body_sweep)
+            } else { 0.0 };
+            if V2 && search > neighboring_reach {
+                self.mark_body_collision::<V2, true>(i, g, search);
+            } else {
+                self.mark_body_collision::<V2, false>(i, g, search);
             }
         }
         for (i, s) in self.snakes.iter().enumerate() {
@@ -1279,6 +1319,64 @@ impl World {
         }
         #[cfg(feature = "parity")]
         self.parity_collisions();
+    }
+    // Constant loop bounds keep the common neighboring-cell path unrolled.
+    // Both paths share the exact same collision order and narrow phase.
+    #[inline(always)]
+    fn mark_body_collision<const V2: bool, const WIDE: bool>(&mut self, i: usize, g: Geometry, search: f64) {
+        let s = self.snakes[i];
+        let head = self.segments[i * MAX_SEGMENTS];
+        let (hx, hy) = self.cell_for_rules::<V2>(head.current);
+        let (ox_lo, ox_hi) = if WIDE { Self::search_cell_offsets(search, g.width, self.grid_columns, true, !g.deadly) }
+            else { (-1, 1) };
+        let (oy_lo, oy_hi) = if WIDE { Self::search_cell_offsets(search, g.height, self.grid_rows, true, !g.deadly) }
+            else { (-1, 1) };
+        let mut visited = [usize::MAX; 9];
+        let mut count = 0;
+        'search: for ox in ox_lo..=ox_hi {
+            for oy in oy_lo..=oy_hi {
+                let mut x = hx as isize+ox;
+                let mut y = hy as isize+oy;
+                if !g.deadly {
+                    x = x.rem_euclid(self.grid_columns as isize);
+                    y = y.rem_euclid(self.grid_rows as isize);
+                }
+                else if x<0 || y<0 || x>=self.grid_columns as isize || y>=self.grid_rows as isize {
+                    continue;
+                }
+                let key = y as usize*self.grid_columns+x as usize;
+                if !WIDE && (!V2 || self.grid_columns < 3 || self.grid_rows < 3) {
+                    if visited[..count].contains(&key) { continue; }
+                    visited[count] = key;
+                    count += 1;
+                }
+                let mut occupant = self.grid_heads[key];
+                while occupant>=0 {
+                    let encoded = occupant as usize;
+                    let other = encoded/MAX_SEGMENTS;
+                    let j = encoded%MAX_SEGMENTS;
+                    occupant = self.grid_next[encoded];
+                    let same = i==other;
+                    if same && (!self.config.self_collisions || j<10) {
+                        continue;
+                    }
+                    let body = self.snakes[other];
+                    let radius = if V2 {
+                        taper::body_radius(body.radius, j as f64, body.len)
+                    } else { body.radius };
+                    let reach = taper::contact_radius(self.config.rules, s.radius, radius, same);
+                    if Self::swept_hit(g, head, self.segments[encoded], reach) {
+                        self.snakes[i].dying = if same {
+                            DeathReason::SelfHit
+                        } else {
+                            DeathReason::Body
+                        };
+                        self.collisions[i].owner_mask = 1 << other;
+                        break 'search;
+                    }
+                }
+            }
+        }
     }
     fn death_particle_count(s: &Snake) -> usize {
         if s.len==0 {
@@ -1311,6 +1409,12 @@ impl World {
         }
     }
     fn explode_snake(&mut self, i: usize) -> usize {
+        let kind=effects::EffectKind::from_byte(self.snakes[i].effect_kind);
+        if kind!=effects::EffectKind::None {
+            effects::end(kind,self,i,effects::EndReason::Died);
+            self.snakes[i].effect_kind=0;
+            self.snakes[i].effect_ticks=0;
+        }
         let s = self.snakes[i];
         let intended = Self::death_particle_count(&s);
         self.make_room_for_death_food(intended.min(48));

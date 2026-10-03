@@ -8,12 +8,14 @@
 #include <QFile>
 #include <QSignalSpy>
 #include <QSGGeometryNode>
+#include <QSGTexture>
 #include <QTest>
 #include <QElapsedTimer>
 #include <QCryptographicHash>
 #include <numeric>
 #include <cmath>
 #include <limits>
+#include <cstddef>
 #include <rhi/qrhi.h>
 
 class SnakeRendererTest final : public QObject
@@ -122,6 +124,50 @@ class SnakeRendererTest final : public QObject
         }
         return frame;
     }
+    static SnakeFrame powerupsFrame()
+    {
+        SnakeFrame frame;
+        frame.info = {600, 20, 1280, 720, 0};
+        constexpr double r = 9, spacing = 1.18 * r;
+        for (uint8_t kind = 1; kind <= 3; ++kind) {
+            const double x = 215 + (kind - 1) * 425;
+            const auto offset = uint32_t(frame.segments.size());
+            for (int j = 0; j < 42; ++j) {
+                const float px = x + 2 * r * std::sin(j * 0.18);
+                const float py = 195 + j * spacing;
+                frame.segments.push_back({px, py, px, py});
+            }
+            const auto &a = frame.segments[offset], &b = frame.segments[offset + 1];
+            const auto angle = std::atan2(a.y-b.y, a.x-b.x);
+            snakes_core_snake snake{};
+            snake.id = kind - 1; snake.generation = 1; snake.alive = 1;
+            snake.color_index = kind; snake.radius = r; snake.angle = angle;
+            snake.desired_angle = angle; snake.segment_offset = offset; snake.segment_count = 42;
+            snake.effect_kind = kind; snake.effect_ticks = kind == 1 ? 24 : kind == 2 ? 180 : 90;
+            snake.flags = kind == 1 ? SNAKES_CORE_BOOSTING : kind == 3 ? SNAKES_CORE_PHASED : 0;
+            frame.snakes.push_back(snake);
+            snakes_core_item item{};
+            item.id = kind; item.kind = kind; item.x = x; item.y = 75;
+            item.age_ticks = 15; item.life_ticks = 750; frame.itemRadius = 18;
+            frame.items.push_back(item);
+        }
+        const auto &magnet = frame.segments[frame.snakes[1].segment_offset];
+        for (int k = 0; k < 12; ++k) {
+            const double a = k * M_PI / 6;
+            const float x = magnet.x + float(std::cos(a) * 65);
+            const float y = magnet.y + float(std::sin(a) * 65);
+            frame.food.push_back({uint64_t(k+1), x, y, 3, float(k), 0.85f,
+                                  magnet.x, magnet.y, uint32_t(k%6), SNAKES_CORE_FOOD_SPARK, 255, 0});
+        }
+        // The Phase lane crosses a tangible rival, exposing its translucent body.
+        const auto offset = uint32_t(frame.segments.size());
+        for (int j = 0; j < 22; ++j) {
+            const float x = 1175 - j * spacing;
+            frame.segments.push_back({x, 390, x, 390});
+        }
+        frame.snakes.push_back({3, 1, 1, 0, r, 0, 0, offset, 22, 0, 0, 0, 0});
+        return frame;
+    }
     const QVector<QColor> palette{QColor("#4de6ff")};
     static QShader bakedShader(const char *path)
     {
@@ -133,7 +179,110 @@ class SnakeRendererTest final : public QObject
     }
     static QShader vertexShader() { return bakedShader(":/snakes/shaders/snake.vert.qsb"); }
     static QShader fragmentShader() { return bakedShader(":/snakes/shaders/snake.frag.qsb"); }
+    static QByteArray geometryBytes(const QSGGeometryNode *node)
+    {
+        const auto *geometry = node->geometry();
+        return QByteArray(static_cast<const char *>(geometry->vertexData()),
+                          geometry->vertexCount() * geometry->sizeOfVertex());
+    }
+    static SnakeFrame animationFrame(const QString &scene)
+    {
+        auto frame = makeFrame(scene == QStringLiteral("head-and-body") ? 260 : 24, 1, 0);
+        auto &snake = frame.snakes.front();
+        snake.flags = 0;
+        if (scene == QStringLiteral("food-pulse")) {
+            frame = makeFrame(0, 0, 1);
+        } else if (scene.startsWith(QStringLiteral("capsule-"))) {
+            frame.snakes.clear(); frame.segments.clear();
+            snakes_core_item item{};
+            item.id = 1; item.kind = scene.right(1).toUInt();
+            item.x = 250; item.y = 120; item.age_ticks = 2; item.life_ticks = 30;
+            frame.items.push_back(item); frame.itemRadius = 18;
+        } else if (scene == QStringLiteral("surge") || scene == QStringLiteral("contrail")) {
+            snake.flags = SNAKES_CORE_BOOSTING;
+            snake.effect_kind = 1; snake.effect_ticks = 24;
+        } else if (scene == QStringLiteral("magnet")) {
+            snake.effect_kind = 2; snake.effect_ticks = 24;
+        } else if (scene == QStringLiteral("phase")) {
+            snake.flags = SNAKES_CORE_PHASED;
+            snake.effect_kind = 3; snake.effect_ticks = 24;
+        } else if (scene == QStringLiteral("crown")) {
+            snake.flags = SNAKES_CORE_LEADER;
+        } else if (scene == QStringLiteral("head-and-body")) {
+            // Tier-three breathing/spine lights, trapped shimmer/pupils,
+            // plus the independent blink and tongue uniform clock.
+            snake.flags = SNAKES_CORE_TRAPPED | SNAKES_CORE_HUNTING;
+        } else if (scene == QStringLiteral("corpse")) {
+            snake.flags = SNAKES_CORE_CORPSE; snake.alive = 0;
+        } else {
+            const uint8_t kind = scene == QStringLiteral("pickup-ring") ? SNAKES_CORE_EVENT_PICKUP
+                : scene == QStringLiteral("expiry-ring") ? SNAKES_CORE_EVENT_ITEM_EXPIRY
+                : scene == QStringLiteral("effect-expiry-ring") ? SNAKES_CORE_EVENT_EFFECT_EXPIRY
+                : scene == QStringLiteral("succession-ring") ? SNAKES_CORE_EVENT_SUCCESSION
+                : SNAKES_CORE_EVENT_KILL;
+            frame.events.push_back({frame.info.tick, 250, 120, 0,
+                                   kind == SNAKES_CORE_EVENT_PICKUP ? 1u : 0u, 0, kind, {}});
+        }
+        return frame;
+    }
 private Q_SLOTS:
+    void bakedShaderResourceLayout()
+    {
+        const auto vertex = vertexShader(), fragment = fragmentShader();
+        using Uniforms = SnakeMaterial::UniformData;
+        const QList<QPair<QByteArray, int>> offsets{
+            {"matrix", offsetof(Uniforms, matrix)}, {"opacity", offsetof(Uniforms, opacity)},
+            {"time", offsetof(Uniforms, time)}, {"light", offsetof(Uniforms, light)},
+            {"animationTime", offsetof(Uniforms, animationTime)},
+            {"motionScale", offsetof(Uniforms, motionScale)}, {"paletteMode", offsetof(Uniforms, paletteMode)}};
+        for (const auto &shader : {vertex, fragment}) {
+            const auto description = shader.description();
+            QVERIFY(description.isValid());
+            const auto blocks = description.uniformBlocks();
+            QCOMPARE(blocks.size(), 1);
+            const auto &block = blocks.first();
+            QCOMPARE(block.binding, SnakeMaterial::UniformBinding);
+            QCOMPARE(block.descriptorSet, 0);
+            QCOMPARE(block.size, int(sizeof(Uniforms)));
+            QVERIFY(SnakeMaterial::UniformBufferSize >= block.size);
+            QCOMPARE(block.members.size(), offsets.size());
+            for (qsizetype i = 0; i < offsets.size(); ++i) {
+                QCOMPARE(block.members[i].name, offsets[i].first);
+                QCOMPARE(block.members[i].offset, offsets[i].second);
+            }
+            QVERIFY(description.separateImages().isEmpty());
+            QVERIFY(description.separateSamplers().isEmpty());
+            QVERIFY(description.storageImages().isEmpty());
+            QVERIFY(description.storageBlocks().isEmpty());
+        }
+        // Wave origins are decoded before interpolation and cross the stages
+        // as premultiplied RGB, without changing the 24-byte vertex ABI.
+        const auto outputs = vertex.description().outputVariables();
+        const auto inputs = fragment.description().inputVariables();
+        const auto light = std::find_if(outputs.cbegin(), outputs.cend(), [](const auto &v) {
+            return v.name == "waveLight";
+        });
+        QVERIFY(light != outputs.cend());
+        QCOMPARE(light->location, 5);
+        QCOMPARE(light->type, QShaderDescription::Vec3);
+        QVERIFY(std::any_of(inputs.cbegin(), inputs.cend(), [&](const auto &v) {
+            return v.name == light->name && v.location == light->location && v.type == light->type;
+        }));
+        QVERIFY(vertex.description().combinedImageSamplers().isEmpty());
+        const auto samplers = fragment.description().combinedImageSamplers();
+        QCOMPARE(samplers.size(), 1);
+        QCOMPARE(samplers.first().name, QByteArray("iconAtlas"));
+        QCOMPARE(samplers.first().type, QShaderDescription::Sampler2D);
+        QCOMPARE(samplers.first().binding, SnakeMaterial::IconAtlasBinding);
+        QCOMPARE(samplers.first().descriptorSet, 0);
+        SnakeMaterial material;
+        QCOMPARE(material.iconAtlas()->textureSize(), QSize(128, 128));
+        QCOMPARE(material.iconAtlas()->filtering(), QSGTexture::Linear);
+        QCOMPARE(material.iconAtlas()->horizontalWrapMode(), QSGTexture::ClampToEdge);
+        QCOMPARE(material.iconAtlas()->verticalWrapMode(), QSGTexture::ClampToEdge);
+        QVERIFY(!material.iconAtlas()->hasMipmaps());
+    }
+
     void bakedShaderVariants()
     {
         const auto vertex = vertexShader(), fragment = fragmentShader();
@@ -277,7 +426,7 @@ private Q_SLOTS:
     {
         QFETCH(bool, absolute);
         QFETCH(int, gap);
-        SnakeSimulation sim({160, 120, 0, 35, 100, 1000, 0, 7, 6, 0, 1, SNAKES_CORE_RULE_V2, 0});
+        SnakeSimulation sim({160, 120, 0, 35, 100, 1000, 0, 7, 6, 0, 1, SNAKES_CORE_RULE_V2, {0}});
         sim.setPresentationLead(4'166'667);
         SnakeRenderer everyTick, skipped;
         for (auto *view : {&everyTick, &skipped}) {
@@ -317,7 +466,7 @@ private Q_SLOTS:
 
     void batchedAdvancePreservesIntermediateDeath()
     {
-        const snakes_core_config config{160, 120, 0, 35, 100, 1000, 0, 7, 6, 0, 1, SNAKES_CORE_RULE_V2, 0};
+        const snakes_core_config config{160, 120, 0, 35, 100, 1000, 0, 7, 6, 0, 1, SNAKES_CORE_RULE_V2, {0}};
         SnakeSimulation referenceSimulation(config), batchedSimulation(config);
         SnakeRenderer everyTick, batched;
         everyTick.setSize(QSizeF(160, 120)); batched.setSize(QSizeF(160, 120));
@@ -346,7 +495,7 @@ private Q_SLOTS:
 
     void perWindowPredictionSurvivesAnotherWindowStepping()
     {
-        const snakes_core_config config{320, 240, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0};
+        const snakes_core_config config{320, 240, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, {0}};
         SnakeSimulation sim(config);
         SnakeRenderer first, second;
         first.setSize(QSizeF(320, 240)); second.setSize(QSizeF(320, 240));
@@ -371,7 +520,7 @@ private Q_SLOTS:
 
     void pendingPresentationSurvivesHistoryRecycling()
     {
-        SnakeSimulation sim({320, 240, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0});
+        SnakeSimulation sim({320, 240, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, {0}});
         SnakeRenderer view;
         view.setSize(QSizeF(320, 240)); view.setSimulation(&sim);
         constexpr qint64 origin = 1'000'000'000;
@@ -462,7 +611,7 @@ private Q_SLOTS:
     }
     void pausedSharedStateReachesEveryRenderer()
     {
-        SnakeSimulation simulation({640, 480, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0});
+        SnakeSimulation simulation({640, 480, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, {0}});
         simulation.setPaused(true);
         SnakeRenderer first, second;
         first.setSize(QSizeF(320, 240)); second.setSize(QSizeF(320, 240));
@@ -494,7 +643,7 @@ private Q_SLOTS:
 
     void sharedNativeFrameAndDestruction()
     {
-        auto *simulation = new SnakeSimulation({640, 480, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0});
+        auto *simulation = new SnakeSimulation({640, 480, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, {0}});
         SnakeRenderer a, b;
         a.setSimulation(simulation); b.setSimulation(simulation);
         simulation->advance(1.0 / 30);
@@ -521,7 +670,7 @@ private Q_SLOTS:
     void abiLimitedArenaMapsToEveryViewport()
     {
         QFETCH(QString, behavior); QFETCH(QSizeF, extent); QFETCH(bool, deadly);
-        SnakeSimulation simulation({1280, 720, 50, 35, 100, 100, 75, 1, 6, 0, uint32_t(deadly), SNAKES_CORE_RULE_DEFAULT, 0});
+        SnakeSimulation simulation({1280, 720, 50, 35, 100, 100, 75, 1, 6, 0, uint32_t(deadly), SNAKES_CORE_RULE_DEFAULT, {0}});
         QVERIFY(simulation.resize(extent.width(), extent.height()));
         const auto &config = simulation.config();
         SnakeRenderer renderer;
@@ -686,7 +835,7 @@ private Q_SLOTS:
     }
     void replacingSimulationClearsRustHistoryAtSameTick()
     {
-        const snakes_core_config config{320,240,50,35,100,100,75,1,6,0,1,SNAKES_CORE_RULE_DEFAULT,0};
+        const snakes_core_config config{320,240,50,35,100,100,75,1,6,0,1,SNAKES_CORE_RULE_DEFAULT,{0}};
         SnakeSimulation first(config),second(config);
         SnakeRenderer renderer,fresh;
         renderer.setSize(QSizeF(320,240));fresh.setSize(QSizeF(320,240));
@@ -716,7 +865,7 @@ private Q_SLOTS:
     void benchmarkEcosystemPhases()
     {
         QFETCH(bool,deadly);
-        snakes_core_config config{3440,1440,100,100,100,100,100,20260814,6,1,uint32_t(deadly),SNAKES_CORE_RULE_DEFAULT,0};
+        snakes_core_config config{3440,1440,100,100,100,100,100,20260814,6,1,uint32_t(deadly),SNAKES_CORE_RULE_DEFAULT,{0}};
         snakes_core_world *handle=nullptr;
         QCOMPARE(snakes_core_create(&config,&handle),SNAKES_CORE_OK);
         std::unique_ptr<snakes_core_world,decltype(&snakes_core_destroy)> world(handle,snakes_core_destroy);
@@ -783,7 +932,7 @@ private Q_SLOTS:
         renderer.presentFrame(21, 0.8);
         renderer.updatePaintNode(node, nullptr);
         QCOMPARE(material->time, float(20 + 0.5 / 30));
-        QCOMPARE(material->animationTime, 21.0f);
+        QCOMPARE(material->animationTime, float(20 + 0.5 / 30));
         QCOMPARE(material->motionScale, 0.6f);
         renderer.setShaderTimeFrozen(false);
         renderer.updatePaintNode(node, nullptr);
@@ -792,6 +941,155 @@ private Q_SLOTS:
         renderer.m_shaderFailed = true;
         node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(node, nullptr));
         QCOMPARE(node->geometry()->sizeOfVertex(), 12);
+        delete node;
+    }
+
+    void reducedMotionFreezesPresentationAnimations_data()
+    {
+        QTest::addColumn<bool>("shader");
+        QTest::addColumn<QString>("scene");
+        QTest::addColumn<bool>("geometryAnimated");
+        const QStringList scenes{
+            QStringLiteral("food-pulse"), QStringLiteral("capsule-1"), QStringLiteral("capsule-2"),
+            QStringLiteral("capsule-3"), QStringLiteral("capsule-4"), QStringLiteral("capsule-5"),
+            QStringLiteral("surge"), QStringLiteral("magnet"), QStringLiteral("phase"),
+            QStringLiteral("contrail"), QStringLiteral("pickup-ring"), QStringLiteral("expiry-ring"),
+            QStringLiteral("effect-expiry-ring"), QStringLiteral("kill-flash"), QStringLiteral("succession-ring"),
+            QStringLiteral("corpse"), QStringLiteral("crown"), QStringLiteral("head-and-body")};
+        for (bool shader : {false, true}) {
+            for (const auto &scene : scenes) {
+                // Procedural shader animation can change pixels with constant
+                // geometry. Classic heads/crowns and succession are static.
+                const bool animated = shader ? scene != QStringLiteral("food-pulse")
+                        && scene != QStringLiteral("magnet") && scene != QStringLiteral("phase")
+                        && scene != QStringLiteral("head-and-body")
+                    : scene != QStringLiteral("succession-ring") && scene != QStringLiteral("crown")
+                        && scene != QStringLiteral("head-and-body");
+                const QByteArray name = (shader ? "shader-" : "classic-") + scene.toUtf8();
+                QTest::newRow(name.constData()) << shader << scene << animated;
+            }
+        }
+    }
+
+    void reducedMotionFreezesPresentationAnimations()
+    {
+        QFETCH(bool, shader);
+        QFETCH(QString, scene);
+        QFETCH(bool, geometryAnimated);
+        SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest = shader;
+        auto frame = animationFrame(scene);
+        renderer.setSize(QSizeF(frame.info.world_width, frame.info.world_height));
+        QSGGeometryNode *node = nullptr;
+        if (scene == QStringLiteral("contrail")) {
+            // Retain multiple moving tail samples so fading and expiry, rather
+            // than just the boost ring, participate in the geometry comparison.
+            for (int tick = 596; tick < 600; ++tick) {
+                auto history = frame;
+                history.info.tick = tick; history.info.simulation_time = tick / 30.0;
+                for (auto &point : history.segments) {
+                    point.x += (tick - 600) * 2; point.previous_x = point.x;
+                }
+                renderer.syncFrame(history, palette, 0.5, true);
+                node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(node, nullptr));
+            }
+        }
+        renderer.syncFrame(frame, palette, 0.5, true);
+        renderer.presentFrame(20.1, 0.5);
+        node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(node, nullptr));
+        QCOMPARE(node->geometry()->sizeOfVertex(), shader ? 24 : 12);
+        QVERIFY(node->geometry()->vertexCount() > 0);
+        const auto normal = geometryBytes(node);
+        renderer.presentFrame(20.23, 0.5);
+        renderer.updatePaintNode(node, nullptr);
+        if (geometryAnimated) QVERIFY2(geometryBytes(node) != normal, "Fixture must exercise animated geometry");
+
+        renderer.presentFrame(20.1, 0.5);
+        renderer.setShaderTimeFrozen(true);
+        renderer.updatePaintNode(node, nullptr);
+        const auto frozen = geometryBytes(node);
+        for (const double delta : {0.01, 0.07, 0.16, 0.35, 0.65, 1.0, 4.0, 8.0}) {
+            renderer.presentFrame(20.1 + delta, 0.5);
+            renderer.updatePaintNode(node, nullptr);
+            QCOMPARE(geometryBytes(node), frozen);
+            if (shader) {
+                const auto *material = static_cast<const SnakeMaterial *>(node->material());
+                QCOMPARE(material->time, 20.1f);
+                QCOMPARE(material->animationTime, 20.1f);
+                QCOMPARE(material->motionScale, 0.6f);
+                QCOMPARE(material->paletteMode, 0.0f);
+            }
+        }
+        // Disabling reduced motion restores both the flag and normal clocks.
+        renderer.setShaderTimeFrozen(false);
+        renderer.presentFrame(20.1, 0.5);
+        renderer.updatePaintNode(node, nullptr);
+        QCOMPARE(geometryBytes(node), normal);
+        if (shader) {
+            const auto *material = static_cast<const SnakeMaterial *>(node->material());
+            QCOMPARE(material->motionScale, 1.0f);
+            renderer.presentFrame(20.23, 0.5);
+            renderer.updatePaintNode(node, nullptr);
+            QCOMPARE(material->time, 20.23f);
+            QCOMPARE(material->animationTime, 20.23f);
+        }
+        delete node;
+    }
+
+    void reducedMotionFlagReachesBothFormats_data()
+    {
+        QTest::addColumn<bool>("shader");
+        QTest::newRow("classic") << false;
+        QTest::newRow("shader") << true;
+    }
+
+    void reducedMotionFlagReachesBothFormats()
+    {
+        QFETCH(bool, shader);
+        SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest = shader;
+        const auto frame = powerupsFrame();
+        renderer.setSize(QSizeF(1280, 720));
+        renderer.syncFrame(frame, palette, 1, true);
+        renderer.presentFrame(20.1, 1);
+        renderer.setShaderTimeFrozen(true);
+        auto *node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr, nullptr));
+        const snakes_core_render_params params{1280, 720, 1, 1, 0, 0, 1, 20.1, 1, 0};
+        const snakes_core_render_color color{77, 230, 255, 255};
+        // Compare with the ABI's reduced-motion styling, so freezing the clock
+        // alone cannot mask a missing set_reduced_motion call in either path.
+        const auto expected = [&](bool format, bool reduced) {
+            std::unique_ptr<snakes_core_renderer, decltype(&snakes_core_render_destroy)> core{
+                snakes_core_render_create(), snakes_core_render_destroy};
+            snakes_core_render_set_items(core.get(), frame.items.data(), frame.items.size(), frame.itemRadius);
+            snakes_core_render_set_reduced_motion(core.get(), uint32_t(reduced));
+            snakes_core_render_output out{};
+            std::vector<snakes_core_shader_vertex> vertices(65536);
+            if (format) snakes_core_render_build_shader(core.get(), &frame.info,
+                frame.snakes.data(), frame.snakes.size(), frame.segments.data(), frame.segments.size(),
+                frame.food.data(), frame.food.size(), nullptr, 0, &color, 1, &params,
+                vertices.data(), vertices.size(), &out);
+            else snakes_core_render_build(core.get(), &frame.info,
+                frame.snakes.data(), frame.snakes.size(), frame.segments.data(), frame.segments.size(),
+                frame.food.data(), frame.food.size(), nullptr, 0, &color, 1, &params,
+                reinterpret_cast<snakes_core_render_vertex *>(vertices.data()), vertices.size(), &out);
+            return QByteArray(reinterpret_cast<const char *>(vertices.data()), out.vertex_count * (format ? 24 : 12));
+        };
+        const auto reduced = expected(shader, true);
+        QVERIFY(reduced != expected(shader, false));
+        QCOMPARE(geometryBytes(node), reduced);
+        // Recreated nodes and a shader failure must inherit the same freeze
+        // instant and reduced-motion flag even after presentation time advances.
+        renderer.presentFrame(24, 1);
+        delete node;
+        node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr, nullptr));
+        QCOMPARE(geometryBytes(node), reduced);
+        if (shader) {
+            renderer.m_shaderFailed = true;
+            node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(node, nullptr));
+            QCOMPARE(node->geometry()->sizeOfVertex(), 12);
+            QCOMPARE(geometryBytes(node), expected(false, true));
+        }
         delete node;
     }
 
@@ -832,16 +1130,68 @@ private Q_SLOTS:
         delete node;
     }
 
+    void itemSpritesUseSixVertices()
+    {
+        SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest = true;
+        renderer.setSize(QSizeF(1280, 720));
+        auto frame = makeFrame(2, 1, 0);
+        renderer.syncFrame(frame, palette, 1, true);
+        QSGNode *node = renderer.updatePaintNode(nullptr, nullptr);
+        const int baseline = static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount();
+        for (uint8_t kind = 1; kind <= 3; ++kind) {
+            snakes_core_item item{};
+            item.id = kind; item.kind = kind;
+            item.x = 200 + kind * 180; item.y = 450;
+            item.age_ticks = 0; item.life_ticks = 750; frame.itemRadius = 12;
+            frame.items.push_back(item);
+        }
+        renderer.syncFrame(frame, palette, 1, true);
+        node = renderer.updatePaintNode(node, nullptr);
+        QCOMPARE(static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount(), baseline + 18);
+        delete node;
+    }
+
+    void powerupFixtureExportsActivePayloads()
+    {
+        SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest = true;
+        renderer.setSize(QSizeF(1280, 720));
+        auto frame = powerupsFrame();
+        renderer.syncFrame(frame, palette, 1, true);
+        auto *node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr, nullptr));
+        std::array<int, 16> counts{};
+        const auto *geometry = node->geometry();
+        const auto *vertices = static_cast<const snakes_core_shader_vertex *>(geometry->vertexData());
+        std::array<int, 4> effects{};
+        for (int i = 0; i < geometry->vertexCount(); ++i) {
+            const auto &v = vertices[i];
+            QVERIFY(v.params[0] < counts.size());
+            ++counts[v.params[0]];
+            if (v.params[0] == 0) ++effects[(v.params[1] >> 2) & 7];
+        }
+        QCOMPARE(counts[1], 24);
+        QCOMPARE(counts[5], 72);
+        QCOMPARE(counts[11], 18);
+        QCOMPARE(counts[14], 6);
+        QCOMPARE(counts[15], 6);
+        for (int kind = 1; kind <= 3; ++kind) QCOMPARE(effects[kind], 41 * 6);
+        delete node;
+    }
+
     void captureShaderFixture_data()
     {
         QTest::addColumn<bool>("rejectPipeline");
-        QTest::newRow("shader") << false;
-        QTest::newRow("driver-rejection-fallback") << true;
+        QTest::addColumn<bool>("powerups");
+        QTest::newRow("shader") << false << false;
+        QTest::newRow("driver-rejection-fallback") << true << false;
+        QTest::newRow("powerups") << false << true;
     }
 
     void captureShaderFixture()
     {
         QFETCH(bool, rejectPipeline);
+        QFETCH(bool, powerups);
         const auto path = qEnvironmentVariable("SNAKES_CAPTURE_PATH");
         if (path.isEmpty()) QSKIP("Set SNAKES_CAPTURE_PATH to capture the RHI fixture");
         QQuickWindow window;
@@ -868,7 +1218,15 @@ private Q_SLOTS:
             };
         }
         renderer.setSize(QSizeF(1280, 720));
-        frame = anatomyFrame();
+        frame = powerups ? powerupsFrame() : anatomyFrame();
+        // Capture the R8 atlas and capsule contours through a real RHI path.
+        for (uint8_t kind = 1; !powerups && kind <= 3; ++kind) {
+            snakes_core_item item{};
+            item.id = kind; item.kind = kind;
+            item.x = 180 + (kind - 1) * 400; item.y = 650;
+            item.age_ticks = 15; item.life_ticks = 750; frame.itemRadius = 18;
+            frame.items.push_back(item);
+        }
         const auto colors = SnakeSimulation::colors(QStringLiteral("ocean"));
         // Replay 14 earlier physics snapshots to expose the continuous boost
         // contrail. Every visible frame remains deterministic at t=20.
@@ -913,8 +1271,31 @@ private Q_SLOTS:
             for (int x = 0; x < image.width(); x += 8)
                 if (image.pixel(x, y) != background) ++coloredSamples;
         QVERIFY2(coloredSamples > 50, "The RHI capture contains no rendered fixture");
-        const auto outputPath = rejectPipeline ? path + QStringLiteral(".fallback.png") : path;
+        const auto outputPath = rejectPipeline ? path + QStringLiteral(".fallback.png")
+            : powerups ? path + QStringLiteral(".powerups.png") : path;
         QVERIFY(image.save(outputPath));
+        if (!rejectPipeline) {
+            // Inspect only the icon square, excluding the capsule rim, halo
+            // and orbiting spark. The dark capsule fill must not pass this
+            // check when an atlas is bound but was never created/uploaded.
+            const double sx = double(image.width()) / frame.info.world_width;
+            const double sy = double(image.height()) / frame.info.world_height;
+            for (const auto &item : frame.items) {
+                const int cx = qRound(item.x * sx), cy = qRound(item.y * sy);
+                const int rx = qRound(frame.itemRadius * 0.55 * sx);
+                const int ry = qRound(frame.itemRadius * 0.55 * sy);
+                int iconPixels = 0;
+                for (int y = cy - ry; y <= cy + ry; ++y)
+                    for (int x = cx - rx; x <= cx + rx; ++x) {
+                        const auto pixel = image.pixel(x, y);
+                        if (pixel != background && qMax(qRed(pixel), qMax(qGreen(pixel), qBlue(pixel))) >= 96)
+                            ++iconPixels;
+                    }
+                qInfo() << "Capsule kind" << item.kind << "icon pixels" << iconPixels;
+                QVERIFY2(iconPixels >= 6, qPrintable(QStringLiteral("Capsule kind %1 has no visible atlas icon (%2 pixels)")
+                                                     .arg(item.kind).arg(iconPixels)));
+            }
+        }
         qInfo() << "Shader fixture:" << outputPath << "RHI API" << window.rendererInterface()->graphicsApi()
                 << "classic fallback" << rejectPipeline;
     }
@@ -929,6 +1310,26 @@ private Q_SLOTS:
         QSGNode *node = renderer.updatePaintNode(nullptr, nullptr);
         const auto *geometry = static_cast<QSGGeometryNode *>(node)->geometry();
         qInfo() << "mature shader vertices" << geometry->vertexCount() << "upload bytes"
+                << geometry->vertexCount() * geometry->sizeOfVertex();
+        QBENCHMARK {
+            renderer.presentFrame(20, 0.5);
+            node = renderer.updatePaintNode(node, nullptr);
+        }
+        delete node;
+    }
+    void benchmarkPowerupGeometry()
+    {
+        SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest = true;
+        renderer.setSize(QSizeF(3440, 1440));
+        auto frame = makeFrame(120, 14, 400);
+        for (auto &snake : frame.snakes) {
+            snake.effect_kind = 1 + snake.id % 3; snake.effect_ticks = 90;
+        }
+        renderer.syncFrame(frame, palette, 0.5, true);
+        QSGNode *node = renderer.updatePaintNode(nullptr, nullptr);
+        const auto *geometry = static_cast<QSGGeometryNode *>(node)->geometry();
+        qInfo() << "active shader vertices" << geometry->vertexCount() << "upload bytes"
                 << geometry->vertexCount() * geometry->sizeOfVertex();
         QBENCHMARK {
             renderer.presentFrame(20, 0.5);

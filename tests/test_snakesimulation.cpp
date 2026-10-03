@@ -14,7 +14,7 @@
 class SnakeSimulationTest final : public QObject
 {
     Q_OBJECT
-    static snakes_core_config defaults() { return {1280, 720, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0}; }
+    static snakes_core_config defaults() { return {1280, 720, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, {0}}; }
 private Q_SLOTS:
     void compactHistoryOutlivesPhaseHistoryAndResetsOnRestart()
     {
@@ -213,6 +213,9 @@ private Q_SLOTS:
         settings.setSnakeIntelligence(99); settings.setSnakeSelfCollisions(true);
         settings.setSnakeDeadlyWalls(false); settings.setAnimationPalette(QStringLiteral("ember"));
         const auto config = SnakeSimulation::configuration(settings, 1, 20000, 0xffffffffU);
+        QCOMPARE(config.power_ups, SNAKES_CORE_POWER_UPS_ON);
+        settings.setSnakePowerUps(false);
+        QCOMPARE(SnakeSimulation::configuration(settings, 1280, 720, 1).power_ups, SNAKES_CORE_POWER_UPS_OFF);
         QCOMPARE(config.width, 80); QCOMPARE(config.height, 16384);
         QCOMPARE(config.density, 90); QCOMPARE(config.trails, 80);
         QCOMPARE(config.scale, 150); QCOMPARE(config.speed, 125);

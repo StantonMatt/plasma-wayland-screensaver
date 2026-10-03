@@ -5,13 +5,14 @@
 //! not cooperative AI claims. Kill attribution uses exact mechanics events.
 use snakes_core::{ai::AiController, controller::{BaselineController}, Config, DeathReason, Point, World, MAX_SNAKES, STEP_SECONDS, normalize_angle};
 use std::time::Instant;
+#[path="support/phase_contact.rs"] mod phase_contact;
 #[path="support/diagnostics.rs"] mod diagnostics;
 use diagnostics::{ScoreController,Diagnostics};
 #[allow(dead_code)]
 #[path="support/accounting.rs"] mod accounting;
 use accounting::{Observed,CombatTotals};
 #[derive(Clone,Copy,Default)]
-struct Before {alive:bool,head:Point,angle:f64,generation:u32}
+struct Before {alive:bool,head:Point,angle:f64,generation:u32,flags:u32}
 #[derive(Clone,Copy,Debug,Default)]
 #[allow(dead_code)]
 struct TraceSnake {head:Point,angle:f64,rush:f64,prey:Option<usize>,side:i8,stage:u8,exit:Point}
@@ -32,11 +33,16 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
     let mut hunting_ticks=0usize;let mut coil_ticks=0usize;let mut rush_ticks=0usize;
     let mut circle_ticks=0usize;let mut live_ticks=0usize;let mut sum_length=0u64;let mut max_length=0usize;
     let mut heading_origin=[0.0f64;MAX_SNAKES];
+    // Observations live outside the timed tick. An intended Phase use means an
+    // actual otherwise-lethal body/head contact survived while intangible.
+    let mut pickups=0u64; let mut phase_pickups=0u64; let mut trapped_phase_pickups=0u64;
+    let mut phase_used=0u64; let mut phase_expiries=0u64; let mut phase_clear_expiries=0u64;
+    let mut phase_contact_ticks=0u64; let mut used=[false;MAX_SNAKES];
     for tick in 0..ticks {
         for s in w.snakes() {
             let id=s.id as usize;
             before[id]=Before {alive:s.alive,head:s.segments.first().map(|p|p.current).unwrap_or_default(),
-                angle:s.angle,generation:s.generation};
+                angle:s.angle,generation:s.generation,flags:s.flags};
         }
         if trace && tick%6==0 {
             for s in w.snakes().filter(|s|s.alive) {
@@ -49,6 +55,25 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
         if let Some(d)=&mut diagnostics {d.before(tick,&w,&controller);}
         let start=Instant::now();w.step(&mut controller);times.push(start.elapsed().as_secs_f64()*1000.0);
         if let Some(d)=&mut diagnostics {d.after(tick,&controller);}
+        for event in w.frame_events() {
+            if event.kind==snakes_core::EventKind::Pickup {
+                pickups+=1;
+                if event.other_snake_id==snakes_core::effects::EffectKind::Phase as u32 {
+                    phase_pickups+=1;
+                    let id=event.snake_id as usize; used[id]=false;
+                    trapped_phase_pickups+=u64::from(before[id].flags & snakes_core::flags::TRAPPED!=0);
+                }
+            }
+            if event.kind==snakes_core::EventKind::EffectExpiry && event.other_snake_id==snakes_core::effects::EffectKind::Phase as u32 {
+                phase_expiries+=1;
+                phase_clear_expiries+=u64::from(w.snake(event.snake_id as usize).is_some_and(|s|s.alive));
+            }
+        }
+        for s in w.snakes().filter(|s|s.alive && s.flags & snakes_core::flags::PHASED!=0) {
+            let id=s.id as usize;
+            let contact=phase_contact::otherwise_lethal(&w,s);
+            if contact {phase_contact_ticks+=1;if !used[id] {phase_used+=1;used[id]=true;}}
+        }
         for (_,e,_,position,_) in w.consumption_events() {
             eaten+=1;
             let challengers=(0..w.snake_count()).filter(|i|*i!=e as usize && before[*i].alive && w.distance_squared(before[*i].head,position)<160.0*160.0).count();
@@ -100,13 +125,14 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
     let CombatTotals {deaths,opponent_kills,ambiguous_kills,bigger_kills,smaller_kills,hunting_kills,staged_kills,attack_deaths,staged_deaths}=combat;
     let avg=times.iter().sum::<f64>()/ticks as f64;times.sort_unstable_by(f64::total_cmp);
     let snake_minutes=live_ticks as f64*STEP_SECONDS/60.0;
+    println!("items pickups={pickups} pickups/min={:.3} phase_pickups={phase_pickups} trapped_phase_pickups={trapped_phase_pickups} phase_used={phase_used} phase_contact_ticks={phase_contact_ticks} phase_expiries={phase_expiries} phase_clear_expiries={phase_clear_expiries}",pickups as f64/minutes as f64);
     println!("{label} seed={} intelligence={} walls={} minutes={minutes} deaths={} wall={} body={} self={} head_lost={} head_tie={} deaths/snake_min={:.4} food/min={:.2} contests_won={contests} contests_lost={contests_lost} opponent_kills={opponent_kills} bigger_kills={bigger_kills} smaller_kills={smaller_kills} ambiguous_kills={ambiguous_kills} hunting_kills={hunting_kills} staged_kills={staged_kills} attack_deaths={attack_deaths} staged_deaths={staged_deaths} reversals/snake_min={:.2} oscillations/snake_min={:.2} circling_snake_s={:.2} mean_len={:.2} max_len={max_length} ms_avg={avg:.4} ms_p50={:.4} ms_p95={:.4} ms_p99={:.4} ms_max={:.4} hunting_snake_s={:.2} coil_snake_s={:.2} rush_snake_s={:.2}",
         cfg.seed,cfg.intelligence,if cfg.deadly_walls {"deadly"} else {"wrap"},w.stats().deaths,deaths[0],deaths[1],deaths[2],deaths[3],deaths[4],w.stats().deaths as f64/snake_minutes,eaten as f64/minutes as f64,reversals as f64/snake_minutes,oscillations as f64/snake_minutes,circle_ticks as f64*STEP_SECONDS,sum_length as f64/live_ticks as f64,percentile(&times,0.50),percentile(&times,0.95),percentile(&times,0.99),times.last().unwrap(),hunting_ticks as f64*STEP_SECONDS,coil_ticks as f64*STEP_SECONDS,rush_ticks as f64*STEP_SECONDS);
 }
 fn main() {
     let args:Vec<String>=std::env::args().collect();
     if args.iter().any(|s|s=="--help") {
-        println!("ai_scorecard [minutes=8] [seed] [IQ=100/50] [deadly/wrap] [--ai-only] [--diagnostics] [--profile] [--trace] [--classic]");return;
+        println!("ai_scorecard [minutes=8] [seed] [IQ=100/50] [deadly/wrap] [--ai-only] [--diagnostics] [--profile] [--trace] [--classic] [--no-power-ups]");return;
     }
     let positional:Vec<&String>=args.iter().skip(1).filter(|s|!s.starts_with("--")).collect();
     let minutes=positional.first().map(|s|s.parse().unwrap()).unwrap_or(8);
@@ -114,7 +140,7 @@ fn main() {
     let seeds=if let Some(seed)=positional.get(1) {vec![seed.parse().unwrap()]} else {vec![73,20260814,991]};
     for seed in seeds {for intelligence in [100.0,50.0] {for deadly_walls in [true,false] {
         let cfg=Config {width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence,
-            self_collisions:true,deadly_walls,seed,rules: if std::env::args().any(|s|s=="--classic") { snakes_core::RuleSet::Classic } else { snakes_core::RuleSet::V2 },..Config::default()};
+            self_collisions:true,deadly_walls,seed,power_ups:!args.iter().any(|s|s=="--no-power-ups"),rules: if std::env::args().any(|s|s=="--classic") { snakes_core::RuleSet::Classic } else { snakes_core::RuleSet::V2 },..Config::default()};
         if let Some(iq)=positional.get(2) {if intelligence!=iq.parse::<f64>().unwrap() {continue;}}
         if let Some(walls)=positional.get(3) {if deadly_walls!=(walls.as_str()=="deadly") {continue;}}
         let diagnostic=args.iter().any(|s|s=="--diagnostics");

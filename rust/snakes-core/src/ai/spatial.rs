@@ -3,6 +3,14 @@ use crate::{Point, World, MAX_FOOD, MAX_SEGMENTS, MAX_SNAKES};
 use std::ops::RangeInclusive;
 pub(super) const CELLS: usize = 128 * 128;
 pub(super) const FILL_LIMIT: usize = 512;
+/// Bound a narrow-phase contact plus its safety margin and possible motion.
+/// Pass maximum physical widths for broad queries, exact tapered widths for
+/// per-record tests. Effect reserves scale the margin as well as the contact.
+#[inline]
+pub(super) fn query_radius(contact: f64, margin: f64, scale: f64, motion: f64) -> f64 {
+    (contact + margin) * scale + motion
+}
+
 /// Shared by body safety, food discovery, route search and area estimates.
 /// Storage is allocated once, independent of arena resize/population changes.
 #[derive(Clone)]

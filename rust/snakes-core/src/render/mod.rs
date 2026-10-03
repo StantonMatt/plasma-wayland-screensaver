@@ -3,10 +3,11 @@
 //! preceding the final vertex conversion stays f64, as in the Qt renderer.
 mod geometry;
 mod shader;
+pub(crate) mod items;
 pub use shader::ShaderVertex;
 use geometry::{P, Sink, delta, wrap, copies, visible, prepare};
-use crate::ffi::{SnakeRecord, SegmentRecord, FoodRecord, EventRecord, FrameInfo};
-use crate::{flags, MAX_SNAKES, MAX_SEGMENTS, MAX_EVENTS};
+use crate::ffi::{SnakeRecord, SegmentRecord, FoodRecord, ItemRecord, EventRecord, FrameInfo};
+use crate::{flags, MAX_SNAKES, MAX_SEGMENTS};
 // Far beyond supported worlds (<=16384) and physical radii, but small
 // enough that all projected/effect coordinates stay representable as f32.
 // Use comparisons: they reject NaN and infinities without a separate scan.
@@ -127,12 +128,13 @@ struct Trail {
     head: usize,
     len: usize
 }
-#[derive(Clone, Copy, Default)]
-struct Flash {
-    p: P,
-    time: f64,
-    color: u32,
-    active: bool
+// One slot is one visible logical effect copy, regardless of its triangles.
+// Count required vertices too, so a buffer-growth retry sees the same budget.
+#[derive(Default)]
+struct EffectBudget { copies: usize }
+impl EffectBudget {
+    fn full(&self)->bool { self.copies>=8 }
+    fn emitted(&mut self,before:usize,after:usize) { self.copies+=usize::from(after>before); }
 }
 #[derive(Clone, Copy, Default)]
 struct Corpse {
@@ -149,14 +151,17 @@ pub struct Renderer {
     dense: bool,
     trails: [Trail;MAX_SNAKES],
     corpses: [Corpse;MAX_SNAKES],
-    flashes: [Flash;MAX_EVENTS],
-    flash_head: usize,
     last_frame: Option<(u64, u64)>,
     event_tick: Option<u64>,
     tapers: Vec<f64>,
     brightness: Vec<u8>,
+    // Only mixed-colour waves need per-sample origins; retained, never allocated per frame.
+    wave_origins: Vec<u8>,
     taper_lengths: [usize;MAX_SNAKES],
     pub reduced_motion: bool,
+    items: [ItemRecord;crate::MAX_ITEMS],
+    item_count: usize,
+    item_radius: f64,
     effects: [shader::Effect;8],
     effect_head: usize,
     waves: [[shader::Wave;2];MAX_SNAKES],
@@ -191,14 +196,16 @@ impl Renderer {
             dense: false,
             trails: [Trail::default();MAX_SNAKES],
             corpses: [Corpse::default();MAX_SNAKES],
-            flashes: [Flash::default();MAX_EVENTS],
-            flash_head: 0,
             last_frame: None,
             event_tick: None,
             tapers: vec![0.0;MAX_SNAKES*MAX_SEGMENTS],
             brightness: vec![0;MAX_SEGMENTS],
+            wave_origins: vec![0;MAX_SEGMENTS],
             taper_lengths: [0;MAX_SNAKES],
             reduced_motion: false,
+            items: [ItemRecord::default();crate::MAX_ITEMS],
+            item_count: 0,
+            item_radius: 0.0,
             effects: [shader::Effect::default();8],
             effect_head: 0,
             waves: [[shader::Wave::default();2];MAX_SNAKES],
@@ -214,8 +221,6 @@ impl Renderer {
     pub fn reset(&mut self) {
         self.trails.fill(Trail::default());
         self.corpses.fill(Corpse::default());
-        self.flashes.fill(Flash::default());
-        self.flash_head = 0;
         self.last_frame = None;
         self.event_tick = None;
         self.dense = false;
@@ -232,19 +237,7 @@ impl Renderer {
         if self.last_frame==Some((info.tick, info.geometry_generation)) {
             return;
         }
-        // Consume only events actually supplied; repeated exports and the retry
-        // after buffer growth cannot replay a kill flash.
-        for e in events {
-            if e.kind==0 && coordinate32(e.x) && coordinate32(e.y) && e.tick<=info.tick && self.event_tick.is_none_or(|t|e.tick>t) {
-                self.flashes[self.flash_head] = Flash {
-                    p: P::new(e.x as f64, e.y as f64),
-                    time: info.simulation_time-(info.tick-e.tick) as f64*crate::STEP_SECONDS,
-                    color: e.color_index,
-                    active: true
-                };
-                self.flash_head = (self.flash_head+1)%MAX_EVENTS;
-            }
-        }
+        // Advance the deduplication cutoff after shader_history consumes events.
         if let Some(t) = events.iter().map(|e|e.tick).max() {
             self.event_tick = Some(self.event_tick.map_or(t, |old|old.max(t)));
         }
@@ -281,7 +274,7 @@ impl Renderer {
     }
     pub fn build(&mut self, info: &FrameInfo, snakes: &[SnakeRecord], segments: &[SegmentRecord], food: &[FoodRecord], events: &[EventRecord], palette: &[Color], p: &Params, output: &mut [Vertex]) -> Output {
         if !frame_valid(info,p) { return Output::default(); }
-        self.history(info, snakes, segments, events);
+        self.shader_history(info, snakes, segments, events);
         self.dense = if self.dense {
             food.len()>=280
         } else {
@@ -392,6 +385,13 @@ impl Renderer {
             if !snake_valid(s) || (s.alive==0 && !corpse)||n<2 {
                 continue;
             }
+            let pickup_waves=self.waves[s.id as usize].map(|w| {
+                let center=(p.presentation_time-w.time)*1.3*(n-1) as f64;
+                if w.active && w.kind!=0 && (0.0..(n as f64+3.5)).contains(&center) {
+                    (center,w.kind)
+                } else { (0.0,0) }
+            });
+            let has_pickup_wave=pickup_waves.iter().any(|&(_,kind)|kind!=0);
             let body = &segments[s.segment_offset as usize..s.segment_offset as usize+n];
             let points = &mut self.points[..n];
             let interpolate = moving(s);
@@ -454,8 +454,12 @@ impl Renderer {
                 P::new((s.radius*3.0).max(margin*inverse_x), (s.radius*3.0).max(margin*inverse_y))
             };
             let (xs, ys) = copies(P::new(minx, miny), P::new(maxx, maxy), world_margin, arena, walls);
+            let active_kind=if s.alive!=0 && !corpse && s.effect_ticks>0 {s.effect_kind} else {0};
+            let effect_time=if self.reduced_motion {0.0} else {p.presentation_time};
             let fade = if corpse {
                 (1.0-(p.presentation_time-self.corpses[s.id as usize].time).max(0.0)/0.55).clamp(0.0, 1.0)
+            } else if active_kind==3 {
+                0.45+0.06*(effect_time*9.0).sin()
             } else {
                 1.0
             };
@@ -525,12 +529,31 @@ impl Renderer {
                             }
                             prepare(&mapped[first..last], &mut self.normals[first..last], &mut self.valid[first..last]);
                             if !split || layer==0 {
-                                let outline = Color::new(5, 7, 16, 175).fade(fade);
+                                let outline = if active_kind==1 {
+                                    items::accent(1,palette).alpha(215)
+                                } else if active_kind==3 {
+                                    items::accent(3,palette).alpha(150)
+                                } else {Color::new(5, 7, 16, 175)}.fade(fade);
                                 sink.ribbon(&mapped[start..=end], &self.normals[start..=end], &self.valid[start..=end], radius*1.275, outline);
                                 if end==n-1 { sink.disc(mapped[end], radius*1.275, outline, 12); }
                             }
                             if !split || layer==1 {
-                                sink.ribbon(&mapped[start..=end], &self.normals[start..=end], &self.valid[start..=end], radius*0.96, c.alpha(245).fade(fade));
+                                if has_pickup_wave {
+                                    for edge in start..end {
+                                        let mut weight=0.0_f64;let mut kind=0;
+                                        for &(center,origin) in &pickup_waves {
+                                            if origin==0 {continue;}
+                                            let strength=(1.0-((edge as f64-center)/3.5).abs()).max(0.0)*0.95;
+                                            if strength>weight {weight=strength;kind=origin;}
+                                        }
+                                        let accent=items::accent(kind,palette);
+                                        let mix=|a:u8,b:u8|(a as f64+(b as f64-a as f64)*weight).round() as u8;
+                                        let tint=Color::new(mix(c.red,accent.red),mix(c.green,accent.green),mix(c.blue,accent.blue),245).fade(fade);
+                                        sink.ribbon(&mapped[edge..=edge+1],&self.normals[edge..=edge+1],&self.valid[edge..=edge+1],radius*0.96,tint);
+                                    }
+                                } else {
+                                    sink.ribbon(&mapped[start..=end], &self.normals[start..=end], &self.valid[start..=end], radius*0.96, c.alpha(245).fade(fade));
+                                }
                                 if end==n-1 { sink.disc(mapped[end], radius*0.96, c.alpha(245).fade(fade), 12); }
                             }
                             if split && layer!=2 { continue; }
@@ -580,22 +603,10 @@ impl Renderer {
                 }
             }
         }
-        for flash in &self.flashes {
-            let age = p.presentation_time-flash.time;
-            if !flash.active || !(0.0..0.5).contains(&age) {
-                continue;
-            }
-            let r = (8.0+age*48.0)*scale;
-            let fade = 1.0-age/0.5;
-            let (xs, ys) = copies(flash.p, flash.p, P::new(r*inverse_x, r*inverse_y), arena, walls);
-            for xi in xs.first..=xs.last {
-                for yi in ys.first..=ys.last {
-                    let pos = map(flash.p+P::new(xi as f64*xs.extent, yi as f64*ys.extent));
-                    sink.disc(pos, r, color(flash.color).alpha((140.0*fade).round() as u8), 12);
-                    sink.disc(pos, r*0.45, Color::new(255, 255, 255, (230.0*fade).round() as u8), 12);
-                }
-            }
-        }
+        self.classic_items(info,p,palette,&mut sink);
+        let mut effect_budget=EffectBudget::default();
+        self.classic_effects(info,p,palette,&mut sink,&mut effect_budget);
+        self.classic_warnings(info,p,palette,snakes,segments,&mut sink,&mut effect_budget);
         if p.developer_mode!=0 {
             for s in snakes {
                 if !snake_valid(s) || s.alive==0 || s.flags&flags::CORPSE!=0 || s.segment_count==0 {

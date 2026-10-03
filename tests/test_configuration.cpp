@@ -34,6 +34,7 @@ private Q_SLOTS:
         QCOMPARE(config.snakeIntelligence(), 75);
         QCOMPARE(config.snakeSelfCollisions(), false);
         QCOMPARE(config.snakeDeadlyWalls(), true);
+        QCOMPARE(config.snakePowerUps(), true);
         QCOMPARE(config.clockMovement(), QStringLiteral("bounce"));
         QCOMPARE(config.clockSpeed(), QStringLiteral("normal"));
         QCOMPARE(config.coverPanels(), true);
@@ -93,6 +94,7 @@ private Q_SLOTS:
             config.setSnakeIntelligence(90);
             config.setSnakeSelfCollisions(true);
             config.setSnakeDeadlyWalls(false);
+            config.setSnakePowerUps(false);
             config.setShowClock(false);
             config.setClockMovement(QStringLiteral("center"));
             config.setClockSpeed(QStringLiteral("fast"));
@@ -118,6 +120,7 @@ private Q_SLOTS:
         QCOMPARE(loaded.snakeIntelligence(), 90);
         QCOMPARE(loaded.snakeSelfCollisions(), true);
         QCOMPARE(loaded.snakeDeadlyWalls(), false);
+        QCOMPARE(loaded.snakePowerUps(), false);
         QCOMPARE(loaded.showClock(), false);
         QCOMPARE(loaded.clockMovement(), QStringLiteral("center"));
         QCOMPARE(loaded.clockSpeed(), QStringLiteral("fast"));
@@ -143,6 +146,7 @@ private Q_SLOTS:
             {QStringLiteral("snakeIntelligence"), 85},
             {QStringLiteral("snakeSelfCollisions"), true},
             {QStringLiteral("snakeDeadlyWalls"), false},
+            {QStringLiteral("snakePowerUps"), false},
             {QStringLiteral("showClock"), false},
             {QStringLiteral("clockSpeed"), QStringLiteral("fast")},
             {QStringLiteral("frameRate"), 120},
@@ -159,6 +163,7 @@ private Q_SLOTS:
         QCOMPARE(config.snakeIntelligence(), 85);
         QCOMPARE(config.snakeSelfCollisions(), true);
         QCOMPARE(config.snakeDeadlyWalls(), false);
+        QCOMPARE(config.snakePowerUps(), false);
         QCOMPARE(config.showClock(), false);
         QCOMPARE(config.clockSpeed(), QStringLiteral("fast"));
         QCOMPARE(config.frameRate(), 120);

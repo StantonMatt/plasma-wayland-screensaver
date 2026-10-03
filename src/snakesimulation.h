@@ -22,6 +22,7 @@ struct SnakeFrame {
     std::vector<snakes_core_item> items;
     std::vector<snakes_core_event> events;
     snakes_core_frame_info info{};
+    double itemRadius = 0;
 };
 
 // Compact state consumed by Rust's visual history.
