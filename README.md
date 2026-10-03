@@ -62,7 +62,13 @@ opens the latest GitHub release instead.
   and seeks open space; bigger snakes contest food and cut rivals off, while
   smaller snakes avoid losing head-on encounters; short boosts for cut-offs,
   escapes and food races cost tail segments dropped as edible pellets and
-  need time to cool down; glossy, shaded, glowing bodies with pointed tails,
+  need time to cool down; glowing hexagon power-ups grant one effect at a
+  time: Surge gives free, back-to-back boosts and a faster snake for chained
+  attacks, Magnet pulls in food from three times as far, and Phase lets snakes
+  slip through rivals' bodies until it wears off. Snakes seek them out to hunt,
+  scavenge and escape. Crackling arcs, an orbiting magnet ring and a translucent
+  hologram show each effect. Turn power-ups off with the Settings checkbox;
+  glossy, shaded, glowing bodies with pointed tails,
   chevrons, saddle bands and glowing spine lights on the biggest snakes;
   spade-shaped heads with eyes that follow movement, blinking and tongue
   flicks; a gold crown for the leader, boost bow waves and contrails, sparks
@@ -229,7 +235,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.9.0`, publishes the verified
+matching the CMake project version, such as `v0.10.0`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 

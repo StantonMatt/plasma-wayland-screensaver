@@ -1,3 +1,17 @@
+plasma-visual-screensaver (0.10.0-1) resolute; urgency=medium
+
+  * Add glowing hexagon power-ups to Slithering Snakes, with one effect at
+    a time: Surge gives free, back-to-back boosts and a faster snake; Magnet
+    pulls in food from three times as far; Phase lets snakes slip through
+    rivals' bodies. Turn power-ups off in Settings.
+  * Snakes seek power-ups to hunt, scavenge and escape. Show each effect with
+    crackling arcs, an orbiting magnet ring or a translucent hologram.
+  * Prefer Vulkan to stop steady memory growth on NVIDIA GPUs under Plasma
+    Wayland. OpenGL remains available with PVS_GRAPHICS_API=opengl or
+    --graphics-api opengl.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Sat, 03 Oct 2026 18:56:27 -0300
+
 plasma-visual-screensaver (0.9.0-1) resolute; urgency=medium
 
   * Give Slithering Snakes glossy, shaded, glowing bodies with pointed tails,
