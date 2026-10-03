@@ -8,6 +8,8 @@
 #include <QScreen>
 #include <QTest>
 #include <QTimer>
+#include <QThread>
+#include <QScopeGuard>
 
 #include <algorithm>
 #include <cmath>
@@ -463,10 +465,13 @@ private Q_SLOTS:
         std::vector<qreal> deltas;
         swaps.reserve(32);
         deltas.reserve(14);
-        connect(&window, &QQuickWindow::frameSwapped, this, [&] {
+        // Destroy the connection context before any captured stack storage,
+        // including on assertion failure with GUI callbacks still queued.
+        QObject callbackContext;
+        connect(&window, &QQuickWindow::frameSwapped, &callbackContext, [&] {
             swaps.push_back(elapsed.nsecsElapsed());
         });
-        connect(&clock, &PresentationClock::frameTick, this, [&](qreal delta) {
+        connect(&clock, &PresentationClock::frameTick, &callbackContext, [&](qreal delta) {
             deltas.push_back(delta);
             window.setColor(deltas.size() % 2 ? Qt::red : Qt::blue);
             if (deltas.size() == 8) {
@@ -475,11 +480,22 @@ private Q_SLOTS:
                 clock.setRunning(false);
             }
         });
+        const auto stopRendering = [&] {
+            clock.setRunning(false);
+            window.setPersistentGraphics(false);
+            window.setPersistentSceneGraph(false);
+            window.hide();
+            window.releaseResources();
+        };
+        auto cleanup = qScopeGuard(stopRendering);
         window.show();
         clock.setRunning(true);
         QTRY_COMPARE_WITH_TIMEOUT(deltas.size(), size_t(14), 4000);
-        clock.setRunning(false);
-        window.hide();
+        stopRendering();
+        cleanup.dismiss();
+        // hide/release joins rendering, but GUI-queued swap callbacks still
+        // need delivery before their timestamp vector is inspected.
+        QCoreApplication::sendPostedEvents(&callbackContext, QEvent::MetaCall);
         QVERIFY(swaps.size() >= 10);
         // The tick predicts presentation one refresh ahead. On watchdog
         // fallback it can lose that lead, but must still include the stall
@@ -495,6 +511,45 @@ private Q_SLOTS:
         std::sort(steadyIntervals.begin(), steadyIntervals.end());
         const qreal median = steadyIntervals[steadyIntervals.size() / 2];
         QVERIFY2(median >= 29 && median < 39, qPrintable(QString::number(median)));
+    }
+
+    void renderThreadFeedbackIsQueued()
+    {
+        // No GPU/compositor required: exercise the production direct atomic
+        // capture and queued pacing handler from a foreign thread. This can
+        // run under TSan without a driver's unrelated worker threads.
+        QQuickWindow window;
+        PresentationClock clock(&window, 30);
+        QSignalSpy ticks(&clock, &PresentationClock::frameTick);
+        clock.setRunning(true);
+        const qint64 observedBefore = clock.m_lastObservedSwapNanoseconds;
+        const auto emitSwaps = [&window] {
+            auto worker = std::unique_ptr<QThread>(QThread::create([&window] {
+                for (int i = 0; i < 64; ++i) Q_EMIT window.frameSwapped();
+            }));
+            worker->start();
+            worker->wait(); // Join before assertions or destroying the window.
+        };
+        emitSwaps();
+        // The render thread may only update the atomic timestamp. GUI-owned
+        // prediction state and tick listeners must wait for queued delivery.
+        QVERIFY(!clock.m_phaseAnchorNanoseconds);
+        QCOMPARE(clock.m_lastObservedSwapNanoseconds, observedBefore);
+        QCOMPARE(ticks.size(), 1);
+        const qint64 captured = clock.m_swapTimestamp->load(std::memory_order_relaxed);
+        QVERIFY(captured > observedBefore);
+        QCoreApplication::sendPostedEvents(&clock, QEvent::MetaCall);
+        QVERIFY(clock.m_phaseAnchorNanoseconds.has_value());
+        QCOMPARE(clock.m_phaseAnchorNanoseconds.value(), captured);
+        QCOMPARE(clock.m_lastObservedSwapNanoseconds, captured);
+        QVERIFY(clock.m_lastSwapCallbackNanoseconds >= captured);
+
+        clock.setRunning(false);
+        const int stoppedTicks = ticks.size();
+        emitSwaps();
+        QCoreApplication::sendPostedEvents(&clock, QEvent::MetaCall);
+        QCOMPARE(ticks.size(), stoppedTicks);
+        QVERIFY(!clock.m_phaseAnchorNanoseconds);
     }
 };
 

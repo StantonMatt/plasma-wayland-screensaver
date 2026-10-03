@@ -4,7 +4,8 @@ target_include_directories(test-graphicsbackend PRIVATE ../src)
 target_link_libraries(test-graphicsbackend PRIVATE GraphicsBackend Qt6::Test)
 add_test(NAME graphics-backend COMMAND test-graphicsbackend)
 
-add_executable(test-graphicsbackend-window test_graphicsbackend_window.cpp)
+add_executable(test-graphicsbackend-window test_graphicsbackend_window.cpp
+    ../src/presentationclock.cpp ../src/presentationclock.h)
 target_include_directories(test-graphicsbackend-window PRIVATE ../src)
 target_link_libraries(test-graphicsbackend-window PRIVATE GraphicsBackend Qt6::Test)
 add_test(NAME graphics-backend-window COMMAND test-graphicsbackend-window)
@@ -109,6 +110,8 @@ add_test(NAME snakes-core-rust
 
 # Build fixture-only hooks separately; the production C ABI remains feature-free.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME frame-timing-gate
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_frame_timing.py")
 add_custom_target(snakes-parity-build ALL
     COMMAND "${CMAKE_COMMAND}" -E env ${SNAKES_CORE_CARGO_ENV}
         "${CARGO_EXECUTABLE}" build --frozen --offline

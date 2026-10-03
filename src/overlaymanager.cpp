@@ -309,6 +309,8 @@ void OverlayManager::retireView(QQuickView *view)
 
     ++m_pendingViewDeletions;
     connect(view, &QObject::destroyed, this, [this] {
+        // QQuickWindow's destructor joins its render thread before QObject
+        // emits destroyed. This counter and the deferred trim stay GUI-owned.
         --m_pendingViewDeletions;
         if (m_pendingViewDeletions == 0 && !m_visible) {
             // Run after QQuickView's destructor has joined its Canvas/render

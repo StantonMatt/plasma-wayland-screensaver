@@ -39,6 +39,9 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    // GUI-thread owned. PresentationClock queues swap feedback before emitting
+    // ticks; window geometry, screen hotplug and QObject destruction are GUI
+    // events. No scene-graph/render callback may access these containers.
     bool addScreen(QScreen *screen);
     void removeScreen(QScreen *screen);
     void updateAllViewGeometry();

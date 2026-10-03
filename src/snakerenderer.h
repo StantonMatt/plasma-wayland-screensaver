@@ -41,6 +41,11 @@ Q_SIGNALS:
 protected:
     QSGNode *updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *data) override;
 private:
+    // Setters/presentFrame/presentAt and snapshot capture run on the GUI thread.
+    // updatePaintNode reads these members (and writes its diagnostics/capacity)
+    // only during Qt's synchronization barrier, with the GUI thread blocked.
+    // After sync, rendering uses GeometryNode/material-owned copies exclusively;
+    // neither the simulation nor this item's state is accessed by draw callbacks.
     void loadFrame(const SnakeFrame &frame, const QVector<QColor> &palette,
                    qreal interpolation, bool deadlyWalls);
     void captureHistory();

@@ -277,7 +277,7 @@ rm ~/.config/plasma-visual-screensaverrc
 Build Release, then run:
 
 ```bash
-./scripts/frame-timing.sh --duration 300 --output-dir /tmp/pvs-frame-baseline
+./scripts/frame-timing.sh --duration 300 --output-dir ~/.cache/agent-scratch/plasma-wayland-screensaver/frame-baseline
 ```
 
 The script runs maximum
@@ -292,6 +292,17 @@ mean intervals, observed submission rates, deadline counts, RSS and process CPU
 usage. Initial five seconds are excluded from frame metrics. Reanalyze saved CSV
 and logs with `--summarize-only --output-dir PATH` (use `--warmup` to override the
 exclusion period).
+
+CI checks three 640×360 outputs for 45 seconds on both forced Vulkan (lavapipe)
+and OpenGL (llvmpipe), using the freshly built package. Reproduce it with
+`--graphics-api vulkan --render-loop basic --outputs 3 --rates 60 --width 640 --height 360
+--duration 45 --check`. A backend fallback, fewer than 80% of expected frames
+on any window, or a median interval more than 25% from the target fails the run.
+The Vulkan check also verifies each initialized scene graph uses a render thread
+and swap interval zero, even when the harness supplies the `basic` override.
+The expected cadence uses each output's advertised refresh and the clock's
+whole-refresh divisor. KWin's virtual CLI exposes one fixed refresh rate;
+this check does not reproduce mixed-refresh hardware outputs.
 
 `PVS_FRAME_TRACE=/path/frames.csv` enables buffered tracing; unset, no timing
 hooks or resource timer are installed. `PVS_FRAME_TRACE_DURATION_MS` additionally
@@ -389,6 +400,11 @@ session:
   overrides take precedence. Vulkan needs `libvulkan1` and a working driver
   (Mesa: `mesa-vulkan-drivers`; NVIDIA: its matching Vulkan ICD). See
   [memory investigation and desktop verification](docs/snakes-gpu-memory.md).
+  Vulkan uses the threaded render loop and swap interval zero to avoid
+  per-output FIFO/Wayland callback waits blocking the GUI thread; the
+  presentation clock still limits updates. A driver without MAILBOX or
+  IMMEDIATE presentation support falls back to OpenGL. The Vulkan path
+  overrides `QSG_RENDER_LOOP`; OpenGL keeps Qt's existing loop selection.
 - **Preview immediately disappears:** a real input/resume event arrived as the
   overlay appeared. Stop touching input devices and retry. KIdleTime deliberately
   treats the first activity as dismissal.

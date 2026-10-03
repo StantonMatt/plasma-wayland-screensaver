@@ -35,6 +35,7 @@ class QQuickWindow;
 class PresentationClock final : public QObject
 {
     Q_OBJECT
+    friend class PresentationClockTest;
 
 public:
     explicit PresentationClock(QQuickWindow *window, int targetFrameRate,
@@ -62,6 +63,8 @@ private:
     // frameSwapped can originate on the render thread. Capture its time there,
     // rather than measuring when the queued GUI callback eventually runs.
     std::shared_ptr<std::atomic<qint64>> m_swapTimestamp;
+    // All remaining pacing/prediction state and public methods are GUI-owned.
+    // Render-thread callbacks capture independent shared state, never this.
     QQuickWindow *m_window;
     QChronoTimer m_wakeTimer;
     int m_targetFrameRate;

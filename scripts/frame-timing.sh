@@ -19,7 +19,7 @@ import time
 SESSION = r'''
 import os, signal, subprocess, sys, time
 from pathlib import Path
-binary, directory, duration, outputs = sys.argv[1:]
+binary, directory, duration, outputs, width, height = sys.argv[1:]
 directory = Path(directory)
 children = []
 
@@ -39,7 +39,7 @@ try:
     # --virtual is mandatory. No DISPLAY or parent WAYLAND_DISPLAY is inherited.
     with (directory / "compositor.log").open("w") as log:
         compositor = subprocess.Popen([
-            "kwin_wayland", "--virtual", "--width", "3440", "--height", "1440",
+            "kwin_wayland", "--virtual", "--width", width, "--height", height,
             "--output-count", outputs, "--socket", "pvs-frame-timing",
             "--no-lockscreen", "--no-global-shortcuts", "--no-kactivities"],
             stdout=log, stderr=subprocess.STDOUT)
@@ -85,7 +85,8 @@ def percentiles(values):
             "p99": percentile(.99), "max": round(values[-1], 4)}
 
 
-def summarize(directory, outputs, duration, rate, warmup):
+def summarize(directory, outputs, duration, rate, warmup, graphics_api=None, check=False, size="3440x1440"):
+    failures = []
     with (directory / "frames.csv").open() as stream:
         rows = list(csv.DictReader(stream))
     resources = [r for r in rows if r["kind"] == "resource"]
@@ -98,6 +99,8 @@ def summarize(directory, outputs, duration, rate, warmup):
     if len(windows) != outputs:
         raise RuntimeError(f"Expected {outputs} output windows, got {len(windows)}")
     app_log = (directory / "app.log").read_text()
+    if graphics_api and f"PVS graphics backend: {graphics_api}\n" not in app_log:
+        failures.append(f"Requested {graphics_api} was not selected (including possible fallback)")
     renderer = re.findall(r".*(?:GL_RENDERER|GL_VENDOR|OpenGL VENDOR|graphics API|backend|Graphics API).*", app_log, re.I)
     if re.search(r"llvmpipe|softpipe|software rasterizer|software backend|Qt Quick software", app_log, re.I):
         rendering = "software"
@@ -108,7 +111,8 @@ def summarize(directory, outputs, duration, rate, warmup):
     start, end = resources[0], resources[-1]
     wall_ns = int(end["timestamp_ns"]) - int(start["timestamp_ns"])
     report = {
-        "duration_requested_s": duration, "outputs": outputs, "output_size": "3440x1440",
+        "duration_requested_s": duration, "outputs": outputs, "output_size": size,
+        "graphics_api_requested": graphics_api,
         "configured_fps": rate, "warmup_excluded_s": warmup, "rendering": rendering,
         "renderer_details": renderer, "window_details": [line for line in app_log.splitlines() if "Frame trace window" in line],
         "rss_mib": {"start": round(int(start["rss_bytes"]) / 2**20, 2),
@@ -127,6 +131,11 @@ def summarize(directory, outputs, duration, rate, warmup):
                     "Over-deadline counts measure lateness, not dropped frames. Skipped-slot estimates round to the nearest nominal interval; no scanout feedback is available.",
                     "When a sync consumes multiple ticks, pacing timestamps describe its last tick; timer_fallbacks is a cumulative per-clock counter."]}
     for window in windows:
+        if graphics_api and not re.search(rf"Frame trace initialized window {window} graphics API {graphics_api}\b", app_log):
+            failures.append(f"Window {window}: no initialized {graphics_api} scene graph")
+        if check and graphics_api == "vulkan" and not re.search(
+                rf"Frame trace initialized window {window} graphics API vulkan render thread true swap interval 0\b", app_log):
+            failures.append(f"Window {window}: Vulkan requires a render thread and swap interval 0")
         selected = [r for r in frames if r["window"] == window]
         intervals = [int(r["interval_ns"]) / 1e6 for r in selected if int(r["interval_ns"]) > 0]
         if not intervals:
@@ -135,6 +144,23 @@ def summarize(directory, outputs, duration, rate, warmup):
         elapsed_ns = timestamps[-1] - timestamps[0]
         refresh_match = re.search(rf"Frame trace window {window} .*refresh Hz ([\d.]+)", app_log)
         refresh = float(refresh_match[1]) if refresh_match else None
+        target = re.search(rf"Frame trace window {window} .*target FPS (\d+)", app_log)
+        target_fps = int(target[1]) if target else None
+        configured_target = 60 if rate == "auto" else int(rate)
+        if check:
+            if not refresh or not target_fps:
+                failures.append(f"Window {window}: missing positive target/refresh rate")
+            else:
+                if target_fps != configured_target:
+                    failures.append(f"Window {window}: target FPS {target_fps} != configured {configured_target}")
+                expected_hz = refresh / max(1, math.ceil(refresh / configured_target))
+                expected_frames = expected_hz * (duration - warmup)
+                median = percentiles(intervals)["p50"]
+                expected_interval = 1000 / expected_hz
+                if len(selected) < .8 * expected_frames:
+                    failures.append(f"Window {window}: {len(selected)} frames < 80% of {expected_frames:.1f} expected")
+                if abs(median / expected_interval - 1) > .25:
+                    failures.append(f"Window {window}: median {median:.4f}ms differs >25% from {expected_interval:.4f}ms")
         cadence = {
             "mean_interval_ms": round(sum(intervals) / len(intervals), 4),
             "observed_submission_hz": round((len(timestamps) - 1) * 1e9 / elapsed_ns, 4) if elapsed_ns > 0 else None,
@@ -180,22 +206,32 @@ def summarize(directory, outputs, duration, rate, warmup):
                 "swap_minus_prediction_ms": differences("timestamp_ns", "predicted_presentation_ns"),
                 "swap_callback_to_tick_ms": differences("tick_timestamp_ns", "swap_callback_ns"),
             }
+    report["validation"] = {"checked": check, "failures": failures}
     result = json.dumps(report, indent=2)
     (directory / "summary.json").write_text(result + "\n")
     print(f"\n{directory}\n{result}", flush=True)
+    if failures:
+        raise RuntimeError("Frame timing validation failed: " + "; ".join(failures))
 
 
 parser = argparse.ArgumentParser(description="Isolated virtual-Wayland Snakes presentation baseline")
 parser.add_argument("--binary", type=Path, default=Path("build-frametiming/bin/plasma-visual-screensaver"))
 parser.add_argument("--duration", type=float, default=300, help="seconds per FPS/output combination (default 300)")
-parser.add_argument("--outputs", type=int, nargs="+", default=[1, 2], choices=[1, 2])
-parser.add_argument("--rates", nargs="+", default=["30", "auto"], choices=["30", "auto"])
+parser.add_argument("--outputs", type=int, nargs="+", default=[1, 2], choices=[1, 2, 3])
+parser.add_argument("--rates", nargs="+", default=["30", "auto"], choices=["30", "60", "auto"])
 parser.add_argument("--warmup", type=float, default=5, help="exclude initial seconds from frame percentiles")
 parser.add_argument("--output-dir", type=Path, default=Path("frame-timing-results"))
+parser.add_argument("--graphics-api", choices=["opengl", "vulkan"], help="force PVS backend; fail if it falls back")
+parser.add_argument("--render-loop", choices=["basic", "threaded"], help="supply a Qt loop override (Vulkan should override basic)")
+parser.add_argument("--check", action="store_true", help="require >=80%% expected frames per window and median within 25%% of target")
+parser.add_argument("--width", type=int, default=3440)
+parser.add_argument("--height", type=int, default=1440)
 parser.add_argument("--summarize-only", action="store_true", help="reanalyze existing runs in --output-dir without launching processes")
 args = parser.parse_args()
 if not 0 <= args.warmup < args.duration or args.duration * 1000 > 2147483647:
     parser.error("duration must exceed nonnegative warmup and fit a Qt timer")
+if args.width <= 0 or args.height <= 0:
+    parser.error("output dimensions must be positive")
 root = args.output_dir.resolve()
 if args.summarize_only:
     for outputs in dict.fromkeys(args.outputs):
@@ -203,7 +239,9 @@ if args.summarize_only:
             directory = root / f"{outputs}output-{rate}fps"
             # Retain the original run's metadata when regenerating summaries.
             previous = json.loads((directory / "summary.json").read_text()) if (directory / "summary.json").exists() else {}
-            summarize(directory, outputs, previous.get("duration_requested_s", args.duration), rate, args.warmup)
+            summarize(directory, outputs, previous.get("duration_requested_s", args.duration), rate, args.warmup,
+                args.graphics_api or previous.get("graphics_api_requested"), args.check,
+                previous.get("output_size", f"{args.width}x{args.height}"))
     sys.exit(0)
 binary = args.binary.resolve(strict=True)
 root.mkdir(parents=True, exist_ok=True)
@@ -226,7 +264,7 @@ SnakeSelfCollisions=false
 SnakeDeadlyWalls=true
 ShowClock=false
 ReducedMotion=false
-FrameRate={0 if rate == 'auto' else 30}
+FrameRate={0 if rate == 'auto' else int(rate)}
 MonitorBehavior=independent
 """)
         with tempfile.TemporaryDirectory(prefix="pvs-frame-timing-") as temporary:
@@ -242,6 +280,15 @@ MonitorBehavior=independent
                 # Block system D-Bus too; the virtual compositor needs no real session services.
                 "DBUS_SYSTEM_BUS_ADDRESS": "unix:path=" + str(private / "no-system-bus"),
                 "QT_LOGGING_RULES": "qt.scenegraph.general=true;kwin_scene_opengl=true"}
+            # Allow only explicit software-driver controls through the scrubbed
+            # environment, never a desktop display/bus or Qt backend override.
+            for name in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES", "LIBGL_ALWAYS_SOFTWARE", "GALLIUM_DRIVER", "KWIN_COMPOSE"):
+                if name in os.environ:
+                    environment[name] = os.environ[name]
+            if args.graphics_api:
+                environment["PVS_GRAPHICS_API"] = args.graphics_api
+            if args.render_loop:
+                environment["QSG_RENDER_LOOP"] = args.render_loop
             bus_config = private / "bus.conf"
             bus_config.write_text(f"""<busconfig>
 <type>session</type>
@@ -252,7 +299,7 @@ MonitorBehavior=independent
 """)
             print(f"Running {outputs} virtual output(s), {rate} FPS, {args.duration:g}s", flush=True)
             session = subprocess.Popen(["dbus-run-session", "--config-file=" + str(bus_config), "--", sys.executable, "-c", SESSION,
-                str(binary), str(directory), str(args.duration), str(outputs)],
+                str(binary), str(directory), str(args.duration), str(outputs), str(args.width), str(args.height)],
                 env=environment, start_new_session=True)
             def interrupt_session(signum, frame):
                 # This process group was created by this script; no preexisting processes are signalled.
@@ -275,5 +322,6 @@ MonitorBehavior=independent
                 for sig, handler in previous.items(): signal.signal(sig, handler)
             if result:
                 raise SystemExit(f"Isolated measurement blocked ({result}); inspect {directory}. No real-session fallback.")
-        summarize(directory, outputs, args.duration, rate, args.warmup)
+        summarize(directory, outputs, args.duration, rate, args.warmup, args.graphics_api, args.check,
+            f"{args.width}x{args.height}")
 PY

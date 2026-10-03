@@ -6,6 +6,7 @@
 #include <QPlatformSurfaceEvent>
 #include <QQuickGraphicsDevice>
 #include <QQuickWindow>
+#include <QSurfaceFormat>
 #include <QVulkanFunctions>
 #include <QVulkanInstance>
 #include <QWindow>
@@ -118,7 +119,10 @@ struct GraphicsBackend::Private : QObject {
             std::vector<VkPresentModeKHR> modes(modeCount);
             if (getModes(device, handle, &modeCount, modes.data()) != VK_SUCCESS) continue;
             modes.resize(modeCount);
-            if (std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_FIFO_KHR) == modes.end()) continue;
+            // FIFO can block each output independently. Require the modes
+            // QRhi uses for NoVSync rather than silently falling back to FIFO.
+            if (std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_MAILBOX_KHR) == modes.end()
+                    && std::find(modes.begin(), modes.end(), VK_PRESENT_MODE_IMMEDIATE_KHR) == modes.end()) continue;
             uint32_t queueCount = 0;
             functions->vkGetPhysicalDeviceQueueFamilyProperties(device, &queueCount, nullptr);
             std::vector<VkQueueFamilyProperties> queues(queueCount);
@@ -159,7 +163,22 @@ bool GraphicsBackend::initialize(const QString &requestedApi)
     QString name;
     switch (api) {
     case Api::Vulkan:
+        // QtWayland's Vulkan presentAboutToBeQueued() waits for a frame
+        // callback when swapInterval > 0. On the basic loop those per-output
+        // waits block the GUI thread, including our pacing timers. Qt 6.10
+        // maps interval 0 to QRhiSwapChain::NoVSync (MAILBOX, then IMMEDIATE)
+        // and skips that Wayland wait. PresentationClock still caps updates.
+        // Do this before any Quick window, including visible QML roots.
+        {
+            auto format = QSurfaceFormat::defaultFormat();
+            format.setSwapInterval(0);
+            QSurfaceFormat::setDefaultFormat(format);
+        }
+        // Each output needs an independent RHI/render thread; inherited Qt
+        // loop overrides must not reintroduce GUI-thread Vulkan presentation.
+        qputenv("QSG_RENDER_LOOP", "threaded");
         QQuickWindow::setGraphicsApi(QSGRendererInterface::Vulkan);
+        qInfo("PVS Vulkan presentation: threaded render loop, swap interval 0 (MAILBOX/IMMEDIATE)");
         name = QStringLiteral("vulkan");
         break;
     case Api::OpenGL:

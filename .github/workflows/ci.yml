@@ -10,6 +10,62 @@ permissions:
   contents: read
 
 jobs:
+  multi-output-presentation:
+    name: Wayland multi-output (${{ matrix.graphics-api }})
+    runs-on: ubuntu-26.04
+    needs: kubuntu-package
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        graphics-api: [opengl, vulkan]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Download freshly built package
+        uses: actions/download-artifact@v6
+        with:
+          name: plasma-visual-screensaver-${{ github.sha }}
+          path: ${{ runner.temp }}/package
+
+      - name: Install binary and private compositor dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            "$RUNNER_TEMP"/package/*.deb kwin-wayland mesa-vulkan-drivers \
+            libvulkan1 libgl1-mesa-dri dbus python3 qt6-wayland
+
+      - name: Check three-output submission cadence
+        env:
+          LIBGL_ALWAYS_SOFTWARE: 1
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          # Isolate Vulkan from any hardware ICDs; both paths use Mesa CPU rendering.
+          export VK_DRIVER_FILES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
+          test -n "$VK_DRIVER_FILES"
+          loop_args=()
+          if [ "${{ matrix.graphics-api }}" = vulkan ]; then
+            # Reproduce the inherited GUI-thread loop seen on the real desktop.
+            # Vulkan startup must replace it with its safe threaded loop.
+            loop_args+=(--render-loop basic)
+          fi
+          ./scripts/frame-timing.sh \
+            --binary /usr/bin/plasma-visual-screensaver \
+            --graphics-api "${{ matrix.graphics-api }}" --outputs 3 --rates 60 \
+            "${loop_args[@]}" \
+            --width 640 --height 360 --duration 45 --warmup 5 --check \
+            --output-dir "$RUNNER_TEMP/frame-timing"
+
+      - name: Upload timings and compositor logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: frame-timing-${{ matrix.graphics-api }}-${{ github.sha }}
+          path: ${{ runner.temp }}/frame-timing
+          if-no-files-found: warn
+          retention-days: 7
+
   kubuntu-package:
     name: Kubuntu 26.04 package
     runs-on: ubuntu-26.04

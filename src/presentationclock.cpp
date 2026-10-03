@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QPointer>
 #include <QTimer>
+#include <QThread>
 #include <QVariant>
 #include <QDebug>
 #include <mutex>
@@ -94,6 +95,15 @@ struct TraceRow {
     qint64 presentation = 0, swapCallback = 0, fallbacks = 0;
 };
 
+// Shared independently of QObject lifetime: a direct render callback already
+// in flight may outlive its clock or the application's GUI-owned file sink.
+struct FrameTraceBuffer {
+    FrameTraceBuffer() { rows.reserve(150'000); }
+    std::mutex mutex;
+    std::vector<TraceRow> rows;
+    bool accepting = true; // Protected by mutex, including shutdown.
+};
+
 // No file I/O or formatting on the render thread. A five-minute two-output
 // run fits in the reserved buffer; write once after the windows stop rendering.
 class FrameTraceSink final : public QObject
@@ -104,7 +114,6 @@ public:
         if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             qFatal("Cannot open PVS_FRAME_TRACE output");
         }
-        rows.reserve(150'000);
         sampleResources();
         auto *timer = new QTimer(this);
         timer->setInterval(1000);
@@ -133,15 +142,16 @@ public:
         row.timestamp = traceNow();
         row.rss = rss;
         row.cpu = qint64(cpu.tv_sec) * 1'000'000'000 + cpu.tv_nsec;
-        std::lock_guard lock(mutex);
-        rows.push_back(row);
+        std::lock_guard lock(buffer->mutex);
+        if (buffer->accepting) buffer->rows.push_back(row);
     }
     void flush()
     {
-        std::lock_guard lock(mutex);
+        std::lock_guard lock(buffer->mutex);
         if (!file.isOpen()) return;
+        buffer->accepting = false;
         QByteArray data("kind,window,timestamp_ns,interval_ns,gui_tick_ns,sync_ns,render_ns,simulation_steps,tick_callbacks,rss_bytes,cpu_ns,wake_deadline_ns,tick_timestamp_ns,request_timestamp_ns,predicted_presentation_ns,swap_callback_ns,timer_fallbacks\n");
-        for (const auto &r : rows) {
+        for (const auto &r : buffer->rows) {
             data += r.resource ? "resource," : "frame,";
             for (qint64 value : {qint64(r.window), r.timestamp, r.interval, r.tick,
                                 r.sync, r.render, r.steps, r.ticks, r.rss, r.cpu,
@@ -158,27 +168,30 @@ public:
         }
         file.close();
     }
+    // File, sampling timer and window numbering are exclusively GUI-owned.
     QFile file;
-    std::mutex mutex;
-    std::vector<TraceRow> rows;
+    const std::shared_ptr<FrameTraceBuffer> buffer = std::make_shared<FrameTraceBuffer>();
     int nextWindow = 0;
 };
 
 FrameTraceSink *traceSink()
 {
-    static FrameTraceSink *sink = nullptr;
+    static QPointer<FrameTraceSink> sink;
     if (!sink) sink = new FrameTraceSink(QString::fromLocal8Bit(qgetenv("PVS_FRAME_TRACE")));
-    return sink;
+    return sink.data();
 }
 }
 
 class PresentationTraceState
 {
 public:
-    FrameTraceSink *sink = nullptr;
+    std::shared_ptr<FrameTraceBuffer> buffer;
     QPointer<QObject> simulationSource; // Only read on the GUI thread.
-    bool simulationTracked = false; // Protected by the sink mutex.
-    TraceRow pending, frame;
+    bool simulationTracked = false; // Protected by the buffer mutex.
+    TraceRow pending; // GUI writes, render sync consumes, under buffer mutex.
+    // Initialized before connecting/showing the window, then render-thread
+    // owned for all scene-graph phases. No GUI handler reads these fields.
+    TraceRow frame;
     qint64 syncStart = 0, renderStart = 0, previousSwap = 0;
 };
 
@@ -195,15 +208,29 @@ PresentationClock::PresentationClock(QQuickWindow *window, int targetFrameRate, 
     if (!qEnvironmentVariableIsEmpty("PVS_FRAME_TRACE")) {
         m_trace = std::make_shared<PresentationTraceState>();
         const auto trace = m_trace;
-        trace->sink = traceSink();
-        trace->frame.window = ++trace->sink->nextWindow;
+        auto *sink = traceSink();
+        trace->buffer = sink->buffer;
+        trace->frame.window = ++sink->nextWindow;
         trace->pending.steps = 0;
         qInfo() << "Frame trace window" << trace->frame.window << window->objectName()
                 << "size" << window->size() << "target FPS" << targetFrameRate
                 << "refresh Hz" << (window->screen() ? window->screen()->refreshRate() : 0);
+        // The renderer interface must be queried on the render thread. Window
+        // format is fixed before exposure; hide/release quiesces rendering
+        // before native-surface destruction, so these lifetime-bound reads are
+        // stable without touching any mutable GUI pacing/simulation state.
+        connect(window, &QQuickWindow::sceneGraphInitialized, this, [window, trace] {
+            const auto api = window->rendererInterface()->graphicsApi();
+            const auto name = api == QSGRendererInterface::Vulkan ? "vulkan"
+                : api == QSGRendererInterface::OpenGL ? "opengl" : "other";
+            qInfo().noquote() << "Frame trace initialized window" << trace->frame.window
+                << "graphics API" << name << "render thread"
+                << (QThread::currentThread() != qApp->thread())
+                << "swap interval" << window->format().swapInterval();
+        }, Qt::DirectConnection);
         connect(window, &QQuickWindow::beforeSynchronizing, this, [trace] {
             const qint64 now = traceNow();
-            std::lock_guard lock(trace->sink->mutex);
+            std::lock_guard lock(trace->buffer->mutex);
             trace->syncStart = now;
             trace->frame.tick = trace->pending.tick;
             trace->frame.ticks = trace->pending.ticks;
@@ -234,8 +261,8 @@ PresentationClock::PresentationClock(QQuickWindow *window, int targetFrameRate, 
             trace->frame.timestamp = now;
             trace->frame.interval = trace->previousSwap ? now - trace->previousSwap : 0;
             trace->previousSwap = now;
-            std::lock_guard lock(trace->sink->mutex);
-            trace->sink->rows.push_back(trace->frame);
+            std::lock_guard lock(trace->buffer->mutex);
+            if (trace->buffer->accepting) trace->buffer->rows.push_back(trace->frame);
         }, Qt::DirectConnection);
     }
     m_wakeTimer.setSingleShot(true);
@@ -262,7 +289,7 @@ void PresentationClock::setTargetFrameRate(int targetFrameRate)
 void PresentationClock::setTraceSimulationSource(QObject *source)
 {
     if (m_trace) {
-        std::lock_guard lock(m_trace->sink->mutex);
+        std::lock_guard lock(m_trace->buffer->mutex);
         m_trace->simulationSource = source;
         m_trace->simulationTracked = source != nullptr;
     }
@@ -347,7 +374,7 @@ void PresentationClock::presentNextFrame()
         : std::llround(m_nextTargetNanoseconds);
     armTimer(watchdog);
     if (m_trace) {
-        std::lock_guard lock(m_trace->sink->mutex);
+        std::lock_guard lock(m_trace->buffer->mutex);
         m_trace->pending.wakeDeadline = wakeDeadline;
         m_trace->pending.tickTimestamp = now;
         m_trace->pending.presentation = next.presentationNanoseconds;
@@ -375,7 +402,7 @@ void PresentationClock::tickAndRequestUpdate(qint64 presentationNanoseconds)
             Q_EMIT frameTick(deltaSeconds);
             const qint64 duration = traceNow() - start;
             const qreal after = source ? source->property("simulationTime").toDouble() : 0;
-            std::lock_guard lock(m_trace->sink->mutex);
+            std::lock_guard lock(m_trace->buffer->mutex);
             m_trace->pending.tick += duration;
             ++m_trace->pending.ticks;
             if (step > 0) m_trace->pending.steps += std::max<qint64>(0, qRound64((after - before) / step));
@@ -386,7 +413,7 @@ void PresentationClock::tickAndRequestUpdate(qint64 presentationNanoseconds)
     }
     if (m_running) {
         if (m_trace) {
-            std::lock_guard lock(m_trace->sink->mutex);
+            std::lock_guard lock(m_trace->buffer->mutex);
             m_trace->pending.requestTimestamp = traceNow();
         }
         // QQuickWindow::update goes directly through Qt Quick's render loop,

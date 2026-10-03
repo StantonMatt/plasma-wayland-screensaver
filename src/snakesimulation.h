@@ -44,6 +44,9 @@ class SnakeSimulation final : public QObject
     Q_PROPERTY(double physicsStepSeconds READ physicsStepSeconds CONSTANT)
     Q_PROPERTY(double interpolation READ interpolation NOTIFY presented)
 public:
+    // GUI-thread owned, including the Rust world, pool, leases and history.
+    // Renderers capture immutable frames/history on the GUI thread; only their
+    // updatePaintNode consumes those snapshots while Qt blocks the GUI thread.
     explicit SnakeSimulation(const snakes_core_config &config, QObject *parent = nullptr);
     ~SnakeSimulation() override;
     static snakes_core_config configuration(const Configuration &settings, double width,
