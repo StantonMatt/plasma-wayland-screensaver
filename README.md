@@ -60,7 +60,9 @@ opens the latest GitHub release instead.
   Digital Rain, Kaleidoscope, Fireflies, Neon Ribbons, Constellations, and
   Slithering Snakes (with adjustable AI that plans paths, avoids collisions,
   and seeks open space; bigger snakes contest food and cut rivals off, while
-  smaller snakes avoid losing head-on encounters; visibly magnetic food,
+  smaller snakes avoid losing head-on encounters; short boosts for cut-offs,
+  escapes and food races cost tail segments dropped as edible pellets and
+  need time to cool down; visibly magnetic food,
   collision-safe spawning, exact head-path body following, outward self-tail
   escapes, swept neck/body collision detection, forward growth, persistent
   food vacuum locks, optional self-collision, deadly or wraparound edges, and
@@ -220,7 +222,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.7.3`, publishes the verified
+matching the CMake project version, such as `v0.8.0`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 

@@ -1,3 +1,15 @@
+plasma-visual-screensaver (0.8.0-1) resolute; urgency=medium
+
+  * Give Slithering Snakes short boosts for cut-offs, escapes and food races,
+    costing tail segments dropped as edible pellets, followed by a cooldown.
+    Hunts are faster and more decisive, with fewer self-inflicted deaths.
+  * Add brighter boosting snakes and contrails, amber hunting eyes, pinprick
+    trapped pupils, kill flashes and fading corpses. Pass the leader's crown
+    only when another snake clearly overtakes it.
+  * Move snake drawing into the Rust core to reduce rendering cost.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Fri, 02 Oct 2026 21:23:41 -0300
+
 plasma-visual-screensaver (0.7.3-1) resolute; urgency=medium
 
   * Reduce Slithering Snakes CPU use by rebuilding snake bodies more

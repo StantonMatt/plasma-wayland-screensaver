@@ -20,6 +20,12 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.8.0" date="2026-10-02">
+      <description>
+        <p>Gives Slithering Snakes short boosts for cut-offs, escapes and food races. Each boost costs tail segments dropped as edible pellets and needs time to cool down. Hunts are faster and more decisive, with fewer self-inflicted deaths.</p>
+        <p>Adds brighter boosting snakes and contrails, amber hunting eyes, pinprick trapped pupils, kill flashes and fading corpses. The leader's crown changes hands only when clearly overtaken. Moves snake drawing into the Rust core to reduce rendering cost.</p>
+      </description>
+    </release>
     <release version="0.7.3" date="2026-10-02">
       <description>
         <p>Noticeably reduces Slithering Snakes CPU use by rebuilding snake bodies more efficiently and skipping redundant AI work. Snake behavior stays the same, with steadier frame timing.</p>
