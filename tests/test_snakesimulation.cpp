@@ -14,8 +14,50 @@
 class SnakeSimulationTest final : public QObject
 {
     Q_OBJECT
-    static snakes_core_config defaults() { return {1280, 720, 50, 35, 100, 100, 75, 1, 6, 0, 1}; }
+    static snakes_core_config defaults() { return {1280, 720, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0}; }
 private Q_SLOTS:
+    void compactHistoryOutlivesPhaseHistoryAndResetsOnRestart()
+    {
+        SnakeSimulation sim(defaults());
+        sim.setPresentationLead(4'166'667);
+        qint64 time = 1'000'000'000;
+        sim.advanceTo(time);
+        for (int i = 0; i < 100; ++i) sim.advanceTo(time += 33'333'334);
+        QVERIFY(sim.m_historyCount < SnakeSimulation::maximumHistoryFrames);
+        std::array<SnakePresentationFrame, SnakeSimulation::maximumHistoryFrames> history;
+        size_t head = 0, count = 0;
+        sim.retainPresentationHistory(nullptr, sim.frame().info, history, head, count);
+        QCOMPARE(count, SnakeSimulation::maximumHistoryFrames);
+        for (size_t i = 0; i < count; ++i) {
+            const auto &state = history[(head + history.size() - count + i) % history.size()];
+            QCOMPARE(state.info.tick, sim.frame().info.tick - count + i + 1);
+            for (size_t e = 0; e < state.eventCount; ++e)
+                QCOMPARE(state.events[e].tick, state.info.tick);
+        }
+        const auto &last = history[(head + history.size() - 1) % history.size()];
+        QCOMPARE(last.snakeCount, sim.frame().snakes.size());
+        QCOMPARE(last.foodCount, sim.frame().food.size());
+        for (size_t i = 0; i < last.snakeCount; ++i) {
+            const auto &snake = sim.frame().snakes[i];
+            QCOMPARE(last.snakes[i].flags, snake.flags);
+            QCOMPARE(last.snakes[i].generation, snake.generation);
+            if (snake.segment_count) {
+                const auto &tail = sim.frame().segments[snake.segment_offset + snake.segment_count - 1];
+                QCOMPARE(last.tails[i].x, tail.x); QCOMPARE(last.tails[i].y, tail.y);
+            }
+        }
+        QVERIFY(sim.resize(2560, 1440));
+        head = count = 0;
+        sim.retainPresentationHistory(nullptr, sim.frame().info, history, head, count);
+        QCOMPARE(count, size_t(1));
+        QCOMPARE(history[0].info.geometry_generation, sim.frame().info.geometry_generation);
+        auto config = sim.config(); ++config.seed;
+        QVERIFY(sim.reconfigure(config));
+        head = count = 0;
+        sim.retainPresentationHistory(nullptr, sim.frame().info, history, head, count);
+        QCOMPARE(count, size_t(1)); QCOMPARE(history[0].info.tick, uint64_t(0));
+    }
+
     void mixedRefreshWindowsShareAbsoluteTimeline_data()
     {
         QTest::addColumn<double>("phase");

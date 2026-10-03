@@ -99,7 +99,7 @@ for scenario, snapshots in enumerate(data['result']):
     cfg = ('width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,'
            if scenario == 1 else '')
     cfg += f'seed:{[73,20260814,-2147483648][scenario]},self_collisions:true,deadly_walls:{str(scenario!=2).lower()},'
-    lines += ['{', f'let mut w=World::new(Config{{{cfg}..Config::default()}}).unwrap();',
+    lines += ['{', f'let mut w=World::new(Config{{rules:RuleSet::Classic,{cfg}..Config::default()}}).unwrap();',
               'let mut c=ScriptedController::new(|tick,s:SnakeView<\'_>|Steering{desired_angle:tick as f64*0.017+s.id as f64*0.41,rush:if tick%100<20 {0.12} else {0.0}});']
     for snap in snapshots:
         tick=snap['tick']

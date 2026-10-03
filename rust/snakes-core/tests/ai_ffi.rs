@@ -30,5 +30,5 @@ fn default_ai_debug_and_scripted_switch_preserve_the_abi() {
     }
     assert_eq!(std::mem::size_of::<AiDebugRecord>(),200);
     assert_eq!(std::mem::offset_of!(AiDebugRecord,path),72);
-    assert_eq!(snakes_core_abi_version(),1);
+    assert_eq!(snakes_core_abi_version(),2);
 }

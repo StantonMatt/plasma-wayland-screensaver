@@ -35,19 +35,26 @@ impl AiController {
     /// the exact discrete integration, and retain only two geometric finalists.
     pub(super) fn cutoffs(&self,w:&World,s:SnakeView<'_>,state:State)->[Attack;2] {
         let mut best=[Attack::default();2];
-        if state.prey==0 || state.coil_radius>0.0 || s.traits.aggression<0.32 {return best;}
+        if state.prey==0 || state.coil_radius>0.0 || s.traits.aggression<if w.config().rules==crate::RuleSet::V2 {0.2} else {0.32} {return best;}
         let prey=&self.rivals[state.prey-1];
-        let (fast,fast_turn)=w.motion_limits(s.id as usize,s.traits.aggression).unwrap();
-        let (slow,slow_turn)=w.motion_limits(s.id as usize,0.15).unwrap();
+        let v2=w.config().rules==crate::RuleSet::V2;
+        if v2 && (!w.boost_ready(s.id as usize) || s.segments.len()<16) {return best;}
+        let burst=if v2 {0.6} else {s.traits.aggression};
+        let motion=self.boosted_motion[s.id as usize];
+        let crossing_rush=Self::boost_request(w,s,0.15);
+        let (fast,fast_turn)=w.motion_limits(s.id as usize,burst).unwrap();
+        let (slow,slow_turn)=w.motion_limits(s.id as usize,crossing_rush).unwrap();
         let head=s.segments[0].current;
-        for ticks in [18usize,30,42] {for side in [-1i8,1] {
+        for direct in [false,true] {
+        if direct && !v2 {continue;}
+        for ticks in if v2 {[18usize,24,36]} else {[18usize,30,42]} {for side in [-1i8,1] {
             // Lay the barrier 0.2s before the prey's nominal arrival.
             let arrive=ticks.saturating_sub(6);let point=prey.path[ticks];
             let forward=w.displacement(prey.path[ticks-2],point);
             let theta=forward.y.atan2(forward.x);
             let crossing=normalize_angle(theta+side as f64*std::f64::consts::FRAC_PI_2);
             let width=(s.radius+prey.radius)*2.0+prey.speed*0.12;
-            let near=w.canonical_point(Point{x:point.x-crossing.cos()*width,y:point.y-crossing.sin()*width});
+            let near=if direct {point} else {w.canonical_point(Point{x:point.x-crossing.cos()*width,y:point.y-crossing.sin()*width})};
             let d=w.displacement(head,near);
             let mut bearing=d.y.atan2(d.x);
             if (d.x*d.x+d.y*d.y).sqrt()>fast*arrive as f64*STEP_SECONDS+width {continue;}
@@ -55,13 +62,13 @@ impl AiController {
             for _ in 0..3 {
                 let turn_ticks=(normalize_angle(crossing-bearing).abs()/(slow_turn*STEP_SECONDS)).ceil() as usize;
                 let cross_ticks=(width/(slow*STEP_SECONDS)).ceil() as usize;
-                let switch=arrive.saturating_sub(turn_ticks/2+cross_ticks).max(2);
+                let switch=if direct {arrive} else {arrive.saturating_sub(turn_ticks/2+cross_ticks).max(2)};
                 attack=Attack {valid:true,side,prey:state.prey,prey_generation:state.prey_generation,start:w.tick(),turn_at:w.tick()+switch as u64,end:w.tick()+(ticks+18) as u64,
-                    approach:bearing,crossing,burst:s.traits.aggression,crossing_rush:0.15,point,prey_heading:theta,error:0.0,limits:Some([fast,fast_turn,slow,slow_turn,s.radius,s.segments.len() as f64])};
+                    approach:bearing,crossing,burst,crossing_rush,point,prey_heading:theta,error:0.0,limits:Some([fast,fast_turn,slow,slow_turn,s.radius,s.segments.len() as f64])};
                 let mut pos=head;let mut angle=s.angle;
                 for j in 0..arrive {
                     let (desired,rush)=attack.control(w.tick()+j as u64);
-                    let (speed,turn)=if rush==attack.burst {(fast,fast_turn)} else {(slow,slow_turn)};
+                    let (speed,turn)=if v2 {motion.at(j)} else if rush==attack.burst {(fast,fast_turn)} else {(slow,slow_turn)};
                     angle=normalize_angle(angle+normalize_angle(desired-angle).clamp(-turn*STEP_SECONDS,turn*STEP_SECONDS));
                     pos=w.canonical_point(Point{x:pos.x+angle.cos()*speed*STEP_SECONDS,y:pos.y+angle.sin()*speed*STEP_SECONDS});
                 }
@@ -76,7 +83,7 @@ impl AiController {
                 let old=best[k];let oldrank=old.error-if state.attack.valid && old.side==state.attack.side {8.0} else {0.0}+(old.end-old.start).saturating_sub(18) as f64*0.1;
                 if !old.valid || rank<oldrank {if k==0 {best[1]=best[0];}best[k]=attack;break;}
             }
-        }}
+        }}}
         best
     }
     /// Six physical responses. Count attacker contacts separately from wall or
@@ -94,17 +101,20 @@ impl AiController {
     }
     pub(super) fn reply_blocked(&self,w:&World,s:SnakeView<'_>,c:&Candidate,victim:SnakeView<'_>,offset:f64,delay:usize,rush:f64,attacker_distance:&[f64;73])->bool {
         let reach=(s.radius+victim.radius)*0.78;
+        let motion=if rush>0.0 {self.boosted_motion[victim.id as usize]} else {self.motion[victim.id as usize]};
         let (speed,turn)=w.motion_limits(victim.id as usize,rush).unwrap();
         let mut path=[victim.segments[0].current;73];let mut angle=victim.angle;
-        let victim_distance=std::array::from_fn(|k|k as f64*speed*STEP_SECONDS);
+        let mut victim_distance=[0.0;73];
         for j in 1..=72 {
+            let (speed,turn)=if w.config().rules==crate::RuleSet::V2 {motion.at(j-1)} else {(speed,turn)};
+            victim_distance[j]=victim_distance[j-1]+speed*STEP_SECONDS;
             let desired=victim.angle+if j>delay {offset} else {0.0};
             angle=normalize_angle(angle+normalize_angle(desired-angle).clamp(-turn*STEP_SECONDS,turn*STEP_SECONDS));
             let q=w.canonical_point(Point{x:path[j-1].x+angle.cos()*speed*STEP_SECONDS,y:path[j-1].y+angle.sin()*speed*STEP_SECONDS});path[j]=q;
             let cfg=w.config();
             if cfg.deadly_walls && (q.x<0.0 || q.x>cfg.width || q.y<0.0 || q.y>cfg.height) {break;}
             if cfg.self_collisions {
-                let travel=j as f64*speed*STEP_SECONDS;
+                let travel=victim_distance[j];
                 let neck=(10.0-travel/(victim.radius*1.18)).max(1.0) as usize;
                 let own_reach=victim.radius*1.48+1.0;
                 let own_hit=victim.segments.iter().enumerate().skip(neck).any(|(k,b)| {
@@ -118,11 +128,11 @@ impl AiController {
             if cfg.self_collisions && Self::deposited_contact(w,path[j-1],q,&path,&victim_distance,j,
                 10.0*victim.radius*1.18,victim.segments.len().saturating_sub(1) as f64*victim.radius*1.18,victim.radius*1.48) {break;}
             let head_contact=Self::head_contact(w,&path,&c.path,j-1,j,(s.radius+victim.radius)*0.82);
-            if head_contact && s.segments.len()>=victim.segments.len()+4 {return true;}
+            if head_contact && c.body_len>=victim.segments.len()+4 {return true;}
             // Distance traveled governs neck exemption and actual barrier
             // persistence; never use the slow safety tail-release bound.
             if Self::deposited_contact(w,path[j-1],q,&c.path[..73],attacker_distance,j,
-                s.radius*1.18,s.segments.len().saturating_sub(1) as f64*s.radius*1.18,reach) {return true;}
+                s.radius*1.18,c.body_len.saturating_sub(1) as f64*s.radius*1.18,reach) {return true;}
         }
         false
     }

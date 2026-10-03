@@ -20,7 +20,7 @@ for expected in [2534411103, 1762550066, 3401961193, 2376878900, 1815706883, 363
 }
 #[test] fn scripted_mechanics_match_unmodified_javascript() {
 {
-let mut w=World::new(Config{seed:73,self_collisions:true,deadly_walls:true,..Config::default()}).unwrap();
+let mut w=World::new(Config{rules:RuleSet::Classic,seed:73,self_collisions:true,deadly_walls:true,..Config::default()}).unwrap();
 let mut c=ScriptedController::new(|tick,s:SnakeView<'_>|Steering{desired_angle:tick as f64*0.017+s.id as f64*0.41,rush:if tick%100<20 {0.12} else {0.0}});
 assert_eq!(w.tick(),0);
 assert_eq!(w.rng_state(),2835230878,"scenario 0 tick 0 RNG");
@@ -380,7 +380,7 @@ close(w.snakes().flat_map(|s|s.segments).map(|s|s.previous.x).sum(),74253.605117
 close(w.snakes().flat_map(|s|s.segments).map(|s|s.previous.y).sum(),37368.69711520269);
 }
 {
-let mut w=World::new(Config{width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,seed:20260814,self_collisions:true,deadly_walls:true,..Config::default()}).unwrap();
+let mut w=World::new(Config{rules:RuleSet::Classic,width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,seed:20260814,self_collisions:true,deadly_walls:true,..Config::default()}).unwrap();
 let mut c=ScriptedController::new(|tick,s:SnakeView<'_>|Steering{desired_angle:tick as f64*0.017+s.id as f64*0.41,rush:if tick%100<20 {0.12} else {0.0}});
 assert_eq!(w.tick(),0);
 assert_eq!(w.rng_state(),2345641049,"scenario 1 tick 0 RNG");
@@ -917,7 +917,7 @@ close(w.snakes().flat_map(|s|s.segments).map(|s|s.previous.x).sum(),427566.35341
 close(w.snakes().flat_map(|s|s.segments).map(|s|s.previous.y).sum(),166361.4586870036);
 }
 {
-let mut w=World::new(Config{seed:-2147483648,self_collisions:true,deadly_walls:false,..Config::default()}).unwrap();
+let mut w=World::new(Config{rules:RuleSet::Classic,seed:-2147483648,self_collisions:true,deadly_walls:false,..Config::default()}).unwrap();
 let mut c=ScriptedController::new(|tick,s:SnakeView<'_>|Steering{desired_angle:tick as f64*0.017+s.id as f64*0.41,rush:if tick%100<20 {0.12} else {0.0}});
 assert_eq!(w.tick(),0);
 assert_eq!(w.rng_state(),3714094653,"scenario 2 tick 0 RNG");

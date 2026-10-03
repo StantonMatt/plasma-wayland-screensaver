@@ -58,7 +58,7 @@ impl Controller for Competition {
 }
 fn main() {
     let args:Vec<_>=std::env::args().collect();
-    if args.iter().any(|a|a=="--help") {println!("ai_competition: 8 scenarios x IQ 100/50 x 80 crossed fixtures; 20s each, first generation only; --scripted-prey uses competent limited prey; --trace logs kill paths; --scenario NAME selects a fixture");return;}
+    if args.iter().any(|a|a=="--help") {println!("ai_competition: 8 scenarios x IQ 100/50 x 80 crossed fixtures; 20s each, first generation only; --scripted-prey uses competent limited prey; --trace logs kill paths; --scenario NAME selects a fixture; V2 by default, --classic selects legacy free rush");return;}
     let scenario=args.windows(2).find(|a|a[0]=="--scenario").map(|a|a[1].as_str());
     let limited=args.iter().any(|a|a=="--scripted-prey");let trace=args.iter().any(|a|a=="--trace");
     for iq in [100.0,50.0] {for case in 0..8 {for aggressive in [true,false] {
@@ -89,7 +89,8 @@ fn main() {
             let mut food=Vec::new();
             for i in 0..28 {food.push(p(cluster.x+(i%7) as f64*8.0-24.0,cluster.y+(i/7) as f64*8.0-12.0));}
             let cfg=Config {width:1600.0,height:1000.0,density:0.0,trails:0.0,scale:70.0,seed:73+jitter_id,
-                intelligence:iq,self_collisions:true,deadly_walls:case!=2,..Config::default()};
+                intelligence:iq,self_collisions:true,deadly_walls:case!=2,
+                rules:if args.iter().any(|a|a=="--classic") {snakes_core::RuleSet::Classic} else {snakes_core::RuleSet::V2},..Config::default()};
             let mut w=World::diagnostic_arena(cfg,&snakes,&food).unwrap();
             if case==5 {
                 wall_u(&mut w,attacker,victim,jitter,mirror);

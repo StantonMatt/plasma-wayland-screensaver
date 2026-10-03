@@ -10,7 +10,7 @@ use crate::controller::{Controller, Steering};
 use spatial::Spatial;
 const STEPS: usize = 138;
 const NORMAL_STEPS: usize = 72;
-const CANDIDATES: usize = 11;
+const CANDIDATES: usize = 13;
 const STRATEGY_QUOTA: usize = 2;
 const URGENT_QUOTA: usize = 2;
 const NARROW_LIMIT: usize = 4096;
@@ -35,7 +35,8 @@ pub struct DebugInfo {
     pub path: [Point; 16],
     pub path_count: u32,
     /// Bit 0: capped area search, bit 1: capped safety query, bit 2: no safe
-    /// full-horizon candidate, bit 3: active interception, bit 4: revalidated plan reuse.
+    /// full-horizon candidate, bit 3: active interception, bit 4: revalidated plan reuse,
+    /// bit 5: trapped (uncapped area below 1.5x turnaround requirement).
     pub flags: u32,
     pub reachable_cells: u32,
     pub safe_seconds: f64,
@@ -80,6 +81,7 @@ struct State {
     harvest_until: u64,
     dodge_until: u64,
     rush: f64,
+    escape_boost: bool,
     turn_sign: i8,
     last_turn_tick: u64,
     track_goal: bool,
@@ -91,6 +93,32 @@ struct State {
     debug: DebugInfo,
 }
 impl State {
+    /// Install the controls carried by the rollout after bookkeeping that can
+    /// clear old tactics. Never reconstruct a maneuver from its scratch slot.
+    fn commit_candidate(state:&mut State,c:&Candidate,best:usize,w:&World,s:SnakeView<'_>,turn:f64,need:usize) {
+        if !c.tracks_goal {state.clear_coil(s.angle);}
+        if best!=1 && normalize_angle(c.desired-s.angle).abs()>0.5 {
+            let duration=if c.kind==7 || c.kind==8 {16} else if c.kind==9 || c.kind==10 {64}
+                else {(normalize_angle(c.desired-s.angle).abs()/turn/STEP_SECONDS).ceil().clamp(12.0,STEPS as f64) as u64};
+            state.commit_until=w.tick()+duration;
+        }
+        if c.area<need && !c.uncertain && !c.tracks_goal && !c.attack.valid
+            && s.segments.len()>=24 && w.tick()>=state.escape_until && w.tick()>=state.orbit_until {
+            state.escape_until=w.tick()+45;
+            state.rejected=state.target;state.reject_until=state.escape_until;
+            // Escape mode invalidates attack/pocket stages and changes goals.
+            // Enter it only for a validated nontracking fallback; tracking and
+            // attack candidates retain every dependency of their rollout.
+            state.prey=0;state.clear_coil(s.angle);state.clear_attacks(s.angle);
+            state.target=0;state.waypoint=None;
+        }
+        state.attack=c.attack;
+        state.track_goal=c.tracks_goal;
+        state.turn_until=c.turn_until;
+        state.exit_angle=c.exit_angle;
+        state.rush=c.rush;
+        state.desired=c.desired;
+    }
     fn clear_coil(&mut self,angle:f64) {
         if self.coil_radius!=0.0 || self.coil_initial_radius>0.0 {
             self.desired=angle;self.exit_angle=angle;self.turn_until=u64::MAX;
@@ -130,9 +158,12 @@ struct Rival {
 }
 #[derive(Clone, Copy)]
 struct Candidate {
+    body_len: usize,
+    kind: usize,
     checked: bool,
     tracks_goal: bool,
     desired: f64,
+    turn_until: u64,
     exit_angle: f64,
     angle: f64,
     path: [Point; STEPS+1],
@@ -150,7 +181,21 @@ impl Default for Rival {
     fn default()->Self {Self {alive:false,radius:0.0,len:0,speed:0.0,turn:0.0,growth_delay:0.0,release_rate:0.0,angle:0.0,path:[Point::default();STEPS+1],envelope:[0.0;STEPS+1],escape:[Point::default();3]}}
 }
 impl Default for Candidate {
-    fn default()->Self {Self {checked:false,tracks_goal:false,desired:0.0,exit_angle:0.0,angle:0.0,path:[Point::default();STEPS+1],steps:0,score:0.0,clearance:0.0,capped:false,area:0,uncertain:false,attack:Attack::default(),rush:0.0}}
+    fn default()->Self {Self {body_len:0,kind:2,checked:false,tracks_goal:false,desired:0.0,turn_until:u64::MAX,exit_angle:0.0,angle:0.0,path:[Point::default();STEPS+1],steps:0,score:0.0,clearance:0.0,capped:false,area:0,uncertain:false,attack:Attack::default(),rush:0.0}}
+}
+
+/// Cached single-burst schedules; all steady-state storage belongs to the controller.
+#[derive(Clone, Copy)]
+struct Motion { limits: [(f64,f64);25], max_speed:f64, max_curve:f64 }
+impl Default for Motion {fn default()->Self {Self {limits:[(0.0,0.0);25],max_speed:0.0,max_curve:0.0}}}
+impl Motion {
+    fn at(&self,offset:usize)->(f64,f64) {self.limits[offset.min(24)]}
+    fn forecast(w:&World,id:usize,rush:f64)->Self {
+        let limits=w.forecast_motion_schedule(id,rush).unwrap();
+        let mut m=Self {limits,max_speed:limits[0].0,max_curve:limits[0].0*limits[0].1};
+        for &(speed,turn) in &limits[1..] {m.max_speed=m.max_speed.max(speed);m.max_curve=m.max_curve.max(speed*turn);}
+        m
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -185,6 +230,7 @@ pub struct CandidateDiagnostic {
     pub coil_sign: f64,
     pub coil_pitch: f64,
     pub coil_progress: f64,
+    pub attack_valid: bool,
     pub attack_turn_ticks: usize,
     pub attack_crossing: f64,
     pub attack_crossing_rush: f64,
@@ -221,6 +267,8 @@ pub struct AiController {
     urgent_used: usize,
     max_radius: f64,
     planning_speed: [f64;MAX_SNAKES],
+    motion: [Motion;MAX_SNAKES],
+    boosted_motion: [Motion;MAX_SNAKES],
     observed_angles: [f64;MAX_SNAKES],
     observed_generations: [u32;MAX_SNAKES],
 }
@@ -229,7 +277,7 @@ impl AiController {
     pub fn new() -> Self {
         Self {spatial:Spatial::new(),candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,profile:[0;5], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],
             rivals:[Rival::default();MAX_SNAKES], food:[None;MAX_FOOD],
-            tick:u64::MAX,geometry:0,seed:0,rng:0x9e3779b97f4a7c15,urgent_used:0,max_radius:0.0,planning_speed:[0.0;MAX_SNAKES],observed_angles:[0.0;MAX_SNAKES],observed_generations:[0;MAX_SNAKES]}
+            tick:u64::MAX,geometry:0,seed:0,rng:0x9e3779b97f4a7c15,urgent_used:0,max_radius:0.0,planning_speed:[0.0;MAX_SNAKES],motion:[Motion::default();MAX_SNAKES],boosted_motion:[Motion::default();MAX_SNAKES],observed_angles:[0.0;MAX_SNAKES],observed_generations:[0;MAX_SNAKES]}
     }
     pub fn enable_profile(&mut self) {self.profile_enabled=true;}
     pub fn profile(&self)->[u128;5] {self.profile}
@@ -260,10 +308,16 @@ impl AiController {
         for (i,f) in w.foods().enumerate() {self.food[i]=Some(f);}
         self.rivals.fill(Rival::default());self.max_radius=0.0;
         for s in w.snakes().filter(|s|s.alive) {
-            let (speed,turn)=w.motion_limits(s.id as usize,w.observed_rush(s.id as usize).unwrap()).unwrap();
+            let id=s.id as usize;
+            self.motion[id]=Motion::forecast(w,id,if w.config().rules==crate::RuleSet::Classic {w.observed_rush(id).unwrap()} else {0.0});
+            self.boosted_motion[id]=if w.boost_ready(id) {Motion::forecast(w,id,0.6)} else {self.motion[id]};
+            let (speed,turn)=self.motion[id].at(0);
             self.max_radius=self.max_radius.max(s.radius);self.planning_speed[s.id as usize]=speed;
             let r=&mut self.rivals[s.id as usize];
-            *r=Rival {alive:true,radius:s.radius,len:s.segments.len(),speed,turn,growth_delay:w.tail_growth_delay(s.id as usize).unwrap(),release_rate:s.radius*1.18/(w.motion_limits(s.id as usize,0.0).unwrap().0*0.65).max(1.0),
+            let release_speed=if w.config().rules==crate::RuleSet::Classic {w.motion_limits(id,0.0).unwrap().0}
+                else {self.motion[id].limits.iter().map(|m|m.0).fold(speed,f64::min)};
+            let growth_scale=if w.config().rules==crate::RuleSet::Classic {1.0} else {speed/release_speed};
+            *r=Rival {alive:true,radius:s.radius,len:s.segments.len(),speed,turn,growth_delay:w.tail_growth_delay(id).unwrap()*growth_scale,release_rate:s.radius*1.18/(release_speed*0.65).max(1.0),
                 angle:s.angle,..Rival::default()};
             r.path[0]=s.segments[0].current;
             let id=s.id as usize;
@@ -272,9 +326,12 @@ impl AiController {
             } else {0.0};
             self.observed_generations[id]=s.generation;self.observed_angles[id]=s.angle;
             let mut angle=s.angle;
-            let rotation=(turn*STEP_SECONDS).sin_cos();
+            let mut rotation=(turn*STEP_SECONDS).sin_cos();
+            let mut rotation_turn=turn;
             let mut direction=Point {x:angle.cos(),y:angle.sin()};
             for j in 1..=STEPS {
+                let (speed,turn)=self.motion[id].at(j-1);
+                if turn!=rotation_turn {rotation=(turn*STEP_SECONDS).sin_cos();rotation_turn=turn;}
                 let t=j as f64*STEP_SECONDS;
                 // The envelope is monotone and capped. Once capped, later
                 // entries are exactly the cap and need no trigonometry.
@@ -452,21 +509,63 @@ impl AiController {
             w.canonical_point(Point{x:head.x+angle.cos()*80.0,y:head.y+angle.sin()*80.0})
         } else {state.waypoint.unwrap_or(state.goal)}
     }
+    fn boost_request(w:&World,s:SnakeView<'_>,rush:f64)->f64 {
+        if w.config().rules == crate::RuleSet::Classic { rush }
+        else if rush >= 0.5 && w.boost_ready(s.id as usize) { 0.6 } else { 0.0 }
+    }
     fn rush_for(&self,w:&World,s:SnakeView<'_>,state:State)->f64 {
-        if self.attack_usable(w,s,state,state.attack) {return state.attack.control(w.tick()).1;}
+        if self.attack_usable(w,s,state,state.attack) {return Self::boost_request(w,s,state.attack.control(w.tick()).1);}
+        if w.config().rules==crate::RuleSet::V2 {
+            // A pursuit is not itself permission to spend tail. Only a checked
+            // cutoff, a valuable contested target or a differential escape is.
+            if state.prey==0 && state.coil_radius==0.0 && self.food_race(w,s,state) {return 0.6;}
+            return 0.0;
+        }
         let d=w.displacement(s.segments[0].current,state.goal);
         let alignment=normalize_angle(d.y.atan2(d.x)-s.angle).abs();
         let settled=normalize_angle(state.desired-s.angle).abs()<0.6;
         if state.prey!=0 && state.coil_radius==0.0 && alignment<0.65 && settled {s.traits.aggression}
         else if w.tick()<state.dodge_until && settled {0.25} else {0.0}
     }
+    fn food_race(&self,w:&World,s:SnakeView<'_>,state:State)->bool {
+        if !w.boost_ready(s.id as usize) || state.target==0 || state.waypoint.is_some() {return false;}
+        let Some(f)=self.food.iter().flatten().find(|f|f.id==state.target && f.vacuum_owner<0) else {return false;};
+        let worth=f.value.max(self.spatial.cluster_weight(self.spatial.key(f.position)));
+        if worth<3.0 {return false;}
+        let d=w.displacement(s.segments[0].current,f.position);
+        let distance=(d.x*d.x+d.y*d.y).sqrt();
+        let (speed,turn)=self.boosted_motion[s.id as usize].at(0);
+        let angle=normalize_angle(d.y.atan2(d.x)-s.angle).abs();
+        if distance<speed/turn*(1.0-angle.cos())+s.radius*2.7 || angle>0.6 {return false;}
+        self.rivals.iter().enumerate().any(|(id,r)|id!=s.id as usize && r.alive
+            && (w.distance_squared(r.path[0],f.position).sqrt()-distance).abs()<=distance*0.25)
+    }
+
     fn attack_usable(&self,w:&World,s:SnakeView<'_>,state:State,a:Attack)->bool {
         if !a.valid || state.prey==0 || a.prey!=state.prey || a.prey_generation!=state.prey_generation
             || w.tick()<a.start || w.tick()>=a.end || w.tick()>state.hunt_until
             || w.tick()<state.escape_until || w.tick()<state.orbit_until || state.coil_radius>0.0 {return false;}
         let Some(victim)=w.snake(state.prey-1).filter(|v|v.alive && v.generation==a.prey_generation) else {return false;};
-        if s.segments.len()<victim.segments.len()+8 {return false;}
-        if a.limits.is_some_and(|limits|limits!=Self::attack_limits(w,s,a)) {return false;}
+        if s.segments.len()<victim.segments.len()+if w.config().rules==crate::RuleSet::V2 {4} else {8} {return false;}
+        if w.config().rules==crate::RuleSet::Classic {
+            if a.limits.is_some_and(|limits|limits!=Self::attack_limits(w,s,a)) {return false;}
+        } else {
+            if w.tick()==a.start && (!w.boost_ready(s.id as usize) || s.segments.len()<16) {return false;}
+            if s.flags & crate::flags::FROZEN!=0 {return false;}
+            if let Some(limits)=a.limits {
+                let original=limits[5] as usize;
+                let elapsed=w.tick().saturating_sub(a.start) as usize;
+                let expected=original.saturating_sub((2+original/100)*elapsed.min(21)/21);
+                // Scheduled payments are part of the plan. Growth, unrelated
+                // shrinkage and size changes invalidate it immediately.
+                if s.segments.len()!=expected || s.radius>limits[4] {return false;}
+                let ratio=(1.0+original.saturating_sub(24) as f64*0.004)
+                    /(1.0+expected.saturating_sub(24) as f64*0.004);
+                let expected_speed=if elapsed<=24 {limits[0]} else {limits[2]}*ratio;
+                let actual=w.motion_limits(s.id as usize,a.burst).unwrap().0;
+                if (actual-expected_speed).abs()>1e-9 {return false;}
+            }
+        }
         let passed=w.displacement(a.point,victim.segments[0].current);
         if passed.x*a.prey_heading.cos()+passed.y*a.prey_heading.sin()>30.0 {return false;}
         let fast=w.motion_limits(s.id as usize,a.burst).unwrap().0;
@@ -493,7 +592,9 @@ impl AiController {
         self.validate_attack(w,s,state);
         let mut own=self.rivals[id];
         let aggression=s.traits.aggression*(0.65+0.35*intelligence);
-        if aggression>0.32 {
+        let advantage=if w.config().rules==crate::RuleSet::V2 {4+2+s.segments.len()/100} else {8};
+        let interest=if w.config().rules==crate::RuleSet::V2 {0.2} else {0.32};
+        if aggression>interest {
             let (speed,turn)=w.motion_limits(id,s.traits.aggression).unwrap();own.speed=speed;own.turn=turn;
         }
         if state.prey!=0 {
@@ -504,7 +605,10 @@ impl AiController {
                 // a short-lived harvest goal until ordinary food scoring sees it.
                 state.goal=state.coil_center;state.harvest_until=w.tick()+60;
             }
-            if !victim.alive || victim.generation!=state.prey_generation || own.len<victim.segments.len()+8
+            // A validated attack already accounts for its scheduled payments.
+            // The full new-burst budget applies only to ordinary hunts; charging
+            // it again after a payment would abandon a still-winning crossing.
+            if !victim.alive || victim.generation!=state.prey_generation || (!state.attack.valid && own.len<victim.segments.len()+advantage)
                 || w.tick()>state.hunt_until || w.distance_squared(head,victim.segments[0].current)>650.0*650.0 {
                 state.prey=0;state.clear_coil(s.angle);state.track_goal=false;state.clear_attacks(s.angle);
             }
@@ -531,10 +635,10 @@ impl AiController {
             state.target=0;state.prey=0;state.clear_coil(s.angle);state.track_goal=false;state.clear_attacks(s.angle);state.waypoint=None;state.dodge_until=w.tick()+18;
             return;
         }
-        if state.prey==0 && aggression>0.32 {
+        if state.prey==0 && aggression>interest {
             let mut value=0.0;
             for (other,r) in self.rivals.iter().enumerate() {
-                if !r.alive || other==id || own.len<r.len+8 {continue;}
+                if !r.alive || other==id || own.len<r.len+advantage {continue;}
                 let distance=w.distance_squared(head,r.path[0]).sqrt();
                 if distance>620.0 {continue;}
                 // Very long snakes cannot catch a fast rival in open space.
@@ -549,7 +653,9 @@ impl AiController {
                 let v=aggression*(r.len as f64).sqrt()*(1.3+alignment)/(eta+1.0);
                 if v>value {value=v;state.prey=other+1;}
             }
-            if value<1.0 {state.prey=0;}
+            // Paid boosts already pass their own value and readiness gates;
+            // admit nearby moderate-interest hunts without spending on chase.
+            if value<if w.config().rules==crate::RuleSet::V2 {0.75} else {1.0} {state.prey=0;}
             if state.prey!=0 {
                 state.prey_generation=w.snake(state.prey-1).unwrap().generation;
                 state.hunt_until=w.tick()+180;
@@ -626,7 +732,7 @@ impl AiController {
                 let threshold=if same {s.radius*1.48} else {(s.radius+r.radius)*0.78};
                 // Half a tick's motion and a small radius reserve protect the
                 // first swept tick against segments that shift along corners.
-                let margin=if time<=STEP_SECONDS+1e-9 {0.75} else {1.5+(r.speed*STEP_SECONDS*0.35).min(r.radius*0.25)+padding};
+                let margin=if time<=STEP_SECONDS+1e-9 {if same && w.config().rules==crate::RuleSet::V2 {2.0} else {0.75}} else {1.5+(r.speed*STEP_SECONDS*0.35).min(r.radius*0.25)+padding};
                 let ap=w.displacement(a,p);
                 let reserve=threshold+margin+if time<=STEP_SECONDS+1e-9 {self.spatial.max_motion} else {0.0};
                 if ap.x<ab.x.min(0.0)-reserve || ap.x>ab.x.max(0.0)+reserve
@@ -668,25 +774,35 @@ impl AiController {
         self.rollout_into(w,s,state,kind,horizon,&mut candidate);
         candidate
     }
+    fn candidate_rush(w:&World,s:SnakeView<'_>,state:State,kind:usize,attack:Attack)->f64 {
+        if kind==11 {0.0} else if kind==12 {Self::boost_request(w,s,0.6)}
+            else {Self::boost_request(w,s,if attack.valid {attack.control(w.tick()).1} else if w.config().rules==crate::RuleSet::Classic || kind==0 || kind==1 || state.escape_boost {state.rush} else {0.0})}
+    }
     fn rollout_into(&mut self,w:&World,s:SnakeView<'_>,state:State,kind:usize,horizon:usize,c:&mut Candidate) {
         let proposed=if kind==1 {state.attack} else if kind==7 || kind==8 {state.attack_options[kind-7]} else {Attack::default()};
         let attack=if self.attack_usable(w,s,state,proposed) {proposed} else {Attack::default()};
-        let rush=if attack.valid {attack.control(w.tick()).1} else {state.rush};
-        let (mut speed,mut turn)=w.motion_limits(s.id as usize,rush).unwrap();
-        let maximum_speed=if attack.valid {w.motion_limits(s.id as usize,attack.burst).unwrap().0} else {speed};
+        let rush=Self::candidate_rush(w,s,state,kind,attack);
+        let motion=if rush>0.0 {self.boosted_motion[s.id as usize]} else {self.motion[s.id as usize]};
+        let (mut speed,mut turn)=if w.config().rules==crate::RuleSet::V2 {motion.at(0)} else {w.motion_limits(s.id as usize,rush).unwrap()};
+        let maximum_speed=if w.config().rules==crate::RuleSet::V2 {motion.max_speed} else if attack.valid {w.motion_limits(s.id as usize,attack.burst).unwrap().0} else {speed};
         let crossing_limits=if attack.valid {w.motion_limits(s.id as usize,attack.crossing_rush).unwrap()} else {(speed,turn)};
-        self.planning_speed[s.id as usize]=if attack.valid {maximum_speed} else {speed};
-        let tracks_goal=!attack.valid && ((kind==0 && (state.coil_radius>0.0 || state.track_goal)) || (kind==1 && state.track_goal));
+        self.planning_speed[s.id as usize]=maximum_speed;
+        let tracks_goal=!attack.valid && (((kind==0 || kind==11) && (state.coil_radius>0.0 || state.track_goal)) || ((kind==1 || kind==12) && state.track_goal));
         // Reset metadata only. Every path/distance entry that can be read is
         // overwritten by this rollout; clearing the unused horizon for every
         // candidate used to stream hundreds of KB of zeros per snake/tick.
-        c.checked=false;c.tracks_goal=tracks_goal;c.desired=0.0;c.exit_angle=0.0;
+        c.body_len=if w.config().rules==crate::RuleSet::V2 && (rush>0.0 || s.boost_ticks>1) {
+            s.segments.len().saturating_sub(w.boost_segment_cost(s.id as usize).unwrap())
+        } else {s.segments.len()};
+        c.kind=kind;c.checked=false;c.tracks_goal=tracks_goal;c.desired=0.0;
+        c.turn_until=match kind {1|12=>state.turn_until,7|8=>w.tick()+16,9|10=>w.tick()+32,_=>u64::MAX};
+        c.exit_angle=if kind==1 || kind==12 {state.exit_angle} else {0.0};
         c.angle=s.angle;c.steps=0;c.score=0.0;c.clearance=200.0;
         c.capped=false;c.area=0;c.uncertain=false;c.attack=attack;c.rush=rush;
         c.path[0]=s.segments[0].current;
         let goal=state.waypoint.unwrap_or(state.goal);
         let d=w.displacement(c.path[0],goal);
-        let fixed=match kind {0=>d.y.atan2(d.x),1=>state.desired,2=>s.angle,3=>s.angle+0.6,4=>s.angle-0.6,
+        let fixed=match kind {0|11=>d.y.atan2(d.x),1|12=>state.desired,2=>s.angle,3=>s.angle+0.6,4=>s.angle-0.6,
             5|7|9=>s.angle+3.0,6|8|10=>s.angle-3.0,_=>s.angle};
         if kind==7 || kind==8 {
             c.exit_angle=normalize_angle(s.angle+normalize_angle(fixed-s.angle).clamp(-turn*STEP_SECONDS*16.0,turn*STEP_SECONDS*16.0));
@@ -698,7 +814,7 @@ impl AiController {
         let mut rotation=(turn*STEP_SECONDS).sin_cos();
         self.rollout_distance[0]=0.0;
         let mut checked=0;
-        let max_curve=if attack.valid {let limits=w.motion_limits(s.id as usize,attack.burst).unwrap();
+        let max_curve=if w.config().rules==crate::RuleSet::V2 {motion.max_curve} else if attack.valid {let limits=w.motion_limits(s.id as usize,attack.burst).unwrap();
             (limits.0*limits.1).max(crossing_limits.0*crossing_limits.1)} else {speed*turn};
         let mut near=0u16;let mut defeated=0u16;let mut reached=false;
         for (other,r) in self.rivals.iter().enumerate() {
@@ -709,7 +825,10 @@ impl AiController {
         }
         for j in 1..=horizon {
             let attack_control=attack.control(w.tick()+j as u64-1);
-            if attack.valid {
+            if w.config().rules==crate::RuleSet::V2 {
+                let limits=motion.at(j-1);
+                if limits!=(speed,turn) {(speed,turn)=limits;rotation=(turn*STEP_SECONDS).sin_cos();}
+            } else if attack.valid {
                 if w.tick()+j as u64-1>=attack.turn_at {(speed,turn)=crossing_limits;}
                 rotation=(turn*STEP_SECONDS).sin_cos();
             }
@@ -722,8 +841,7 @@ impl AiController {
                 if state.target!=0 && w.distance_squared(c.path[j-1],goal)<(s.radius*2.7).powi(2) {reached=true;}
                 let d=w.displacement(c.path[j-1],goal);
                 if reached || (state.prey!=0 && defeated&(1<<(state.prey-1))!=0) {c.angle} else {d.y.atan2(d.x)}
-            } else if kind==1 && w.tick()+j as u64>state.turn_until {state.exit_angle}
-                else if ((kind==7 || kind==8) && j>16) || ((kind==9 || kind==10) && j>32) {c.exit_angle} else {fixed};
+            } else if w.tick()+j as u64>c.turn_until {c.exit_angle} else {fixed};
             if j==1 {c.desired=normalize_angle(desired);}
             let delta=normalize_angle(desired-c.angle);
             let step=turn*STEP_SECONDS;
@@ -735,7 +853,7 @@ impl AiController {
                 c.angle=normalize_angle(desired);
                 let (sin,cos)=c.angle.sin_cos();direction=Point{x:cos,y:sin};
             }
-            if j==16 && kind!=9 && kind!=10 {c.exit_angle=c.angle;}
+            if j==16 && kind!=1 && kind!=12 && kind!=9 && kind!=10 {c.exit_angle=c.angle;}
             let p=w.canonical_point(Point {x:c.path[j-1].x+direction.x*speed*STEP_SECONDS,
                 y:c.path[j-1].y+direction.y*speed*STEP_SECONDS});
             c.path[j]=p;
@@ -762,7 +880,8 @@ impl AiController {
             // The published first step is always checked separately.
             // Finish the old stage before changing speed/turn. Every consumer
             // uses this same interval, including head and deposited-self sweeps.
-            let sweep=j==1 || j%4==0 || j==horizon || (attack.valid && w.tick()+j as u64==attack.turn_at);
+            let sweep=j==1 || j%4==0 || j==horizon || (attack.valid && w.tick()+j as u64==attack.turn_at)
+                || (w.config().rules==crate::RuleSet::V2 && motion.at(j)!=motion.at(j-1));
             let from_index=checked;
             let span=(j-from_index) as f64*STEP_SECONDS;
             let padding=speed*turn*span*span/8.0;
@@ -778,7 +897,7 @@ impl AiController {
             while active!=0 {
                 let other=active.trailing_zeros() as usize;active&=active-1;
                 let r=&self.rivals[other];
-                let winning=s.segments.len()>=r.len+6;
+                let winning=c.body_len>=r.len+if w.config().rules==crate::RuleSet::V2 {4} else {6};
                 let reach=(s.radius+r.radius)*0.82;
                 // A bounded turn envelope widens with time, but not into an
                 // arbitrary reachable disk that would paralyze all pursuit.
@@ -803,7 +922,7 @@ impl AiController {
             }
             if hit {break;}
             if w.config().self_collisions {
-                let age=(s.radius*1.18*10.0/(if attack.valid {maximum_speed} else {speed})/STEP_SECONDS).ceil() as usize;
+                let age=(s.radius*1.18*10.0/(if attack.valid || w.config().rules==crate::RuleSet::V2 {maximum_speed} else {speed})/STEP_SECONDS).ceil() as usize;
                 if sweep && j>age {
                     for k in (0..j-age).step_by(3) {
                         let end=(k+3).min(j-age);
@@ -862,6 +981,11 @@ impl AiController {
             c.score+=closed as f64*70.0*s.traits.aggression;
             c.score+=(pressure*155.0+barrier*110.0)*s.traits.aggression;
         }
+        if w.config().rules==crate::RuleSet::V2 && rush>0.0 {
+            // One nutrition unit is about 30 pixels of ordinary progress.
+            // More mature snakes spend more segments for the same burst.
+            c.score-=30.0*2.5*(2+s.segments.len()/100) as f64/2.0;
+        }
         // Favor room for a future escape turn, including when a parallel
         // corridor is immediately safe but leaves no room for a later turn.
         if w.config().deadly_walls {
@@ -876,6 +1000,11 @@ impl AiController {
     }
 }
 impl Controller for AiController {
+    fn intent_flags(&self, id: u32) -> Option<u32> {
+        let s = self.states[id as usize];
+        Some((if s.prey != 0 || s.coil_radius > 0.0 { crate::flags::HUNTING } else { 0 })
+            | if s.debug.flags & 32 != 0 { crate::flags::TRAPPED } else { 0 })
+    }
     fn steer(&mut self,w:&World,s:SnakeView<'_>) -> Steering {
         let clock=self.profile_enabled.then(std::time::Instant::now);
         self.prepare(w);
@@ -962,6 +1091,7 @@ impl Controller for AiController {
         // Temporarily lease the preallocated scratch so rollout methods can
         // also mutably access shared caches. No allocation or array reset.
         let mut candidates=self.candidates.take().expect("non-reentrant controller");
+        let mut area_alias=[None;CANDIDATES];
         self.rollout_into(w,s,state,1,horizon,&mut candidates[1]);
         if !strategic && (candidates[1].steps<horizon || (state.target==0 && state.prey==0 && w.tick().saturating_sub(state.last_strategy)>6)) && self.urgent_used<URGENT_QUOTA {
             self.urgent_used+=1;strategic=true;
@@ -988,11 +1118,28 @@ impl Controller for AiController {
         if !reuse_plan || self.diagnostic_enabled {
             for kind in 0..CANDIDATES {
                 if kind==1 {continue;}
-                if kind>=9 && !extended {candidates[kind]=candidates[2];continue;}
-                if kind==2 && candidates[1].checked && !candidates[1].attack.valid && !state.track_goal && state.turn_until==u64::MAX && normalize_angle(state.desired-s.angle).abs()<1e-12 {
-                    candidates[kind]=candidates[1];
+                if (kind==9 || kind==10) && !extended {candidates[kind]=candidates[2];area_alias[kind]=Some(2);continue;}
+                if kind==11 && (w.config().rules==crate::RuleSet::Classic || state.rush==0.0) {candidates[kind]=candidates[0];area_alias[kind]=Some(0);continue;}
+                if kind==12 && (w.config().rules!=crate::RuleSet::V2 || !w.boost_ready(id) || candidates[1].steps>=18) {candidates[kind]=candidates[2];area_alias[kind]=Some(2);continue;}
+                if kind==2 && candidates[1].checked && !candidates[1].attack.valid && !state.track_goal && state.turn_until==u64::MAX && normalize_angle(state.desired-s.angle).abs()<1e-12
+                    && candidates[1].rush==Self::candidate_rush(w,s,state,kind,Attack::default()) {
+                    candidates[kind]=candidates[1];area_alias[kind]=Some(1);
                 } else {self.rollout_into(w,s,state,kind,horizon,&mut candidates[kind]);}
             }
+        }
+        if !reuse_plan && w.config().rules==crate::RuleSet::V2 && w.boost_ready(id) {
+            let unboosted=candidates.iter().filter(|c|c.rush==0.0 && !c.attack.valid).map(|c|c.steps).max().unwrap_or(0);
+            if unboosted<18 {
+                let mut trial=Candidate::default();
+                for kind in [0,2,3,4,5,6,7,8] {
+                    let mut escape=state;escape.rush=0.6;escape.escape_boost=true;escape.attack=Attack::default();escape.attack_options=[Attack::default();2];
+                    // kind 12 follows retained control; ordinary slots below
+                    // explicitly request boost for this differential probe.
+                    self.rollout_into(w,s,escape,kind,horizon,&mut trial);
+                    if trial.rush>0.0 && trial.steps>candidates[12].steps {candidates[12]=trial;area_alias[12]=None;}
+                }
+                if candidates[12].steps!=horizon {candidates[12]=candidates[2];area_alias[12]=Some(2);}
+            } else {candidates[12]=candidates[2];area_alias[12]=Some(2);}
         }
         // A reused decision selects only slot 1. Leave other scratch slots
         // untouched instead of copying its full path into ten unused slots.
@@ -1007,8 +1154,11 @@ impl Controller for AiController {
         let safe=candidates.iter().filter(|c|c.steps==horizon).count();
         let rollout_time=clock.map(|c|c.elapsed().as_nanos());
         if let Some(t)=rollout_time {self.profile[2]+=t-strategy_time.unwrap();}
-        for (index,c) in candidates.iter_mut().enumerate() {
+        for index in 0..CANDIDATES {
             if reuse_plan && !self.diagnostic_enabled && index!=1 {continue;}
+            let alias=area_alias[index].map(|source|(candidates[source].area,candidates[source].uncertain));
+            let c=&mut candidates[index];
+            if let Some((area,capped))=alias {c.area=area;c.uncertain=capped;}
             if c.area==0 {
                 let (area,capped)=if extended && normalize_angle(c.angle-s.angle).abs()>0.7 {
                     let rate=s.radius*1.18/(w.motion_limits(id,state.rush).unwrap().0*STEP_SECONDS).max(0.1);
@@ -1034,10 +1184,11 @@ impl Controller for AiController {
         if self.diagnostic_enabled {
                 let mut d=DecisionDiagnostic {generation:s.generation,selected:best,horizon,required_cells:need,length:s.segments.len(),goal:state.waypoint.unwrap_or(state.goal),reused_plan:reuse_plan,..Default::default()};
             for (i,c) in candidates.iter().enumerate() {
-                let turn_ticks=if i==7 || i==8 {16} else if i==9 || i==10 {32} else if i==1 && state.turn_until!=u64::MAX {state.turn_until.saturating_sub(w.tick()) as usize} else {0};
+                let turn_ticks=if c.turn_until!=u64::MAX {c.turn_until.saturating_sub(w.tick()) as usize} else {0};
                 d.candidates[i]=CandidateDiagnostic {checked:c.checked,desired:c.desired,safe_ticks:c.steps,area:c.area,area_capped:c.uncertain,
-                    turn_ticks,track_goal:c.tracks_goal,exit_angle:if i==1 {state.exit_angle} else {c.exit_angle},capped:c.capped,score:c.score,rush:c.rush,coil_center:state.coil_center,coil_radius:state.coil_radius,coil_sign:state.coil_sign,
+                    turn_ticks,track_goal:c.tracks_goal,exit_angle:c.exit_angle,capped:c.capped,score:c.score,rush:c.rush,coil_center:state.coil_center,coil_radius:state.coil_radius,coil_sign:state.coil_sign,
                     coil_pitch:state.coil_pitch,coil_progress:state.coil_progress,
+                    attack_valid:c.attack.valid,
                     attack_turn_ticks:if c.attack.valid {c.attack.turn_at.saturating_sub(w.tick()) as usize} else {0},
                     attack_crossing:if c.attack.valid {c.attack.crossing} else {c.desired},
                     attack_crossing_rush:if c.attack.valid {c.attack.crossing_rush} else {c.rush}};
@@ -1045,24 +1196,7 @@ impl Controller for AiController {
             self.decisions[id]=d;
         }
         let c=&candidates[best];
-        if !c.tracks_goal {state.clear_coil(s.angle);}
-        if best!=1 {
-            state.attack=c.attack;
-            state.track_goal=best==0 && state.coil_radius>0.0;
-            if normalize_angle(c.desired-s.angle).abs()>0.5 {
-                let duration=if best==7 || best==8 {16} else if best==9 || best==10 {64} else {(normalize_angle(c.desired-s.angle).abs()/self.rivals[id].turn/STEP_SECONDS).ceil().clamp(12.0,STEPS as f64) as u64};
-                state.commit_until=w.tick()+duration;
-            }
-            state.turn_until=if best==7 || best==8 {w.tick()+16} else if best==9 || best==10 {w.tick()+32} else {u64::MAX};
-            state.exit_angle=c.exit_angle;
-        }
-        if c.area<need && !c.uncertain && s.segments.len()>=24 && w.tick()>=state.escape_until && w.tick()>=state.orbit_until {
-            state.escape_until=w.tick()+45;state.prey=0;state.clear_coil(s.angle);state.track_goal=false;state.clear_attacks(s.angle);
-            state.rejected=state.target;state.reject_until=state.escape_until;
-            state.target=0;state.waypoint=None;
-        }
-        state.rush=c.rush;
-        state.desired=c.desired;
+        State::commit_candidate(&mut state,c,best,w,s,self.rivals[id].turn,need);
         let diff=normalize_angle(c.desired-s.angle);
         let sign=if diff>0.07 {1} else if diff< -0.07 {-1} else {0};
         if sign!=0 {state.last_turn_tick=w.tick();state.turn_sign=sign;}
@@ -1072,6 +1206,7 @@ impl Controller for AiController {
         }
         state.debug.safe_seconds=c.steps as f64*STEP_SECONDS;
         state.debug.reachable_cells=c.area as u32;
+        if (c.area as f64) < 1.5 * need as f64 && !c.uncertain {state.debug.flags|=32;}
         if c.uncertain {state.debug.flags|=1;}
         if c.capped {state.debug.flags|=2;}
         if c.steps<horizon {state.debug.flags|=4;}
@@ -1079,7 +1214,7 @@ impl Controller for AiController {
         self.states[id]=state;
         self.candidates=Some(candidates);
         if let Some(c)=clock {self.profile[4]+=c.elapsed().as_nanos();}
-        Steering {desired_angle:state.desired,rush:state.rush}
+        Steering {desired_angle:state.desired,rush:Self::boost_request(w,s,state.rush)}
     }
 }
 

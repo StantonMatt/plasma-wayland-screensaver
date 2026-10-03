@@ -3,7 +3,7 @@
 #include <assert.h>
 #include <math.h>
 int main(void) {
-    snakes_core_config c = {1280, 720, 100, 100, 100, 100, 100, 73, 7, 1, 1};
+    snakes_core_config c = {1280, 720, 100, 100, 100, 100, 100, 73, 7, 1, 1, SNAKES_CORE_RULE_DEFAULT, 0};
     snakes_core_world *w = NULL;
     assert(snakes_core_create(&c, &w) == SNAKES_CORE_OK);
     assert(snakes_core_step(w, 1) == SNAKES_CORE_OK);

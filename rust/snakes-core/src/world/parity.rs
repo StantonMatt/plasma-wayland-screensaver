@@ -111,7 +111,7 @@ fn emit(w: &mut World, out: &mut impl Write) -> io::Result<()> {
 pub fn run(input: &str, out: &mut impl Write) -> io::Result<()> {
     let mut r = Input(input.split_whitespace());
     assert_eq!(r.n::<u32>(), 1, "unsupported numeric protocol");
-    let config = Config { width:r.n(), height:r.n(), seed:r.n(), density:r.n(), trails:r.n(), scale:r.n(), speed:r.n(), intelligence:r.n(), palette_size:r.n(), self_collisions:r.flag(), deadly_walls:r.flag() };
+    let config = Config { rules:RuleSet::Classic, width:r.n(), height:r.n(), seed:r.n(), density:r.n(), trails:r.n(), scale:r.n(), speed:r.n(), intelligence:r.n(), palette_size:r.n(), self_collisions:r.flag(), deadly_walls:r.flag() };
     let ticks: u64 = r.n();
     let dt: f64 = r.n();
     let collision_only = r.flag();
@@ -135,7 +135,7 @@ pub fn run(input: &str, out: &mut impl Write) -> io::Result<()> {
     w.food.clear();
     let count: usize = r.n();
     for _ in 0..count {
-        w.food.push(Food { id:r.n(), p:r.point(), value:r.n(), color:r.n(), size:r.n(), velocity:r.point(), life:r.n(), phase:r.n(), feast:r.n(), trail_index:r.n::<i64>() as u32, feast_len:r.n(), attraction:r.n(), target:r.point(), owner:r.n(), original_life:r.n() });
+        w.food.push(Food { kind:FoodKind::Spark, id:r.n(), p:r.point(), value:r.n(), color:r.n(), size:r.n(), velocity:r.point(), life:r.n(), phase:r.n(), feast:r.n(), trail_index:r.n::<i64>() as u32, feast_len:r.n(), attraction:r.n(), target:r.point(), owner:r.n(), original_life:r.n() });
     }
     w.events.clear();
     w.parity_record = true;

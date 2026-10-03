@@ -721,7 +721,7 @@ fn prey_replies_obey_self_collision_setting_for_current_and_deposited_trails() {
         let generation=w.snake(1).unwrap().generation;
         let attack=Attack {valid:true,prey:2,prey_generation:generation,end:120,point:w.snake(0).unwrap().segments[0].current,..Attack::default()};
         let state=State {prey:2,prey_generation:generation,hunt_until:120,..State::default()};
-        let mut c=Candidate {attack,..Candidate::default()};
+        let mut c=Candidate {attack,body_len:w.snake(0).unwrap().segments.len(),..Candidate::default()};
         // Keep the hunter clear initially, then sweep across every reply at
         // tick 60. A U-turn reply crosses its own deposited trail beforehand.
         for j in 0..=STEPS {c.path[j]=Point{x:700.0,y:300.0};}
@@ -806,13 +806,13 @@ fn tactic_gates_only_reject_candidates_that_execute_that_tactic() {
             3=>tactical.escape_until=100,
             _=>tactical.orbit_until=100,
         }
-        for kind in 2..CANDIDATES {
+        for kind in 2..11 {
             let ordinary=ai.rollout(&w,s,base,kind,36);
             let alternative=ai.rollout(&w,s,tactical,kind,36);
             assert_eq!(alternative.steps,ordinary.steps,"mode {mode}, kind {kind}");
             assert_eq!(alternative.path,ordinary.path,"mode {mode}, kind {kind}");
         }
-        for kind in [0,1] {assert_eq!(ai.rollout(&w,s,tactical,kind,36).steps,0);}
+        for kind in [0,1,11,12] {assert_eq!(ai.rollout(&w,s,tactical,kind,36).steps,0);}
     }
     // A valid attack has its own motion schedule, also independent of a stale
     // coil's curvature. The live consumer normally cancels that conflict.
@@ -952,8 +952,8 @@ fn selecting_a_checked_straight_continuation_abandons_the_old_pocket() {
 
 
 // Advisory regression classes; single replies isolate legality from aggregate utility.
-fn reply_fixture(_w:&World)->(Candidate,[f64;73]) {
-    let mut c=Candidate::default();c.path.fill(Point{x:600.0,y:700.0});
+fn reply_fixture(w:&World)->(Candidate,[f64;73]) {
+    let mut c=Candidate {body_len:w.snake(0).unwrap().segments.len(),..Candidate::default()};c.path.fill(Point{x:600.0,y:700.0});
     let distance=[0.0;73];(c,distance)
 }
 #[test]
@@ -992,7 +992,7 @@ fn advisory_reply_hits_barrier_between_former_sampled_intervals() {
         let y=if wrap {0.0} else {300.0};
         line(&mut w,0,Point{x:139.3333333333,y:y-72.0},std::f64::consts::FRAC_PI_2,120);
         line(&mut w,1,Point{x:100.0,y},0.0,24);
-        let mut c=Candidate::default();let mut distance=[0.0;73];
+        let mut c=Candidate {body_len:w.snake(0).unwrap().segments.len(),..Candidate::default()};let mut distance=[0.0;73];
         for j in 0..=72 {c.path[j]=w.canonical_point(Point{x:139.3333333333,y:y-72.0+j as f64*24.0});distance[j]=j as f64*24.0;}
         assert!(AiController::new().reply_blocked(&w,w.snake(0).unwrap(),&c,w.snake(1).unwrap(),0.0,0,0.0,&distance),"wrap={wrap}");
     }
@@ -1068,7 +1068,8 @@ fn bounded_angle_fast_path_matches_general_remainder_bit_for_bit() {
 
 #[test]
 fn candidate_scratch_never_reads_a_previous_decisions_unused_path() {
-    let cfg=Config {width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,
+    for rules in [crate::RuleSet::Classic,crate::RuleSet::V2] {
+    let cfg=Config {rules,width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,
         deadly_walls:false,self_collisions:true,seed:20260814,..Config::default()};
     let mut a=World::new(cfg).unwrap();let mut b=a.diagnostic_snapshot();
     let mut plain=AiController::new();let mut poisoned=AiController::new();
@@ -1083,6 +1084,331 @@ fn candidate_scratch_never_reads_a_previous_decisions_unused_path() {
         for (sa,sb) in a.snakes().zip(b.snakes()) {
             assert_eq!(sa.angle,sb.angle,"tick {} snake {}",a.tick(),sa.id);
             assert_eq!(sa.segments,sb.segments);
+        }
+    }
+    }
+}
+
+#[test]
+fn v2_requests_only_fixed_ready_boosts_and_exports_intent() {
+    let mut w=World::new(Config{rules:crate::RuleSet::V2,..Config::default()}).unwrap();
+    let s=w.snake(0).unwrap();
+    assert_eq!(AiController::boost_request(&w,s,0.25),0.0);
+    assert_eq!(AiController::boost_request(&w,s,0.49),0.0);
+    assert_eq!(AiController::boost_request(&w,s,0.5),0.6);
+    assert_eq!(AiController::boost_request(&w,s,1.0),0.6);
+    let mut ai=AiController::new();
+    ai.states[0].prey=2;ai.states[0].debug.flags=32;
+    assert_eq!(ai.intent_flags(0),Some(crate::flags::HUNTING|crate::flags::TRAPPED));
+    w.step(&mut crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering{desired_angle:s.angle,rush:1.0}));
+    assert_eq!(AiController::boost_request(&w,w.snake(0).unwrap(),1.0),0.0);
+}
+
+#[test]
+fn v2_forecast_tracks_payments_expiry_and_observed_burst_from_tick_one() {
+    let mut w=arena(true);w.config.rules=crate::RuleSet::V2;
+    line(&mut w,0,Point{x:400.0,y:400.0},0.0,120);
+    let mut ai=AiController::new();ai.prepare(&w);
+    let predicted=ai.rollout(&w,w.snake(0).unwrap(),State {rush:0.6,desired:0.9,turn_until:u64::MAX,..State::default()},1,72);
+    assert_eq!(predicted.steps,72);
+    let schedule=Motion::forecast(&w,0,0.6);
+    for j in 0..36 {
+        let expected=w.forecast_motion_limits(0,if j==0 {0.6} else {0.0},0).unwrap();
+        assert_eq!(schedule.at(j),expected,"payment/expiry tick {j}");
+        w.step(&mut crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering {desired_angle:0.9,rush:if s.boost_ticks==0 && s.cooldown_ticks==0 {0.6} else {0.0}}));
+        let actual=w.motion_limits(0,w.observed_rush(0).unwrap()).unwrap();
+        assert_eq!(schedule.at(j),actual,"actual motion tick {j}");
+        assert!(w.distance_squared(predicted.path[j+1],w.snake(0).unwrap().segments[0].current)<1e-15,"rollout tick {j}");
+        if j==0 {
+            assert_ne!(w.snake(0).unwrap().flags & crate::flags::BOOSTING,0);
+            let mut observer=AiController::new();observer.prepare(&w);
+            let rival=&observer.rivals[0];
+            let m=Motion::forecast(&w,0,0.0);
+            assert!((w.distance_squared(rival.path[0],rival.path[1]).sqrt()-m.at(0).0*STEP_SECONDS).abs()<1e-10);
+            assert!(m.at(23).0<m.at(22).0,"observed burst expires after remaining 23 ticks");
+        }
+    }
+    assert_eq!(w.snake(0).unwrap().segments.len(),117);
+}
+
+#[test]
+fn v2_cutoffs_require_ready_budget_but_do_not_spend_on_an_ordinary_chase() {
+    let mut w=arena(true);w.config.rules=crate::RuleSet::V2;
+    line(&mut w,0,Point{x:400.0,y:400.0},0.0,15);
+    line(&mut w,1,Point{x:450.0,y:470.0},-std::f64::consts::FRAC_PI_2,6);
+    let mut ai=AiController::new();ai.prepare(&w);
+    let state=State {prey:2,prey_generation:w.snake(1).unwrap().generation,hunt_until:180,
+        goal:Point{x:550.0,y:400.0},..State::default()};
+    assert!(ai.cutoffs(&w,w.snake(0).unwrap(),state).iter().all(|a|!a.valid));
+    assert_eq!(ai.rush_for(&w,w.snake(0).unwrap(),state),0.0);
+    line(&mut w,0,Point{x:400.0,y:400.0},0.0,72);w.tick+=1;ai.prepare(&w);
+    assert!(ai.cutoffs(&w,w.snake(0).unwrap(),state).iter().any(|a|a.valid));
+    w.snakes[0].cooldown_ticks=1;w.tick+=1;ai.prepare(&w);
+    assert!(ai.cutoffs(&w,w.snake(0).unwrap(),state).iter().all(|a|!a.valid));
+}
+
+#[test]
+fn v2_food_race_spends_only_on_valuable_close_competition_with_turn_room() {
+    let mut w=arena(true);w.config.rules=crate::RuleSet::V2;
+    line(&mut w,0,Point{x:400.0,y:400.0},0.0,24);
+    line(&mut w,1,Point{x:600.0,y:500.0},-1.0,24);
+    food(&mut w,Point{x:600.0,y:400.0});w.food[0].value=3.0;
+    let mut ai=AiController::new();ai.prepare(&w);
+    let state=State {target:100000,goal:w.food[0].p,..State::default()};
+    assert!(!ai.food_race(&w,w.snake(0).unwrap(),state),"rival is half as far, outside the 25% band");
+    line(&mut w,1,Point{x:600.0,y:620.0},-1.0,24);w.tick+=1;ai.prepare(&w);
+    assert!(ai.food_race(&w,w.snake(0).unwrap(),state));
+    w.food[0].value=1.0;w.tick+=1;ai.prepare(&w);
+    assert!(!ai.food_race(&w,w.snake(0).unwrap(),state));
+    w.food[0].value=3.0;w.snakes[0].angle=2.0;w.tick+=1;ai.prepare(&w);
+    assert!(!ai.food_race(&w,w.snake(0).unwrap(),state),"target requires an unsafe boosted reversal");
+}
+
+#[test]
+fn v2_open_coil_admission_requires_body_for_one_point_two_loops() {
+    for wrap in [false,true] {
+        let mut w=arena(wrap);w.config.rules=crate::RuleSet::V2;
+        line(&mut w,0,Point{x:500.0,y:400.0},std::f64::consts::FRAC_PI_2,150);
+        line(&mut w,1,Point{x:420.0,y:400.0},0.0,24);
+        let mut ai=AiController::new();ai.prepare(&w);
+        let mut state=State {prey:2,prey_generation:w.snake(1).unwrap().generation,hunt_until:180,..State::default()};
+        assert!(ai.pocket(&w,w.snake(0).unwrap(),&mut state));
+        assert!(state.coil_radius>=4.2*w.snake(0).unwrap().radius);
+        assert!(ai.pocket_usable(&w,w.snake(0).unwrap(),state));
+        state.clear_coil(w.snake(0).unwrap().angle);
+        line(&mut w,1,Point{x:340.0,y:400.0},0.0,24);w.tick+=1;ai.prepare(&w);
+        assert!(!ai.pocket(&w,w.snake(0).unwrap(),&mut state),"outside 20 radii and too much circumference");
+        line(&mut w,0,Point{x:500.0,y:400.0},std::f64::consts::FRAC_PI_2,149);w.tick+=1;ai.prepare(&w);
+        assert!(!ai.pocket(&w,w.snake(0).unwrap(),&mut state),"below mature length threshold");
+    }
+}
+
+#[test]
+fn v2_retained_cutoff_survives_its_payments_but_rejects_unplanned_growth() {
+    let mut w=arena(true);w.config.rules=crate::RuleSet::V2;
+    line(&mut w,0,Point{x:400.0,y:400.0},0.0,72);
+    line(&mut w,1,Point{x:450.0,y:470.0},-std::f64::consts::FRAC_PI_2,24);
+    let mut ai=AiController::new();ai.prepare(&w);
+    let mut state=State {prey:2,prey_generation:w.snake(1).unwrap().generation,hunt_until:180,..State::default()};
+    let mut attack=ai.cutoffs(&w,w.snake(0).unwrap(),state).into_iter().find(|a|a.valid).unwrap();
+    // Keep prey distant and unpassed while testing the retained motion budget.
+    attack.point=Point{x:600.0,y:200.0};attack.prey_heading=0.0;attack.end=60;
+    state.attack=attack;
+    line(&mut w,1,Point{x:200.0,y:200.0},0.0,24);w.snakes[1].traits.speed_bias=0.2;
+    for j in 0..30 {
+        assert!(ai.attack_usable(&w,w.snake(0).unwrap(),state,attack),"retained tick {j}");
+        w.step(&mut crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering {desired_angle:s.angle,rush:if s.id==0 && j==0 {0.6} else {0.0}}));
+    }
+    w.snakes[0].len+=1;
+    assert!(!ai.attack_usable(&w,w.snake(0).unwrap(),state,attack));
+}
+
+#[test]
+fn advisory_retained_hunt_refresh_does_not_rebudget_paid_boost_segments() {
+    // Cover the base cost and its size-dependent siblings at both boundaries.
+    for length in [30,100,200] {
+        let mut w=arena(true);w.config.rules=crate::RuleSet::V2;
+        w.config.width=3440.0;w.config.height=1440.0;
+        line(&mut w,0,Point{x:1800.0,y:400.0},0.0,length);
+        line(&mut w,1,Point{x:1600.0,y:200.0},0.0,length-4-2-length/100);
+        w.snakes[1].traits.speed_bias=0.2;
+        let mut ai=AiController::new();ai.prepare(&w);
+        let mut attack=Attack {valid:true,prey:2,prey_generation:w.snake(1).unwrap().generation,
+            start:0,turn_at:18,end:60,approach:0.0,crossing:0.0,burst:0.6,
+            point:Point{x:2000.0,y:200.0},..Attack::default()};
+        attack.limits=Some(AiController::attack_limits(&w,w.snake(0).unwrap(),attack));
+        let mut state=State {prey:2,prey_generation:attack.prey_generation,hunt_until:180,attack,..State::default()};
+        for j in 0..30 {
+            ai.prepare(&w);
+            assert!(ai.attack_usable(&w,w.snake(0).unwrap(),state,attack),"length {length}, tick {j}");
+            ai.tactics(&w,w.snake(0).unwrap(),&mut state,1.0);
+            assert_eq!(state.prey,2,"refresh rebudgeted length {length}, tick {j}");
+            assert!(state.attack.valid,"refresh cancelled length {length}, tick {j}");
+            w.step(&mut crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering {
+                desired_angle:s.angle,rush:if s.id==0 && j==0 {0.6} else {0.0}}));
+        }
+        assert_eq!(w.snake(0).unwrap().segments.len(),length-2-length/100);
+        // Retention is conditional on validation, never permission to keep a
+        // stale attack after an unrelated body change loses winning advantage.
+        w.snakes[0].len-=1;w.tick+=1;ai.prepare(&w);
+        ai.tactics(&w,w.snake(0).unwrap(),&mut state,1.0);
+        assert!(!state.attack.valid);
+        assert_eq!(state.prey,0);
+    }
+}
+
+#[test]
+fn advisory_straight_alias_preserves_unboosted_food_race_alternative() {
+    let mut w=arena(true);w.config.rules=crate::RuleSet::V2;
+    // Slot 2 has no strategy quota on this tick, retaining its straight plan.
+    line(&mut w,2,Point{x:400.0,y:400.0},0.0,24);
+    line(&mut w,1,Point{x:600.0,y:630.0},-1.0,24);
+    food(&mut w,Point{x:600.0,y:420.0});w.food[0].value=3.0;
+    let mut ai=AiController::new();ai.prepare(&w);ai.enable_diagnostics();
+    let s=w.snake(2).unwrap();
+    let state=State {generation:s.generation,target:100000,goal:w.food[0].p,
+        last_angle:s.angle,desired:s.angle,turn_until:u64::MAX,best_distance:f64::MAX,..State::default()};
+    assert!(ai.food_race(&w,s,state));
+    ai.states[2]=state;
+    ai.steer(&w,s);let d=ai.decision(2);
+    assert_eq!(d.candidates[1].rush,0.6);
+    for kind in [2,9,10,12] {
+        assert_eq!(d.candidates[kind].rush,0.0,"unboosted straight sibling {kind}");
+        assert_eq!(d.candidates[kind].desired,s.angle);
+    }
+    assert_eq!(d.candidates[11].rush,0.0);
+    assert_ne!(d.candidates[11].desired,s.angle,"unboosted food bearing cannot replace straight");
+}
+
+#[test]
+fn advisory_crossing_diagnostics_export_validity_for_all_attack_slots() {
+    for rules in [crate::RuleSet::Classic,crate::RuleSet::V2] {
+        let mut w=arena(true);w.config.rules=rules;w.tick=20;
+        line(&mut w,2,Point{x:400.0,y:400.0},0.0,72);
+        line(&mut w,1,Point{x:200.0,y:200.0},0.0,24);
+        w.snakes[1].traits.speed_bias=0.2;
+        let mut ai=AiController::new();ai.prepare(&w);ai.enable_diagnostics();
+        let s=w.snake(2).unwrap();
+        let attack=Attack {valid:true,prey:2,prey_generation:w.snake(1).unwrap().generation,
+            start:0,turn_at:18,end:80,approach:0.7,crossing:0.0,burst:0.6,
+            crossing_rush:if rules==crate::RuleSet::Classic {0.15} else {0.0},
+            point:Point{x:600.0,y:200.0},..Attack::default()};
+        ai.states[2]=State {generation:s.generation,attack,prey:2,prey_generation:attack.prey_generation,
+            hunt_until:180,next_response:100,last_angle:s.angle,desired:attack.crossing,
+            turn_until:22,exit_angle:-1.2,..State::default()};
+        ai.steer(&w,s);let d=ai.decision(2);
+        let c=d.candidates[1];
+        assert!(c.attack_valid);
+        assert_eq!(c.attack_turn_ticks,0);
+        assert_eq!(c.attack_crossing,c.desired);
+        assert_eq!(c.attack_crossing_rush,c.rush);
+        assert_eq!(c.turn_ticks,2);
+        assert_ne!(c.exit_angle,c.desired);
+        for (slot,c) in d.candidates.iter().enumerate() {
+            assert_eq!(c.attack_valid,ai.candidates.as_ref().unwrap()[slot].attack.valid,"{rules:?}, slot {slot}");
+        }
+        assert!(!d.candidates[2].attack_valid,"straight aliases must not inherit attack validity");
+    }
+}
+
+#[test]
+fn v2_escape_boost_opens_a_path_when_all_unboosted_controls_fail_imminently() {
+    let mut w=arena(true);w.config.rules=crate::RuleSet::V2;
+    line(&mut w,0,Point{x:500.0,y:400.0},0.0,24);
+    line(&mut w,1,Point{x:515.0,y:360.0},1.57,72);
+    let mut ai=AiController::new();ai.prepare(&w);
+    let state=State {desired:0.0,turn_until:u64::MAX,goal:Point{x:800.0,y:400.0},revise_opponents:true,..State::default()};
+    for kind in [0,2,3,4,5,6,7,8] {
+        assert!(ai.rollout(&w,w.snake(0).unwrap(),state,kind,72).steps<18);
+    }
+    let boosted=ai.rollout(&w,w.snake(0).unwrap(),State {rush:0.6,escape_boost:true,..state},3,72);
+    assert_eq!(boosted.steps,72);
+    ai.enable_diagnostics();
+    let chosen=ai.steer(&w,w.snake(0).unwrap());
+    assert_eq!(chosen.rush,0.6);
+    assert_eq!(ai.decision(0).candidates[ai.decision(0).selected].safe_ticks,72);
+    for j in 0..24 {
+        w.step(&mut crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering {
+            desired_angle:if s.id==0 {chosen.desired_angle} else {1.57},rush:if s.id==0 && j==0 {0.6} else {0.0}}));
+        assert!(w.snake(0).unwrap().alive,"physical escape tick {j}");
+    }
+    // An open world with a complete unboosted path must retain its tail.
+    w.snakes[1].alive=false;w.tick+=36;w.snakes[0].boost_ticks=0;w.snakes[0].cooldown_ticks=0;
+    let mut fresh=AiController::new();
+    assert_eq!(fresh.steer(&w,w.snake(0).unwrap()).rush,0.0);
+}
+
+#[test]
+fn v2_crossing_stage_cannot_switch_off_an_active_burst() {
+    let mut w=arena(true);w.config.rules=crate::RuleSet::V2;
+    line(&mut w,0,Point{x:400.0,y:400.0},0.0,72);
+    line(&mut w,1,Point{x:900.0,y:650.0},0.0,24);
+    let attack=Attack {valid:true,prey:2,prey_generation:w.snake(1).unwrap().generation,
+        start:0,turn_at:7,end:60,approach:0.3,crossing:1.0,burst:0.6,crossing_rush:0.0,
+        point:Point{x:900.0,y:650.0},..Attack::default()};
+    let state=State {prey:2,prey_generation:attack.prey_generation,hunt_until:60,attack,
+        attack_options:[attack;2],..State::default()};
+    let mut ai=AiController::new();ai.prepare(&w);
+    for kind in [1,7,8] {
+        let c=ai.rollout(&w,w.snake(0).unwrap(),state,kind,36);
+        assert_eq!(c.steps,36);
+        let mut actual=w.diagnostic_snapshot();
+        for j in 0..36 {
+            actual.step(&mut crate::controller::ScriptedController::new(|tick:u64,s:SnakeView<'_>| {
+                let (angle,rush)=if s.id==0 {attack.control(tick)} else {(s.angle,0.0)};
+                Steering {desired_angle:angle,rush}
+            }));
+            assert!(actual.snake(0).unwrap().alive);
+            assert!(actual.distance_squared(c.path[j+1],actual.snake(0).unwrap().segments[0].current)<1e-15,"slot {kind}, step {j}");
+            if j==8 {assert_ne!(actual.snake(0).unwrap().flags & crate::flags::BOOSTING,0);}
+            if j==24 {assert_eq!(actual.snake(0).unwrap().flags & crate::flags::BOOSTING,0);}
+        }
+    }
+}
+
+#[test]
+fn validated_candidate_commit_preserves_staged_continuations() {
+    let mut w=arena(true);w.config.rules=crate::RuleSet::V2;
+    line(&mut w,0,Point{x:500.0,y:400.0},0.0,72);
+    let mut ai=AiController::new();ai.prepare(&w);
+    let original=State {desired:0.6,turn_until:7,exit_angle:-0.2,
+        goal:Point{x:800.0,y:500.0},..State::default()};
+    for kind in [1,12] {
+        let c=ai.rollout(&w,w.snake(0).unwrap(),original,kind,36);
+        assert_eq!(c.steps,36);
+        let mut committed=original;
+        State::commit_candidate(&mut committed,&c,kind,&w,w.snake(0).unwrap(),ai.rivals[0].turn,0);
+        assert_eq!(committed.turn_until,original.turn_until,"kind {kind}");
+        assert_eq!(committed.exit_angle,original.exit_angle,"kind {kind}");
+        let retained=ai.rollout(&w,w.snake(0).unwrap(),committed,1,36);
+        for j in 0..=36 {
+            assert!(w.distance_squared(c.path[j],retained.path[j])<1e-15,"kind {kind}, tick {j}");
+        }
+    }
+}
+
+#[test]
+fn all_candidate_controls_survive_alias_slots_and_escape_bookkeeping() {
+    for rules in [crate::RuleSet::Classic,crate::RuleSet::V2] {
+        let mut w=arena(true);w.config.rules=rules;
+        line(&mut w,0,Point{x:500.0,y:400.0},0.0,72);
+        line(&mut w,1,Point{x:900.0,y:650.0},0.0,24);
+        let mut ai=AiController::new();ai.prepare(&w);
+        let attack=Attack {valid:true,prey:2,prey_generation:w.snake(1).unwrap().generation,
+            start:0,turn_at:7,end:60,approach:0.3,crossing:1.0,burst:0.6,crossing_rush:0.0,
+            point:Point{x:900.0,y:650.0},..Attack::default()};
+        for variant in 0..5 {
+            let state=State {desired:0.6,turn_until:7,exit_angle:-0.2,rush:if variant==0 {0.0} else {0.6},
+                escape_boost:variant==1,track_goal:variant==2 || variant==3,
+                target:if variant==2 {7} else {0},prey:if variant==4 {2} else {0},
+                prey_generation:attack.prey_generation,hunt_until:60,
+                attack:if variant==4 {attack} else {Attack::default()},
+                attack_options:if variant==4 {[attack;2]} else {[Attack::default();2]},
+                coil_center:Point{x:500.0,y:500.0},coil_radius:if variant==3 {140.0} else {0.0},
+                coil_initial_radius:if variant==3 {140.0} else {0.0},coil_sign:1.0,coil_pitch:14.0,
+                coil_last_head:Point{x:500.0,y:400.0},coil_until:100,
+                goal:Point{x:800.0,y:500.0},waypoint:Some(Point{x:700.0,y:450.0}),..State::default()};
+            for kind in 0..CANDIDATES {
+                let c=ai.rollout(&w,w.snake(0).unwrap(),state,kind,36);
+                if !c.checked {continue;}
+                for slot in [kind,1,12] {
+                    let mut committed=state;
+                    // Force the narrow-space bookkeeping, including coil and
+                    // attack cleanup. Scratch aliases must not change controls.
+                    State::commit_candidate(&mut committed,&c,slot,&w,w.snake(0).unwrap(),ai.rivals[0].turn,usize::MAX);
+                    assert_eq!(committed.turn_until,c.turn_until);
+                    assert_eq!(committed.exit_angle,c.exit_angle);
+                    assert_eq!(committed.track_goal,c.tracks_goal);
+                    assert_eq!(committed.attack.valid,c.attack.valid);
+                    assert_eq!(committed.rush,c.rush);
+                    let retained=ai.rollout(&w,w.snake(0).unwrap(),committed,1,36);
+                    assert_eq!(c.steps,retained.steps,"{rules:?} variant {variant} kind {kind} slot {slot}");
+                    for j in 0..=c.steps {
+                        assert!(w.distance_squared(c.path[j],retained.path[j])<1e-15,
+                            "{rules:?} variant {variant} kind {kind} slot {slot} tick {j}");
+                    }
+                }
+            }
         }
     }
 }

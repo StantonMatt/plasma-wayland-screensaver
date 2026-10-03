@@ -8,6 +8,31 @@ pub const MAX_SNAKES: usize  =  14;
 pub const MAX_SEGMENTS: usize  =  1600;
 pub const MAX_FOOD: usize  =  480;
 pub const STEP_SECONDS: f64  =  1.0/30.0;
+/// Rust callers keep Classic by default; the C ABI defaults to V2.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RuleSet { #[default] Classic, V2 }
+pub mod flags {
+    pub const BOOSTING: u32 = 1;
+    pub const COOLDOWN: u32 = 2;
+    pub const HUNTING: u32 = 4;
+    pub const TRAPPED: u32 = 8;
+    pub const FROZEN: u32 = 16;
+    pub const PHASED: u32 = 32;
+    pub const LEADER: u32 = 64;
+    pub const CORPSE: u32 = 128;
+}
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FoodKind { #[default] Spark, Shard, Pellet, Prism }
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EventKind { #[default] Kill, Sever, Pickup, Nova, Succession }
+pub const MAX_EVENTS: usize = 32;
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameEvent {
+    pub tick: u64, pub position: Point, pub snake_id: u32,
+    pub other_snake_id: u32, pub color_index: u32, pub kind: EventKind,
+}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Config {
     pub width: f64,
@@ -21,6 +46,7 @@ pub struct Config {
     pub palette_size: u32,
     pub self_collisions: bool,
     pub deadly_walls: bool,
+    pub rules: RuleSet,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -35,7 +61,8 @@ impl Default for Config {
             intelligence: 75.0,
             palette_size: 6,
             self_collisions: false,
-            deadly_walls: true
+            deadly_walls: true,
+            rules: RuleSet::Classic
         }
     }
 }
@@ -148,6 +175,14 @@ pub(crate) struct Snake {
     pub rush: f64,
     pub score: f64,
     pub dying: DeathReason,
+    pub boost_ticks: u8,
+    pub cooldown_ticks: u8,
+    boost_cost: u8,
+    boost_paid: u8,
+    pub corpse_ticks: u8,
+    pub intent_flags: u32,
+    pub effect_kind: u8,
+    pub effect_ticks: u16,
     trail_start: usize,
     trail_len: usize,
 }
@@ -162,6 +197,11 @@ pub struct SnakeView<'a> {
     pub color_index: u32,
     pub traits: Traits,
     pub growth: f64,
+    pub flags: u32,
+    pub effect_kind: u8,
+    pub effect_ticks: u16,
+    pub boost_ticks: u8,
+    pub cooldown_ticks: u8,
     pub segments: &'a [Segment],
 }
 #[derive(Clone, Copy, Debug, Default)]
@@ -181,6 +221,7 @@ pub(crate) struct Food {
     pub target: Point,
     pub owner: i32,
     pub original_life: f64,
+    pub kind: FoodKind,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct FoodView {
@@ -197,6 +238,8 @@ pub struct FoodView {
     pub feast_id: u64,
     pub trail_index: u32,
     pub feast_length: u32,
+    pub kind: FoodKind,
+    pub life_fraction: u8,
 }
 impl From<&Food> for FoodView {
     fn from(f: &Food) -> Self {
@@ -213,7 +256,11 @@ impl From<&Food> for FoodView {
             vacuum_owner: f.owner,
             feast_id: f.feast,
             trail_index: f.trail_index,
-            feast_length: f.feast_len
+            feast_length: f.feast_len,
+            kind: f.kind,
+            life_fraction: if f.original_life > 0.0 {
+                (255.0 * (if f.life < 0.0 { f.original_life } else { f.life }) / f.original_life).clamp(0.0, 255.0).round() as u8
+            } else { 255 }
         }
     }
 }
@@ -242,6 +289,10 @@ pub struct World {
     pub(crate) time: f64,
     pub(crate) geometry_generation: u64,
     growth_slots: usize,
+    leader: Option<usize>,
+    frame_events: [FrameEvent; MAX_EVENTS],
+    event_start: usize,
+    event_count: usize,
     deaths: Stats,
     collisions: [CollisionEvent; MAX_SNAKES],
     // Passive bounded observer storage, reused on every step.
@@ -279,6 +330,10 @@ impl World {
             time: 0.0,
             geometry_generation: 1,
             growth_slots: 0,
+            leader: None,
+            frame_events: [FrameEvent::default(); MAX_EVENTS],
+            event_start: 0,
+            event_count: 0,
             deaths: Stats::default(),
             collisions: [CollisionEvent::default(); MAX_SNAKES],
             consumptions: Vec::with_capacity(MAX_FOOD),
@@ -324,6 +379,11 @@ impl World {
             color_index: s.color,
             traits: s.traits,
             growth: s.growth,
+            flags: self.snake_flags(id),
+            effect_kind: s.effect_kind,
+            effect_ticks: s.effect_ticks,
+            boost_ticks: s.boost_ticks,
+            cooldown_ticks: s.cooldown_ticks,
             segments: &self.segments[id*MAX_SEGMENTS..id*MAX_SEGMENTS+s.len]
         })
     }
@@ -394,6 +454,9 @@ impl World {
         self.collisions.fill(CollisionEvent::default());
         self.consumptions.clear();
         self.food.clear();
+        self.leader = None;
+        self.event_start = 0;
+        self.event_count = 0;
         for s in &mut self.snakes {
             s.alive = false;
             s.len = 0;
@@ -402,6 +465,7 @@ impl World {
             self.make_snake(i);
         }
         self.growth_slots = self.config.maximum_world_segments().saturating_sub(self.stats().total_segments as usize);
+        self.update_leader(0);
         for _ in 0..self.config.food_count() {
             self.add_ambient_food();
         }
@@ -410,7 +474,7 @@ impl World {
     /// does). Other controls preserve live state; geometry rescales positions.
     pub fn reconfigure(&mut self, config: Config) -> Result<(), ConfigError> {
         config.validate()?;
-        if config.seed!=self.config.seed || config.snake_count()!=self.snakes.len() {
+        if config.seed!=self.config.seed || config.snake_count()!=self.snakes.len() || config.rules!=self.config.rules {
             self.config = config;
             self.snakes.resize(config.snake_count(), Snake::default());
             // Same-size trail storage may need to accommodate more slots.
@@ -473,6 +537,11 @@ impl World {
                 t.distance = d;
                 prev = t.p;
             }
+        }
+        for i in 0..self.event_count {
+            let event = &mut self.frame_events[(self.event_start+i)%MAX_EVENTS];
+            event.position.x *= sx;
+            event.position.y *= sy;
         }
         for f in &mut self.food {
             f.p.x*=sx;
@@ -772,6 +841,8 @@ impl World {
     }
     fn step_seconds<C: Controller+?Sized>(&mut self, controller: &mut C, seconds: f64) {
         self.consumptions.clear();
+        self.event_start = 0;
+        self.event_count = 0;
         self.time+=seconds;
         self.update_food(seconds);
         self.growth_slots = self.config.maximum_world_segments().saturating_sub(self.stats().total_segments as usize);
@@ -783,13 +854,27 @@ impl World {
             }
         }
         for (i, input) in inputs.iter().enumerate().take(self.snakes.len()) {
+            if self.snakes[i].alive && !input.is_valid() && self.config.rules == RuleSet::V2 {
+                self.advance_boost(i, false);
+            }
             if self.snakes[i].alive && input.is_valid() {
                 self.snakes[i].desired = input.desired_angle;
-                self.snakes[i].rush = input.rush;
+                if self.config.rules == RuleSet::Classic {
+                    self.snakes[i].rush = input.rush;
+                } else {
+                    self.advance_boost(i, input.rush > 0.0);
+                }
+                if let Some(flags) = controller.intent_flags(i as u32) {
+                    self.set_intent_flags(i, flags);
+                }
             }
         }
         for i in 0..self.snakes.len() {
             if !self.snakes[i].alive {
+                if self.snakes[i].corpse_ticks > 0 {
+                    self.snakes[i].corpse_ticks -= 1;
+                    if self.snakes[i].corpse_ticks == 0 { self.snakes[i].len = 0; }
+                }
                 self.snakes[i].respawn-=seconds;
                 if self.snakes[i].respawn<=0.0 {
                     self.make_snake(i);
@@ -805,11 +890,88 @@ impl World {
                 self.explode_snake(i);
             }
         }
+        self.update_leader(self.tick.wrapping_add(1));
         self.tick = self.tick.wrapping_add(1);
     }
     pub fn step_n<C: Controller+?Sized>(&mut self, controller: &mut C, ticks: u32) {
         for _ in 0..ticks {
             self.step(controller);
+        }
+    }
+    /// Export count includes retained corpses; statistics count only live bodies.
+    pub fn exported_segment_count(&self) -> usize { self.snakes.iter().map(|s|s.len).sum() }
+    pub fn frame_events(&self) -> impl ExactSizeIterator<Item = &FrameEvent> {
+        (0..self.event_count).map(|i| &self.frame_events[(self.event_start+i)%MAX_EVENTS])
+    }
+    fn push_event(&mut self, event: FrameEvent) {
+        if self.event_count == MAX_EVENTS {
+            self.frame_events[self.event_start] = event;
+            self.event_start = (self.event_start+1)%MAX_EVENTS;
+        } else {
+            self.frame_events[(self.event_start+self.event_count)%MAX_EVENTS] = event;
+            self.event_count += 1;
+        }
+    }
+    fn snake_flags(&self, id: usize) -> u32 {
+        let s = &self.snakes[id];
+        if !s.alive { return if s.corpse_ticks > 0 { flags::CORPSE } else { 0 }; }
+        s.intent_flags | if s.boost_ticks > 0 { flags::BOOSTING } else { 0 }
+            | if s.cooldown_ticks > 0 { flags::COOLDOWN } else { 0 }
+            | if s.effect_kind == 5 && s.effect_ticks > 0 { flags::FROZEN } else { 0 }
+            | if self.leader == Some(id) { flags::LEADER } else { 0 }
+    }
+    /// AI/user hooks; only intent bits are writable. Other flags belong to mechanics.
+    pub fn set_intent_flags(&mut self, id: usize, value: u32) -> bool {
+        let Some(s) = self.snakes.get_mut(id) else { return false; };
+        s.intent_flags = value & (flags::HUNTING | flags::TRAPPED); true
+    }
+    pub fn boost_ready(&self, id: usize) -> bool {
+        self.snakes.get(id).is_some_and(|s| s.alive && s.len >= 12 && s.boost_ticks == 0
+            && s.cooldown_ticks == 0 && !(s.effect_kind == 5 && s.effect_ticks > 0))
+    }
+    fn update_leader(&mut self, tick: u64) {
+        let old = self.leader;
+        let mut leader = old.filter(|&i|self.snakes[i].alive && self.snakes[i].len >= 30);
+        for (i,s) in self.snakes.iter().enumerate() {
+            if !s.alive || s.len < 30 { continue; }
+            if leader.is_none_or(|j| s.len >= self.snakes[j].len + if old == Some(j) { 3 } else { 1 }) {
+                leader = Some(i);
+            }
+        }
+        self.leader = leader;
+        if leader != old {
+            if let Some(i) = leader {
+                self.push_event(FrameEvent { tick, position: self.segments[i*MAX_SEGMENTS].current,
+                    snake_id: i as u32, other_snake_id: old.map_or(u32::MAX,|j|j as u32),
+                    color_index: self.snakes[i].color, kind: EventKind::Succession });
+            }
+        }
+    }
+    fn advance_boost(&mut self, i: usize, request: bool) {
+        let s = &mut self.snakes[i];
+        let frozen = s.effect_kind == 5 && s.effect_ticks > 0;
+        if frozen && s.boost_ticks > 0 { s.boost_ticks = 0; s.cooldown_ticks = 36; }
+        else if s.boost_ticks == 1 { s.boost_ticks = 0; s.cooldown_ticks = 36; }
+        else if s.boost_ticks > 1 { s.boost_ticks -= 1; }
+        else if s.cooldown_ticks > 0 { s.cooldown_ticks -= 1; }
+        if request && !frozen && s.boost_ticks == 0 && s.cooldown_ticks == 0 && s.len >= 12 {
+            s.boost_ticks = 24;
+            s.boost_cost = (2+s.len/100) as u8;
+            s.boost_paid = 0;
+        }
+        s.rush = if s.boost_ticks > 0 { 0.6 } else { 0.0 };
+        if s.effect_ticks > 0 { s.effect_ticks -= 1; }
+        let due = if s.boost_ticks > 0 { s.boost_cost as usize * (25-s.boost_ticks as usize).min(21) / 21 } else { s.boost_paid as usize };
+        while (self.snakes[i].boost_paid as usize) < due {
+            let s = &mut self.snakes[i];
+            let p = self.segments[i*MAX_SEGMENTS+s.len-1].current;
+            let color = s.color;
+            s.len -= 1;
+            s.boost_paid += 1;
+            Self::update_radius(s);
+            // Keep every spent segment represented, even when the food cap is full.
+            if self.food.len() >= self.config.maximum_food() { self.food.remove(0); }
+            self.add_food(Food { p, value: 0.5, color, life: 8.0, kind: FoodKind::Pellet, ..Food::default() });
         }
     }
     fn add_food(&mut self, mut f: Food) {
@@ -826,7 +988,9 @@ impl World {
             self.config.geometry().wrap(f.p)
         };
         f.size = self.config.base_radius()*(0.23+f.value.min(1.4)*0.13);
-        f.phase = self.rng.random()*TAU;
+        f.phase = if f.kind == FoodKind::Pellet {
+            (f.id.wrapping_mul(2654435761) as u32) as f64 / (u32::MAX as f64 + 1.0) * TAU
+        } else { self.rng.random()*TAU };
         f.owner = -1;
         f.original_life = f.life;
         self.food.push(f);
@@ -1188,16 +1352,28 @@ impl World {
                 },
                 life: 18.0+self.rng.random()*16.0,
                 feast,
+                kind: FoodKind::Shard,
                 trail_index: j as u32,
                 feast_len: emitted as u32,
                 ..Food::default()
             };
             self.add_food(f);
         }
+        let owners = self.collisions[i].owner_mask & !(1 << i);
+        self.push_event(FrameEvent {
+            tick: self.tick.wrapping_add(1), position: self.segments[i*MAX_SEGMENTS].current,
+            snake_id: i as u32, other_snake_id: if owners == 0 { u32::MAX } else { owners.trailing_zeros() },
+            color_index: s.color, kind: EventKind::Kill,
+        });
         let snake = &mut self.snakes[i];
         snake.alive = false;
         snake.respawn = 2.2+self.rng.random()*3.2;
-        snake.len = 0;
+        snake.corpse_ticks = if self.config.rules == RuleSet::V2 { 17 } else { 0 };
+        if snake.corpse_ticks == 0 { snake.len = 0; }
+        snake.boost_ticks = 0;
+        snake.cooldown_ticks = 0;
+        if self.config.rules == RuleSet::V2 { snake.rush = 0.0; }
+        snake.intent_flags = 0;
         snake.trail_len = 0;
         self.deaths.deaths+=1;
         match s.dying {
@@ -1217,3 +1393,6 @@ pub mod parity;
 #[cfg(test)]
 #[path  =  "world/tests.rs"]
 pub(crate) mod tests;
+#[cfg(test)]
+#[path = "world/v2_tests.rs"]
+mod v2_tests;

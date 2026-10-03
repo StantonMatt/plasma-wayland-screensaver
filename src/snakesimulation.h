@@ -19,7 +19,20 @@ struct SnakeFrame {
     std::vector<snakes_core_snake> snakes;
     std::vector<snakes_core_segment> segments;
     std::vector<snakes_core_food> food;
+    std::vector<snakes_core_item> items;
+    std::vector<snakes_core_event> events;
     snakes_core_frame_info info{};
+};
+
+// Compact state consumed by Rust's visual history.
+// One tail point per snake preserves boost samples; flags preserve corpse and
+// leader transitions. Every event retains its original completed tick.
+struct SnakePresentationFrame {
+    std::array<snakes_core_snake, SNAKES_CORE_MAX_SNAKES> snakes{};
+    std::array<snakes_core_segment, SNAKES_CORE_MAX_SNAKES> tails{};
+    std::array<snakes_core_event, SNAKES_CORE_MAX_EVENTS> events{};
+    snakes_core_frame_info info{};
+    size_t snakeCount = 0, eventCount = 0, foodCount = 0;
 };
 
 class SnakeSimulation final : public QObject
@@ -53,6 +66,12 @@ public:
     std::shared_ptr<const SnakeFrame> retainFrameAt(qint64 presentationNanoseconds, double &alpha) const;
     void setPresentationLead(qint64 nanoseconds);
     static constexpr size_t maximumHistoryFrames = 32;
+    // Append intervening visual state, oldest first. This compact fixed ring
+    // covers every effect lifetime independently of display phase history.
+    void retainPresentationHistory(const snakes_core_frame_info *after,
+        const snakes_core_frame_info &through,
+        std::array<SnakePresentationFrame, maximumHistoryFrames> &frames,
+        size_t &head, size_t &count) const;
     bool resize(double width, double height);
     bool reconfigure(const snakes_core_config &config);
     void applySettings(const Configuration &settings);
@@ -72,6 +91,10 @@ private:
     std::shared_ptr<SnakeFrame> m_frame;
     std::array<std::shared_ptr<SnakeFrame>, maximumHistoryFrames> m_history;
     std::vector<std::shared_ptr<SnakeFrame>> m_storage;
+    // Separate from display phase history: hotplug can shrink the latter to
+    // two frames, but transient effects must retain their completed ticks.
+    std::array<SnakePresentationFrame, maximumHistoryFrames> m_presentationHistory;
+    size_t m_presentationHistoryCount = 0, m_presentationHistoryHead = 0;
     size_t m_historyCount = 0;
     size_t m_historyHead = 0;
     size_t m_historyLimit = maximumHistoryFrames;

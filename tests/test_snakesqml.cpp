@@ -7,7 +7,7 @@
 class SnakeQmlSetup : public QObject
 {
     Q_OBJECT
-    SnakeSimulation simulation{{640, 360, 50, 35, 100, 100, 75, 1, 6, 0, 1}};
+    SnakeSimulation simulation{{640, 360, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0}};
 public Q_SLOTS:
     void applicationAvailable() { registerSnakeTypes(); }
     void qmlEngineAvailable(QQmlEngine *engine)

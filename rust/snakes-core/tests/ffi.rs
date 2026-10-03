@@ -4,7 +4,7 @@ use snakes_core::{ Config, World };
 use snakes_core::ffi::*;
 #[test] fn ffi_round_trip_and_validation() {
     unsafe {
-        assert_eq!(snakes_core_abi_version(), 1);
+        assert_eq!(snakes_core_abi_version(), 2);
         let config = CoreConfig::from(Config {
             seed: 73,
             ..Config::default()
@@ -98,8 +98,53 @@ use snakes_core::ffi::*;
     }
 }
 #[test] fn ffi_layout_sizes_and_offsets() {
-    assert_eq!(std::mem::size_of::<CoreConfig>(), 72);
-    assert_eq!(std::mem::size_of::<SnakeRecord>(), 48);
-    assert_eq!(std::mem::size_of::<FoodRecord>(), 40);
+    assert_eq!(std::mem::size_of::<CoreConfig>(), 80);
+    assert_eq!(std::mem::size_of::<SnakeRecord>(), 56);
+    assert_eq!(std::mem::size_of::<FoodRecord>(), 48);
     assert_eq!(std::mem::offset_of!(FoodRecord, color_index), 36);
+}
+
+#[test]
+fn output_records_accept_uninitialized_storage() {
+    use std::mem::MaybeUninit;
+    unsafe {
+        let config = CoreConfig::from(Config::default());
+        let mut handle = MaybeUninit::uninit();
+        assert_eq!(snakes_core_create(&config, handle.as_mut_ptr()), OK);
+        let handle = handle.assume_init();
+        let mut sizes = MaybeUninit::<FrameSizes>::uninit();
+        assert_eq!(snakes_core_get_frame_sizes(handle, sizes.as_mut_ptr()), OK);
+        let sizes = sizes.assume_init();
+        let mut snakes = vec![MaybeUninit::<SnakeRecord>::uninit(); sizes.snakes as usize];
+        let mut segments = vec![MaybeUninit::<SegmentRecord>::uninit(); sizes.segments as usize];
+        let mut food = vec![MaybeUninit::<FoodRecord>::uninit(); sizes.food as usize];
+        let mut info = MaybeUninit::<FrameInfo>::uninit();
+        assert_eq!(snakes_core_export_frame(handle, snakes.as_mut_ptr().cast(), snakes.len(),
+            segments.as_mut_ptr().cast(), segments.len(), food.as_mut_ptr().cast(), food.len(), info.as_mut_ptr()), OK);
+        assert_eq!(info.assume_init().tick, 0);
+        assert!(snakes.iter().all(|s| s.assume_init().generation == 1));
+        assert!(segments.iter().all(|s| s.assume_init().x.is_finite()));
+        assert!(food.iter().all(|f| f.assume_init().id != 0));
+        // Script straight movement until a wall strike produces an event.
+        let input = SteeringInput { id: 0, generation: 0, desired_angle: 0.0, rush: 0.0 };
+        assert_eq!(snakes_core_set_steering(handle, &input, 1), OK);
+        let mut sizes = FrameSizes::default();
+        for _ in 0..1000 {
+            assert_eq!(snakes_core_step(handle, 1), OK);
+            assert_eq!(snakes_core_get_frame_sizes(handle, &mut sizes), OK);
+            if sizes.events > 0 { break; }
+        }
+        assert!(sizes.events > 0);
+        let mut events = vec![MaybeUninit::<EventRecord>::uninit(); sizes.events as usize];
+        assert_eq!(snakes_core_export_extras(handle, ptr::null_mut(), 0,
+            events.as_mut_ptr().cast(), events.len()), OK);
+        assert!(events.iter().all(|e| e.assume_init().tick > 0));
+        let mut stats = MaybeUninit::<CoreStats>::uninit();
+        assert_eq!(snakes_core_stats(handle, stats.as_mut_ptr()), OK);
+        assert!(stats.assume_init().alive > 0);
+        let mut debug = MaybeUninit::<AiDebugRecord>::uninit();
+        assert_eq!(snakes_core_ai_debug(handle, 0, debug.as_mut_ptr()), OK);
+        assert_eq!(debug.assume_init().id, 0);
+        snakes_core_destroy(handle);
+    }
 }

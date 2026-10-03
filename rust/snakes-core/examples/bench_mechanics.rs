@@ -14,7 +14,7 @@ fn main() {
         intelligence: 100.0,
         self_collisions: true,
         seed: 20260814,
-        ..Config::default()
+        rules: if std::env::args().any(|s|s=="--classic") { snakes_core::RuleSet::Classic } else { snakes_core::RuleSet::V2 },..Config::default()
     };
     let mut world = World::new(config).unwrap();
     let mut controller = BaselineController;

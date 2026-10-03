@@ -40,6 +40,10 @@ protected:
 private:
     void loadFrame(const SnakeFrame &frame, const QVector<QColor> &palette,
                    qreal interpolation, bool deadlyWalls);
+    void captureHistory();
+    std::array<SnakePresentationFrame, SnakeSimulation::maximumHistoryFrames> m_pendingHistory;
+    size_t m_pendingHistoryCount = 0, m_pendingHistoryHead = 0;
+    std::optional<snakes_core_frame_info> m_capturedThrough;
     const SnakeFrame *m_frame = nullptr;
     std::shared_ptr<const SnakeFrame> m_retainedFrame;
     QPointer<SnakeSimulation> m_simulation;
@@ -47,6 +51,8 @@ private:
     QMetaObject::Connection m_presentedConnection;
     QMetaObject::Connection m_destroyedConnection;
     QVector<QColor> m_palette;
+    std::vector<snakes_core_render_color> m_renderPalette;
+    quint64 m_renderEpoch = 0;
     qreal m_simulationTime = 0;
     qreal m_interpolation = 0;
     qreal m_worldWidth = 1;

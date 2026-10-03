@@ -24,6 +24,7 @@ impl<C> Observed<C> {
     pub fn begin(&mut self) { self.tactics.fill(Tactics::default()); }
 }
 impl<C: ScoreController> Controller for Observed<C> {
+    fn intent_flags(&self, id: u32) -> Option<u32> { self.inner.intent_flags(id) }
     fn steer(&mut self, w: &World, s: SnakeView<'_>) -> Steering {
         let result = self.inner.steer(w, s);
         if let Some(ai) = self.inner.ai() { self.tactics[s.id as usize] = Tactics::observe(ai, s); }

@@ -2,6 +2,7 @@
 #include "snakerenderer.h"
 #include "configuration.h"
 #include <QTemporaryDir>
+#include <QFile>
 #include <QSignalSpy>
 #include <QSGGeometryNode>
 #include <QTest>
@@ -21,7 +22,7 @@ class SnakeRendererTest final : public QObject
         frame.info = {600, 20, 3440, 1440, 0};
         for (int n = 0; n < snakeCount; ++n) {
             frame.snakes.push_back({uint32_t(n), 1, 1, 0, 8, 0, 0.7,
-                                   uint32_t(frame.segments.size()), uint32_t(segments)});
+                                   uint32_t(frame.segments.size()), uint32_t(segments), SNAKES_CORE_LEADER, 0, 0, 0});
             for (int i = 0; i < segments; ++i) {
                 const float x = (250 - i * 4.5 + (n % 4) * 780) * coordinateScale;
                 const float y = (120 + std::sin(i * 0.08) * 18 + (n / 4) * 340) * coordinateScale;
@@ -32,15 +33,123 @@ class SnakeRendererTest final : public QObject
         for (int i = 0; i < foodCount; ++i) {
             const float x = 12 + (i % 32) * 9;
             const float y = 12 + (i / 32) * 9;
-            frame.food.push_back({uint64_t(i + 1), x, y, 4, 0, 0, x, y, 0});
+            frame.food.push_back({uint64_t(i + 1), x, y, 4, 0, 0, x, y, 0, SNAKES_CORE_FOOD_SPARK, 0, 0});
         }
         return frame;
     }
     const QVector<QColor> palette{QColor("#4de6ff")};
 private Q_SLOTS:
+    void allocatedVertexCapacityIsInitialized()
+    {
+        SnakeRenderer view;
+        view.setSize(QSizeF(320, 240));
+        auto frame = makeFrame(24);
+        frame.info.world_width = 320; frame.info.world_height = 240;
+        view.syncFrame(frame, palette, 0.5, true);
+        auto *node = static_cast<QSGGeometryNode *>(view.updatePaintNode(nullptr, nullptr));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+        const auto *vertices = node->geometry()->vertexDataAsColoredPoint2D();
+        QVERIFY(view.m_geometryCapacity > node->geometry()->vertexCount());
+        // Rust forms a slice over the full capacity, including this unused tail.
+        // MALLOC_PERTURB_ makes this fail on Qt's uninitialized malloc storage.
+        for (int i = node->geometry()->vertexCount(); i < view.m_geometryCapacity; ++i) {
+            QCOMPARE(vertices[i].x, 0.0f); QCOMPARE(vertices[i].y, 0.0f);
+            QCOMPARE(vertices[i].r, uchar(0)); QCOMPARE(vertices[i].a, uchar(0));
+        }
+        auto *mutableVertices = node->geometry()->vertexDataAsColoredPoint2D();
+        const int unused = node->geometry()->vertexCount();
+        mutableVertices[unused].x = 123.0f;
+        view.presentFrame(frame.info.simulation_time, 0.5);
+        node = static_cast<QSGGeometryNode *>(view.updatePaintNode(node, nullptr));
+        QCOMPARE(node->geometry()->vertexDataAsColoredPoint2D()[unused].x, 123.0f);
+        // Capacity is initialized on growth, never cleared each presentation.
+#endif
+        delete node;
+    }
+
+    void presentationGapsPreserveTransientHistory_data()
+    {
+        QTest::addColumn<bool>("absolute");
+        QTest::addColumn<int>("gap");
+        QTest::newRow("relative-three-ticks") << false << 3;
+        QTest::newRow("absolute-three-ticks") << true << 3;
+        QTest::newRow("relative-ten-ticks") << false << 10;
+        QTest::newRow("absolute-ten-ticks") << true << 10;
+    }
+    void presentationGapsPreserveTransientHistory()
+    {
+        QFETCH(bool, absolute);
+        QFETCH(int, gap);
+        SnakeSimulation sim({160, 120, 0, 35, 100, 1000, 0, 7, 6, 0, 1, SNAKES_CORE_RULE_V2, 0});
+        sim.setPresentationLead(4'166'667);
+        SnakeRenderer everyTick, skipped;
+        for (auto *view : {&everyTick, &skipped}) {
+            view->setSize(QSizeF(160, 120)); view->setSimulation(&sim);
+        }
+        QSGNode *reference = everyTick.updatePaintNode(nullptr, nullptr);
+        QSGNode *actual = skipped.updatePaintNode(nullptr, nullptr);
+        qint64 time = 1'000'000'000;
+        sim.advanceTo(time);
+        bool found = false;
+        for (int group = 0; group < 300 && !found; ++group) {
+            for (int tick = 0; tick < gap; ++tick) {
+                time += 33'333'334;
+                if (absolute) { sim.advanceTo(time); everyTick.presentAt(time); }
+                else sim.advance(1.0 / 30);
+                reference = everyTick.updatePaintNode(reference, nullptr);
+                if (tick < gap - 1 && std::any_of(sim.frame().events.begin(), sim.frame().events.end(),
+                    [](const auto &event) { return event.kind == SNAKES_CORE_EVENT_KILL; })) found = true;
+            }
+            if (absolute) skipped.presentAt(time);
+            actual = skipped.updatePaintNode(actual, nullptr);
+        }
+        QVERIFY(found); // Death occurred before the final tick of a presentation gap.
+        const auto *expected = static_cast<QSGGeometryNode *>(reference)->geometry();
+        const auto *observed = static_cast<QSGGeometryNode *>(actual)->geometry();
+        QCOMPARE(observed->vertexCount(), expected->vertexCount());
+        QCOMPARE(QByteArray(static_cast<const char *>(observed->vertexData()), observed->vertexCount() * 12),
+                 QByteArray(static_cast<const char *>(expected->vertexData()), expected->vertexCount() * 12));
+        delete actual;
+        actual = skipped.updatePaintNode(nullptr, nullptr);
+        const auto *recreated = static_cast<QSGGeometryNode *>(actual)->geometry();
+        QCOMPARE(recreated->vertexCount(), expected->vertexCount());
+        QCOMPARE(QByteArray(static_cast<const char *>(recreated->vertexData()), recreated->vertexCount() * 12),
+                 QByteArray(static_cast<const char *>(expected->vertexData()), expected->vertexCount() * 12));
+        delete reference; delete actual;
+    }
+
+    void batchedAdvancePreservesIntermediateDeath()
+    {
+        const snakes_core_config config{160, 120, 0, 35, 100, 1000, 0, 7, 6, 0, 1, SNAKES_CORE_RULE_V2, 0};
+        SnakeSimulation referenceSimulation(config), batchedSimulation(config);
+        SnakeRenderer everyTick, batched;
+        everyTick.setSize(QSizeF(160, 120)); batched.setSize(QSizeF(160, 120));
+        everyTick.setSimulation(&referenceSimulation); batched.setSimulation(&batchedSimulation);
+        QSGNode *reference = everyTick.updatePaintNode(nullptr, nullptr);
+        QSGNode *actual = batched.updatePaintNode(nullptr, nullptr);
+        bool found = false;
+        for (int group = 0; group < 300 && !found; ++group) {
+            for (int tick = 0; tick < 3; ++tick) {
+                referenceSimulation.advance(1.0 / 30);
+                reference = everyTick.updatePaintNode(reference, nullptr);
+                if (tick < 2 && std::any_of(referenceSimulation.frame().events.begin(), referenceSimulation.frame().events.end(),
+                    [](const auto &event) { return event.kind == SNAKES_CORE_EVENT_KILL; })) found = true;
+            }
+            batchedSimulation.advance(0.1);
+            actual = batched.updatePaintNode(actual, nullptr);
+        }
+        QVERIFY(found);
+        const auto *expected = static_cast<QSGGeometryNode *>(reference)->geometry();
+        const auto *observed = static_cast<QSGGeometryNode *>(actual)->geometry();
+        QCOMPARE(observed->vertexCount(), expected->vertexCount());
+        QCOMPARE(QByteArray(static_cast<const char *>(observed->vertexData()), observed->vertexCount() * 12),
+                 QByteArray(static_cast<const char *>(expected->vertexData()), expected->vertexCount() * 12));
+        delete reference; delete actual;
+    }
+
     void perWindowPredictionSurvivesAnotherWindowStepping()
     {
-        const snakes_core_config config{320, 240, 50, 35, 100, 100, 75, 1, 6, 0, 1};
+        const snakes_core_config config{320, 240, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0};
         SnakeSimulation sim(config);
         SnakeRenderer first, second;
         first.setSize(QSizeF(320, 240)); second.setSize(QSizeF(320, 240));
@@ -65,7 +174,7 @@ private Q_SLOTS:
 
     void pendingPresentationSurvivesHistoryRecycling()
     {
-        SnakeSimulation sim({320, 240, 50, 35, 100, 100, 75, 1, 6, 0, 1});
+        SnakeSimulation sim({320, 240, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0});
         SnakeRenderer view;
         view.setSize(QSizeF(320, 240)); view.setSimulation(&sim);
         constexpr qint64 origin = 1'000'000'000;
@@ -156,7 +265,7 @@ private Q_SLOTS:
     }
     void pausedSharedStateReachesEveryRenderer()
     {
-        SnakeSimulation simulation({640, 480, 50, 35, 100, 100, 75, 1, 6, 0, 1});
+        SnakeSimulation simulation({640, 480, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0});
         simulation.setPaused(true);
         SnakeRenderer first, second;
         first.setSize(QSizeF(320, 240)); second.setSize(QSizeF(320, 240));
@@ -188,7 +297,7 @@ private Q_SLOTS:
 
     void sharedNativeFrameAndDestruction()
     {
-        auto *simulation = new SnakeSimulation({640, 480, 50, 35, 100, 100, 75, 1, 6, 0, 1});
+        auto *simulation = new SnakeSimulation({640, 480, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0});
         SnakeRenderer a, b;
         a.setSimulation(simulation); b.setSimulation(simulation);
         simulation->advance(1.0 / 30);
@@ -215,7 +324,7 @@ private Q_SLOTS:
     void abiLimitedArenaMapsToEveryViewport()
     {
         QFETCH(QString, behavior); QFETCH(QSizeF, extent); QFETCH(bool, deadly);
-        SnakeSimulation simulation({1280, 720, 50, 35, 100, 100, 75, 1, 6, 0, uint32_t(deadly)});
+        SnakeSimulation simulation({1280, 720, 50, 35, 100, 100, 75, 1, 6, 0, uint32_t(deadly), SNAKES_CORE_RULE_DEFAULT, 0});
         QVERIFY(simulation.resize(extent.width(), extent.height()));
         const auto &config = simulation.config();
         SnakeRenderer renderer;
@@ -233,8 +342,8 @@ private Q_SLOTS:
         const float y = logical.y() * config.height / extent.height();
         SnakeFrame frame;
         frame.info = {0, 0, config.width, config.height, 0};
-        frame.food.push_back({1, x, y, 3, 0, 0, x, y, 0});
-        frame.snakes.push_back({0, 1, 1, 0, 6, 0, 0, 0, 2});
+        frame.food.push_back({1, x, y, 3, 0, 0, x, y, 0, SNAKES_CORE_FOOD_SPARK, 0, 0});
+        frame.snakes.push_back({0, 1, 1, 0, 6, 0, 0, 0, 2, 0, 0, 0, 0});
         frame.segments.push_back({x, y, x, y});
         frame.segments.push_back({x - 12, y, x - 12, y});
         renderer.syncFrame(frame, palette, 0, deadly);
@@ -259,19 +368,42 @@ private Q_SLOTS:
         QTest::addColumn<bool>("developer");
         QTest::addColumn<double>("alpha");
         QTest::addColumn<QByteArray>("expected");
-        QTest::newRow("walls") << true << false << 0.5 << QByteArray("55e68e536a65e2ceb3d5c1258b9a887ef679ae972608acc65bdd7c7c7dc691af");
-        QTest::newRow("wrapping") << false << false << 0.9 << QByteArray("3c7f9798331487979dc67386d05e72b9a0a49737525cac1e1289f449243e7b03");
-        QTest::newRow("developer") << true << true << 0.1 << QByteArray("a7558b4dbf84d518ba4f4de41d104643c2a11a936c7667945212818e05b81ee0");
+        QTest::addColumn<int>("fixture");
+        QTest::newRow("walls") << true << false << 0.5 << QByteArray("55e68e536a65e2ceb3d5c1258b9a887ef679ae972608acc65bdd7c7c7dc691af") << 0;
+        QTest::newRow("wrapping") << false << false << 0.9 << QByteArray("3c7f9798331487979dc67386d05e72b9a0a49737525cac1e1289f449243e7b03") << 0;
+        QTest::newRow("developer") << true << true << 0.1 << QByteArray("a7558b4dbf84d518ba4f4de41d104643c2a11a936c7667945212818e05b81ee0") << 0;
+        QTest::newRow("sparse-colors") << true << false << 0.0 << QByteArray("a3a8f196ef00d7a96ea0bb9254967d01e95a3d28f3a366b9372f392cef37fef2") << 1;
+        // Full screen-space halo bounds add 63 vertices; consistent arena
+        // bounds remove an 18-vertex steering copy outside the arena.
+        QTest::newRow("offset-scale") << false << true << 1.0 << QByteArray("829b5f8f30a368f48a9d3015907879ebf7f90cffa104370d6f3637da9f973002") << 2;
+        QTest::newRow("vacuum-wrap") << false << true << 0.4 << QByteArray("9114668b9724dd9ca5ef5a0d48416da56540d9536a9cae3917e2691815c25b84") << 3;
     }
     void geometryFingerprint()
     {
         QFETCH(bool,deadly);QFETCH(bool,developer);QFETCH(double,alpha);
-        QFETCH(QByteArray,expected);
+        QFETCH(QByteArray,expected);QFETCH(int,fixture);
         SnakeRenderer renderer;
         renderer.setSize(QSizeF(3440,1440));
         renderer.setDeveloperMode(developer);
-        auto frame=makeFrame(120,14,400,true);
-        renderer.syncFrame(frame,palette,alpha,deadly);
+        auto frame=fixture ? makeFrame(38,3,12) : makeFrame(120,14,400,true);
+        auto colors=palette;
+        if (fixture==1) {
+            colors={QColor(213,61,42,179),QColor(73,123,11,255),QColor(119,17,198,230)};
+            for (auto &snake:frame.snakes) {snake.angle=snake.id*0.9;snake.color_index=snake.id;}
+            for (auto &food:frame.food) {food.color_index=food.id%3;food.phase=food.id*0.2;}
+        } else if (fixture==2) {
+            renderer.setSize(QSizeF(640,480));renderer.setScaleToViewport(true);renderer.setDrawOffset(-100,70);
+        } else if (fixture==3) {
+            frame=makeFrame(38,1,4);
+            frame.info.world_width=320;frame.info.world_height=240;
+            renderer.setSize(QSizeF(320,240));
+            for (auto &seg:frame.segments) {
+                seg.x=std::fmod(seg.x+72,320);seg.previous_x=std::fmod(seg.previous_x+72,320);
+                seg.y=std::fmod(seg.y+115,240);seg.previous_y=std::fmod(seg.previous_y+115,240);
+            }
+            for (auto &food:frame.food) {food.x=food.id%2 ? 2:318;food.y=food.id<=2 ? 2:238;food.attraction=0.85;food.attraction_x=6;food.attraction_y=3;}
+        }
+        renderer.syncFrame(frame,colors,alpha,deadly);
         auto *node=static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr,nullptr));
         auto *g=node->geometry();
         const auto bytes=QByteArrayView(reinterpret_cast<const char *>(g->vertexData()),
@@ -279,7 +411,104 @@ private Q_SLOTS:
         const auto hash=QCryptographicHash::hash(bytes,QCryptographicHash::Sha256).toHex();
         qInfo() << "geometry" << QTest::currentDataTag() << g->vertexCount() << hash;
         QCOMPARE(hash,expected);
+        // Original C++ buffers cover unchanged fixtures. The scaled wrapping
+        // fixture intentionally gains full-extent copies after the seam fix.
+        const auto directory=qEnvironmentVariable("SNAKES_RENDER_REFERENCE_DIR");
+        if (!directory.isEmpty() && fixture!=2) {
+            QFile reference(directory + QLatin1Char('/') + QString::fromLatin1(QTest::currentDataTag()) + QStringLiteral(".bin"));
+            if (qEnvironmentVariableIsSet("SNAKES_RENDER_WRITE_REFERENCE")) {
+                QVERIFY(reference.open(QIODevice::WriteOnly));
+                QCOMPARE(reference.write(bytes.data(),bytes.size()),bytes.size());
+            } else {
+                QVERIFY(reference.open(QIODevice::ReadOnly));
+                QCOMPARE(QByteArray(bytes.data(),bytes.size()),reference.readAll());
+            }
+        }
         delete node;
+    }
+    void r1FlagsPelletsAndKillEventsReachRustGeometry()
+    {
+        SnakeRenderer renderer;
+        renderer.setSize(QSizeF(3440,1440));
+        auto frame=makeFrame(18,1,0);
+        frame.snakes[0].flags=0;
+        QSGNode *node=nullptr;
+        const auto render=[&] {
+            renderer.syncFrame(frame,palette,0.5,true);
+            node=renderer.updatePaintNode(node,nullptr);
+            return static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount();
+        };
+        const auto hasColor=[&](QColor color) {
+            const auto *geometry=static_cast<QSGGeometryNode *>(node)->geometry();
+            const auto *vertices=geometry->vertexDataAsColoredPoint2D();
+            for (int i=0;i<geometry->vertexCount();++i) {
+                const auto &v=vertices[i];
+                if (v.r==color.red() && v.g==color.green() && v.b==color.blue() && v.a==color.alpha()) return true;
+            }
+            return false;
+        };
+        const int base=render();
+        frame.snakes[0].flags=SNAKES_CORE_BOOSTING;++frame.info.tick;
+        QCOMPARE(render(),base);
+        QVERIFY(hasColor(QColor(139,239,255,245)));
+        frame.snakes[0].flags=SNAKES_CORE_HUNTING;++frame.info.tick;
+        QCOMPARE(render(),base);
+        QVERIFY(hasColor(QColor(255,190,80)));
+        frame.snakes[0].flags=SNAKES_CORE_TRAPPED;++frame.info.tick;
+        QCOMPARE(render(),base);
+        frame.snakes.clear();
+        frame.food.push_back({1,200,200,4,0,0,200,200,0,0,255,0});
+        QCOMPARE(render(),63);
+        frame.food[0].kind=SNAKES_CORE_FOOD_PELLET;
+        QCOMPARE(render(),24);
+        QVERIFY(hasColor(QColor(77,230,255,110)));
+        frame.food.clear();++frame.info.tick;
+        frame.events.push_back({frame.info.tick,200,200,0,UINT32_MAX,0,SNAKES_CORE_EVENT_KILL,{0,0,0}});
+        QCOMPARE(render(),72);
+        renderer.presentFrame(20.2,0.5);node=renderer.updatePaintNode(node,nullptr);
+        QCOMPARE(static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount(),72);
+        renderer.presentFrame(20.5,0.5);node=renderer.updatePaintNode(node,nullptr);
+        QCOMPARE(static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount(),0);
+        delete node;
+    }
+    void crownFollowsLeaderFlagOnShorterSnake()
+    {
+        SnakeRenderer renderer;
+        renderer.setSize(QSizeF(3440,1440));
+        auto frame=makeFrame(30,2,0);
+        frame.snakes[0].flags=0;frame.snakes[1].flags=0;
+        frame.snakes[1].segment_count=28;
+        renderer.syncFrame(frame,palette,0.5,true);
+        auto *node=renderer.updatePaintNode(nullptr,nullptr);
+        const int base=static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount();
+        frame.snakes[1].flags=SNAKES_CORE_LEADER;
+        renderer.syncFrame(frame,palette,0.5,true);
+        node=renderer.updatePaintNode(node,nullptr);
+        QCOMPARE(static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount(),base+81);
+        delete node;
+    }
+    void replacingSimulationClearsRustHistoryAtSameTick()
+    {
+        const snakes_core_config config{320,240,50,35,100,100,75,1,6,0,1,SNAKES_CORE_RULE_DEFAULT,0};
+        SnakeSimulation first(config),second(config);
+        SnakeRenderer renderer,fresh;
+        renderer.setSize(QSizeF(320,240));fresh.setSize(QSizeF(320,240));
+        renderer.setSimulation(&first);
+        SnakeFrame flash;
+        flash.info=first.frame().info;
+        flash.events.push_back({flash.info.tick,120,120,0,UINT32_MAX,0,SNAKES_CORE_EVENT_KILL,{0,0,0}});
+        renderer.syncFrame(flash,palette,0,true);
+        auto *node=renderer.updatePaintNode(nullptr,nullptr);
+        QCOMPARE(static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount(),72);
+        renderer.setSimulation(&second);fresh.setSimulation(&second);
+        node=renderer.updatePaintNode(node,nullptr);
+        auto *reference=fresh.updatePaintNode(nullptr,nullptr);
+        const auto *a=static_cast<QSGGeometryNode *>(node)->geometry();
+        const auto *b=static_cast<QSGGeometryNode *>(reference)->geometry();
+        QCOMPARE(a->vertexCount(),b->vertexCount());
+        QCOMPARE(QByteArray(reinterpret_cast<const char *>(a->vertexData()),a->vertexCount()*a->sizeOfVertex()),
+                 QByteArray(reinterpret_cast<const char *>(b->vertexData()),b->vertexCount()*b->sizeOfVertex()));
+        delete node;delete reference;
     }
     void benchmarkEcosystemPhases_data()
     {
@@ -290,7 +519,7 @@ private Q_SLOTS:
     void benchmarkEcosystemPhases()
     {
         QFETCH(bool,deadly);
-        snakes_core_config config{3440,1440,100,100,100,100,100,20260814,6,1,uint32_t(deadly)};
+        snakes_core_config config{3440,1440,100,100,100,100,100,20260814,6,1,uint32_t(deadly),SNAKES_CORE_RULE_DEFAULT,0};
         snakes_core_world *handle=nullptr;
         QCOMPARE(snakes_core_create(&config,&handle),SNAKES_CORE_OK);
         std::unique_ptr<snakes_core_world,decltype(&snakes_core_destroy)> world(handle,snakes_core_destroy);

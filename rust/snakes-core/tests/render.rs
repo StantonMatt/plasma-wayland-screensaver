@@ -1,0 +1,826 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+use snakes_core::{ffi::*, flags};
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+thread_local! {
+    static COUNT: Cell<Option<usize>>=const {
+        Cell::new(None)
+    };
+}
+struct Allocator;
+unsafe impl GlobalAlloc for Allocator {
+    unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+        COUNT.with(|c|if let Some(n) = c.get() {
+            c.set(Some(n+1));
+        });
+        unsafe {
+            System.alloc(l)
+        }
+    }
+    unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        unsafe {
+            System.dealloc(p, l)
+        }
+    }
+    unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+        COUNT.with(|c|if let Some(n) = c.get() {
+            c.set(Some(n+1));
+        });
+        unsafe {
+            System.realloc(p, l, n)
+        }
+    }
+}
+#[global_allocator]static ALLOCATOR: Allocator = Allocator;
+fn params() -> RenderParams {
+    RenderParams {
+        viewport_width: 3440.0,
+        viewport_height: 1440.0,
+        scale_x: 1.0,
+        scale_y: 1.0,
+        interpolation: 0.5,
+        presentation_time: 20.0,
+        deadly_walls: 1,
+        ..Default::default()
+    }
+}
+fn info() -> FrameInfo {
+    FrameInfo {
+        tick: 600,
+        simulation_time: 20.0,
+        world_width: 3440.0,
+        world_height: 1440.0,
+        ..Default::default()
+    }
+}
+fn snake() -> SnakeRecord {
+    SnakeRecord {
+        id: 0,
+        generation: 1,
+        alive: 1,
+        radius: 8.0,
+        segment_count: 3,
+        ..Default::default()
+    }
+}
+fn body() -> [SegmentRecord;3] {
+    std::array::from_fn(|i|SegmentRecord {
+        x: 200.0-i as f32*8.0,
+        y: 200.0,
+        previous_x: 199.0-i as f32*8.0,
+        previous_y: 200.0
+    })
+}
+fn palette() -> [RenderColor;1] {
+    [RenderColor {
+        red: 77,
+        green: 230,
+        blue: 255,
+        alpha: 255
+    }]
+}
+fn build(r: &mut RenderHandle, s: SnakeRecord, p: RenderParams) -> Vec<RenderVertex> {
+    let mut out = vec![RenderVertex::default();4096];
+    let result = r.build(&info(), &[s], &body(), &[], &[], &palette(), &p, &mut out);
+    out.truncate(result.vertex_count);
+    out
+}
+#[test]fn packed_abi_layouts() {
+    assert_eq!(std::mem::size_of::<RenderVertex>(), 12);
+    assert_eq!(std::mem::align_of::<RenderVertex>(), 4);
+    assert_eq!(std::mem::offset_of!(RenderVertex, color), 8);
+    assert_eq!(std::mem::size_of::<RenderParams>(), 72);
+    assert_eq!(std::mem::size_of::<RenderOutput>(), 16);
+}
+#[test]fn flags_change_colors_and_eyes_without_extra_vertices_and_only_leader_has_crown() {
+    let mut r = RenderHandle::new();
+    let mut s = snake();
+    let ordinary = build(&mut r, s, params());
+    s.flags = flags::BOOSTING;
+    let boosted = build(&mut r, s, params());
+    assert_eq!(ordinary.len(), boosted.len());
+    assert!(boosted.iter().any(|v|v.color==RenderColor {
+        red: 139,
+        green: 239,
+        blue: 255,
+        alpha: 245
+    }));
+    s.flags = flags::HUNTING;
+    let hunting = build(&mut r, s, params());
+    assert_eq!(ordinary.len(), hunting.len());
+    assert!(hunting.iter().any(|v|v.color==RenderColor {
+        red: 255,
+        green: 190,
+        blue: 80,
+        alpha: 255
+    }));
+    s.flags = flags::TRAPPED;
+    let trapped = build(&mut r, s, params());
+    assert_eq!(ordinary.len(), trapped.len());
+    assert_ne!(ordinary, trapped);
+    s.flags = flags::LEADER;
+    assert_eq!(build(&mut r, s, params()).len(), ordinary.len()+81);
+}
+#[test]fn pellet_has_two_small_dim_four_sided_discs() {
+    let mut r = RenderHandle::new();
+    let mut f = FoodRecord {
+        x: 200.0,
+        y: 200.0,
+        size: 4.0,
+        ..Default::default()
+    };
+    let mut out = [RenderVertex::default();100];
+    let full = r.build(&info(), &[], &[], &[f], &[], &palette(), &params(), &mut out);
+    assert_eq!(full.vertex_count, 63);
+    f.kind = 2;
+    let pellet = r.build(&info(), &[], &[], &[f], &[], &palette(), &params(), &mut out);
+    assert_eq!(pellet.vertex_count, 24);
+    assert_eq!(out[0].color.alpha, 12);
+    assert_eq!(out[12].color.alpha, 110);
+    assert!(out[1].x-200.0<4.0*3.2);
+}
+#[test]fn contrail_ring_is_bounded_and_resets_on_generation_rewind_and_resize() {
+    let mut r = RenderHandle::new();
+    let mut s = snake();
+    s.flags = flags::BOOSTING;
+    let mut b = body();
+    let mut i = info();
+    let mut p = params();
+    let mut out = [RenderVertex::default();4096];
+    let base = r.build(&i, &[s], &b, &[], &[], &palette(), &p, &mut out).vertex_count;
+    for t in 1..40 {
+        i.tick += 1;
+        i.simulation_time += 1.0/30.0;
+        p.presentation_time = i.simulation_time;
+        b[2].x -= 2.0;
+        b[2].previous_x -= 2.0;
+        let count = r.build(&i, &[s], &b, &[], &[], &palette(), &p, &mut out).vertex_count;
+        assert_eq!(count, base+6*t.min(14));
+        assert_eq!(r.build(&i, &[s], &b, &[], &[], &palette(), &p, &mut out).vertex_count, count);
+    }
+    s.generation += 1;
+    i.tick += 1;
+    assert_eq!(r.build(&i, &[s], &b, &[], &[], &palette(), &p, &mut out).vertex_count, base);
+    i.tick = 0;
+    assert_eq!(r.build(&i, &[s], &b, &[], &[], &palette(), &p, &mut out).vertex_count, base);
+    i.geometry_generation += 1;
+    assert_eq!(r.build(&i, &[s], &b, &[], &[], &palette(), &p, &mut out).vertex_count, base);
+}
+#[test]fn kill_flash_lasts_half_second_is_deduplicated_and_rewind_clears_history() {
+    let mut r = RenderHandle::new();
+    let mut i = info();
+    let mut p = params();
+    let e = EventRecord {
+        tick: 600,
+        x: 200.0,
+        y: 200.0,
+        kind: 0,
+        ..Default::default()
+    };
+    let mut out = [RenderVertex::default();4096];
+    assert_eq!(r.build(&i, &[], &[], &[], &[e], &palette(), &p, &mut out).vertex_count, 72);
+    i.tick += 1;
+    p.presentation_time = 20.2;
+    assert_eq!(r.build(&i, &[], &[], &[], &[e], &palette(), &p, &mut out).vertex_count, 72);
+    let alpha = out[0].color.alpha;
+    i.tick += 1;
+    p.presentation_time = 20.499;
+    assert_eq!(r.build(&i, &[], &[], &[], &[], &palette(), &p, &mut out).vertex_count, 72);
+    assert!(out[0].color.alpha<alpha);
+    p.presentation_time = 20.5;
+    assert_eq!(r.build(&i, &[], &[], &[], &[], &palette(), &p, &mut out).vertex_count, 0);
+    i.tick = 1;
+    p.presentation_time = 0.03;
+    assert_eq!(r.build(&i, &[], &[], &[], &[], &palette(), &p, &mut out).vertex_count, 0);
+}
+#[test]fn corpse_fades_all_primitives() {
+    let mut r = RenderHandle::new();
+    let mut s = snake();
+    s.flags = flags::CORPSE|flags::LEADER;
+    s.alive = 0;
+    let initial = build(&mut r, s, params());
+    assert!(!initial.is_empty());
+    let mut p = params();
+    p.presentation_time += 0.3;
+    let faded = build(&mut r, s, p);
+    assert_eq!(initial.len(), faded.len());
+    for (a, b) in initial.iter().zip(&faded) {
+        assert!(b.color.alpha<a.color.alpha);
+        assert_eq!(a.x, b.x);
+    }
+    p.presentation_time = 20.55;
+    assert!(build(&mut r, s, p).iter().all(|v|v.color.alpha==0));
+}
+#[test]fn render_ffi_validates_and_retry_reports_complete_count() {
+    unsafe {
+        let r = snakes_core_render_create();
+        let mut result = RenderOutput::default();
+        let s = snake();
+        let b = body();
+        let pal = palette();
+        let p = params();
+        let i = info();
+        let call = |s: *const SnakeRecord, out: *mut RenderVertex, n: usize, result: *mut RenderOutput|snakes_core_render_build(r, &i, s, 1, b.as_ptr(), b.len(), std::ptr::null(), 0, std::ptr::null(), 0, pal.as_ptr(), pal.len(), &p, out, n, result);
+        assert_eq!(call(&s, std::ptr::null_mut(), 0, &mut result), BUFFER_TOO_SMALL);
+        let n = result.vertex_count;
+        let mut vertices = vec![RenderVertex::default();n];
+        assert_eq!(call(&s, vertices.as_mut_ptr(), n, &mut result), OK);
+        assert_eq!(result.vertex_count, n);
+        let invalid = SnakeRecord {
+            segment_offset: 999,
+            ..s
+        };
+        result.vertex_count = 123;
+        let copy = vertices.clone();
+        assert_eq!(call(&invalid, vertices.as_mut_ptr(), n, &mut result), INVALID_ARGUMENT);
+        assert_eq!(result.vertex_count, 123);
+        assert_eq!(vertices, copy);
+        assert_eq!(call(std::ptr::null(), vertices.as_mut_ptr(), n, &mut result), INVALID_ARGUMENT);
+        assert_eq!(snakes_core_render_reset(r), OK);
+        snakes_core_render_destroy(r);
+        snakes_core_render_destroy(std::ptr::null_mut());
+    }
+}
+#[test]fn zero_allocations_building_all_r1_effects_and_resetting_history() {
+    let mut r = RenderHandle::new();
+    let mut i = info();
+    let mut p = params();
+    let mut s = snake();
+    s.flags = flags::BOOSTING|flags::LEADER|flags::HUNTING|flags::TRAPPED;
+    let mut b = body();
+    let food = [FoodRecord {
+        x: 0.1,
+        y: 0.1,
+        size: 4.0,
+        kind: 2,
+        attraction: 1.0,
+        attraction_x: 10.0,
+        attraction_y: 10.0,
+        ..Default::default()
+    }];
+    let pal = palette();
+    let mut out = vec![RenderVertex::default();4096];
+    COUNT.with(|c|c.set(Some(0)));
+    for t in 0..1000 {
+        i.tick += 1;
+        i.simulation_time += 1.0/30.0;
+        p.presentation_time = i.simulation_time;
+        p.deadly_walls = (t%2) as u32;
+        p.developer_mode = 1;
+        b[2].x = (t%20) as f32;
+        if t % 100 > 80 {
+            s.alive = 0;
+            s.flags = flags::CORPSE;
+        } else {
+            s.alive = 1;
+            s.flags = flags::BOOSTING | flags::LEADER | flags::HUNTING | flags::TRAPPED;
+        }
+        let event = EventRecord {
+            tick: i.tick,
+            x: 0.1,
+            y: 0.1,
+            kind: 0,
+            ..Default::default()
+        };
+        r.build(&i, &[s], &b, &food, &[event], &pal, &p, &mut out);
+        if t%30==0 {
+            r.reset();
+        }
+    }
+    let n = COUNT.with(|c|c.replace(None).unwrap());
+    assert_eq!(n, 0);
+}
+// The constants are measured from the pre-port C++ vertex buffers. Each byte
+// (including f32 coordinates and RGBA) participates, so this checks draw order,
+// clipping, interpolation, circle tessellation and malformed-point guards.
+fn mature_fixture() -> (Vec<SnakeRecord>, Vec<SegmentRecord>, Vec<FoodRecord>) {
+    let mut snakes = Vec::new();
+    let mut segments = Vec::new();
+    let mut food = Vec::new();
+    for n in 0..14 {
+        snakes.push(SnakeRecord {
+            id: n,
+            generation: 1,
+            alive: 1,
+            color_index: 0,
+            radius: 8.0,
+            angle: 0.0,
+            desired_angle: 0.7,
+            segment_offset: segments.len() as u32,
+            segment_count: 120,
+            flags: flags::LEADER,
+            ..Default::default()
+        });
+        for i in 0..120 {
+            let x = (250.0-i as f64*4.5+(n%4) as f64*780.0) as f32;
+            let y = (120.0+(i as f64*0.08).sin()*18.0+(n/4) as f64*340.0) as f32;
+            segments.push(SegmentRecord {
+                x: if i==7 {
+                    f32::NAN
+                } else {
+                    x
+                },
+                y,
+                previous_x: x-1.0,
+                previous_y: y
+            });
+        }
+    }
+    for i in 0..400 {
+        let x = (12+(i%32)*9) as f32;
+        let y = (12+(i/32)*9) as f32;
+        food.push(FoodRecord {
+            id: i+1,
+            x,
+            y,
+            size: 4.0,
+            attraction_x: x,
+            attraction_y: y,
+            ..Default::default()
+        });
+    }
+    (snakes, segments, food)
+}
+fn fingerprint(vertices: &[RenderVertex]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for v in vertices {
+        for b in v.x.to_bits().to_le_bytes().into_iter().chain(v.y.to_bits().to_le_bytes()).chain([v.color.red, v.color.green, v.color.blue, v.color.alpha]) {
+            hash = (hash^b as u64).wrapping_mul(0x100000001b3);
+        }
+    }
+    hash
+}
+#[test]fn original_cpp_geometry_fingerprints() {
+    let (snakes, segments, food) = mature_fixture();
+    let mut out = vec![RenderVertex::default();200000];
+    for (walls, developer, alpha, expected) in [(true, false, 0.5, 0x277138f72018d760u64), (false, false, 0.9, 0x9835584fd581399bu64), (true, true, 0.1, 0x97f0972248a549edu64)] {
+        let mut p = params();
+        p.deadly_walls = walls as u32;
+        p.developer_mode = developer as u32;
+        p.interpolation = alpha;
+        let result = RenderHandle::new().build(&info(), &snakes, &segments, &food, &[], &palette(), &p, &mut out);
+        let actual = fingerprint(&out[..result.vertex_count]);
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn contrail_history_expires_after_skipped_presentation_ticks() {
+    let mut r = RenderHandle::new();
+    let mut s = snake();
+    s.flags = flags::BOOSTING;
+    let mut b = body();
+    let mut i = info();
+    let mut p = params();
+    let mut out = [RenderVertex::default();4096];
+    let base = r.build(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    for _ in 0..20 {
+        i.tick += 3;
+        i.simulation_time += 0.1;
+        p.presentation_time = i.simulation_time;
+        b[2].x += 2.0;
+        b[2].previous_x += 2.0;
+        let count = r.build(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+        assert!(count <= base + 24);
+    }
+    i.tick += 16;
+    i.simulation_time += 16.0 / 30.0;
+    p.presentation_time = i.simulation_time;
+    assert_eq!(r.build(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count,base);
+}
+
+
+#[test]
+fn stationary_snakes_do_not_replay_stale_interpolation() {
+    for walls in [0, 1] {
+        for stationary in [flags::CORPSE, flags::FROZEN] {
+            let mut r = RenderHandle::new();
+            let mut s = snake();
+            s.flags = stationary | flags::LEADER;
+            s.alive = u32::from(stationary != flags::CORPSE);
+            let mut i = info();
+            let mut p = params();
+            p.deadly_walls = walls;
+            p.developer_mode = 1;
+            let mut b = body();
+            // A frozen final move crossing a seam must stay at its endpoint.
+            for seg in &mut b {
+                seg.x -= 197.0;
+                seg.previous_x = i.world_width as f32 - 5.0;
+            }
+            let mut out = [RenderVertex::default();4096];
+            p.interpolation = 1.0;
+            let n = r.build(&i, &[s], &b, &[], &[], &palette(), &p, &mut out).vertex_count;
+            let reference = out[..n].to_vec();
+            for tick in 0..3 {
+                i.tick += tick;
+                for alpha in [0.0, 0.25, 0.75, 1.0] {
+                    p.interpolation = alpha;
+                    let n = r.build(&i, &[s], &b, &[], &[], &palette(), &p, &mut out).vertex_count;
+                    assert!(&out[..n] == reference, "walls={walls} stationary={stationary} alpha={alpha}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn wrap_copies_cover_full_effect_extents_on_edges_and_corners() {
+    let mut p = params();
+    let mut i = info();
+    i.world_width = 320.0;
+    i.world_height = 240.0;
+    p.viewport_width = 320.0;
+    p.viewport_height = 240.0;
+    p.deadly_walls = 0;
+    let mut out = [RenderVertex::default();4096];
+    for (x, y, copies) in [(2.0,120.0,2), (318.0,120.0,2), (160.0,2.0,2), (160.0,238.0,2), (2.0,2.0,4), (318.0,238.0,4)] {
+        let e = EventRecord {tick:i.tick, x, y, kind:0, ..Default::default()};
+        let n = RenderHandle::new().build(&i,&[],&[],&[],&[e],&palette(),&p,&mut out).vertex_count;
+        assert_eq!(n,72*copies,"flash at {x},{y}");
+        for kind in [0,2] {
+            // Keep even the small offset highlight straddling the seam.
+            let fx = if x<10.0 {0.01} else if x>310.0 {319.99} else {x};
+            let fy = if y<10.0 {0.01} else if y>230.0 {239.99} else {y};
+            let f = FoodRecord {x:fx,y:fy,size:4.0,kind,..Default::default()};
+            let n = RenderHandle::new().build(&i,&[],&[],&[f],&[],&palette(),&p,&mut out).vertex_count;
+            assert_eq!(n,if kind==2 {24*copies} else {63*copies},"food kind {kind} at {x},{y}");
+        }
+    }
+    // The expanding outer disc reaches a corner before the inner one does.
+    let e = EventRecord {tick:i.tick,x:20.0,y:20.0,kind:0,..Default::default()};
+    p.presentation_time += 0.4;
+    assert_eq!(RenderHandle::new().build(&i,&[],&[],&[],&[e],&palette(),&p,&mut out).vertex_count,180);
+    p.deadly_walls = 1;
+    assert_eq!(RenderHandle::new().build(&i,&[],&[],&[],&[e],&palette(),&p,&mut out).vertex_count,72);
+    // Oversized effects include every copy of the outer and inner discs.
+    p.deadly_walls=0; p.viewport_width=10.0; p.viewport_height=10.0;
+    i.world_width=10.0; i.world_height=10.0;
+    let e=EventRecord{x:5.0,y:5.0,..e};
+    assert_eq!(RenderHandle::new().build(&i,&[],&[],&[],&[e],&palette(),&p,&mut out).vertex_count,2088);
+}
+
+#[test]
+fn vacuum_streak_wraps_even_when_food_halo_does_not_reach_seam() {
+    let mut i = info();
+    i.world_width = 320.0;
+    i.world_height = 240.0;
+    let mut p = params();
+    // Anisotropic scaling exercises conversion of the screen-space width.
+    p.scale_x = 2.0;
+    p.scale_y = 0.5;
+    p.viewport_width = 640.0;
+    p.viewport_height = 120.0;
+    p.deadly_walls = 0;
+    let mut out = [RenderVertex::default();4096];
+    for (x,y,ax,ay) in [(22.0,120.0,52.0,120.0), (298.0,120.0,268.0,120.0), (160.0,60.0,160.0,90.0), (160.0,180.0,160.0,150.0)] {
+        let f = FoodRecord {x,y,attraction_x:ax,attraction_y:ay,size:8.0,phase:-60.0,attraction:1.0,..Default::default()};
+        let n = RenderHandle::new().build(&i,&[],&[],&[f],&[],&palette(),&p,&mut out).vertex_count;
+        let streak = out[..n].iter().filter(|v|v.color.alpha==150).count();
+        assert_eq!(streak,12,"streak at {x},{y}");
+        p.deadly_walls = 1;
+        let n = RenderHandle::new().build(&i,&[],&[],&[f],&[],&palette(),&p,&mut out).vertex_count;
+        assert_eq!(out[..n].iter().filter(|v|v.color.alpha==150).count(),6);
+        p.deadly_walls = 0;
+    }
+    // The halo itself also needs screen-to-world extent conversion.
+    let f=FoodRecord{x:160.0,y:35.0,size:8.0,phase:-60.0,..Default::default()};
+    assert_eq!(RenderHandle::new().build(&i,&[],&[],&[f],&[],&palette(),&p,&mut out).vertex_count,87);
+}
+
+#[test]
+fn contrail_draws_both_sides_of_a_seam_and_stops_at_death() {
+    for (a,b) in [((1.0,120.0),(319.0,120.0)), ((160.0,1.0),(160.0,239.0)), ((1.0,1.0),(319.0,239.0))] {
+        let mut r = RenderHandle::new();
+        let mut s = snake();
+        s.flags = flags::BOOSTING;
+        let mut i = info();
+        i.world_width = 320.0;
+        i.world_height = 240.0;
+        let mut p = params();
+        p.viewport_width = 320.0;
+        p.viewport_height = 240.0;
+        p.deadly_walls = 0;
+        let mut body = body();
+        let mut out = [RenderVertex::default();4096];
+        body[2].x=a.0; body[2].y=a.1;
+        r.build(&i,&[s],&body,&[],&[],&palette(),&p,&mut out);
+        i.tick+=1;
+        i.simulation_time+=1.0/30.0;
+        p.presentation_time=i.simulation_time;
+        body[2].x=b.0; body[2].y=b.1;
+        let n=r.build(&i,&[s],&body,&[],&[],&palette(),&p,&mut out).vertex_count;
+        let copies=if a.0==1.0 && a.1==1.0 {4} else {2};
+        assert_eq!(out[..n].iter().filter(|v|v.color.alpha==110).count(),6*copies);
+        s.alive=0; s.flags=flags::CORPSE|flags::BOOSTING;
+        i.tick+=1;
+        r.build(&i,&[s],&body,&[],&[],&palette(),&p,&mut out);
+        s.alive=1; s.flags=flags::BOOSTING;
+        i.tick+=1;
+        let n=r.build(&i,&[s],&body,&[],&[],&palette(),&p,&mut out).vertex_count;
+        assert!(!out[..n].iter().any(|v|v.color.alpha==110),"death must clear trail history");
+    }
+}
+
+
+#[test]
+fn eyes_and_crown_pixel_minimums_wrap_at_small_viewport_scales() {
+    let mut i=info();
+    i.world_width=1000.0; i.world_height=1000.0;
+    let mut p=params();
+    p.scale_x=0.01; p.scale_y=0.01;
+    p.viewport_width=10.0; p.viewport_height=10.0;
+    p.deadly_walls=0;
+    let mut s=snake(); s.flags=flags::LEADER;
+    let b=std::array::from_fn::<_,3,_>(|n|SegmentRecord{x:70.0+n as f32*8.0,y:500.0,previous_x:70.0+n as f32*8.0,previous_y:500.0});
+    let mut out=[RenderVertex::default();4096];
+    let n=RenderHandle::new().build(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert!(out[..n].iter().any(|v|v.x>10.0 && v.color==RenderColor{red:255,green:255,blue:255,alpha:255}));
+    assert!(out[..n].iter().any(|v|v.x>10.0 && v.color==RenderColor{red:109,green:67,blue:0,alpha:255}));
+    for (sx,sy) in [(0.0,0.01),(0.01,0.0),(0.0,0.0)] {
+        p.scale_x=sx; p.scale_y=sy;
+        assert_eq!(RenderHandle::new().build(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count,0);
+    }
+}
+
+#[test]
+fn malformed_render_records_are_skipped_before_bounds_and_history() {
+    let mut i=info();i.world_width=320.0;i.world_height=240.0;
+    let mut p=params();p.viewport_width=320.0;p.viewport_height=240.0;p.deadly_walls=0;p.developer_mode=1;
+    let mut out=[RenderVertex::default();4096];
+    let good=FoodRecord{x:160.0,y:120.0,size:4.0,..Default::default()};
+    let base=RenderHandle::new().build(&i,&[],&[],&[good],&[],&palette(),&p,&mut out).vertex_count;
+    for bad in [f32::NAN,f32::INFINITY,f32::NEG_INFINITY,f32::MAX,-f32::MAX] {
+        for field in 0..8 {
+            let mut f=good;
+            match field {0=>f.x=bad,1=>f.y=bad,2=>f.size=bad,3=>f.phase=bad,
+                4=>f.attraction=bad,5=>f.attraction_x=bad,6=>f.attraction_y=bad,_=>f.size=-1.0}
+            let n=RenderHandle::new().build(&i,&[],&[],&[good,f],&[],&palette(),&p,&mut out).vertex_count;
+            assert_eq!(n,base,"food field {field} value {bad}");
+        }
+        let event=EventRecord{tick:i.tick,x:bad,y:120.0,kind:0,..Default::default()};
+        assert_eq!(RenderHandle::new().build(&i,&[],&[],&[],&[event],&palette(),&p,&mut out).vertex_count,0);
+        let event=EventRecord{x:160.0,y:bad,..event};
+        assert_eq!(RenderHandle::new().build(&i,&[],&[],&[],&[event],&palette(),&p,&mut out).vertex_count,0);
+        for field in 0..4 {
+            let mut b=body();
+            for seg in &mut b {
+                match field {0=>seg.x=bad,1=>seg.y=bad,2=>seg.previous_x=bad,_=>seg.previous_y=bad}
+            }
+            let mut s=snake();s.flags=flags::BOOSTING|flags::LEADER;
+            let mut r=RenderHandle::new();
+            for _ in 0..2 {
+                assert_eq!(r.build(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count,0);
+                i.tick+=1;
+            }
+            // Invalid history must not become a contrail when valid segments resume.
+            let n=r.build(&i,&[s],&body(),&[],&[],&palette(),&p,&mut out).vertex_count;
+            assert!(n<out.len());
+            assert!(out[..n].iter().all(|v|v.x.is_finite() && v.y.is_finite()));
+            assert!(!out[..n].iter().any(|v|v.color.alpha==110));
+        }
+        for field in 0..3 {
+            let mut s=snake();
+            match field {0=>s.radius=bad as f64,1=>s.angle=bad as f64,_=>s.desired_angle=bad as f64}
+            assert_eq!(RenderHandle::new().build(&i,&[s],&body(),&[],&[],&palette(),&p,&mut out).vertex_count,0);
+        }
+    }
+    // A finite but giant halo/streak is rejected by the complete-tiling budget.
+    let huge=FoodRecord{size:1e9,attraction:1.0,attraction_x:170.0,attraction_y:130.0,..good};
+    let n=RenderHandle::new().build(&i,&[],&[],&[huge],&[],&palette(),&p,&mut out).vertex_count;
+    assert!(n<=9*(63+6));
+    assert!(out[..n].iter().all(|v|v.x.is_finite() && v.y.is_finite()));
+}
+
+#[test]
+fn render_frame_numeric_validation_covers_all_projection_inputs() {
+    let call=|i:&FrameInfo,p:&RenderParams|unsafe {
+        let r=snakes_core_render_create();
+        let mut output=RenderOutput{vertex_count:123,..Default::default()};
+        let result=snakes_core_render_build(r,i,std::ptr::null(),0,std::ptr::null(),0,
+            std::ptr::null(),0,std::ptr::null(),0,std::ptr::null(),0,p,
+            std::ptr::null_mut(),0,&mut output);
+        snakes_core_render_destroy(r);
+        (result,output.vertex_count)
+    };
+    for bad in [f64::NAN,f64::INFINITY,f64::NEG_INFINITY,f64::MAX,-f64::MAX] {
+        for field in 0..11 {
+            let mut i=info();let mut p=params();
+            match field {0=>i.world_width=bad,1=>i.world_height=bad,2=>i.simulation_time=bad,
+                3=>p.viewport_width=bad,4=>p.viewport_height=bad,5=>p.scale_x=bad,6=>p.scale_y=bad,
+                7=>p.offset_x=bad,8=>p.offset_y=bad,9=>p.presentation_time=bad,_=>p.interpolation=bad}
+            assert_eq!(call(&i,&p),(INVALID_ARGUMENT,123),"field {field} value {bad}");
+            assert_eq!(RenderHandle::new().build(&i,&[],&[],&[],&[],&palette(),&p,&mut []).vertex_count,0);
+        }
+    }
+    for (sx,sy) in [(1e-300,1.0),(1.0,1e-300),(1e300,1.0),(1.0,1e300)] {
+        let mut p=params();p.scale_x=sx;p.scale_y=sy;
+        assert_eq!(call(&info(),&p),(INVALID_ARGUMENT,123));
+    }
+    for alpha in [-0.01,1.01] {
+        let mut p=params();p.interpolation=alpha;
+        assert_eq!(call(&info(),&p),(INVALID_ARGUMENT,123));
+    }
+}
+
+#[test]
+fn render_ffi_skips_malformed_exports_without_allocating_or_mutating_records() {
+    unsafe {
+        let r=snakes_core_render_create();
+        let mut i=info();
+        let mut p=params();p.deadly_walls=0;p.developer_mode=1;
+        let mut s=snake();s.flags=flags::BOOSTING|flags::LEADER;
+        let mut b=body();b[2].x=f32::INFINITY;
+        let f=[FoodRecord{x:200.0,y:200.0,size:f32::INFINITY,..Default::default()},
+            FoodRecord{x:200.0,y:200.0,size:4.0,attraction:1.0,attraction_x:f32::MAX,..Default::default()}];
+        let e=[EventRecord{tick:i.tick,x:f32::NEG_INFINITY,y:200.0,kind:0,..Default::default()}];
+        let pal=palette();let mut vertices=[RenderVertex::default();4096];let mut output=RenderOutput::default();
+        COUNT.with(|c|c.set(Some(0)));
+        for _ in 0..10 {
+            assert_eq!(snakes_core_render_build(r,&i,&s,1,b.as_ptr(),b.len(),f.as_ptr(),f.len(),e.as_ptr(),e.len(),
+                pal.as_ptr(),pal.len(),&p,vertices.as_mut_ptr(),vertices.len(),&mut output),OK);
+            assert!(output.vertex_count<=vertices.len());
+            assert!(vertices[..output.vertex_count].iter().all(|v|v.x.is_finite() && v.y.is_finite()));
+            i.tick+=1;
+        }
+        assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+        assert!(b[2].x.is_infinite());assert!(f[0].size.is_infinite());
+        snakes_core_render_destroy(r);
+    }
+}
+
+#[test]
+fn multi_arena_bodies_keep_every_edge_and_tail_under_viewport_scaling() {
+    for (width,height,dx,dy) in [(100.0,200.0,7.0,0.0),
+        (200.0,100.0,0.0,7.0),(100.0,100.0,7.0,7.0),
+        (100.0,200.0,-7.0,0.0)] {
+        for (sx,sy) in [(1.0,1.0),(2.0,0.5),(0.5,2.0)] {
+            let mut i=info(); i.world_width=width; i.world_height=height;
+            let mut p=params(); p.deadly_walls=0; p.interpolation=1.0;
+            p.scale_x=sx; p.scale_y=sy;
+            p.viewport_width=width*sx; p.viewport_height=height*sy;
+            let s=SnakeRecord{radius:6.0,segment_count:40,..snake()};
+            let b:Vec<_>=(0..40).map(|j| {
+                let x=(50.0+dx*j as f64).rem_euclid(width) as f32;
+                let y=(50.0+dy*j as f64).rem_euclid(height) as f32;
+                SegmentRecord{x,y,previous_x:x,previous_y:y}
+            }).collect();
+            let mut out=vec![RenderVertex::default();20000];
+            let n=RenderHandle::new().build(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+            assert!(n<=out.len());
+            let tail=b.last().unwrap();
+            let fill=RenderColor{alpha:245,..palette()[0]};
+            assert!(out[..n].iter().any(|v|v.color==fill
+                && (v.x as f64-tail.x as f64*sx).abs()<0.001
+                && (v.y as f64-tail.y as f64*sy).abs()<0.001),
+                "missing wrapped tail: arena={width}x{height}, delta={dx},{dy}, scale={sx},{sy}");
+            // Independently enumerate all visible copies of each straight edge.
+            // This checks the whole body, including intermediate arena crossings.
+            let radius=6.0*(sx*sy).sqrt()*0.96;
+            let mut edge_copies=0;
+            for j in 1..40 {
+                let (ax,ay)=(50.0+dx*(j-1) as f64,50.0+dy*(j-1) as f64);
+                let (bx,by)=(ax+dx,ay+dy);
+                for x in -4..=4 { for y in -4..=4 {
+                    let (tx,ty)=(x as f64*width,y as f64*height);
+                    if (ax.min(bx)+tx)*sx-radius<p.viewport_width
+                        && (ax.max(bx)+tx)*sx+radius>0.0
+                        && (ay.min(by)+ty)*sy-radius<p.viewport_height
+                        && (ay.max(by)+ty)*sy+radius>0.0 { edge_copies+=1; }
+                }}
+            }
+            // Tail caps have 36 vertices, edge quads have six. These fixtures
+            // keep the tail cap away from seams at every tested projection.
+            assert_eq!(out[..n].iter().filter(|v|v.color==fill).count(),
+                edge_copies*6+36,"incomplete body at {width}x{height}, delta={dx},{dy}, scale={sx},{sy}");
+        }
+    }
+}
+
+#[test]
+fn oversized_primitives_match_complete_tiling_in_small_scaled_arenas() {
+    for (sx,sy) in [(1.0,1.0),(2.0,0.5)] {
+        let mut i=info();i.world_width=10.0;i.world_height=10.0;
+        let mut p=params();p.deadly_walls=0;p.scale_x=sx;p.scale_y=sy;
+        p.viewport_width=10.0*sx;p.viewport_height=10.0*sy;
+        p.presentation_time+=0.4;
+        let f=FoodRecord{x:5.0,y:5.0,size:12.0,..Default::default()};
+        let e=EventRecord{tick:i.tick,x:5.0,y:5.0,kind:0,..Default::default()};
+        let b=[SegmentRecord{x:5.0,y:5.0,previous_x:5.0,previous_y:5.0};3];
+        let s=SnakeRecord{radius:0.5,..snake()};
+        let mut out=vec![RenderVertex::default();100000];
+        // Food halo/highlight, expanding flash, and minimum-length steering
+        // arrow each extend beyond the immediately neighboring arena copies.
+        for primitive in 0..3 {
+            p.developer_mode=u32::from(primitive==2);
+            let snakes=if primitive==2 {std::slice::from_ref(&s)} else {&[]};
+            let food=if primitive==0 {std::slice::from_ref(&f)} else {&[]};
+            let events=if primitive==1 {std::slice::from_ref(&e)} else {&[]};
+            let actual=RenderHandle::new().build(&i,snakes,&b,food,events,&palette(),&p,&mut out).vertex_count;
+            assert!(actual<=out.len());
+            let mut expected=0;
+            let mut tile=p;tile.deadly_walls=1;
+            for x in -10..=10 {for y in -10..=10 {
+                tile.offset_x=x as f64*10.0*sx;
+                tile.offset_y=y as f64*10.0*sy;
+                expected+=RenderHandle::new().build(&i,snakes,&b,food,events,&palette(),&tile,&mut out).vertex_count;
+            }}
+            assert_eq!(actual,expected,"primitive={primitive}, scale={sx},{sy}");
+        }
+    }
+}
+
+#[test]
+fn contrails_rebase_samples_outside_the_original_arena() {
+    let mut i=info();i.world_width=100.0;i.world_height=100.0;
+    let mut p=params();p.deadly_walls=0;p.scale_x=2.0;p.scale_y=0.5;
+    p.viewport_width=200.0;p.viewport_height=50.0;
+    let s=SnakeRecord{flags:flags::BOOSTING,radius:6.0,..snake()};
+    let mut canonical=RenderHandle::new();let mut displaced=RenderHandle::new();
+    let mut a=[RenderVertex::default();4096];let mut b=a;
+    for tick in 0..3 {
+        i.tick+=1;i.simulation_time+=1.0/30.0;p.presentation_time=i.simulation_time;
+        let mut segments=[SegmentRecord{x:2.0+tick as f32*2.0,y:50.0,
+            previous_x:2.0+tick as f32*2.0,previous_y:50.0};3];
+        let n=canonical.build(&i,&[s],&segments,&[],&[],&palette(),&p,&mut a).vertex_count;
+        for seg in &mut segments {seg.x+=300.0;seg.previous_x+=300.0;}
+        let m=displaced.build(&i,&[s],&segments,&[],&[],&palette(),&p,&mut b).vertex_count;
+        assert_eq!(a[..n].iter().filter(|v|v.color.alpha==110).collect::<Vec<_>>(),
+            b[..m].iter().filter(|v|v.color.alpha==110).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn maximum_length_multi_arena_body_is_complete_and_allocation_free() {
+    let mut i=info();i.world_width=100.0;i.world_height=100.0;
+    let mut p=params();p.deadly_walls=0;p.viewport_width=100.0;p.viewport_height=100.0;
+    p.interpolation=1.0;
+    let s=SnakeRecord{radius:6.0,segment_count:1600,..snake()};
+    let b:Vec<_>=(0..1600).map(|j| {
+        let x=(50.0+7.0*j as f64).rem_euclid(100.0) as f32;
+        SegmentRecord{x,y:x,previous_x:x,previous_y:x}
+    }).collect();
+    let mut out=vec![RenderVertex::default();100000];
+    let mut r=RenderHandle::new();
+    let fill=RenderColor{alpha:245,..palette()[0]};
+    let mut edges=0;
+    for j in 1..1600 {
+        let a=50.0+7.0*(j-1) as f64;let b=a+7.0;
+        let copies=((100.0+5.76-a)/100.0).floor()-((-5.76-b)/100.0).ceil()+1.0;
+        edges+=(copies*copies) as usize;
+    }
+    COUNT.with(|c|c.set(Some(0)));
+    for _ in 0..10 {
+        let n=r.build(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+        assert!(n<=out.len());
+        assert_eq!(out[..n].iter().filter(|v|v.color==fill).count(),edges*6+36);
+        // Every outline precedes every fill in the split path.
+        let last_outline=out[..n].iter().rposition(|v|v.color==RenderColor{red:5,green:7,blue:16,alpha:175}).unwrap();
+        let first_fill=out[..n].iter().position(|v|v.color==fill).unwrap();
+        assert!(last_outline<first_fill);
+    }
+    assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+    // Extreme finite extents must also terminate with a tiny caller buffer.
+    i.world_width=1e-6;i.world_height=1e-6;
+    let huge=SnakeRecord{radius:1e9,..s};
+    assert_eq!(r.build(&i,&[huge],&b,&[],&[],&palette(),&p,&mut out[..1]).vertex_count,0);
+}
+
+#[test]
+fn history_only_replay_preserves_corpses_flashes_trails_and_lod_without_allocating() {
+    let mut reference = RenderHandle::new();
+    let mut replay = RenderHandle::new();
+    let mut i = info();
+    let mut p = params();
+    let mut s = snake();
+    let b = body();
+    let mut compact = s;
+    compact.segment_offset = 0; compact.segment_count = 1;
+    let tail = [*b.last().unwrap()];
+    let food = vec![FoodRecord { x: 20.0, y: 20.0, size: 4.0, ..FoodRecord::default() }; 350];
+    let mut a = vec![RenderVertex::default(); 30000];
+    let mut c = vec![RenderVertex::default(); 30000];
+    let pal = palette();
+    COUNT.with(|count| count.set(Some(0)));
+    for tick in 0..10 {
+        i.tick = 600 + tick; i.simulation_time = i.tick as f64 / 30.0;
+        p.presentation_time = i.simulation_time;
+        s.flags = if tick < 4 { flags::BOOSTING | flags::LEADER } else { flags::CORPSE };
+        s.alive = u32::from(tick < 4);
+        compact.flags = s.flags; compact.alive = s.alive;
+        let death = EventRecord { tick: i.tick, x: 200.0, y: 120.0, kind: 0, ..EventRecord::default() };
+        let events = if tick == 4 { std::slice::from_ref(&death) } else { &[] };
+        let food = if tick < 7 { &food[..] } else { &food[..300] };
+        let expected = reference.build(&i, &[s], &b, food, events, &pal, &p, &mut a);
+        let mut history = p; history.scale_x = 0.0; history.scale_y = 0.0;
+        let result = replay.build(&i, &[compact], &tail, food, events, &pal, &history, &mut []);
+        assert_eq!(result.vertex_count, 0);
+        if tick == 3 || tick == 9 {
+            let actual = replay.build(&i, &[s], &b, food, events, &pal, &p, &mut c);
+            assert_eq!(actual.dense_food, expected.dense_food);
+            assert_eq!(actual.vertex_count, expected.vertex_count);
+            assert_eq!(a[..actual.vertex_count], c[..actual.vertex_count]);
+        }
+    }
+    assert_eq!(COUNT.with(|count| count.replace(None).unwrap()), 0);
+}

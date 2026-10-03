@@ -1,3 +1,9 @@
+# ABI records must explicitly initialize fields added by future ABI revisions.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_source_files_properties(test_snakerenderer.cpp test_snakesimulation.cpp test_snakesqml.cpp
+        PROPERTIES COMPILE_OPTIONS "-Werror=missing-field-initializers")
+endif()
+
 add_executable(test-statemachine
     test_statemachine.cpp
     ../src/screensaverstatemachine.cpp

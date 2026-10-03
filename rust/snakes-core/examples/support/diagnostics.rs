@@ -6,7 +6,7 @@ pub trait ScoreController: Controller {
 }
 impl ScoreController for AiController { fn ai(&self) -> Option<&AiController> { Some(self) } }
 impl ScoreController for snakes_core::controller::BaselineController {}
-struct Snapshot { tick:usize, world:World, ai:AiController, decision:[DecisionDiagnostic;MAX_SNAKES], attack_valid:[u16;MAX_SNAKES] }
+struct Snapshot { tick:usize, world:World, ai:AiController, decision:[DecisionDiagnostic;MAX_SNAKES] }
 pub struct Diagnostics {
     snapshots: Vec<Snapshot>,
     history: Vec<[DecisionDiagnostic;MAX_SNAKES]>,
@@ -18,7 +18,7 @@ impl Diagnostics {
         if tick%30!=0 {return;}
         if let Some(ai)=c.ai() {
             if self.snapshots.len()==5 {self.snapshots.remove(0);}
-            self.snapshots.push(Snapshot { tick,world:w.diagnostic_snapshot(),ai:ai.clone(),decision:[DecisionDiagnostic::default();MAX_SNAKES],attack_valid:[0;MAX_SNAKES] });
+            self.snapshots.push(Snapshot { tick,world:w.diagnostic_snapshot(),ai:ai.clone(),decision:[DecisionDiagnostic::default();MAX_SNAKES] });
         }
     }
     pub fn after<C:ScoreController>(&mut self,tick:usize,c:&C) {
@@ -26,17 +26,6 @@ impl Diagnostics {
             for id in 0..MAX_SNAKES {self.history[tick%91][id]=ai.decision(id);}
             if let Some(s)=self.snapshots.last_mut().filter(|s|s.tick==tick) {
                 s.decision=self.history[tick%91];
-                // The runtime observer carries explicit retained-attack validity.
-                // In crossing stage both headings/rushes coincide, so comparing
-                // the two rushes alone loses the schedule. A cancelled retained
-                // attack clears its rush; crossing rush is below the admission
-                // threshold for ordinary hunting and distinct from dodge rush.
-                for id in 0..MAX_SNAKES {
-                    let retained=s.ai.competition_debug(id).unwrap();
-                    s.attack_valid[id]=s.decision[id].candidates.iter().enumerate().fold(0,|mask,(k,c)| {
-                        mask | if replay_attack_valid(k,c,retained) {1<<k} else {0}
-                    });
-                }
             }
         }
     }
@@ -56,7 +45,7 @@ impl Diagnostics {
             let held_ticks=30.max(candidate.turn_ticks+16);
             let mut c=Probe {ai,id,generation,desired:candidate.desired,exit_angle:candidate.exit_angle,
                 turn_ticks:candidate.turn_ticks,track_goal:candidate.track_goal,goal:d.goal,rush:candidate.rush,coil_center:candidate.coil_center,coil_radius:candidate.coil_radius,coil_sign:candidate.coil_sign,coil_pitch:candidate.coil_pitch,coil_progress:candidate.coil_progress,
-                coil_last_angle:None,attack_valid:snapshot.attack_valid[id]&(1<<k)!=0,attack_turn_ticks:candidate.attack_turn_ticks,attack_crossing:candidate.attack_crossing,
+                coil_last_angle:None,attack_valid:candidate.attack_valid,attack_turn_ticks:candidate.attack_turn_ticks,attack_crossing:candidate.attack_crossing,
                 attack_crossing_rush:candidate.attack_crossing_rush,total:held_ticks,remaining:held_ticks};
             // All rivals respond normally. Hold the alternative steering for
             // at least one second (up to 1.6s for compound escapes), honoring
@@ -94,10 +83,6 @@ impl Diagnostics {
         println!("diagnostic_breakdown no_replay_escape={} late_detection={} bad_pocket={} fill_underestimate={} fill_overestimate_or_turnability={} rival_prediction={} query_cap={} no_snapshot={}",
             self.counts[0],self.counts[1],self.counts[2],self.counts[3],self.counts[4],self.counts[5],self.counts[6],self.counts[7]);
     }
-}
-fn replay_attack_valid(k:usize,c:&snakes_core::ai::CandidateDiagnostic,retained:snakes_core::ai::CompetitionDebug)->bool {
-    c.attack_turn_ticks>0 || c.attack_crossing!=c.desired || c.attack_crossing_rush!=c.rush
-        || (k==1 && retained.attack_stage!=0 && !c.track_goal && c.rush==0.15)
 }
 struct Probe { ai:AiController,id:usize,generation:u32,desired:f64,exit_angle:f64,turn_ticks:usize,track_goal:bool,goal:snakes_core::Point,rush:f64,coil_center:snakes_core::Point,coil_radius:f64,coil_sign:f64,coil_pitch:f64,coil_progress:f64,coil_last_angle:Option<f64>,
     attack_valid:bool,attack_turn_ticks:usize,attack_crossing:f64,attack_crossing_rush:f64,total:usize,remaining:usize }
@@ -139,14 +124,29 @@ impl Controller for Probe {
 mod tests {
     use super::*;
     #[test]
-    fn crossing_snapshot_keeps_validity_and_cancellation_drops_it() {
-        let c=snakes_core::ai::CandidateDiagnostic {desired:1.3,rush:0.15,attack_crossing:1.3,attack_crossing_rush:0.15,turn_ticks:8,..Default::default()};
-        let retained=snakes_core::ai::CompetitionDebug {prey:Some(1),attack_stage:2,rush:0.15,..Default::default()};
-        assert!(replay_attack_valid(1,&c,retained));
-        assert!(replay_attack_valid(1,&c,snakes_core::ai::CompetitionDebug {attack_stage:1,rush:1.0,..retained}),"first crossing tick must retain validity");
-        assert!(!replay_attack_valid(7,&c,retained),"ordinary alternatives cannot inherit validity");
-        let cancelled=snakes_core::ai::CandidateDiagnostic {rush:0.0,attack_crossing_rush:0.0,..c};
-        assert!(!replay_attack_valid(1,&cancelled,retained));
+    fn advisory_v2_mid_crossing_replay_keeps_attack_over_compound_exit() {
+        let candidate=snakes_core::ai::CandidateDiagnostic {desired:1.3,rush:0.0,
+            attack_valid:true,attack_crossing:1.3,attack_crossing_rush:0.0,turn_ticks:2,exit_angle:-1.2,..Default::default()};
+        let w=World::diagnostic_arena(snakes_core::Config {density:0.0,rules:snakes_core::RuleSet::V2,..Default::default()},
+            &[(snakes_core::Point{x:400.0,y:400.0},0.0,24,1.0)],&[]).unwrap();
+        let mut probe=Probe {ai:AiController::new(),id:0,generation:w.snake(0).unwrap().generation,
+            desired:candidate.desired,exit_angle:candidate.exit_angle,turn_ticks:candidate.turn_ticks,
+            track_goal:false,goal:Default::default(),rush:candidate.rush,coil_center:Default::default(),
+            coil_radius:0.0,coil_sign:0.0,coil_pitch:0.0,coil_progress:0.0,coil_last_angle:None,
+            attack_valid:candidate.attack_valid,attack_turn_ticks:0,
+            attack_crossing:candidate.attack_crossing,attack_crossing_rush:candidate.attack_crossing_rush,total:12,remaining:12};
+        for _ in 0..12 {
+            let control=probe.steer(&w,w.snake(0).unwrap());
+            assert_eq!(control.desired_angle,1.3,"crossing must override the pending ordinary exit");
+            assert_eq!(control.rush,0.0);
+        }
+        // A cancelled record retains no attack override, even if all the
+        // headings and rushes still look like a crossing maneuver.
+        probe.attack_valid=false;probe.remaining=probe.total;
+        for elapsed in 0..12 {
+            assert_eq!(probe.steer(&w,w.snake(0).unwrap()).desired_angle,
+                if elapsed>=candidate.turn_ticks {candidate.exit_angle} else {candidate.desired});
+        }
     }
     #[test]
     fn replay_attack_overrides_ordinary_exit_in_approach_and_crossing() {

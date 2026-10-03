@@ -106,7 +106,7 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
 fn main() {
     let args:Vec<String>=std::env::args().collect();
     if args.iter().any(|s|s=="--help") {
-        println!("ai_scorecard [minutes=8] [seed] [IQ=100/50] [deadly/wrap] [--ai-only] [--diagnostics] [--profile] [--trace]");return;
+        println!("ai_scorecard [minutes=8] [seed] [IQ=100/50] [deadly/wrap] [--ai-only] [--diagnostics] [--profile] [--trace] [--classic]");return;
     }
     let positional:Vec<&String>=args.iter().skip(1).filter(|s|!s.starts_with("--")).collect();
     let minutes=positional.first().map(|s|s.parse().unwrap()).unwrap_or(8);
@@ -114,7 +114,7 @@ fn main() {
     let seeds=if let Some(seed)=positional.get(1) {vec![seed.parse().unwrap()]} else {vec![73,20260814,991]};
     for seed in seeds {for intelligence in [100.0,50.0] {for deadly_walls in [true,false] {
         let cfg=Config {width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence,
-            self_collisions:true,deadly_walls,seed,..Config::default()};
+            self_collisions:true,deadly_walls,seed,rules: if std::env::args().any(|s|s=="--classic") { snakes_core::RuleSet::Classic } else { snakes_core::RuleSet::V2 },..Config::default()};
         if let Some(iq)=positional.get(2) {if intelligence!=iq.parse::<f64>().unwrap() {continue;}}
         if let Some(walls)=positional.get(3) {if deadly_walls!=(walls.as_str()=="deadly") {continue;}}
         let diagnostic=args.iter().any(|s|s=="--diagnostics");

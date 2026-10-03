@@ -1,4 +1,183 @@
-# Rust snake AI — iteration 4
+# R1 step B — paid boost planning
+
+V2 uses a single observed/requested burst schedule throughout cutoff refinement,
+physical safety rollouts, rival prediction and sampled prey replies. The schedule
+keeps the observed nutrition reserve fixed, applies the real 21-tick tail-payment
+schedule (including length/radius effects on motion), and ends the boost after
+24 ticks. An already active burst decrements before the next forecast step.
+Future food, new rival boosts and rival private controls are not predicted.
+Classic motion retains its separate stage-speed behavior.
+
+- Cutoffs start only with a ready boost and at least 16 segments, use fixed
+  rush 0.6, and reserve the paid segments when checking the four-segment head
+  advantage and deposited barrier length. Their utility pays approximately
+  2.5 food for the first two segments, proportionally more for longer snakes.
+  Retained attacks tolerate their own scheduled payments but cancel on growth,
+  unrelated shrinkage, frozen state or changed motion.
+- V2 admits nearby hunts at effective aggression above 0.2 and interest at
+  least 0.75, retaining low-aggression foraging. The cutoff library considers
+  both an early crossing and arrival-first crossing, at 18/24/36 ticks.
+- Pursuit by itself spends no tail. Food-race requests require a target patch
+  worth at least 3, a rival within 25% of our distance, and a forward approach
+  with room for the boosted turning circle. A checked unboosted alternative
+  competes with that request in ordinary ranking.
+- Emergency boost is admitted only when every sampled unboosted control has
+  less than 0.6 seconds of safety and a boosted control completes the horizon.
+  The rollout uses physical speed/turn caps; its compound turn and exit control
+  are retained when selected. Escape is allowed from length 12.
+- V2 admits open/wrap and wall-side coils from length 150 and three times the
+  victim's length: victim within 20 own radii, coil radius at least 4.2 own
+  radii and the physical turning floor, and body for 1.2 circumferences. The
+  ordinary rollout still checks entry, existing body, contraction and exit.
+  Classic keeps the existing wall-U admission.
+- HUNTING follows prey or active coil; TRAPPED uses uncapped reachable area
+  below 1.5 times the existing turnaround requirement. These remain intent
+  observations exposed through the step A hooks.
+- Both burst schedules and the two additional candidate slots are preallocated.
+  Identical fallback candidates reuse their area search. Tail-release bounds
+  use the slowest forecast speed, so a current burst cannot prematurely release
+  a body that remains after boost expiry.
+
+## Eight-minute natural scorecard
+
+Same 12 configurations as step A: maximum density/trails, 3440x1440,
+self collisions, 14,400 ticks per run. Kills use exact opponent-owner events;
+ambiguous kills are zero. Each triple is **0.7.3 / step A / step B**.
+Timings compare the step A report with final step B, on the shared host without
+CPU pinning. A fresh same-session step A matrix is summarized below too.
+
+| Seed | IQ | Walls | Exact kills | Self deaths | Mean ms A → B | p99 ms A → B |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| 73 | 100 | deadly | 12 / 9 / 12 | 6 / 0 / 3 | 0.2026 → 0.2199 | 0.3721 → 0.3541 |
+| 73 | 100 | wrap | 19 / 4 / 8 | 3 / 6 / 1 | 0.2237 → 0.2280 | 0.4077 → 0.4523 |
+| 73 | 50 | deadly | 12 / 12 / 16 | 7 / 1 / 3 | 0.2157 → 0.2173 | 0.3627 → 0.3629 |
+| 73 | 50 | wrap | 12 / 8 / 11 | 4 / 0 / 2 | 0.2158 → 0.2284 | 0.3548 → 0.4317 |
+| 20260814 | 100 | deadly | 10 / 10 / 12 | 4 / 2 / 0 | 0.2161 → 0.2160 | 0.3763 → 0.3497 |
+| 20260814 | 100 | wrap | 11 / 5 / 17 | 2 / 5 / 1 | 0.2318 → 0.2317 | 0.4281 → 0.4162 |
+| 20260814 | 50 | deadly | 13 / 10 / 17 | 6 / 1 / 3 | 0.2037 → 0.2103 | 0.3632 → 0.3407 |
+| 20260814 | 50 | wrap | 14 / 7 / 11 | 4 / 1 / 3 | 0.2174 → 0.2319 | 0.3649 → 0.3912 |
+| 991 | 100 | deadly | 11 / 7 / 12 | 3 / 1 / 2 | 0.1900 → 0.2022 | 0.3190 → 0.3357 |
+| 991 | 100 | wrap | 14 / 8 / 15 | 3 / 1 / 0 | 0.2234 → 0.2268 | 0.4139 → 0.4521 |
+| 991 | 50 | deadly | 14 / 7 / 17 | 4 / 2 / 4 | 0.2241 → 0.2113 | 0.4774 → 0.3637 |
+| 991 | 50 | wrap | 14 / 4 / 16 | 3 / 0 / 0 | 0.2294 → 0.2220 | 0.4365 → 0.4115 |
+
+Totals: exact kills **156 / 91 / 164**; self deaths **49 / 20 / 22**;
+wall deaths **0 / 0 / 0**. Every step B configuration has no more self deaths
+than 0.7.3. Total deaths are 186. The requested aggression and self-safety gates
+pass; step B has two more aggregate self deaths than step A.
+
+Equal-weight mean tick **0.216142 → 0.220483 ms** against the step A
+report, **+0.004341 ms**. Largest per-case increase is
+**+0.0173 ms**.
+All 12 means are below 0.25 ms, every increase is below 0.05 ms, and all p99s
+are below 0.6 ms. A freshly rebuilt step A snapshot reproduces its **91 kills /
+20 self deaths** and measures **0.220200 ms**; the same-session equal-weight
+mean difference is **+0.000283 ms**. These wall-clock timings vary with
+shared-host load; the measured gates pass, without claiming a noise-free CPU bound.
+
+## V2 duels: step A → step B
+
+The duel example now defaults to V2; `--classic` selects legacy free rush.
+Both sides below use the same updated example against an untouched step A crate
+snapshot and final step B. Eight scenarios × two IQs × two aggressions × ten
+jitters × mirrors × role swaps: **1,280 worlds per mode**, first designated
+death or 20 seconds. Each entry is high / low aggression kills per 40 worlds.
+
+| Scenario | IQ | Responsive A → B (high / low) | Limited A → B (high / low) |
+| --- | ---: | ---: | ---: |
+| open_crossing | 100 | 0 / 0 → 0 / 0 | 31 / 18 → 27 / 18 |
+| wall_escape | 100 | 0 / 0 → 0 / 0 | 0 / 0 → 4 / 0 |
+| wrap_escape | 100 | 0 / 0 → 0 / 0 | 11 / 3 → 0 / 3 |
+| equal_cluster | 100 | 0 / 0 → 0 / 0 | 0 / 0 → 1 / 1 |
+| food_cutoff | 100 | 2 / 0 → 0 / 0 | 25 / 6 → 29 / 7 |
+| long_encircle | 100 | 0 / 0 → 0 / 0 | 35 / 34 → 17 / 33 |
+| feasible_crossing | 100 | 0 / 0 → 0 / 0 | 5 / 20 → 10 / 4 |
+| infeasible_chase | 100 | 0 / 0 → 0 / 0 | 0 / 0 → 0 / 0 |
+| open_crossing | 50 | 0 / 0 → 0 / 0 | 34 / 17 → 35 / 30 |
+| wall_escape | 50 | 0 / 0 → 0 / 0 | 0 / 0 → 8 / 0 |
+| wrap_escape | 50 | 0 / 0 → 0 / 0 | 22 / 4 → 0 / 4 |
+| equal_cluster | 50 | 0 / 0 → 0 / 0 | 0 / 5 → 1 / 4 |
+| food_cutoff | 50 | 0 / 0 → 0 / 0 | 13 / 25 → 12 / 27 |
+| long_encircle | 50 | 7 / 0 → 0 / 0 | 38 / 40 → 19 / 40 |
+| feasible_crossing | 50 | 0 / 0 → 0 / 0 | 17 / 12 → 20 / 26 |
+| infeasible_chase | 50 | 0 / 0 → 0 / 0 | 0 / 0 → 0 / 0 |
+
+Responsive: kills **9 → 0**; attacker deaths **5 → 9**; victim self deaths **0 → 0**; victim wall deaths **0 → 0**.
+
+Limited: kills **415 → 380**; attacker deaths **23 → 40**; victim self deaths **0 → 0**; victim wall deaths **0 → 3**.
+
+The retained `long_encircle` fixture starts 30 own radii from the victim
+(radius 180, own radius 6), with 1,274.4 pixels of body versus 1,357.2 needed
+for 1.2 loops. It fails the new 20-radius/1.2-loop admission. These original
+fixtures remain unchanged for comparison; this scenario is not a positive
+R1 coil benchmark. The open/wrap admission and physical safety paths are
+covered by the focused regressions.
+
+**Open release decision:** the natural matrix meets all stated numerical gates,
+but responsive duel kills fall to zero and limited duel kills/deaths regress.
+Limited prey is the unchanged diagnostic controller rather than the full AI;
+its three wall deaths are excluded from opponent-kill attribution. No
+forced-kill or duel improvement claim is made. Infeasible-chase kills remain
+zero in both modes. These duel regressions remain unresolved and need a release decision.
+
+## Final verification and reproduction
+
+Distribution `/usr/bin/cargo`, `/usr/bin/rustc`, `/usr/bin/rustdoc` 1.93.1,
+frozen/offline, Release. Every full suite, build and benchmark matrix ran under
+`/home/mjstanton/.local/bin/heavy`. The final finite gate script ran sequentially:
+
+```sh
+/home/mjstanton/.local/bin/heavy bash /tmp/snakes-r1-step-b/final-checks.sh
+# Exact inner commands (600-second timeout on each):
+export RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc
+cmake --build build-ai -j 4
+ctest --test-dir build-ai --output-on-failure
+/usr/bin/cargo test --frozen --offline --release --manifest-path rust/snakes-core/Cargo.toml
+/usr/bin/cargo build --frozen --offline --release --manifest-path rust/snakes-core/Cargo.toml --example ai_competition
+rust/snakes-core/target/release/examples/ai_competition
+rust/snakes-core/target/release/examples/ai_competition --scripted-prey
+```
+
+- Fresh native Release build: passed. `build-ai` was configured with
+  `cmake -S . -B build-ai -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON`.
+- Fresh full CTest: **14/14 passed**, 70.85 seconds, including Rust, Classic
+  parity/recording, native ABI, simulation, QML and overlay integration.
+- Fresh full Release Cargo: **339 test executions passed**: 105 library,
+  1 AI allocation, 1 AI FFI, 108 allocation/includes, 1 controllers, 2 FFI,
+  107 observer/includes and 14 tooling. No failures.
+- The new public V2 AI allocation test measures the first decision and 3,000
+  ticks with observed boosts/hunts: **zero allocations/reallocations**.
+  Existing cap, reconfiguration, boosted mechanics and FFI allocation tests pass.
+- New physical regressions cover cost/expiry motion, tick-one rival prediction,
+  admission/cooldown, food race/turn room, open/wrap coils, retained payment
+  budgets, emergency escape and all three attack slots remaining boosted after
+  crossing. The scratch-poison determinism regression now runs in both rules.
+- `git diff --check`: passed. No commit, push, review loop, server or watcher.
+
+Final matrix command:
+
+```sh
+/home/mjstanton/.local/bin/heavy env RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc /usr/bin/cargo run --frozen --offline --release --manifest-path rust/snakes-core/Cargo.toml --example ai_scorecard -- 8 --ai-only
+```
+
+The immutable step A crate copy is `/tmp/snakes-r1-step-b/step-a`, copied before
+AI edits (original 0.7.3 revision is `e35791f988099f8536c766e9ed01a00b1b6842dd`).
+Only its duel example was updated to select V2 by default, matching the final
+benchmark; its AI/mechanics stayed unchanged. Reproduce step A duels/matrix with
+`/home/mjstanton/.local/bin/heavy bash /tmp/snakes-r1-step-b/baseline-benchmarks.sh`.
+Raw artifacts under `/tmp/snakes-r1-step-b` include `matrix-5.txt` (final),
+`matrix-step-a-paired.txt`, `duels-{step-a,final}.txt`,
+`limited-{step-a,final}.txt`, `{build,ctest,cargo-test}-final.txt`, scripts and
+intermediate matrix logs. All finite task processes exited.
+
+Changed step B files: `src/ai/{mod.rs,attack.rs,pocket.rs,tests.rs,README.md}`,
+read-only observation hooks in `src/world/query.rs`,
+`examples/ai_competition.rs`, and `tests/ai_boost_allocation.rs` (all paths in
+this crate). No mechanics, FFI/header, C++/renderer or version edits in step B.
+
+Historical pre-R1 measurements are retained below.
+
+## Historical pre-R1 AI — iteration 4
 
 The advisory production follow-up fixes five accepted collision/feasibility
 classes and their siblings, with unchanged mechanics/C ABI and zero steady-state
@@ -651,3 +830,36 @@ Final logs and immutable executables are in `/tmp/ai4-review-fixes`:
 `scorecard-final.txt`, `duels-final.txt`, `limited-final.txt`, `cargo.txt`,
 `ctest.txt`, `allocation-release.txt`, `cap-before-[1-3].txt`,
 `cap-after-[1-3].txt`, and `regressions-before.txt`.
+
+### R1 V2 mechanics groundwork
+
+`Config.rules` selects `RuleSet::Classic` (Rust's compatibility default) or
+`RuleSet::V2`. The C ABI defaults to V2 (`rule_set = 0`); `1` explicitly selects
+Classic, and `2` explicitly selects V2. Parity replay and JS goldens select
+Classic. The scorecard and mechanics benchmark select V2 unless `--classic` is
+passed. Changing rules restarts the world and invalidates the AI geometry epoch.
+
+V2 maps the old AI rush requests of at least 0.5 to a fixed 0.6 boost request
+when `World::boost_ready` is true. Motion observations include an ongoing burst,
+including when the current request is zero. The old dodge and crossing rushes
+are zero in V2. Burst cost budgeting and future-duration rollouts remain R1 step
+B work. `Controller::intent_flags` publishes HUNTING/TRAPPED after steering;
+its default `None` preserves explicit `World::set_intent_flags` hooks. AI flags
+use prey/coil presence and the existing finalist reachable-area result (below
+1.5 times its turnaround-area requirement, only when uncapped).
+
+ABI v2 keeps the snapshot export and adds `snakes_core_export_extras` for the
+latest tick's bounded events and the reserved empty item array. A multi-tick
+step exports only the final tick's events. Event reads are repeatable. Corpse
+segments are part of frame sizes, but never statistics or live collision/AI
+geometry. The current renderer ignores the new state and skips corpse records.
+
+## Validated control retention
+
+Every rollout records its own turn deadline and exit heading alongside its
+initial desired heading, goal-tracking mode, attack stages and rush. One commit
+helper installs those controls after clearing old tactics; diagnostic snapshots
+read the same candidate fields. Scratch-slot aliases and boosted continuations
+therefore retain the maneuver whose path was checked. Narrow-space escape
+bookkeeping applies only to nontracking, nonattack fallbacks, since entering
+escape mode invalidates the goal, pocket and attack dependencies of a rollout.

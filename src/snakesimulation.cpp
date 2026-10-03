@@ -20,6 +20,7 @@ SnakeSimulation::SnakeSimulation(const snakes_core_config &config, QObject *pare
     : QObject(parent), m_config(config), m_viewSize(config.width, config.height)
 {
     m_frame = std::make_shared<SnakeFrame>();
+    m_frame->events.reserve(SNAKES_CORE_MAX_EVENTS);
     m_storage.push_back(m_frame);
     snakes_core_world *world = nullptr;
     if (snakes_core_create(&config, &world) != SNAKES_CORE_OK) {
@@ -38,7 +39,7 @@ snakes_core_config SnakeSimulation::configuration(const Configuration &settings,
             double(settings.trailAmount()), double(settings.animationScale()),
             double(settings.animationSpeed()), double(settings.snakeIntelligence()),
             std::bit_cast<qint32>(seed), 6, uint32_t(settings.snakeSelfCollisions()),
-            uint32_t(settings.snakeDeadlyWalls())};
+            uint32_t(settings.snakeDeadlyWalls()), SNAKES_CORE_RULE_DEFAULT, 0};
 }
 
 QVector<QColor> SnakeSimulation::colors(const QString &palette)
@@ -103,10 +104,41 @@ bool SnakeSimulation::exportFrame()
     grow(m_frame->snakes, sizes.snakes);
     grow(m_frame->segments, sizes.segments);
     grow(m_frame->food, sizes.food);
+    m_frame->events.reserve(SNAKES_CORE_MAX_EVENTS);
+    grow(m_frame->events, sizes.events);
+    grow(m_frame->items, sizes.items);
     if (snakes_core_export_frame(m_world.get(), m_frame->snakes.data(), m_frame->snakes.size(),
                                 m_frame->segments.data(), m_frame->segments.size(),
                                 m_frame->food.data(), m_frame->food.size(), &m_frame->info) != SNAKES_CORE_OK)
         return false;
+    if (snakes_core_export_extras(m_world.get(), m_frame->items.data(), m_frame->items.size(),
+                                 m_frame->events.data(), m_frame->events.size()) != SNAKES_CORE_OK)
+        return false;
+    if (m_presentationHistoryCount) {
+        const auto &previous = m_presentationHistory[(m_presentationHistoryHead + maximumHistoryFrames - 1)
+                                                     % maximumHistoryFrames].info;
+        if (previous.geometry_generation != m_frame->info.geometry_generation || previous.tick > m_frame->info.tick)
+            m_presentationHistoryCount = m_presentationHistoryHead = 0;
+        else if (previous.tick == m_frame->info.tick) {
+            m_presentationHistoryHead = (m_presentationHistoryHead + maximumHistoryFrames - 1) % maximumHistoryFrames;
+            --m_presentationHistoryCount; // Replace same-tick settings exports.
+        }
+    }
+    auto &state = m_presentationHistory[m_presentationHistoryHead];
+    state.info = m_frame->info;
+    state.snakeCount = m_frame->snakes.size();
+    state.eventCount = m_frame->events.size();
+    state.foodCount = m_frame->food.size();
+    for (size_t i = 0; i < state.snakeCount; ++i) {
+        auto snake = m_frame->snakes[i];
+        if (snake.segment_count) state.tails[i] = m_frame->segments[snake.segment_offset + snake.segment_count - 1];
+        snake.segment_offset = uint32_t(i);
+        snake.segment_count = snake.segment_count ? 1 : 0;
+        state.snakes[i] = snake;
+    }
+    std::copy(m_frame->events.begin(), m_frame->events.end(), state.events.begin());
+    m_presentationHistoryHead = (m_presentationHistoryHead + 1) % maximumHistoryFrames;
+    m_presentationHistoryCount = std::min(m_presentationHistoryCount + 1, maximumHistoryFrames);
     m_history[m_historyHead] = m_frame;
     m_historyHead = (m_historyHead + 1) % maximumHistoryFrames;
     ++m_historyCount;
@@ -120,9 +152,11 @@ void SnakeSimulation::advance(double deltaSeconds)
     clearHistory();
     const auto ticks = uint32_t(std::floor((m_accumulator + 1e-12) / physicsStepSeconds()));
     if (ticks) {
-        if (snakes_core_step(m_world.get(), ticks) != SNAKES_CORE_OK) return;
+        for (uint32_t tick = 0; tick < ticks; ++tick) {
+            if (snakes_core_step(m_world.get(), 1) != SNAKES_CORE_OK) return;
+            exportFrame();
+        }
         m_accumulator = std::max(0.0, m_accumulator - ticks * physicsStepSeconds());
-        exportFrame();
     }
     Q_EMIT presented();
 }
@@ -172,6 +206,30 @@ std::shared_ptr<const SnakeFrame> SnakeSimulation::retainFrameAt(qint64 presenta
     const auto *frame = &frameAt(presentationNanoseconds, alpha);
     for (const auto &entry : m_storage) if (entry.get() == frame) return entry;
     return {};
+}
+
+void SnakeSimulation::retainPresentationHistory(const snakes_core_frame_info *after,
+    const snakes_core_frame_info &through,
+    std::array<SnakePresentationFrame, maximumHistoryFrames> &frames,
+    size_t &head, size_t &count) const
+{
+    // Find just the requested suffix. Normal presentation checks one new
+    // boundary plus the preceding tick, rather than scanning the entire ring.
+    size_t newestAge = 0, oldestAge = 0;
+    for (size_t age = 1; age <= m_presentationHistoryCount; ++age) {
+        const auto &info = m_presentationHistory[(m_presentationHistoryHead + maximumHistoryFrames - age)
+                                                % maximumHistoryFrames].info;
+        if (after && info.tick <= after->tick) break;
+        if (info.geometry_generation != through.geometry_generation || info.tick > through.tick) continue;
+        if (!newestAge) newestAge = age;
+        oldestAge = age;
+    }
+    for (size_t age = oldestAge; age >= newestAge && age > 0; --age) {
+        frames[head] = m_presentationHistory[(m_presentationHistoryHead + maximumHistoryFrames - age)
+                                            % maximumHistoryFrames];
+        head = (head + 1) % maximumHistoryFrames;
+        count = std::min(count + 1, maximumHistoryFrames);
+    }
 }
 
 bool SnakeSimulation::resize(double width, double height)

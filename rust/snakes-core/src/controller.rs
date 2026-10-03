@@ -11,6 +11,7 @@ impl Steering {
     }
 }
 pub trait Controller {
+    fn intent_flags(&self, _id: u32) -> Option<u32> { None }
     fn steer(&mut self, world: &World, snake: SnakeView<'_>) -> Steering;
 }
 /// Deterministic function of tick and snake. The closure may keep its own

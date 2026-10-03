@@ -10,7 +10,7 @@ class SnakesCoreAbiTest final : public QObject
 private Q_SLOTS:
     void abiVersion()
     {
-        QCOMPARE(snakes_core_abi_version(), uint32_t{1});
+        QCOMPARE(snakes_core_abi_version(), uint32_t{2});
     }
 };
 

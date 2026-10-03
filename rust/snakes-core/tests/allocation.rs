@@ -99,3 +99,37 @@ fn zero_allocations_with_ai_at_caps_and_after_reconfiguration() {
     w.step_n(&mut ai,2000);
     ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
 }
+
+#[test]
+fn zero_allocations_v2_boost_pellets_events_corpses_and_ffi_export() {
+    use ffi::*;
+    let mut w=world::tests::allocation_fixture();
+    w.config.rules=RuleSet::V2;
+    let mut boost=controller::ScriptedController::new(|_,s:SnakeView<'_>|controller::Steering{desired_angle:s.angle,rush:1.0});
+    let mut snakes=[SnakeRecord::default();MAX_SNAKES];
+    let mut segments=vec![SegmentRecord::default();MAX_SNAKES*MAX_SEGMENTS];
+    let mut food=[FoodRecord::default();MAX_FOOD];let mut events=[EventRecord::default();MAX_EVENTS];
+    // Use the public FFI path separately with preallocated high-water buffers.
+    let cfg=CoreConfig::from(Config{rules:RuleSet::V2,self_collisions:true,seed:73,..Config::default()});
+    let mut handle=std::ptr::null_mut();
+    unsafe {assert_eq!(snakes_core_create(&cfg,&mut handle),OK);}
+    let inputs:[SteeringInput;9]=std::array::from_fn(|id|SteeringInput{id:id as u32,desired_angle:0.0,rush:1.0,..SteeringInput::default()});
+    unsafe {assert_eq!(snakes_core_set_steering(handle,inputs.as_ptr(),inputs.len()),OK);}
+    let mut info=FrameInfo::default();let mut seen_pellet=false;let mut seen_event=false;let mut seen_corpse=false;
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    for _ in 0..1000 {
+        w.step(&mut boost);
+        unsafe {
+            assert_eq!(snakes_core_step(handle,1),OK);
+            assert_eq!(snakes_core_export_frame(handle,snakes.as_mut_ptr(),snakes.len(),segments.as_mut_ptr(),segments.len(),food.as_mut_ptr(),food.len(),&mut info),OK);
+            let mut sizes=FrameSizes::default();assert_eq!(snakes_core_get_frame_sizes(handle,&mut sizes),OK);
+            assert_eq!(snakes_core_export_extras(handle,std::ptr::null_mut(),0,events.as_mut_ptr(),events.len()),OK);
+            seen_pellet|=food[..sizes.food as usize].iter().any(|f|f.kind==FoodKind::Pellet as u8);
+            seen_event|=sizes.events>0;
+            seen_corpse|=snakes[..sizes.snakes as usize].iter().any(|s|s.flags & flags::CORPSE != 0);
+        }
+    }
+    ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
+    assert!(seen_pellet && seen_event && seen_corpse);
+    unsafe {snakes_core_destroy(handle);}
+}
