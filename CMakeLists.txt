@@ -29,7 +29,7 @@ include(KDECMakeSettings)
 include(KDECompilerSettings NO_POLICY_SCOPE)
 include(FeatureSummary)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core DBus Gui Qml Quick QuickControls2)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core DBus Gui Qml Quick QuickControls2 ShaderTools)
 find_package(KF6 6.0 REQUIRED COMPONENTS Config IdleTime)
 find_package(LayerShellQt REQUIRED)
 

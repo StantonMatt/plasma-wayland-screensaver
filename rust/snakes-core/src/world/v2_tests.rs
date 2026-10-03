@@ -130,3 +130,61 @@ fn resizing_scales_the_entire_wrapped_event_ring() {
         assert_eq!(event.position,Point{x:2.0*(100.0+tick as f64),y:2.0*(200.0+tick as f64)});
     }
 }
+
+#[test]
+fn taper_profile_matches_the_renderer_contract_and_size_tiers() {
+    use crate::shape::taper;
+    for (u,expected) in [(-1.0,0.84),(0.0,0.84),(0.035,0.92),(0.07,1.0),
+        (0.4,1.0),(0.6,1.0),(1.0,0.22),(2.0,0.22)] {
+        assert!((taper(u)-expected).abs()<1e-12,"u={u}");
+    }
+    for len in [1,12,23,24,99,100,249,250,MAX_SEGMENTS] {
+        for j in 0..len {
+            let u=j as f64/len.saturating_sub(1).max(1) as f64;
+            assert_eq!(taper::body_radius(6.0,j as f64,len),6.0*taper(u));
+        }
+    }
+    assert_eq!(taper::span_radius(6.0,0.0,1.0),6.0);
+    assert_eq!(taper::span_radius(6.0,0.8,1.0),6.0*taper(0.8));
+}
+
+#[test]
+fn tapered_tail_contacts_match_the_radius_with_classic_unchanged() {
+    for same in [false,true] {for wrap in [false,true] {
+        for len in [24,100,250] {for j in [10,len-1] {
+            for inside in [false,true] {for rules in [RuleSet::Classic,RuleSet::V2] {
+                let mut w=arena(len);w.config.rules=rules;w.config.self_collisions=true;
+                w.config.deadly_walls=!wrap;
+                let owner=if same {0} else {1};
+                if !same {w.snakes[1]=w.snakes[0];}
+                for id in 0..=owner {for k in 0..len {
+                    let p=Point{x:1000.0+k as f64*8.0,y:1100.0};
+                    w.segments[id*MAX_SEGMENTS+k]=Segment{current:p,previous:p};
+                }}
+                let radius=taper::body_radius(6.0,j as f64,len);
+                let tapered=taper::contact_radius(RuleSet::V2,6.0,radius,same);
+                let full=taper::contact_radius(RuleSet::Classic,6.0,6.0,same);
+                let distance=if inside {tapered-0.01} else if tapered<full {(tapered+full)*0.5} else {full+0.01};
+                let head=Point{x:if wrap {2.0} else {500.0},y:700.0};
+                let body=w.canonical_point(Point{x:head.x-distance,y:head.y});
+                w.segments[0]=Segment{current:head,previous:head};
+                w.segments[owner*MAX_SEGMENTS+j]=Segment{current:body,previous:body};
+                w.mark_collisions();
+                let hit=inside || (rules==RuleSet::Classic && tapered<full);
+                assert_eq!(w.snakes[0].dying,if hit {
+                    if same {DeathReason::SelfHit} else {DeathReason::Body}
+                } else {DeathReason::None},"same={same} wrap={wrap} len={len} j={j} rules={rules:?} inside={inside}");
+            }}
+        }}
+    }}
+}
+
+#[test]
+fn swept_contact_with_the_thin_tail_is_still_lethal() {
+    let mut w=arena(24);w.snakes[1]=w.snakes[0];
+    let tail=Point{x:500.0,y:700.0};
+    w.segments[MAX_SEGMENTS+23]=Segment{current:tail,previous:tail};
+    w.segments[0]=Segment{previous:Point{x:500.0,y:690.0},current:Point{x:500.0,y:710.0}};
+    w.mark_collisions();assert_eq!(w.snakes[0].dying,DeathReason::Body);
+    assert_eq!(w.collisions[0].owner_mask,1<<1);
+}

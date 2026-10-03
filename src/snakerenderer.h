@@ -10,6 +10,7 @@ class SnakeRenderer : public QQuickItem
     Q_OBJECT
     Q_PROPERTY(SnakeSimulation *simulation READ simulation WRITE setSimulation NOTIFY simulationChanged)
     Q_PROPERTY(bool scaleToViewport READ scaleToViewport WRITE setScaleToViewport)
+    Q_PROPERTY(bool shaderTimeFrozen READ shaderTimeFrozen WRITE setShaderTimeFrozen)
     Q_PROPERTY(bool developerMode READ developerMode WRITE setDeveloperMode)
     Q_PROPERTY(qreal drawOffsetX READ drawOffsetX WRITE setDrawOffsetX)
     Q_PROPERTY(qreal drawOffsetY READ drawOffsetY WRITE setDrawOffsetY)
@@ -33,6 +34,8 @@ public:
     void setScaleToViewport(bool enabled);
     bool developerMode() const { return m_developerMode; }
     void setDeveloperMode(bool enabled);
+    bool shaderTimeFrozen() const { return m_shaderTimeFrozen; }
+    void setShaderTimeFrozen(bool frozen);
 Q_SIGNALS:
     void simulationChanged();
 protected:
@@ -66,4 +69,14 @@ private:
     bool m_developerMode = false;
     bool m_denseFoodRendering = false;
     int m_geometryCapacity = 0;
+    // A null-window unit fixture can select shader geometry without creating RHI.
+    bool m_shaderGeometryForTest = false;
+    bool m_shaderTimeFrozen = false;
+    bool m_shaderFailed = false;
+    bool m_shaderInUse = false;
+    // Allows the GPU fallback fixture to probe a deliberately invalid program.
+    bool (*m_shaderSupportCheck)(QQuickWindow *) = nullptr;
+    qreal m_shaderTime = 0;
+    qreal m_frozenShaderTime = 0;
+    QMetaObject::Connection m_shaderErrorConnection;
 };

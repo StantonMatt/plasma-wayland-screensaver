@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "snakerenderer.h"
+#include "snakematerial.h"
+#include <QQuickWindow>
+#include <QSGRendererInterface>
 
 #include <QSGGeometry>
 #include <QSGGeometryNode>
@@ -28,6 +31,7 @@ qreal clamped(qreal value, qreal minimum, qreal maximum)
 struct GeometryNode : QSGGeometryNode {
     std::unique_ptr<snakes_core_renderer, decltype(&snakes_core_render_destroy)> renderer{
         snakes_core_render_create(), snakes_core_render_destroy};
+    bool shader = false;
     quint64 epoch = 0;
     std::optional<snakes_core_frame_info> historyThrough;
 };
@@ -37,6 +41,14 @@ SnakeRenderer::SnakeRenderer(QQuickItem *parent)
     : QQuickItem(parent)
 {
     setFlag(ItemHasContents, true);
+    const auto observeWindow = [this](QQuickWindow *window) {
+        disconnect(m_shaderErrorConnection);
+        m_shaderFailed = false;
+        if (window) m_shaderErrorConnection = connect(window, &QQuickWindow::sceneGraphError, this,
+            [this](QQuickWindow::SceneGraphError, const QString &) { m_shaderFailed = true; update(); });
+    };
+    connect(this, &QQuickItem::windowChanged, this, observeWindow);
+    observeWindow(window());
 }
 
 void SnakeRenderer::setSimulation(SnakeSimulation *simulation)
@@ -98,6 +110,7 @@ void SnakeRenderer::loadFrame(const SnakeFrame &frame, const QVector<QColor> &pa
     }
     m_simulationTime = frame.info.simulation_time;
     m_interpolation = clamped(interpolation, 0.0, 1.0);
+    m_shaderTime = m_simulationTime + m_interpolation * SnakeSimulation::physicsStepSeconds();
     m_worldWidth = std::max(1.0, frame.info.world_width);
     m_worldHeight = std::max(1.0, frame.info.world_height);
     m_worldToViewX = m_simulation ? m_simulation->viewSize().width() / m_worldWidth : 1.0;
@@ -129,12 +142,14 @@ void SnakeRenderer::presentAt(qint64 presentationNanoseconds)
     m_retainedFrame = m_simulation->retainFrameAt(presentationNanoseconds, alpha);
     loadFrame(*m_retainedFrame, m_simulation->palette(), alpha, m_simulation->config().deadly_walls);
     m_simulationTime += alpha * SnakeSimulation::physicsStepSeconds();
+    m_shaderTime = m_simulationTime;
     update();
 }
 
 void SnakeRenderer::presentFrame(qreal simulationTime, qreal interpolation)
 {
     m_simulationTime = simulationTime;
+    m_shaderTime = simulationTime;
     m_interpolation = clamped(interpolation, 0.0, 1.0);
     update();
 }
@@ -168,6 +183,14 @@ void SnakeRenderer::setDeveloperMode(bool enabled)
     update();
 }
 
+void SnakeRenderer::setShaderTimeFrozen(bool frozen)
+{
+    if (m_shaderTimeFrozen == frozen) return;
+    if (frozen) m_frozenShaderTime = m_shaderTime;
+    m_shaderTimeFrozen = frozen;
+    update();
+}
+
 QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
                                         UpdatePaintNodeData *updatePaintNodeData)
 {
@@ -175,18 +198,39 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
     // Each scene-graph node owns Rust scratch/history for this window. Immutable
     // frame leases keep GUI snapshots alive until scene-graph sync completes.
     auto *node = static_cast<GeometryNode *>(oldNode);
+    // Resource decoding and driver compilation occur only on node creation.
+    // Keep the decision with the node: no capability checks or allocations per
+    // presentation, and recreated scene graphs probe the current device again.
+    bool shader = node ? node->shader && !m_shaderFailed : false;
+    if (!node && !m_shaderFailed) {
+        shader = m_shaderGeometryForTest ? SnakeMaterial::shadersAvailable()
+            : (m_shaderSupportCheck ? m_shaderSupportCheck(window()) : SnakeMaterial::supportsWindow(window()));
+        if (window() && QSGRendererInterface::isApiRhiBased(window()->rendererInterface()->graphicsApi())
+            && !shader) m_shaderFailed = true;
+    }
+    m_shaderInUse = shader;
+    if (node && node->shader != shader) { delete node; node = nullptr; }
     if (!node) {
         node = new GeometryNode;
-        auto *geometry = new QSGGeometry(QSGGeometry::defaultAttributes_ColoredPoint2D(), 0);
+        node->shader = shader;
+        auto *geometry = new QSGGeometry(shader ? SnakeMaterial::attributes() : QSGGeometry::defaultAttributes_ColoredPoint2D(), 0);
         geometry->setDrawingMode(QSGGeometry::DrawTriangles);
         geometry->setVertexDataPattern(QSGGeometry::DynamicPattern);
         node->setGeometry(geometry);
         node->setFlag(QSGNode::OwnsGeometry);
-        auto *material = new QSGVertexColorMaterial;
+        QSGMaterial *material = shader ? static_cast<QSGMaterial *>(new SnakeMaterial) : new QSGVertexColorMaterial;
         material->setFlag(QSGMaterial::Blending, true);
         node->setMaterial(material);
         node->setFlag(QSGNode::OwnsMaterial);
         m_geometryCapacity = 0;
+    }
+    if (shader) {
+        auto *material = static_cast<SnakeMaterial *>(node->material());
+        material->time = float(m_shaderTimeFrozen ? m_frozenShaderTime : m_shaderTime);
+        material->animationTime = float(m_shaderTime);
+        material->motionScale = m_shaderTimeFrozen ? 0.6f : 1.0f;
+        snakes_core_render_set_reduced_motion(node->renderer.get(), uint32_t(m_shaderTimeFrozen));
+        node->markDirty(QSGNode::DirtyMaterial);
     }
     if (node->epoch != m_renderEpoch) {
         snakes_core_render_reset(node->renderer.get());
@@ -204,7 +248,9 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
     // history without tessellation: zero scale exits after consuming history.
     // Kill flashes, corpse fade starts and boost trail samples keep their
     // original physics timestamps. The final frame is consumed by build below.
-    auto historyParams = params;
+    auto shaderParams = params;
+    shaderParams.presentation_time = m_shaderTime;
+    auto historyParams = shader ? shaderParams : params;
     historyParams.scale_x = historyParams.scale_y = 0;
     // Keep the compact ring after sync so a recreated scene graph can restore
     // effect ages. Existing nodes scan only new boundaries (usually none/one).
@@ -221,7 +267,13 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
                                              % m_pendingHistory.size()];
         if (frame.info.tick < info.tick) {
             snakes_core_render_output ignored{};
-            snakes_core_render_build(node->renderer.get(), &frame.info,
+            // History calls have no output: both formats accept initialized
+            // compact records and update their own effect state only.
+            if (shader) snakes_core_render_build_shader(node->renderer.get(), &frame.info,
+                frame.snakes.data(), frame.snakeCount, frame.tails.data(), frame.snakeCount,
+                historyFood.data(), frame.foodCount, frame.events.data(), frame.eventCount, nullptr, 0,
+                &historyParams, nullptr, 0, &ignored);
+            else snakes_core_render_build(node->renderer.get(), &frame.info,
                 frame.snakes.data(), frame.snakeCount, frame.tails.data(), frame.snakeCount,
                 historyFood.data(), frame.foodCount, frame.events.data(), frame.eventCount, nullptr, 0,
                 &historyParams, nullptr, 0, &ignored);
@@ -230,6 +282,13 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
     auto *geometry = node->geometry();
     snakes_core_render_output result{};
     const auto build = [&] {
+        if (shader) return snakes_core_render_build_shader(node->renderer.get(), &info,
+            m_frame ? m_frame->snakes.data() : nullptr, m_frame ? m_frame->snakes.size() : 0,
+            m_frame ? m_frame->segments.data() : nullptr, m_frame ? m_frame->segments.size() : 0,
+            m_frame ? m_frame->food.data() : nullptr, m_frame ? m_frame->food.size() : 0,
+            m_frame ? m_frame->events.data() : nullptr, m_frame ? m_frame->events.size() : 0,
+            m_renderPalette.data(), m_renderPalette.size(), &shaderParams,
+            static_cast<snakes_core_shader_vertex *>(geometry->vertexData()), m_geometryCapacity, &result);
         return snakes_core_render_build(node->renderer.get(), &info,
             m_frame ? m_frame->snakes.data() : nullptr, m_frame ? m_frame->snakes.size() : 0,
             m_frame ? m_frame->segments.data() : nullptr, m_frame ? m_frame->segments.size() : 0,
@@ -251,7 +310,7 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
         // Qt leaves malloc-backed vertex storage uninitialized. Rust borrows
         // every slot as a Vertex, so initialize the entire capacity once per
         // allocation, including the unused tail. No steady-state clearing.
-        std::memset(geometry->vertexData(), 0, size_t(m_geometryCapacity) * sizeof(Vertex));
+        std::memset(geometry->vertexData(), 0, size_t(m_geometryCapacity) * geometry->sizeOfVertex());
         status = build();
     }
     if (status == SNAKES_CORE_OK || status == SNAKES_CORE_BUFFER_TOO_SMALL) node->historyThrough = info;
@@ -264,7 +323,7 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
     // count changes; current Qt writes directly into the retained GPU buffer.
     if (m_geometryCapacity != count) {
         geometry->allocate(count);
-        if (count) std::memset(geometry->vertexData(), 0, size_t(count) * sizeof(Vertex));
+        if (count) std::memset(geometry->vertexData(), 0, size_t(count) * geometry->sizeOfVertex());
         m_geometryCapacity = count;
         if (count) build();
     }

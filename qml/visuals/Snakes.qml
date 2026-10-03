@@ -14,10 +14,12 @@ Item {
     property double animationEpochMs: 0
 
     SnakeRenderer {
+        id: renderer
         objectName: "snakeNativeRenderer"
         anchors.fill: parent
         simulation: root.context ? root.context.snakeSimulation : null
         scaleToViewport: root.context && root.context.monitorBehavior === "synchronized"
         developerMode: root.context && root.context.developerMode === true
+        shaderTimeFrozen: root.reducedMotion
     }
 }

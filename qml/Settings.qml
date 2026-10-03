@@ -446,7 +446,7 @@ ApplicationWindow {
                     Label { text: qsTr("Motion") }
                     CheckBox {
                         id: reducedMotion
-                        text: qsTr("Reduced motion (static visual)")
+                        text: qsTr("Reduced motion")
                         checked: window.screensaverConfig.reducedMotion
                     }
 
@@ -473,7 +473,7 @@ ApplicationWindow {
                             { text: qsTr("240 fps"), value: 240 }
                         ]
                         Component.onCompleted: currentIndex = indexOfValue(window.screensaverConfig.frameRate)
-                        enabled: !reducedMotion.checked
+                        enabled: !reducedMotion.checked || visual.currentValue === "snakes"
                     }
                 }
             }

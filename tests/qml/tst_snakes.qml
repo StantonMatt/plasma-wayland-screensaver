@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import QtTest
+import Screensaver.Native 1.0
 import "../../qml/visuals"
 
 TestCase {
@@ -36,6 +37,34 @@ TestCase {
         const image = grabImage(visual)
         compare(image.width, visual.width)
         compare(image.height, visual.height)
+    }
+    function test_nativeBindingsTargetDeclaredProperties() {
+        // Direct native assignments are checked by the QML compiler. Also
+        // check dynamic Binding targets even when their `when` is false.
+        for (let i = 0; i < visual.data.length; ++i) {
+            const binding = visual.data[i]
+            if (binding instanceof Binding)
+                verify(snakeNativeContract.hasNativeProperty(binding.target, binding.property),
+                       "Missing native Q_PROPERTY: " + binding.property)
+        }
+    }
+    function test_reducedMotionFreezesRealRenderer() {
+        const renderer = findChild(visual, "snakeNativeRenderer")
+        compare(renderer.shaderTimeFrozen, false)
+        visual.reducedMotion = true
+        compare(renderer.shaderTimeFrozen, true)
+        visual.reducedMotion = false
+        compare(renderer.shaderTimeFrozen, false)
+    }
+    function test_missingNativeBindingPropertyFailsToLoad() {
+        let rejected = false
+        try {
+            Qt.createQmlObject('import QtQuick; import Screensaver.Native 1.0; '
+                               + 'SnakeRenderer { missingMotionProperty: true }', visual)
+        } catch (error) {
+            rejected = String(error).indexOf("missingMotionProperty") !== -1
+        }
+        verify(rejected, "Unknown native property bindings must fail component creation")
     }
     function test_nativePixels() {
         if (visual.GraphicsInfo.api === GraphicsInfo.Software)

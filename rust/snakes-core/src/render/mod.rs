@@ -2,6 +2,8 @@
 //! Per-window, allocation-free classic triangle tessellation. All arithmetic
 //! preceding the final vertex conversion stays f64, as in the Qt renderer.
 mod geometry;
+mod shader;
+pub use shader::ShaderVertex;
 use geometry::{P, Sink, delta, wrap, copies, visible, prepare};
 use crate::ffi::{SnakeRecord, SegmentRecord, FoodRecord, EventRecord, FrameInfo};
 use crate::{flags, MAX_SNAKES, MAX_SEGMENTS, MAX_EVENTS};
@@ -151,6 +153,20 @@ pub struct Renderer {
     flash_head: usize,
     last_frame: Option<(u64, u64)>,
     event_tick: Option<u64>,
+    tapers: Vec<f64>,
+    brightness: Vec<u8>,
+    taper_lengths: [usize;MAX_SNAKES],
+    pub reduced_motion: bool,
+    effects: [shader::Effect;8],
+    effect_head: usize,
+    waves: [[shader::Wave;2];MAX_SNAKES],
+    shader_generations: [u32;MAX_SNAKES],
+    shader_flags: [u32;MAX_SNAKES],
+    shader_limits: Vec<f64>,
+    shader_taper_bytes: Vec<u8>,
+    shader_taper_lengths: [usize;MAX_SNAKES],
+    shader_angles: [f64;MAX_SNAKES],
+    shader_previous_angles: [f64;MAX_SNAKES],
 }
 impl Default for Renderer {
     fn default() -> Self {
@@ -178,7 +194,21 @@ impl Renderer {
             flashes: [Flash::default();MAX_EVENTS],
             flash_head: 0,
             last_frame: None,
-            event_tick: None
+            event_tick: None,
+            tapers: vec![0.0;MAX_SNAKES*MAX_SEGMENTS],
+            brightness: vec![0;MAX_SEGMENTS],
+            taper_lengths: [0;MAX_SNAKES],
+            reduced_motion: false,
+            effects: [shader::Effect::default();8],
+            effect_head: 0,
+            waves: [[shader::Wave::default();2];MAX_SNAKES],
+            shader_generations: [0;MAX_SNAKES],
+            shader_flags: [0;MAX_SNAKES],
+            shader_limits: vec![0.0;MAX_SEGMENTS],
+            shader_taper_bytes: vec![0;MAX_SNAKES*MAX_SEGMENTS],
+            shader_taper_lengths: [0;MAX_SNAKES],
+            shader_angles: [0.0;MAX_SNAKES],
+            shader_previous_angles: [0.0;MAX_SNAKES]
         }
     }
     pub fn reset(&mut self) {
@@ -189,6 +219,11 @@ impl Renderer {
         self.last_frame = None;
         self.event_tick = None;
         self.dense = false;
+        self.effects.fill(shader::Effect::default());
+        self.effect_head=0;
+        self.waves.fill([shader::Wave::default();2]);
+        self.shader_generations.fill(0);
+        self.shader_flags.fill(0);
     }
     fn history(&mut self, info: &FrameInfo, snakes: &[SnakeRecord], segments: &[SegmentRecord], events: &[EventRecord]) {
         if self.last_frame.is_some_and(|(tick, generation)|info.tick<tick || generation!=info.geometry_generation) {

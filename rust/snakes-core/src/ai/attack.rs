@@ -116,30 +116,37 @@ impl AiController {
             if cfg.self_collisions {
                 let travel=victim_distance[j];
                 let neck=(10.0-travel/(victim.radius*1.18)).max(1.0) as usize;
-                let own_reach=victim.radius*1.48+1.0;
                 let own_hit=victim.segments.iter().enumerate().skip(neck).any(|(k,b)| {
                     if travel>(victim.segments.len()-k) as f64*victim.radius*1.18 {return false;}
                     let d=w.displacement(q,b.current);
+                    let reserve=victim.radius*1.48+1.0+speed*STEP_SECONDS*2.0;
+                    if d.x.abs()>=reserve || d.y.abs()>=reserve {return false;}
+                    let body=if cfg.rules==crate::RuleSet::V2 {
+                        crate::world::taper::span_radius(victim.radius,
+                            k as f64/victim.segments.len().saturating_sub(1).max(1) as f64,
+                            (k as f64+travel/(victim.radius*1.18))/victim.segments.len().saturating_sub(1).max(1) as f64)
+                    } else {victim.radius};
+                    let own_reach=crate::world::taper::contact_radius(cfg.rules,victim.radius,body,true)+1.0;
                     d.x.abs()<own_reach+speed*STEP_SECONDS*2.0 && d.y.abs()<own_reach+speed*STEP_SECONDS*2.0
                         && w.segment_distance_squared(b.current,path[j-1],q)<own_reach*own_reach
                 });
                 if own_hit {break;}
             }
             if cfg.self_collisions && Self::deposited_contact(w,path[j-1],q,&path,&victim_distance,j,
-                10.0*victim.radius*1.18,victim.segments.len().saturating_sub(1) as f64*victim.radius*1.18,victim.radius*1.48) {break;}
+                10.0*victim.radius*1.18,victim.segments.len().saturating_sub(1) as f64*victim.radius*1.18,victim.radius*1.48,(victim.radius,victim.radius,true)) {break;}
             let head_contact=Self::head_contact(w,&path,&c.path,j-1,j,(s.radius+victim.radius)*0.82);
             if head_contact && c.body_len>=victim.segments.len()+4 {return true;}
             // Distance traveled governs neck exemption and actual barrier
             // persistence; never use the slow safety tail-release bound.
             if Self::deposited_contact(w,path[j-1],q,&c.path[..73],attacker_distance,j,
-                s.radius*1.18,c.body_len.saturating_sub(1) as f64*s.radius*1.18,reach) {return true;}
+                s.radius*1.18,c.body_len.saturating_sub(1) as f64*s.radius*1.18,reach,(victim.radius,s.radius,false)) {return true;}
         }
         false
     }
 
     /// Exact contiguous one-tick edges. Clip both ends to the still-live body
     /// by traveled distance, so neither neck nor released tail is a barrier.
-    fn deposited_contact(w:&World,a:Point,b:Point,path:&[Point],distance:&[f64;73],j:usize,neck:f64,length:f64,reach:f64)->bool {
+    pub(super) fn deposited_contact(w:&World,a:Point,b:Point,path:&[Point],distance:&[f64;73],j:usize,neck:f64,length:f64,reach:f64,radii:(f64,f64,bool))->bool {
         if length<=neck {return false;}
         let oldest=distance[j]-length;let newest=distance[j]-neck;
         let ab=w.displacement(a,b);
@@ -150,6 +157,13 @@ impl AiController {
             let ap=w.displacement(a,path[k-1]);let bp=Point{x:ap.x+edge.x,y:ap.y+edge.y};
             if ap.x.min(bp.x)>ab.x.max(0.0)+reach || ap.x.max(bp.x)<ab.x.min(0.0)-reach
                 || ap.y.min(bp.y)>ab.y.max(0.0)+reach || ap.y.max(bp.y)<ab.y.min(0.0)-reach {continue;}
+            let reach=if w.config().rules==crate::RuleSet::V2 {
+                let (head,body,same)=radii;
+                let radius=crate::world::taper::span_radius(body,
+                    ((distance[j]-distance[k])/length).clamp(0.0,1.0),
+                    ((distance[j]-distance[k-1])/length).clamp(0.0,1.0));
+                crate::world::taper::contact_radius(w.config().rules,head,radius,same)
+            } else {reach};
             let span=distance[k]-distance[k-1];
             if span<=1e-12 {continue;}
             let lo=((oldest-distance[k-1])/span).clamp(0.0,1.0);

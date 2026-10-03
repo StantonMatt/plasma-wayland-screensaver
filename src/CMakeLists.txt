@@ -1,3 +1,27 @@
+# Share the material and baked resource pack with renderer integration tests.
+# RHI's public headers have limited compatibility and Debian ships them in
+# qt6-base-private-dev. Only these headers are needed; link the public QtGui.
+get_target_property(snake_qt_gui_includes Qt6::Gui INTERFACE_INCLUDE_DIRECTORIES)
+find_path(SNAKES_QT_RHI_INCLUDE_DIR rhi/qrhi.h
+    HINTS ${snake_qt_gui_includes}
+    PATH_SUFFIXES "${Qt6Gui_VERSION}/QtGui")
+if(NOT SNAKES_QT_RHI_INCLUDE_DIR)
+    message(FATAL_ERROR "QShader/QRhi headers are required; install qt6-base-private-dev matching QtGui")
+endif()
+add_library(SnakeMaterial STATIC snakematerial.cpp snakematerial.h)
+set_target_properties(SnakeMaterial PROPERTIES AUTOMOC OFF)
+target_include_directories(SnakeMaterial SYSTEM PUBLIC "${SNAKES_QT_RHI_INCLUDE_DIR}")
+target_link_libraries(SnakeMaterial PUBLIC Qt6::Quick SnakesCore::snakes_core)
+qt_add_shaders(SnakeMaterial snakes_shaders
+    BATCHABLE
+    # Cover Qt RHI's ES 3.x and desktop/core-profile version selection, while
+    # retaining legacy targets. Unsupported legacy drivers fail the probe.
+    GLSL "100es,300es,310es,320es,120,130,140,150,330"
+    HLSL "50"
+    MSL "12"
+    PREFIX "/snakes"
+    FILES shaders/snake.vert shaders/snake.frag)
+
 set(screensaver_sources
     main.cpp
     animationstate.cpp
@@ -27,6 +51,7 @@ set(screensaver_sources
 
 add_executable(plasma-visual-screensaver ${screensaver_sources})
 target_link_libraries(plasma-visual-screensaver PRIVATE
+    SnakeMaterial
     SnakesCore::snakes_core
     Qt6::Core
     Qt6::DBus
@@ -43,3 +68,14 @@ target_compile_definitions(plasma-visual-screensaver PRIVATE
 )
 
 install(TARGETS plasma-visual-screensaver ${KDE_INSTALL_TARGETS_DEFAULT_ARGS})
+
+# Tests declare their renderer consumers after this directory. Attach the same
+# baked material once all targets exist, without maintaining a second resource pack.
+function(link_snake_material_consumers)
+    foreach(consumer test-snakerenderer test-snakesimulation test-snakesqml test-overlaysnakes)
+        if(TARGET ${consumer})
+            target_link_libraries(${consumer} PRIVATE SnakeMaterial)
+        endif()
+    endforeach()
+endfunction()
+cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL link_snake_material_consumers)

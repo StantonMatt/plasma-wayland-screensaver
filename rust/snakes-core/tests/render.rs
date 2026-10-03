@@ -824,3 +824,536 @@ fn history_only_replay_preserves_corpses_flashes_trails_and_lod_without_allocati
     }
     assert_eq!(COUNT.with(|count| count.replace(None).unwrap()), 0);
 }
+
+#[test]
+fn shader_layout_and_per_element_budgets() {
+    assert_eq!(std::mem::size_of::<ShaderRenderVertex>(),24);
+    assert_eq!(std::mem::offset_of!(ShaderRenderVertex,color),16);
+    assert_eq!(std::mem::offset_of!(ShaderRenderVertex,params),20);
+    let mut out=vec![ShaderRenderVertex::default();200000];
+    for length in [2,12,24,99,100,249,250,400] {
+        let s=SnakeRecord{segment_count:length,..snake()};
+        let b:Vec<_>=(0..length).map(|i|SegmentRecord{x:2000.0-i as f32*4.5,y:200.0,previous_x:2000.0-i as f32*4.5,previous_y:200.0}).collect();
+        let result=RenderHandle::new().build_shader(&info(),&[s],&b,&[],&[],&palette(),&params(),&mut out);
+        assert_eq!(result.vertex_count,6*(length as usize-1)+6);
+        let body=out[..result.vertex_count].iter().filter(|v|v.params[0]==0).count();
+        let head=out[..result.vertex_count].iter().filter(|v|v.params[0]==1).count();
+        assert_eq!(body,6*(length as usize-1));assert_eq!(head,6);
+        assert_eq!(out[0].along,(length-1) as f32);
+        assert_eq!(out[body-1].along,0.0);
+        // Exact shared neck and tail envelopes; the shader points the last edge.
+        assert!(((out[0].y-200.0).abs()-8.0*0.84*2.5).abs()<0.0001);
+        assert!(((out[body-1].y-out[body-4].y).abs()-8.0*0.22*2.5*2.0).abs()<0.0001);
+        assert_eq!((out[body-1].y+out[body-4].y)*0.5,200.0);
+    }
+    for kind in 0..4 {
+        let f=FoodRecord{x:200.0,y:200.0,size:4.0,kind,life_fraction:255,..Default::default()};
+        let n=RenderHandle::new().build_shader(&info(),&[],&[],&[f],&[],&palette(),&params(),&mut out).vertex_count;
+        assert_eq!(n,6);
+    }
+}
+
+fn shader_fingerprint(vertices:&[ShaderRenderVertex])->u64 {
+    let mut hash=0xcbf29ce484222325u64;
+    for v in vertices {
+        for b in v.x.to_bits().to_le_bytes().into_iter().chain(v.y.to_bits().to_le_bytes())
+            .chain(v.across.to_bits().to_le_bytes()).chain(v.along.to_bits().to_le_bytes())
+            .chain([v.color.red,v.color.green,v.color.blue,v.color.alpha]).chain(v.params) {
+            hash=(hash^b as u64).wrapping_mul(0x100000001b3);
+        }
+    }
+    hash
+}
+#[test]
+fn shader_geometry_fingerprints() {
+    let (s,b,f)=mature_fixture();let mut out=vec![ShaderRenderVertex::default();200000];
+    for (walls,alpha,expected) in [(true,0.5,0x0a2b4e7bb3e4aa0au64),(false,0.9,0xd185295f64764c96u64)] {
+        let p=RenderParams{deadly_walls:walls as u32,interpolation:alpha,..params()};
+        let n=RenderHandle::new().build_shader(&info(),&s,&b,&f,&[],&palette(),&p,&mut out).vertex_count;
+        let actual=shader_fingerprint(&out[..n]);
+        assert_eq!(actual,expected,"walls={walls}, count={n}, hash={actual:#x}");
+    }
+}
+#[test]
+fn shader_render_growth_effects_and_ffi_are_allocation_free() {
+    let mut r=RenderHandle::new();let mut i=info();let pal=palette();let mut p=params();
+    let mut out=vec![ShaderRenderVertex::default();200000];
+    let (_,b,f)=mature_fixture();let mut s=snake();
+    COUNT.with(|c|c.set(Some(0)));
+    for t in 0..100 {
+        i.tick+=1;i.simulation_time+=1.0/30.0;p.presentation_time=i.simulation_time;
+        p.developer_mode=1;p.deadly_walls=(t%2) as u32;
+        s.segment_count=if t%2==0 { 12 } else { 120 };s.flags=if t%20<10 { flags::BOOSTING|flags::LEADER } else { flags::CORPSE };
+        let e=EventRecord{tick:i.tick,x:200.0,y:200.0,other_snake_id:0,..Default::default()};
+        let result=r.build_shader(&i,&[s],&b,&f,&[e],&pal,&p,&mut out);
+        assert!(result.vertex_count<out.len());
+        unsafe {
+            let mut result=RenderOutput::default();
+            assert_eq!(snakes_core_render_build_shader(&mut r,&i,&s,1,b.as_ptr(),b.len(),f.as_ptr(),f.len(),&e,1,pal.as_ptr(),pal.len(),&p,out.as_mut_ptr(),out.len(),&mut result),OK);
+        }
+        if t%30==0 { r.reset(); }
+    }
+    let allocations=COUNT.with(|c|c.replace(None).unwrap());assert_eq!(allocations,0);
+}
+#[test]
+fn shader_effect_quad_cap_and_retry_are_stable() {
+    let mut r=RenderHandle::new();let mut i=info();let p=params();let pal=palette();
+    let events:Vec<_>=(0..32).map(|j|EventRecord{tick:i.tick,x:200.0+j as f32,y:200.0,..Default::default()}).collect();
+    let mut out=[ShaderRenderVertex::default();1024];
+    let n=r.build_shader(&i,&[],&[],&[],&events,&pal,&p,&mut []).vertex_count;
+    assert_eq!(n,8*6);
+    assert_eq!(r.build_shader(&i,&[],&[],&[],&events,&pal,&p,&mut out).vertex_count,n);
+    i.tick+=1;i.simulation_time+=1.0;
+    let expired=RenderParams{presentation_time:i.simulation_time,..p};
+    assert_eq!(r.build_shader(&i,&[],&[],&[],&[],&pal,&expired,&mut out).vertex_count,0);
+}
+
+#[test]
+fn shader_trail_budget_and_generation_reset() {
+    let mut r=RenderHandle::new();let mut i=info();let mut p=params();let mut b=body();
+    let mut s=SnakeRecord{flags:flags::BOOSTING,..snake()};
+    let mut out=[ShaderRenderVertex::default();4096];
+    for tick in 0..20 {
+        i.tick+=1;i.simulation_time+=1.0/30.0;p.presentation_time=i.simulation_time;
+        for segment in &mut b { segment.previous_x=segment.x;segment.x+=2.0; }
+        let count=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+        let trail=out[..count].iter().filter(|v|v.params[0]==10).count();
+        assert!(trail<=84);if tick>15 { assert_eq!(trail,84); }
+    }
+    s.generation+=1;i.tick+=1;
+    let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert!(!out[..n].iter().any(|v|v.params[0]==10));
+}
+#[test]
+fn shader_history_tail_samples_do_not_place_boost_ring_at_tail() {
+    let mut r=RenderHandle::new();let mut i=info();let mut p=params();
+    let s=SnakeRecord{flags:flags::BOOSTING,..snake()};let b=body();
+    let compact=SnakeRecord{segment_count:1,..s};
+    let history=RenderParams{scale_x:0.0,scale_y:0.0,..p};
+    r.build_shader(&i,&[compact],&b[2..],&[],&[],&palette(),&history,&mut []);
+    i.tick+=1;i.simulation_time+=1.0/30.0;p.presentation_time=i.simulation_time;
+    let mut out=[ShaderRenderVertex::default();4096];
+    let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    let ring:Vec<_>=out[..n].iter().filter(|v|v.params[0]==9).collect();assert_eq!(ring.len(),6);
+    let center_x=(ring[0].x+ring[5].x)*0.5;assert_eq!(center_x,b[0].x);
+}
+
+#[test]
+fn reduced_motion_shortens_discrete_effects_without_changing_classic() {
+    let mut normal=RenderHandle::new();let mut reduced=RenderHandle::new();
+    unsafe { assert_eq!(snakes_core_render_set_reduced_motion(&mut reduced,1),OK); }
+    let i=info();let p=params();let pal=palette();let b=body();
+    let s=SnakeRecord{flags:flags::CORPSE,alive:0,..snake()};
+    let event=EventRecord{tick:i.tick,x:200.0,y:200.0,..Default::default()};
+    let mut a=[ShaderRenderVertex::default();4096];let mut c=a;
+    normal.build_shader(&i,&[s],&b,&[],&[event],&pal,&p,&mut a);
+    reduced.build_shader(&i,&[s],&b,&[],&[event],&pal,&p,&mut c);
+    let aged=RenderParams{presentation_time:i.simulation_time+0.36,..p};
+    assert!(normal.build_shader(&i,&[s],&b,&[],&[],&pal,&aged,&mut a).vertex_count>0);
+    assert_eq!(reduced.build_shader(&i,&[s],&b,&[],&[],&pal,&aged,&mut c).vertex_count,0);
+    let mut x=[RenderVertex::default();4096];let mut y=x;
+    normal.reset();reduced.reset();
+    let n=normal.build(&i,&[s],&b,&[],&[event],&pal,&aged,&mut x).vertex_count;
+    let m=reduced.build(&i,&[s],&b,&[],&[event],&pal,&aged,&mut y).vertex_count;
+    assert_eq!(n,m);assert_eq!(x[..n],y[..m]);
+    // Kill eye flares use the same shortened death-effect duration.
+    normal.reset();reduced.reset();
+    let alive=snake();let kill=EventRecord{other_snake_id:0,..event};
+    normal.build_shader(&i,&[alive],&b,&[],&[kill],&pal,&p,&mut a);
+    reduced.build_shader(&i,&[alive],&b,&[],&[kill],&pal,&p,&mut c);
+    let n=normal.build_shader(&i,&[alive],&b,&[],&[],&pal,&aged,&mut a).vertex_count;
+    let m=reduced.build_shader(&i,&[alive],&b,&[],&[],&pal,&aged,&mut c).vertex_count;
+    assert!(a[..n].iter().any(|v|v.params[0]==1 && v.params[1]&128!=0));
+    assert!(!c[..m].iter().any(|v|v.params[0]==1 && v.params[1]&128!=0));
+}
+
+#[test]
+fn shader_taper_payload_is_physical_and_shared_across_edges() {
+    let length=16;
+    let s=SnakeRecord{segment_count:length,..snake()};
+    let b:Vec<_>=(0..length).map(|j|SegmentRecord{x:400.0-j as f32*9.44,y:200.0,previous_x:400.0-j as f32*9.44,previous_y:200.0}).collect();
+    let mut out=[ShaderRenderVertex::default();1024];
+    let n=RenderHandle::new().build_shader(&info(),&[s],&b,&[],&[],&palette(),&params(),&mut out).vertex_count;
+    let body=&out[..n-6];
+    for vertex in body {
+        // Across is physical distance, not ±1: no diagonal-dependent UV kink.
+        assert!(((vertex.y-200.0).abs()/8.0-vertex.across.abs()*2.5).abs()<1.0e-5);
+        assert!((vertex.across.abs()-vertex.color.alpha as f32/255.0).abs()<=0.5/255.0+1.0e-6);
+    }
+    for pair in body.chunks_exact(6).collect::<Vec<_>>().windows(2) {
+        assert_eq!((pair[0][2].x,pair[0][2].y,pair[0][2].across,pair[0][2].color),
+                   (pair[1][0].x,pair[1][0].y,pair[1][0].across,pair[1][0].color));
+    }
+    assert_eq!(body.last().unwrap().along,0.0);
+    let head=&out[n-6..n];
+    assert_eq!(head[0].color.alpha,body[2].color.alpha);
+}
+
+#[test]
+fn shader_boost_quad_expands_without_stretching_head_units() {
+    let b=body();let p=params();let i=info();let mut out=[ShaderRenderVertex::default();1024];
+    for flags in [0,flags::BOOSTING] {
+        let s=SnakeRecord{flags,..snake()};
+        let n=RenderHandle::new().build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+        let head:Vec<_>=out[..n].iter().filter(|v|v.params[0]==1).collect();
+        assert_eq!(head.len(),6);
+        let hu=8.0*1.24;
+        assert!(((head[1].x-head[0].x)/(head[1].across-head[0].across)-hu).abs()<1.0e-4);
+        assert!(((head[5].y-head[1].y)/(head[5].along-head[1].along)-hu).abs()<1.0e-4);
+        assert_eq!(head[0].along,if flags!=0 {-2.5} else {-1.75});
+        assert_eq!(head[0].across,if flags!=0 {-2.3} else {-1.0});
+    }
+}
+
+#[test]
+fn shader_head_angle_interpolates_shortest_arc_and_retries_stably() {
+    let mut r=RenderHandle::new();let mut i=info();let mut s=SnakeRecord{angle:3.05,..snake()};
+    let b=body();let mut out=[ShaderRenderVertex::default();1024];let mut p=params();
+    r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out);
+    i.tick+=1;i.simulation_time+=1.0/30.0;s.angle=-3.05;
+    for alpha in [0.0,0.25,0.5,0.75,1.0] {
+        p.interpolation=alpha;
+        let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+        let head=&out[n-6..n];
+        let actual=((head[1].y-head[0].y) as f64).atan2((head[1].x-head[0].x) as f64);
+        let expected=3.05+(std::f64::consts::TAU-6.10)*alpha;
+        let error=(actual-expected).sin().atan2((actual-expected).cos());
+        assert!(error.abs()<1.0e-5,"alpha={alpha}, actual={actual}");
+        let snapshot=out[..n].to_vec();
+        assert_eq!(r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count,n);
+        assert_eq!(snapshot,out[..n]);
+    }
+    s.flags=flags::FROZEN;p.interpolation=0.0;
+    let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    let head=&out[n-6..n];
+    let actual=((head[1].y-head[0].y) as f64).atan2((head[1].x-head[0].x) as f64);
+    assert!((actual-s.angle).abs()<1.0e-5);
+    s.flags=0;s.generation+=1;s.angle=0.7;
+    let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    // A new generation at the same tick is not a physics update; the host
+    // normally sends it on the next tick, as respawns do.
+    i.tick+=1;
+    let n2=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert_eq!(n,n2);
+    let head=&out[n2-6..n2];
+    let actual=((head[1].y-head[0].y) as f64).atan2((head[1].x-head[0].x) as f64);
+    assert!((actual-0.7).abs()<1.0e-5);
+}
+
+#[test]
+fn shader_crown_white_rule_uses_entire_palette_identity() {
+    let palettes:[([u32;6],bool);5]=[
+        ([0xfff1a8,0xffc857,0xff7b42,0xef3e36,0x9c1c28,0xffd6a5],true),
+        ([0xffffff,0xd9e1e8,0xaeb8c2,0x7f8b96,0xedf2f4,0xbac4ce],true),
+        ([0xff477e,0xffbe0b,0x42e2b8,0x3a86ff,0xb967ff,0xfb5607],false),
+        ([0xffc8dd,0xbde0fe,0xcaffbf,0xffd6a5,0xe7c6ff,0xa2d2ff],false),
+        ([0xd9fbff,0x3dd6e8,0x3a86ff,0x7358d6,0x2aa889,0x9bf6ff],false),
+    ];
+    let mut out=[ShaderRenderVertex::default();1024];
+    for (rgb,white) in palettes {
+        let pal:Vec<_>=rgb.iter().map(|c|RenderColor{red:(c>>16) as u8,green:(c>>8) as u8,blue:*c as u8,alpha:255}).collect();
+        for color_index in 0..6 {
+            let s=SnakeRecord{flags:flags::LEADER,color_index,..snake()};
+            let n=RenderHandle::new().build_shader(&info(),&[s],&body(),&[],&[],&pal,&params(),&mut out).vertex_count;
+            assert!(out[..n].iter().filter(|v|v.params[0]<=1).all(|v|(v.params[1]&64!=0)==white));
+        }
+    }
+}
+
+#[test]
+fn shader_corpse_keeps_width_in_alpha_and_fade_in_separate_byte() {
+    let mut r=RenderHandle::new();let mut i=info();let b=body();let mut p=params();
+    let mut out=[ShaderRenderVertex::default();1024];let s=SnakeRecord{alive:0,flags:flags::CORPSE,..snake()};
+    r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out);
+    i.tick+=1;i.simulation_time+=0.2;p.presentation_time=i.simulation_time;
+    let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert!(n>0);
+    assert!(out[..n].iter().all(|v|v.params[0]==0 && v.params[2]&128!=0 && v.params[3]>0 && v.params[3]<255));
+    assert!(out[..n].iter().any(|v|v.color.alpha!=v.params[3]));
+    let original=palette()[0];
+    assert_eq!(out[0].color.red,(original.red as f64+(255-original.red) as f64*0.35).round() as u8);
+}
+
+#[test]
+fn shader_contrail_has_shared_width_and_brightness_at_every_join() {
+    let mut r=RenderHandle::new();let mut i=info();let mut p=params();let mut b=body();
+    let s=SnakeRecord{flags:flags::BOOSTING,..snake()};let mut out=[ShaderRenderVertex::default();4096];
+    for _ in 0..16 {
+        i.tick+=1;i.simulation_time+=1.0/30.0;p.presentation_time=i.simulation_time;
+        for segment in &mut b {segment.previous_x=segment.x;segment.x+=2.0;}
+        r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out);
+    }
+    let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    let trail:Vec<_>=out[..n].iter().copied().filter(|v|v.params[0]==10).collect();
+    assert_eq!(trail.len(),84);
+    assert!(trail.iter().all(|v|v.along==0.0));
+    assert!(trail.iter().all(|v|v.across.abs()==1.0)); // compact shader support
+    for (j,edge) in trail.chunks_exact(6).enumerate() {
+        let half_width=|a:ShaderRenderVertex,b:ShaderRenderVertex|
+            ((a.x-b.x).powi(2)+(a.y-b.y).powi(2)).sqrt()*0.5;
+        assert!((half_width(edge[0],edge[1])-0.465*8.0*(j+1) as f32/15.0).abs()<0.0001);
+        assert!((half_width(edge[2],edge[5])-0.465*8.0*(j+2) as f32/15.0).abs()<0.0001);
+    }
+    for edge in trail.chunks_exact(6).collect::<Vec<_>>().windows(2) {
+        assert_eq!(edge[0][2],edge[1][0]);assert_eq!(edge[0][5],edge[1][1]);
+    }
+    assert!(trail[0].color.alpha<trail.last().unwrap().color.alpha);
+    assert_eq!(trail.last().unwrap().color.alpha,89);
+}
+
+#[test]
+fn shader_food_uses_exported_sizes_and_full_vacuum_streak() {
+    let mut out=[ShaderRenderVertex::default();1024];
+    for kind in 0..4 {
+        let f=FoodRecord{x:200.0,y:200.0,size:4.0,kind,life_fraction:255,..Default::default()};
+        let n=RenderHandle::new().build_shader(&info(),&[],&[],&[f],&[],&palette(),&params(),&mut out).vertex_count;
+        assert_eq!(n,6);assert!((out[5].x-out[0].x-2.0*4.6*4.0).abs()<1.0e-4);
+    }
+    let f=FoodRecord{x:200.0,y:200.0,size:4.0,attraction:0.8,attraction_x:300.0,attraction_y:200.0,life_fraction:255,..Default::default()};
+    let n=RenderHandle::new().build_shader(&info(),&[],&[],&[f],&[],&palette(),&params(),&mut out).vertex_count;
+    assert_eq!(n,12);assert_eq!(out[0].params[0],5);assert_eq!(out[0].color.alpha,191);
+    assert!(((out[0].y-out[1].y).abs()-1.3*4.0).abs()<1.0e-4);
+    assert!((out[0].x-out[2].x-4.0*(3.0+8.0*0.8)).abs()<1.0e-4);
+}
+
+#[test]
+fn shader_tight_coil_envelope_stays_inside_curvature_without_triangle_fold() {
+    let radius=14.4_f32;
+    let b:Vec<_>=(0..24).map(|j|{
+        let angle=j as f32*0.6;
+        let x=200.0+radius*angle.cos();let y=200.0+radius*angle.sin();
+        SegmentRecord{x,y,previous_x:x,previous_y:y}
+    }).collect();
+    let s=SnakeRecord{segment_count:24,..snake()};let mut out=[ShaderRenderVertex::default();1024];
+    let n=RenderHandle::new().build_shader(&info(),&[s],&b,&[],&[],&palette(),&params(),&mut out).vertex_count;
+    let edge=&out[5*6..6*6];
+    for v in edge {
+        let center=b[if v.along==18.0 {5} else {6}];
+        let extrusion=((v.x-center.x).powi(2)+(v.y-center.y).powi(2)).sqrt();
+        assert!((extrusion-radius*0.95).abs()<1.0e-4);
+        assert!(v.across.abs()<v.color.alpha as f32/255.0);
+    }
+    assert_eq!(n,24*6);
+    let area=|a:ShaderRenderVertex,b:ShaderRenderVertex,c:ShaderRenderVertex|(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
+    // Exclude the uncurved endpoint normals; interior edge triangles agree.
+    for edge in out[6..(24-2)*6].chunks_exact(6) {
+        assert!(area(edge[0],edge[1],edge[2])*area(edge[3],edge[4],edge[5])>0.0);
+    }
+}
+
+
+#[test]
+fn shader_all_primitive_wrap_bounds_match_independent_tiling() {
+    // Count by primitive kind against wall-bounded draws shifted independently
+    // across a generous tile grid. This oracle never calls wrap-copy selection.
+    let counts = |vertices: &[ShaderRenderVertex]| {
+        let mut result = [0usize; 11];
+        for v in vertices { result[v.params[0] as usize] += 1; }
+        result
+    };
+    for (width, height, x, y, angle) in [
+        (640.0, 360.0, 590.0, 180.0, 0.0),
+        (640.0, 360.0, 50.0, 180.0, std::f64::consts::PI),
+        (640.0, 360.0, 320.0, 310.0, std::f64::consts::FRAC_PI_2),
+        (640.0, 360.0, 320.0, 50.0, -std::f64::consts::FRAC_PI_2),
+        (100.0, 100.0, 90.0, 90.0, std::f64::consts::FRAC_PI_4),
+        (10.0, 10.0, 5.0, 5.0, std::f64::consts::FRAC_PI_4),
+    ] {
+        for (sx, sy) in [(1.0, 1.0), (2.0, 0.5), (0.5, 2.0)] {
+            let mut i = info(); i.world_width = width; i.world_height = height;
+            let mut p = params(); p.deadly_walls = 0; p.developer_mode = 1;
+            p.scale_x = sx; p.scale_y = sy; p.interpolation = 1.0;
+            p.viewport_width = width * sx; p.viewport_height = height * sy;
+            let mut s = SnakeRecord { flags: flags::BOOSTING | flags::LEADER,
+                angle, desired_angle: angle, ..snake() };
+            let b = std::array::from_fn::<_, 3, _>(|j| SegmentRecord {
+                x: x as f32 - j as f32, y: y as f32,
+                previous_x: x as f32 - j as f32, previous_y: y as f32 });
+            let food = std::array::from_fn::<_, 4, _>(|kind| FoodRecord {
+                x: x as f32, y: y as f32, size: 4.0, kind: kind as u8,
+                attraction: 1.0, attraction_x: x as f32 + 1.0,
+                attraction_y: y as f32 + 1.0, life_fraction: 255, ..Default::default() });
+            let events = [EventRecord { tick: i.tick, x: x as f32, y: y as f32,
+                kind: 0, ..Default::default() }, EventRecord { tick: i.tick,
+                x: x as f32, y: y as f32, kind: 4, ..Default::default() }];
+            let mut wrapped = RenderHandle::new(); let mut tiled = RenderHandle::new();
+            let mut out = vec![ShaderRenderVertex::default(); 100000];
+            let mut history = p; history.scale_x = 0.0; history.scale_y = 0.0;
+            for renderer in [&mut wrapped, &mut tiled] {
+                renderer.build_shader(&i, &[s], &b, &food, &events, &palette(), &history, &mut []);
+            }
+            i.tick += 1; i.simulation_time += 1.0 / 30.0; p.presentation_time = i.simulation_time;
+            let mut current = b; current[2].y += 1.0; current[2].previous_y += 1.0;
+            for corpse in [false, true] {
+                if corpse { s.flags = flags::CORPSE; s.alive = 0;
+                    i.tick += 1; i.simulation_time += 1.0 / 30.0;
+                    p.presentation_time = i.simulation_time + 0.2; }
+                let n = wrapped.build_shader(&i, &[s], &current, &food, &[], &palette(), &p, &mut out).vertex_count;
+                assert!(n <= out.len()); let actual = counts(&out[..n]);
+                let mut expected = [0usize; 11]; let mut tile = p; tile.deadly_walls = 1;
+                for tx in -16..=16 { for ty in -16..=16 {
+                    tile.offset_x = tx as f64 * width * sx;
+                    tile.offset_y = ty as f64 * height * sy;
+                    let n = tiled.build_shader(&i, &[s], &current, &food, &[], &palette(), &tile, &mut out).vertex_count;
+                    assert!(n <= out.len());
+                    for (total, count) in expected.iter_mut().zip(counts(&out[..n])) { *total += count; }
+                }}
+                assert_eq!(actual, expected,
+                    "arena={width}x{height}, head={x},{y}, angle={angle}, scale={sx},{sy}, corpse={corpse}");
+            }
+        }
+    }
+}
+
+
+#[test]
+fn shader_multi_arena_body_bounds_match_independent_tiling() {
+    for (dx, dy) in [(7.0, 0.0), (0.0, 7.0), (7.0, 7.0), (-7.0, 0.0)] {
+        for (sx, sy) in [(1.0, 1.0), (2.0, 0.5), (0.5, 2.0)] {
+            let mut i = info(); i.world_width = 100.0; i.world_height = 100.0;
+            let mut p = params(); p.deadly_walls = 0; p.interpolation = 1.0;
+            p.scale_x = sx; p.scale_y = sy;
+            p.viewport_width = 100.0 * sx; p.viewport_height = 100.0 * sy;
+            let mut s = SnakeRecord { radius: 6.0, segment_count: 40, ..snake() };
+            let unwrapped: Vec<_> = (0..40).map(|j| {
+                let x = (50.0 + dx * j as f64) as f32;
+                let y = (50.0 + dy * j as f64) as f32;
+                SegmentRecord { x, y, previous_x: x, previous_y: y }
+            }).collect();
+            let b: Vec<_> = unwrapped.iter().map(|seg| {
+                let x = seg.x.rem_euclid(100.0); let y = seg.y.rem_euclid(100.0);
+                SegmentRecord { x, y, previous_x: x, previous_y: y }
+            }).collect();
+            let mut wrapped = RenderHandle::new(); let mut tiled = RenderHandle::new();
+            let mut out = vec![ShaderRenderVertex::default(); 10000];
+            for corpse in [false, true] {
+                if corpse { i.tick += 1; i.simulation_time += 1.0 / 30.0;
+                    s.alive = 0; s.flags = flags::CORPSE;
+                    p.presentation_time = i.simulation_time + 0.2; }
+                let n = wrapped.build_shader(&i, &[s], &b, &[], &[], &palette(), &p, &mut out).vertex_count;
+                assert!(n <= out.len());
+                let actual = out[..n].iter().filter(|v| v.params[0] == 0).count();
+                let mut expected = 0; let mut tile = p; tile.deadly_walls = 1;
+                for tx in -5..=5 { for ty in -5..=5 {
+                    tile.offset_x = tx as f64 * 100.0 * sx;
+                    tile.offset_y = ty as f64 * 100.0 * sy;
+                    let n = tiled.build_shader(&i, &[s], &unwrapped, &[], &[], &palette(), &tile, &mut out).vertex_count;
+                    assert!(n <= out.len());
+                    expected += out[..n].iter().filter(|v| v.params[0] == 0).count();
+                }}
+                assert_eq!(actual, expected, "delta={dx},{dy}, scale={sx},{sy}, corpse={corpse}");
+            }
+        }
+    }
+}
+
+#[test]
+fn shader_fragment_extents_fit_emitted_body_head_and_food_quads() {
+    let mut out = vec![ShaderRenderVertex::default(); 4096];
+    let b: Vec<_> = (0..24).map(|j| SegmentRecord {
+        x: 400.0-j as f32*9.44, y: 200.0,
+        previous_x: 400.0-j as f32*9.44, previous_y: 200.0 }).collect();
+    for flags in [0, flags::HUNTING, flags::LEADER, flags::TRAPPED,
+                  flags::BOOSTING | flags::LEADER | flags::HUNTING] {
+        let s = SnakeRecord { flags, segment_count: 24, ..snake() };
+        let n = RenderHandle::new().build_shader(&info(), &[s], &b, &[], &[], &palette(), &params(), &mut out).vertex_count;
+        assert_eq!(n, 24*6+if flags & flags::BOOSTING != 0 {6} else {0});
+        for v in out[..n].iter().filter(|v| v.params[0] == 0) {
+            let wave_support = 2.4 * 1.028 * v.color.alpha as f64/255.0;
+            assert!((v.y as f64-200.0).abs()/8.0+1.0e-5 >= wave_support);
+        }
+        let h:Vec<_> = out[..n].iter().filter(|v|v.params[0]==1).collect();
+        let hr = 8.0*1.14;
+        // UV and world extents must agree: expanding vertices alone stretches
+        // artwork, and expanding UV alone shrinks its intended physical size.
+        for v in &h {
+            assert!((v.x as f64-400.0-v.across as f64*hr).abs()<0.00005);
+            assert!((v.y as f64-200.0-v.along as f64*hr).abs()<0.00005);
+        }
+        assert!(h[1].across as f64 >= 1.30+1.32+0.045+0.2); // tongue
+        assert!(h[5].along as f64 >= 0.56+1.15); // eye light
+        if flags & flags::BOOSTING != 0 {
+            let rear_bow = 0.286+2.352*2.4-1.238*2.4*2.4
+                -(0.08+0.2)*(1.0_f64+(2.352_f64-2.476*2.4).powi(2)).sqrt();
+            assert!(h[0].across as f64 <= rear_bow);
+            assert!(h[5].along >= 2.4);
+        }
+    }
+    for (kind, support) in [(0,4.6_f64),(1,4.4),(2,3.0),(3,4.0)] {
+        let f = FoodRecord { x:400.0,y:200.0,size:4.0,kind,life_fraction:255,..Default::default() };
+        let n = RenderHandle::new().build_shader(&info(), &[], &[], &[f], &[], &palette(), &params(), &mut out).vertex_count;
+        assert_eq!(n, 6);
+        assert!((out[0].x as f64-400.0).abs()/4.0+0.00001 >= support);
+        assert!((out[0].y as f64-200.0).abs()/4.0+0.00001 >= support);
+    }
+}
+
+#[test]
+fn shader_effect_extents_fit_emitted_quads_through_entire_lifetime() {
+    let i = info(); let mut out = [ShaderRenderVertex::default(); 1024];
+    let events = [EventRecord {tick:i.tick,x:400.0,y:200.0,kind:0,..Default::default()},
+                  EventRecord {tick:i.tick,x:400.0,y:200.0,kind:4,..Default::default()}];
+    let s = SnakeRecord {flags:flags::BOOSTING,..snake()}; let b = body();
+    for kind in [6,7,9] {
+        let mut renderer = RenderHandle::new();
+        renderer.build_shader(&i, &[s], &b, &[], &events, &palette(), &params(), &mut out);
+        let duration = if kind==6 {0.5} else if kind==7 {0.6} else {0.28};
+        for byte in 0..=255 {
+            let p = RenderParams {presentation_time:i.simulation_time+duration*(byte as f64/255.0).min(0.9999),..params()};
+            let n = renderer.build_shader(&i, &[s], &b, &[], &[], &palette(), &p, &mut out).vertex_count;
+            let quad:Vec<_> = out[..n].iter().filter(|v|v.params[0]==kind).collect();
+            assert_eq!(quad.len(),6);
+            let age = quad[0].params[3] as f64/255.0;
+            let progress = 2.0*age-age*age;
+            let mut support = 1.0+(if kind==9 {2.2} else {5.0})*progress+7.0*(0.012+0.04);
+            if kind==6 {
+                support = support.max(1.2+8.4*progress+2.2*(1.0-age)+7.0*(0.012+0.04)).max(7.0);
+            }
+            for v in &quad { assert!(v.across.abs() as f64 >= support && v.along.abs() as f64 >= support); }
+            let radius_per_uv = (quad[1].x-quad[0].x)/(quad[1].across-quad[0].across);
+            assert!((radius_per_uv-8.0).abs()<0.00001);
+        }
+    }
+}
+
+#[test]
+fn shader_new_outer_support_selects_edge_and_corner_copies() {
+    // 75px from the seam: old 56px impact radius missed these copies;
+    // the current 81.6px radius includes them at all four corners.
+    let mut i = info(); i.world_width=640.0;i.world_height=360.0;
+    let p = RenderParams {viewport_width:640.0,viewport_height:360.0,deadly_walls:0,..params()};
+    let mut out=[ShaderRenderVertex::default();1024];
+    for (x,y,expected) in [(565.0,180.0,12),(75.0,180.0,12),
+                          (320.0,285.0,12),(320.0,75.0,12),
+                          (565.0,285.0,24),(75.0,75.0,24)] {
+        let e=EventRecord {tick:i.tick,x,y,kind:0,..Default::default()};
+        let n=RenderHandle::new().build_shader(&i,&[],&[],&[],&[e],&palette(),&p,&mut out).vertex_count;
+        assert_eq!(n,expected,"impact at {x},{y}");
+    }
+}
+
+#[test]
+fn shader_compact_streak_support_and_minimum_pixel_width_fit_emitted_bounds() {
+    let mut out=[ShaderRenderVertex::default();1024];
+    let p=RenderParams {developer_mode:1,..params()};
+    let n=RenderHandle::new().build_shader(&info(),&[snake()],&body(),&[],&[],&palette(),&p,&mut out).vertex_count;
+    let overlay:Vec<_>=out[..n].iter().filter(|v|v.params[0]==5).collect();
+    assert_eq!(overlay.len(),6);
+    assert!((overlay[0].y-overlay[1].y-2.4).abs()<0.0001);
+    assert!((overlay[2].x-overlay[0].x-56.0).abs()<0.0001);
+    for v in &overlay { assert_eq!(v.across.abs(),1.0); assert!((0.0..=1.0).contains(&v.along)); }
+    // The vacuum's .5px minimum is wider than this food halo. Only the
+    // streak crosses the seam: selecting copies with halo bounds loses it.
+    let mut i=info();i.world_width=10.0;i.world_height=10.0;
+    let p=RenderParams {viewport_width:10.0,viewport_height:10.0,deadly_walls:0,..params()};
+    let f=FoodRecord {x:5.0,y:0.49,size:0.1,attraction:0.8,
+        attraction_x:6.0,attraction_y:0.49,life_fraction:255,..Default::default()};
+    let n=RenderHandle::new().build_shader(&i,&[],&[],&[f],&[],&palette(),&p,&mut out).vertex_count;
+    let streaks:Vec<_>=out[..n].iter().filter(|v|v.params[0]==5).collect();
+    assert_eq!(streaks.len(),12); assert_eq!(n,18);
+    for q in streaks.chunks_exact(6) {
+        assert!(((q[0].y-q[1].y).abs()-1.0).abs()<0.0001);
+        assert!((q[0].x-q[2].x-0.94).abs()<0.0001);
+        for v in q { assert_eq!(v.across.abs(),1.0); assert!((0.0..=1.0).contains(&v.along)); }
+    }
+}

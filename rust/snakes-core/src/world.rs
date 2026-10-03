@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 mod query;
+pub(crate) mod taper;
 use std::f64::consts::TAU;
 use crate::{ Point, WorldRng, normalize_angle };
 use crate::math::Geometry;
@@ -1242,11 +1243,11 @@ impl World {
                         if same && (!self.config.self_collisions || j<10) {
                             continue;
                         }
-                        let reach = if same {
-                            s.radius*1.48
-                        } else {
-                            (s.radius+self.snakes[other].radius)*0.78
-                        };
+                        let body = self.snakes[other];
+                        let radius = if self.config.rules == RuleSet::V2 {
+                            taper::body_radius(body.radius, j as f64, body.len)
+                        } else { body.radius };
+                        let reach = taper::contact_radius(self.config.rules, s.radius, radius, same);
                         if Self::swept_hit(g, head, self.segments[encoded], reach) {
                             self.snakes[i].dying = if same {
                                 DeathReason::SelfHit

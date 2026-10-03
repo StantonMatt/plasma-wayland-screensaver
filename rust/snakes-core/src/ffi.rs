@@ -720,3 +720,66 @@ pub unsafe extern "C" fn snakes_core_render_build(
     unsafe { output.write(result); }
     status
 }
+
+// Shader geometry is additive; the classic entry point/layout is unchanged.
+pub use crate::render::ShaderVertex as ShaderRenderVertex;
+/// Same borrowed-buffer and initialized-capacity contract as render_build.
+/// # Safety
+/// All pointers must be aligned, initialized, nonoverlapping for their lengths;
+/// calls on a renderer must be serialized. Output is the complete required count.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snakes_core_render_build_shader(
+    renderer: *mut RenderHandle, info: *const FrameInfo,
+    snakes: *const SnakeRecord, snake_count: usize,
+    segments: *const SegmentRecord, segment_count: usize,
+    food: *const FoodRecord, food_count: usize,
+    events: *const EventRecord, event_count: usize,
+    palette: *const RenderColor, palette_count: usize,
+    params: *const RenderParams, vertices: *mut ShaderRenderVertex,
+    vertex_capacity: usize, output: *mut RenderOutput,
+) -> i32 {
+    if !valid(renderer) || !valid(info) || !valid(params) || !valid(output)
+        || snake_count>crate::MAX_SNAKES || segment_count>crate::MAX_SNAKES*crate::MAX_SEGMENTS
+        || food_count>crate::MAX_FOOD || event_count>crate::MAX_EVENTS || palette_count>4096
+        || !buffer(snakes.cast_mut(),snake_count,snake_count)
+        || !buffer(segments.cast_mut(),segment_count,segment_count)
+        || !buffer(food.cast_mut(),food_count,food_count)
+        || !buffer(events.cast_mut(),event_count,event_count)
+        || !buffer(palette.cast_mut(),palette_count,palette_count)
+        || !buffer(vertices,vertex_capacity,vertex_capacity) { return INVALID_ARGUMENT; }
+    let info=unsafe { &*info };let params=unsafe { &*params };
+    if !crate::render::frame_valid(info,params) { return INVALID_ARGUMENT; }
+    // A zero-length slice still requires a nonnull pointer in Rust.
+    unsafe fn records<'a,T>(p:*const T,n:usize)->&'a [T] {
+        if n==0 { &[] } else { unsafe { std::slice::from_raw_parts(p,n) } }
+    }
+    let snakes=unsafe { records(snakes,snake_count) };
+    let mut seen=0u32;
+    for s in snakes {
+        if s.id as usize>=crate::MAX_SNAKES || s.segment_count as usize>crate::MAX_SEGMENTS
+            || s.segment_offset as usize+s.segment_count as usize>segment_count
+            || !crate::render::snake_valid(s)
+            || seen&(1<<s.id)!=0 { return INVALID_ARGUMENT; }
+        seen|=1<<s.id;
+    }
+    // Caller initializes the full capacity on allocation, not merely the
+    // visible prefix: forming this slice borrows initialized Vertex values.
+    let vertices=if vertex_capacity==0 { &mut [] } else { unsafe { std::slice::from_raw_parts_mut(vertices,vertex_capacity) } };
+    let result=unsafe { &mut *renderer }.build_shader(info,snakes,
+        unsafe { records(segments,segment_count) },unsafe { records(food,food_count) },
+        unsafe { records(events,event_count) },unsafe { records(palette,palette_count) },params,vertices);
+    let status=if result.vertex_count>vertex_capacity { BUFFER_TOO_SMALL } else { OK };
+    unsafe { output.write(result); }
+    status
+}
+
+/// Freeze procedural shader motion separately in the host; this shortens
+/// renderer-managed discrete waves and dissolves. Classic output is unaffected.
+/// # Safety
+/// The handle must be live and exclusively borrowed for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snakes_core_render_set_reduced_motion(renderer: *mut RenderHandle, enabled:u32) -> i32 {
+    if !valid(renderer) || enabled>1 { return INVALID_ARGUMENT; }
+    unsafe { &mut *renderer }.reduced_motion=enabled!=0;
+    OK
+}

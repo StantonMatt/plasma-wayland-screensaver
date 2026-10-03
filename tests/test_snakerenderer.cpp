@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "snakerenderer.h"
 #include "configuration.h"
+#include "snakematerial.h"
+#include <QQuickWindow>
+#include <QSGRendererInterface>
 #include <QTemporaryDir>
 #include <QFile>
 #include <QSignalSpy>
@@ -11,6 +14,7 @@
 #include <numeric>
 #include <cmath>
 #include <limits>
+#include <rhi/qrhi.h>
 
 class SnakeRendererTest final : public QObject
 {
@@ -37,8 +41,201 @@ class SnakeRendererTest final : public QObject
         }
         return frame;
     }
+    static SnakeFrame anatomyFrame()
+    {
+        constexpr double W = 1280, H = 720, r = 0.0108 * H;
+        constexpr double spacing = 1.18 * r;
+        const double rows[] = {0.22, 0.335, 0.45, 0.565, 0.68};
+        const int lengths[] = {16, 48, 110, 260, 280};
+        const uint32_t colors[] = {1, 2, 3, 4, 0};
+        const uint32_t flags[] = {0, SNAKES_CORE_BOOSTING, SNAKES_CORE_HUNTING, 0, SNAKES_CORE_LEADER};
+        SnakeFrame frame;
+        frame.info = {600, 20, W, H, 0};
+        for (int k = 0; k < 5; ++k) {
+            const auto path = [=](double x) { return rows[k] * H + 3.6 * r * std::sin(2 * M_PI * x / (0.2 * W) + 1.3 * k); };
+            const auto arc = [=](double x, double dx) {
+                const auto speed = [=](double x) {
+                    const double slope = 3.6 * r * (2 * M_PI / (0.2 * W)) * std::cos(2 * M_PI * x / (0.2 * W) + 1.3 * k);
+                    return std::sqrt(1 + slope * slope);
+                };
+                return dx / 6 * (speed(x) + 4 * speed(x - dx / 2) + speed(x - dx));
+            };
+            const auto offset = uint32_t(frame.segments.size());
+            double x = W * (0.35 + 0.12 * k);
+            for (int j = 0; j < lengths[k]; ++j) {
+                const float y = path(x);
+                frame.segments.push_back({float(x), y, float(x), y});
+                double low = 0, high = spacing;
+                for (int b = 0; b < 24; ++b) {
+                    const double dx = (low + high) / 2;
+                    if (arc(x, dx) < spacing) low = dx; else high = dx;
+                }
+                x -= (low + high) / 2;
+            }
+            const auto &a = frame.segments[offset], &b = frame.segments[offset + 1];
+            const double angle = std::atan2(a.y - b.y, a.x - b.x);
+            frame.snakes.push_back({uint32_t(k), 1, 1, colors[k], r, angle, angle,
+                                   offset, uint32_t(lengths[k]), flags[k], 0, 0, 0});
+        }
+        // A visible boost tail and its retained history, separate from the long
+        // Anatomy adult whose tail position depends on the sine path.
+        const auto boostOffset = uint32_t(frame.segments.size());
+        for (int j = 0; j < 24; ++j) {
+            const float x = 1070 - j * spacing;
+            frame.segments.push_back({x, 75, x, 75});
+        }
+        frame.snakes.push_back({5, 1, 1, 2, r, 0, 0, boostOffset, 24, SNAKES_CORE_BOOSTING, 0, 0, 0});
+        // A tight spiral starts at 1.8r, then opens with 4r between turns.
+        // Arc spacing matches the body; wider outer turns expose the inner
+        // glow fold without piling multiple opaque laps on top of that wedge.
+        const auto coilOffset = uint32_t(frame.segments.size());
+        double theta = 0;
+        for (int j = 0; j < 48; ++j) {
+            const double radius = r * (1.8 + 0.65 * theta);
+            const float x = 1135 + radius * std::cos(theta), y = 320 + radius * std::sin(theta);
+            frame.segments.push_back({x, y, x, y});
+            const auto speed = [=](double t) { return r * std::hypot(1.8 + 0.65 * t, 0.65); };
+            double low = 0, high = spacing / radius;
+            for (int b = 0; b < 24; ++b) {
+                const double dt = (low + high) / 2;
+                const double arc = dt / 6 * (speed(theta) + 4 * speed(theta + dt / 2) + speed(theta + dt));
+                if (arc < spacing) low = dt; else high = dt;
+            }
+            theta += (low + high) / 2;
+        }
+        const auto &a = frame.segments[coilOffset], &b = frame.segments[coilOffset + 1];
+        const double angle = std::atan2(a.y - b.y, a.x - b.x);
+        frame.snakes.push_back({6, 1, 1, 4, r, angle, angle, coilOffset, 48, SNAKES_CORE_HUNTING, 0, 0, 0});
+        // World::add_food exports R*(0.23 + min(value,1.4)*0.13).
+        // Representative values: spark 0.7, shard 0.85, pellet 0.5. Prism
+        // spawning belongs to R4; reserve its approved 0.62R size here.
+        const float sizes[] = {float(r * 0.321), float(r * 0.3405), float(r * 0.295), float(r * 0.62)};
+        for (int group = 0; group < 5; ++group) {
+            const uint8_t kind = group == 4 ? SNAKES_CORE_FOOD_SPARK : group;
+            for (int j = 0; j < (kind == 3 ? 1 : 3); ++j) {
+                const float x = W * (0.06 + group * 0.075) + (j - 1) * r * 2.6;
+                const float y = H * 0.86 - r * 0.5 + (j % 2) * r * 1.6;
+                frame.food.push_back({uint64_t(frame.food.size() + 1), x, y, sizes[kind], float(j * 1.7),
+                    float(group == 4 && j == 2 ? 0.8 : 0.0), x + 40, y, uint32_t((group + j) % 6),
+                    kind, uint8_t(group == 4 ? 12 : 255), 0});
+            }
+        }
+        return frame;
+    }
     const QVector<QColor> palette{QColor("#4de6ff")};
+    static QShader bakedShader(const char *path)
+    {
+        // Initializes the static library's shared resource pack.
+        SnakeMaterial::shadersAvailable();
+        QFile file(QString::fromLatin1(path));
+        if (!file.open(QIODevice::ReadOnly)) return {};
+        return QShader::fromSerialized(file.readAll());
+    }
+    static QShader vertexShader() { return bakedShader(":/snakes/shaders/snake.vert.qsb"); }
+    static QShader fragmentShader() { return bakedShader(":/snakes/shaders/snake.frag.qsb"); }
 private Q_SLOTS:
+    void bakedShaderVariants()
+    {
+        const auto vertex = vertexShader(), fragment = fragmentShader();
+        QVERIFY(vertex.isValid()); QVERIFY(fragment.isValid());
+        QCOMPARE(vertex.stage(), QShader::VertexStage);
+        QCOMPARE(fragment.stage(), QShader::FragmentStage);
+        QList<QShaderKey> required;
+        for (int version : {100, 300, 310, 320})
+            required.append({QShader::GlslShader, {version, QShaderVersion::GlslEs}});
+        for (int version : {120, 130, 140, 150, 330})
+            required.append({QShader::GlslShader, version});
+        required.append({QShader::SpirvShader, 100});
+        required.append({QShader::HlslShader, 50});
+        required.append({QShader::MslShader, 12});
+        for (auto key : required) {
+            QVERIFY(fragment.availableShaders().contains(key));
+            QVERIFY(!fragment.shader(key).shader().isEmpty());
+            for (auto variant : {QShader::StandardShader, QShader::BatchableVertexShader}) {
+                key.setSourceVariant(variant);
+                QVERIFY(vertex.availableShaders().contains(key));
+                QVERIFY(!vertex.shader(key).shader().isEmpty());
+            }
+        }
+        const auto inputs = vertex.description().inputVariables();
+        QVERIFY(std::any_of(inputs.cbegin(), inputs.cend(), [](const auto &input) {
+            return input.name == "_qt_order" && input.location == 7;
+        }));
+        qInfo() << "Baked shader variants:" << vertex.availableShaders().size() << "vertex,"
+                << fragment.availableShaders().size() << "fragment";
+    }
+
+    void backendShaderSelection()
+    {
+        const auto vertex = vertexShader(), fragment = fragmentShader();
+        for (auto api : {QSGRendererInterface::Vulkan, QSGRendererInterface::Direct3D11,
+                        QSGRendererInterface::Direct3D12, QSGRendererInterface::Metal})
+            QVERIFY(SnakeMaterial::shadersSupported(vertex, fragment, api));
+        for (auto api : {QSGRendererInterface::Software, QSGRendererInterface::Unknown,
+                        QSGRendererInterface::Null, QSGRendererInterface::OpenVG})
+            QVERIFY(!SnakeMaterial::shadersSupported(vertex, fragment, api));
+        QSurfaceFormat format;
+        format.setRenderableType(QSurfaceFormat::OpenGLES);
+        for (const auto version : {std::pair{2, 0}, {3, 0}, {3, 1}, {3, 2}}) {
+            format.setVersion(version.first, version.second);
+            QVERIFY(SnakeMaterial::shadersSupported(vertex, fragment, QSGRendererInterface::OpenGL, format));
+        }
+        format.setRenderableType(QSurfaceFormat::OpenGL);
+        for (const auto version : {std::pair{2, 1}, {3, 0}, {3, 1}, {3, 2}, {3, 3}, {4, 6}}) {
+            format.setVersion(version.first, version.second);
+            format.setProfile(version.first >= 3 ? QSurfaceFormat::CoreProfile : QSurfaceFormat::NoProfile);
+            QVERIFY(SnakeMaterial::shadersSupported(vertex, fragment, QSGRendererInterface::OpenGL, format));
+        }
+        QVERIFY(!SnakeMaterial::shadersSupported({}, fragment, QSGRendererInterface::Vulkan));
+        QVERIFY(!SnakeMaterial::shadersSupported(vertex, {}, QSGRendererInterface::Vulkan));
+        QVERIFY(!SnakeMaterial::shadersSupported(fragment, vertex, QSGRendererInterface::Vulkan));
+        for (auto variant : {QShader::StandardShader, QShader::BatchableVertexShader}) {
+            auto missing = vertex;
+            missing.removeShader({QShader::SpirvShader, 100, variant});
+            QVERIFY(!SnakeMaterial::shadersSupported(missing, fragment, QSGRendererInterface::Vulkan));
+        }
+        auto missingFragment = fragment;
+        missingFragment.removeShader({QShader::SpirvShader, 100});
+        QVERIFY(!SnakeMaterial::shadersSupported(vertex, missingFragment, QSGRendererInterface::Vulkan));
+        // GLES cannot consume desktop GLSL even when both shaders are valid.
+        auto desktopOnly = vertex;
+        for (auto key : desktopOnly.availableShaders())
+            if (key.source() == QShader::GlslShader && key.sourceVersion().flags().testFlag(QShaderVersion::GlslEs))
+                desktopOnly.removeShader(key);
+        format.setRenderableType(QSurfaceFormat::OpenGLES);
+        format.setVersion(3, 2);
+        QVERIFY(!SnakeMaterial::shadersSupported(desktopOnly, fragment, QSGRendererInterface::OpenGL, format));
+        // ES 3.2-only packs cannot be chosen by an ES 3.0 context.
+        auto es32Only = vertex;
+        for (auto key : es32Only.availableShaders())
+            if (key.source() == QShader::GlslShader && key.sourceVersion().flags().testFlag(QShaderVersion::GlslEs)
+                && key.sourceVersion().version() < 320) es32Only.removeShader(key);
+        format.setVersion(3, 0);
+        QVERIFY(!SnakeMaterial::shadersSupported(es32Only, fragment, QSGRendererInterface::OpenGL, format));
+    }
+
+    void rejectedShaderProbeKeepsClassicGeometry()
+    {
+        static int probes = 0;
+        probes = 0;
+        SnakeRenderer renderer;
+        renderer.m_shaderSupportCheck = [](QQuickWindow *) { ++probes; return false; };
+        renderer.setSize(QSizeF(3440, 1440));
+        auto frame = makeFrame(24);
+        renderer.syncFrame(frame, palette, 0.5, true);
+        auto *node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr, nullptr));
+        QCOMPARE(node->geometry()->sizeOfVertex(), 12);
+        QVERIFY(node->geometry()->vertexCount() > 0);
+        QCOMPARE(probes, 1);
+        for (int i = 0; i < 10; ++i) {
+            renderer.presentFrame(20 + i / 30.0, 0.5);
+            node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(node, nullptr));
+            QCOMPARE(node->geometry()->sizeOfVertex(), 12);
+        }
+        QCOMPARE(probes, 1);
+        delete node;
+    }
+
     void allocatedVertexCapacityIsInitialized()
     {
         SnakeRenderer view;
@@ -565,13 +762,174 @@ private Q_SLOTS:
         delete nodes[0];delete nodes[1];
     }
 
+    void shaderGeometryBudgetAndFrozenTime()
+    {
+        SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest = true;
+        renderer.setSize(QSizeF(3440, 1440));
+        auto frame = makeFrame(24, 1, 1);
+        renderer.syncFrame(frame, palette, 0.5, true);
+        auto *node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr, nullptr));
+        QCOMPARE(node->geometry()->sizeOfVertex(), 24);
+        QCOMPARE(node->geometry()->vertexCount(), 24 * 6 + 6);
+        auto *material = static_cast<SnakeMaterial *>(node->material());
+        QCOMPARE(material->time, float(20 + 0.5 / 30));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+        const auto *storage = static_cast<const uchar *>(node->geometry()->vertexData());
+        for (int i = node->geometry()->vertexCount() * 24; i < renderer.m_geometryCapacity * 24; ++i)
+            QCOMPARE(storage[i], uchar(0));
+#endif
+        renderer.setShaderTimeFrozen(true);
+        renderer.presentFrame(21, 0.8);
+        renderer.updatePaintNode(node, nullptr);
+        QCOMPARE(material->time, float(20 + 0.5 / 30));
+        QCOMPARE(material->animationTime, 21.0f);
+        QCOMPARE(material->motionScale, 0.6f);
+        renderer.setShaderTimeFrozen(false);
+        renderer.updatePaintNode(node, nullptr);
+        QCOMPARE(material->time, 21.0f);
+        // A reported scene graph failure recreates the node in classic format.
+        renderer.m_shaderFailed = true;
+        node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(node, nullptr));
+        QCOMPARE(node->geometry()->sizeOfVertex(), 12);
+        delete node;
+    }
+
+    void anatomyFixtureUsesPhysicalSpacing()
+    {
+        const auto frame = anatomyFrame();
+        QCOMPARE(frame.snakes.size(), size_t(7));
+        QCOMPARE(frame.food.size(), size_t(13));
+        for (int k = 0; k < 5; ++k) {
+            const auto &snake = frame.snakes[k];
+            const auto &head = frame.segments[snake.segment_offset];
+            const auto &neck = frame.segments[snake.segment_offset + 1];
+            QCOMPARE(snake.angle, std::atan2(head.y - neck.y, head.x - neck.x));
+            for (uint32_t j = 1; j < snake.segment_count; ++j) {
+                const auto &a = frame.segments[snake.segment_offset + j - 1];
+                const auto &b = frame.segments[snake.segment_offset + j];
+                QVERIFY(std::abs(std::hypot(a.x-b.x, a.y-b.y) - 1.18*snake.radius) < 0.012);
+            }
+        }
+        SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest = true;
+        renderer.setSize(QSizeF(1280, 720));
+        renderer.syncFrame(frame, SnakeSimulation::colors(QStringLiteral("ocean")), 1, true);
+        auto *node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr, nullptr));
+        const auto *geometry = node->geometry();
+        QCOMPARE(geometry->sizeOfVertex(), 24);
+        std::array<int, 11> counts{};
+        const auto *vertices = static_cast<const snakes_core_shader_vertex *>(geometry->vertexData());
+        for (int i = 0; i < geometry->vertexCount(); ++i) ++counts[vertices[i].params[0]];
+        QCOMPARE(counts[1], 7 * 6);
+        QCOMPARE(counts[2], 6 * 6);
+        QCOMPARE(counts[3], 3 * 6);
+        QCOMPARE(counts[4], 3 * 6);
+        QCOMPARE(counts[8], 6);
+        QCOMPARE(counts[5], 6);
+        qInfo() << "Anatomy fixture vertices" << geometry->vertexCount() << "body vertices" << counts[0]
+                << "upload bytes" << geometry->vertexCount() * geometry->sizeOfVertex();
+        delete node;
+    }
+
+    void captureShaderFixture_data()
+    {
+        QTest::addColumn<bool>("rejectPipeline");
+        QTest::newRow("shader") << false;
+        QTest::newRow("driver-rejection-fallback") << true;
+    }
+
+    void captureShaderFixture()
+    {
+        QFETCH(bool, rejectPipeline);
+        const auto path = qEnvironmentVariable("SNAKES_CAPTURE_PATH");
+        if (path.isEmpty()) QSKIP("Set SNAKES_CAPTURE_PATH to capture the RHI fixture");
+        QQuickWindow window;
+        window.resize(1280, 720);
+        window.setColor(Qt::black);
+        // The borrowed snapshot outlives the item and every render-thread sync.
+        SnakeFrame frame;
+        SnakeRenderer renderer(window.contentItem());
+        if (rejectPipeline) {
+            if (window.rendererInterface()->graphicsApi() != QSGRendererInterface::OpenGL)
+                QSKIP("The intentional driver compile failure fixture requires OpenGL");
+            renderer.m_shaderSupportCheck = [](QQuickWindow *window) {
+                const auto *interface = window->rendererInterface();
+                auto *rhi = static_cast<QRhi *>(interface->getResource(window, QSGRendererInterface::RhiResource));
+                auto *swapchain = static_cast<QRhiSwapChain *>(interface->getResource(window, QSGRendererInterface::RhiSwapchainResource));
+                auto vertex = vertexShader();
+                // Keep valid reflection and variants but make native GLSL
+                // compilation fail inside QRhiGraphicsPipeline::create().
+                for (const auto &key : vertex.availableShaders())
+                    if (key.source() == QShader::GlslShader)
+                        vertex.setShader(key, QShaderCode("this is intentionally invalid GLSL", "main"));
+                return SnakeMaterial::probePipelines(rhi, swapchain ? swapchain->currentFrameRenderTarget() : nullptr,
+                                                     vertex, fragmentShader());
+            };
+        }
+        renderer.setSize(QSizeF(1280, 720));
+        frame = anatomyFrame();
+        const auto colors = SnakeSimulation::colors(QStringLiteral("ocean"));
+        // Replay 14 earlier physics snapshots to expose the continuous boost
+        // contrail. Every visible frame remains deterministic at t=20.
+        for (int tick = 586; tick <= 600; ++tick) {
+            auto history = frame;
+            history.info.tick = tick;
+            history.info.simulation_time = tick / 30.0;
+            const float shift = (tick - 600) * 2;
+            for (const auto &snake : history.snakes) {
+                if (!(snake.flags & SNAKES_CORE_BOOSTING)) continue;
+                for (uint32_t j = 0; j < snake.segment_count; ++j) {
+                    auto &point = history.segments[snake.segment_offset + j];
+                    point.x += shift; point.previous_x = point.x;
+                }
+            }
+            renderer.syncFrame(history, colors, 1, true);
+            auto &pending = renderer.m_pendingHistory[renderer.m_pendingHistoryHead];
+            pending = {};
+            pending.info = history.info;
+            for (const auto &snake : history.snakes) {
+                auto compact = snake;
+                compact.segment_offset = pending.snakeCount;
+                compact.segment_count = 1;
+                pending.snakes[pending.snakeCount] = compact;
+                pending.tails[pending.snakeCount++] = history.segments[snake.segment_offset + snake.segment_count - 1];
+            }
+            renderer.m_pendingHistoryHead = (renderer.m_pendingHistoryHead + 1) % renderer.m_pendingHistory.size();
+            ++renderer.m_pendingHistoryCount;
+        }
+        renderer.syncFrame(frame, colors, 1, true);
+        window.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&window));
+        QVERIFY(window.rendererInterface()->graphicsApi() != QSGRendererInterface::Software);
+        QVERIFY(SnakeMaterial::shadersAvailable());
+        const QImage image = window.grabWindow();
+        QVERIFY(!image.isNull());
+        QCOMPARE(renderer.m_shaderFailed, rejectPipeline);
+        QCOMPARE(renderer.m_shaderInUse, !rejectPipeline);
+        const QRgb background = image.pixel(0, 0);
+        int coloredSamples = 0;
+        for (int y = 0; y < image.height(); y += 8)
+            for (int x = 0; x < image.width(); x += 8)
+                if (image.pixel(x, y) != background) ++coloredSamples;
+        QVERIFY2(coloredSamples > 50, "The RHI capture contains no rendered fixture");
+        const auto outputPath = rejectPipeline ? path + QStringLiteral(".fallback.png") : path;
+        QVERIFY(image.save(outputPath));
+        qInfo() << "Shader fixture:" << outputPath << "RHI API" << window.rendererInterface()->graphicsApi()
+                << "classic fallback" << rejectPipeline;
+    }
+
     void benchmarkMatureGeometry()
     {
         SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest = true;
         renderer.setSize(QSizeF(3440, 1440));
         auto frame = makeFrame(120, 14, 400);
         renderer.syncFrame(frame, palette, 0.5, true);
         QSGNode *node = renderer.updatePaintNode(nullptr, nullptr);
+        const auto *geometry = static_cast<QSGGeometryNode *>(node)->geometry();
+        qInfo() << "mature shader vertices" << geometry->vertexCount() << "upload bytes"
+                << geometry->vertexCount() * geometry->sizeOfVertex();
         QBENCHMARK {
             renderer.presentFrame(20, 0.5);
             node = renderer.updatePaintNode(node, nullptr);

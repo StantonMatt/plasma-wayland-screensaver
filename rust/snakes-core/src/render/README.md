@@ -225,3 +225,222 @@ counts; median walls geometry is **0.058079 -> 0.058195 ms** (+0.20%) and
 wrapping is **0.074702 -> 0.073477 ms** (-1.64%), within the 5% gate. Exact
 commands, regression evidence, sibling audit and logs are in
 `build-fix1/WRAP_FIX_REPORT.md`, `wrap-checks.sh` and `wrap-*.log` (gitignored).
+
+## R2 shader renderer
+
+`render/shader.rs` adds `snakes_core_render_build_shader`, sharing borrowed
+snapshots and history with classic but emitting a 24-byte vertex directly into
+QSG storage: position f32x2, across/along f32x2, RGBA u8x4, params u8x4.
+Body along coordinates count from the tail. The four params bytes mean:
+
+| Primitive | kind | byte 1 | byte 2 | byte 3 |
+|---|---:|---|---|---|
+| Body | 0 | tier bits 0–1, effect bits 2–4, neck-marking suppression bit 5, white crown palette bit 6, white wave bit 7 | simulation flags | interpolated wave brightness, or corpse fade |
+| Head | 1 | tier bits 0–1, deterministic phase bits 2–5, white crown palette bit 6, kill flare bit 7 | simulation flags | desired-heading offset |
+| Spark / shard / pellet | 2 / 3 / 4 | phase | remaining life fraction | reserved |
+| Vacuum / debug direction | 5 | reserved | reserved | reserved |
+| Continuous contrail | 10 | reserved | reserved | reserved |
+| Impact / succession / boost ring | 6 / 7 / 9 | event seed | reserved | normalized effect age |
+| Prism (reserved for R4) | 8 | phase | remaining life fraction | reserved |
+
+Kinds 11–31 reserve item and power-up sprites. No atlas is needed until R3.
+All allocations occur when the render handle or retained QSG buffer is created
+or grown. Taper multipliers and shader alpha bytes are cached per snake length, using the exact shared
+`shape::taper` profile. Normals are prepared once per snake, with bounded f64
+square roots. Live wall-bounded ribbons convert each shared point pair once; corpse and
+wrapped primitives convert four corners per edge to preserve drift and exact
+f64 seam translations. Both write six triangle-list vertices with a single
+capacity check. A conservative dot/cross lower bound rejects ordinary bends
+before the exact circumradius calculation, and clipping limits are prepared
+once per point. Wave updates touch only the
+seven-segment bands, with at most two waves per snake. Effects retain eight
+quads; contrails retain at most fourteen edges (84 vertices) before seam copies.
+Body, head and food each retain their six-vertex primitive budget.
+
+`SnakeMaterial` owns one baked shader pair. Tube bands, additive glow, contact
+shadow, sheen, tier markings/spine lights, eyes, tongue, crown, bow waves and
+food halo twinkle run in the fragment shader. Additive pixels carry zero alpha
+under Qt's premultiplied-over blend state. All geometry generation stays in
+Rust. The software backend and unavailable shader resources use the unchanged
+classic generator and its original geometry fingerprints.
+
+The host can call `SnakeRenderer::setShaderTimeFrozen(bool)` (QML property
+`shaderTimeFrozen`). The material's procedural time freezes while a separate
+simulation/presentation animation time keeps discrete blinks/tongue flicks
+running at 60% duration. `snakes_core_render_set_reduced_motion` shortens
+renderer-managed waves, rings and corpse dissolution without changing classic.
+No overlay, clock or setting code is changed by the render implementation.
+
+The material uses `qt_add_shaders(BATCHABLE ...)` and the `qt6-shadertools-dev`
+build dependency. The pack contains standard and batchable vertex variants for
+SPIR-V 100, HLSL 50, MSL 12, GLSL ES 100/300/310/320, and desktop GLSL
+120/130/140/150/330, plus the matching standard fragment variants. Renderer
+integration tests inspect that exact resource pack and its `_qt_order` input.
+There is no shader-tools runtime dependency.
+
+Runtime selection uses `QShader::fromSerialized` and `availableShaders()` to
+check both vertex variants and the fragment variant against the window's actual
+QRhi backend and OpenGL context version/profile. Before creating shader geometry,
+a one-time pipeline probe compiles both variants on that same QRhi, using the
+window's render pass, sample count, vertex layout, uniform binding and blend
+state. Missing variants, unavailable RHI/render target, native pipeline creation
+failure, and reported scene-graph errors select classic rendering. The node
+retains this decision; decoding, capability checks and driver probes do not run
+per presentation. The probe submits no commands and reads no pixels.
+
+QShader/QRhi use Qt's RHI API, which has limited compatibility guarantees. On
+Debian/Ubuntu its headers require `qt6-base-private-dev` matching `QtGui`, in
+addition to the existing build dependencies. CMake reports the missing package
+explicitly. No Qt private scene-graph implementation API is used.
+
+### Native visual capture
+
+On the real desktop, capture the five Anatomy rows (hatchling/adult/elder/
+titan/leader), all four food sprites, a visible boost contrail and a tight coil:
+
+```sh
+QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl \
+  SNAKES_CAPTURE_PATH=/tmp/snakes-r2.png \
+  build-r2/bin/test-snakerenderer captureShaderFixture
+```
+
+The test is skipped during ordinary software-backend CTest runs. Its `shader`
+row requires a working RHI and verifies that shader rendering is active, as well
+as checking the output image. On OpenGL the `driver-rejection-fallback` row
+deliberately supplies invalid GLSL to the pipeline probe, verifies classic
+rendering is selected, and saves a second visible image to
+`$SNAKES_CAPTURE_PATH.fallback.png`. That row skips on Vulkan; the shader row
+can also be run with `QSG_RHI_BACKEND=vulkan`. This sandbox has
+no `/dev/dri`: offscreen OpenGL cannot create a context, offscreen Vulkan is
+unsupported, and Xvfb cannot connect through the sandbox. GPU appearance and
+frame pacing must therefore be checked on the real display. The local HTML
+prototype was unavailable through the browser's local-file URL policy; the
+implementation used its drawing source as the visual reference.
+
+Known visual approximations: the head uses an analytic spade distance field
+rather than the prototype's Bézier path; its quad extends to 2.9 head units
+forward to contain the full tongue while retaining six vertices. The final
+body edge ends at a pointed tip within the shared taper envelope. Shard expiry
+uses a nominal 30-second lifetime because ABI v2 exports a life fraction but
+not the randomized original lifetime (18–34 seconds). A boost ring replayed
+from compact tail-only history is anchored at the first full head sample,
+while retaining its original start time. Performance/verification results and
+exact paired commands are recorded in `build-r2/WORKER_REPORT.md` and
+`build-r2/LOOK_FIX_REPORT.md` (gitignored).
+
+
+### Product-review corrections
+
+Body colour alpha carries the local taper, while across UV carries physical
+extrusion in radii / BOUNDS_BODY (2.5), including a curvature clamp on tight bends.
+Interpolating physical distance fixes tapered trapezoids' diagonal kink; the
+last edge's silhouette distance tapers to a point without dividing its halo by
+zero. Corpse opacity lives in params byte 3, independently of width. Corpses
+flash white, then keep a 35% white tint. Shared across/silhouette derivatives
+anti-alias the tube bands, shadow and halo. Chevrons occur every two segments,
+with a 0.20r stroke, and saddle bands are 0.50r wide every six segments.
+
+The head smoothly joins the neck (smooth-max 0.15 head units), continues tube
+bands and fades its rear shadow into the underlying body. Its colour alpha is
+the segment-1 neck taper. Boosting widens the quad to contain both bow strokes
+without stretching head units. Stored per-tick headings interpolate on the
+shortest arc with the same factor as the body; frozen heads use current angles.
+Ember and mono are recognized by their complete shipped palettes once per
+build and pass an explicit white-crown bit; individual orange/yellow colours
+never decide the crown's colour.
+
+Opaque coverage masks only the outer halo. A separate additive term retains
+light waves, spine dots and crown glow on skin, while eye light is applied
+before the socket and iris. Inner halo strength is 1.55x; the outer edge fades
+across 0.25 widths and the head has a matching front cap. Spine dots use radii
+on both axes. A circumradius limit of 0.95 times local curvature radius bounds
+the glow envelope; ordinary paths avoid its divide/sqrt. It adds no vertices,
+allocations, or draw calls.
+
+The shader normal walk carries raw finite-point checks across its three-point
+window and uses one reciprocal for both normal components. Live wall-bounded
+ribbons compute the glow envelope once per snake and convert shared corner
+pairs once, only for visible edges. Edges starting inside the viewport avoid
+the full bounds calculation; boundary edges retain it. Corpse and wrapped
+paths preserve their separate drift and exact seam translations.
+Per-length taper bytes are retained, with no steady-state allocation.
+
+Contrails have kind 10, constant along UV, and shared per-end width/colour/alpha
+(half-width 0.465r*u, alpha 0.35*u², 35% white). Food keeps its exported size;
+only halo brightness twinkles. Shards use a slim rhombus, and prism fruit has
+a shaded orb, gradient-normalised ellipse ring and orbit dot. Vacuum streaks
+use half-width 0.65s, length s*(3+8*attraction), 0.75 peak and 40% white tint.
+
+The deterministic 1280x720 capture fixture uses black, the shipped ocean
+palette, R0=0.0108*720, arc-length spacing 1.18r on the Anatomy sine paths,
+lengths 16/48/110/260/280, and tangent-aligned heads. Two extra snakes expose
+a full boost tail and a tight spiral. The food row uses actual representative
+exported sizes (spark 0.321R, shard 0.3405R, pellet 0.295R). The prototype's
+pellet is 0.20R, but the simulation exports 0.295R: this fixture deliberately
+shows the production size. Prism spawning is R4; its reserved fixture size is
+the approved 0.62R. Fifteen compact physics snapshots expose boost trails
+without requiring simulation or AI changes.
+
+### Fragment support and geometry contract
+
+`snake.frag` now owns the literal `BOUNDS_*` constants. Rust reads those literals
+at compile time in `shader/bounds.rs`; extrusion, UV scale, viewport culling,
+and wrap selection use the same values. This adds no runtime parsing, allocation,
+vertex storage, or draw calls. Effect UVs are body radii rather than normalized
+quad coordinates: expanding the impact quad preserves spark speed and width.
+
+Sprite AA ceilings are 0.04 effect-coordinate units, 0.2 head units, and 0.8
+food units (minimum 0.008). Food's pixel-dependent ornament width is bounded
+to 0.6 food units. These ceilings retain normal one-pixel softening. Body AA
+keeps its original derivatives and is contained by the compact ribbon fade. Previously neither
+had a finite support bound under arbitrary supported projections. The impact's
+Gaussian flash now smoothly ends at 7 body radii (the old quad boundary), rather
+than having infinite mathematical support. Body light fades over the last 0.04
+body radii of the interpolated extrusion, which also contains curvature-limited
+ribbons and shrinking corpse pieces while preserving their tube-width payload.
+
+The table uses conservative maxima, includes the new AA ceiling where relevant,
+and lists quad half-extents. Body values are multiples of the local taper times
+body radius; head values are head radii; food values are exported food size.
+
+| Content | Shader support before → after | Previous quad | Current quad |
+|---|---:|---:|---:|
+| Body outer halo + breathing/rounded taper | <=2.230 → <=2.230 | 2.2102 | 2.5 |
+| Body shadow / softened inner glow | Unbounded AA → <=local quad edge (2.5) | 2.2102 | 2.5 |
+| Body traveling light waves | <=2.489 → <=2.489 | 2.2102 | 2.5 |
+| Body sheen/chevrons/saddles/spine lights | Exterior AA unbounded → contained by tube alpha | 2.2102 | 2.5 |
+| Curvature-limited body / corpse dissolution | Shader exceeded extrusion → compact edge fade | Curvature-clipped | Same curvature limit, compact support |
+| Corpse displacement | <=1.6 → <=1.6 body radii from original edge | Width + 1.6 wrap margin | Width + shared 1.6 wrap margin |
+| Head tube/shadow/smooth neck | Unbounded AA → x<=1.831, y<=1.468, rear>=-1 | x=[-1,2.8], y=1.5 | x=[-1,2.9], y=1.75 |
+| Head glow (outer / softened inner) | 1.584 / unbounded AA → <=1.636 front/side | y=1.5 | y=1.75 |
+| Eye sockets/iris/blinks/look/pupils | Exterior AA unbounded → inside head skin | Same head quad | Same head quad |
+| Eye glow incl. hunting/leader/flare | Unchanged: x=[-0.65,1.65], abs(y)<=1.71 | y=1.5 | y=1.75 |
+| Tongue incl. full flick + AA | Unbounded AA → x<=2.865, abs(y)<=0.465 | x<=2.8 | x<=2.9 |
+| Crown outline / additive glow | Outline AA unbounded → x=[-0.98,1.02], abs(y)<=1.035 | Same head quad | Same head quad |
+| Boost bow strokes incl. AA | x AA unbounded → x> -2.244, x<2.191, abs(y)<=2.4 | x>=-1.2, y=2.5 | x>=-2.3, y=2.5 |
+| Contrail | Unchanged: exact half-width 0.465*r*u; no longitudinal displacement | Same ribbon | Shared 0.465, same ribbon |
+| Kill/leader ring + AA | Unbounded AA → <=6.364 body radii | 7 | 7 |
+| Boost ring + AA | Unbounded AA → <=3.564 body radii | 7 | 7 |
+| Kill flash | Unbounded Gaussian before; compact <=7 now | 7 | 10.2 (shared impact quad) |
+| Kill sparks + stroke/AA | Endpoint <=9.744, unbounded AA → <=10.108 body radii; endpoint <=9.744 | 7 | 10.2 |
+| Spark food halo / twinkle cross / core | 4.6 / 4.5 / unbounded AA → 4.6 / 4.5 / <=1.85 | 4.6 | Shared 4.6 |
+| Essence shard halo / rotated rhombus | 4.4 / unbounded AA → 4.4 / <=3.307 | 4.6 | Shared 4.6 |
+| Spent pellet halo / core | 3.0 / unbounded AA → 3.0 / <=1.8 | 4.6 | Shared 4.6 |
+| Prism halo / ring / rotating orbit dot / core | 4.0 / unbounded pixel-AA ornaments → 4.0 / <=3.99 / <=3.54 / <=1.8 | 4.6 | Shared 4.6 |
+| Food pulse / expiry | Unchanged: modulates amplitude, never size | 4.6 | Shared 4.6 |
+| Vacuum streak | Unchanged width/length; explicit start gate: half-width max(0.65*s,0.5px), length s*(3+8*attraction) | Endpoint bounds + width | Shared 0.65, same bounds |
+| Developer steering | Unchanged width/length; explicit start gate: half-width 1.2px; length max(7*r,52) projected per axis | Endpoint bounds + width | Shared 1.2, same bounds |
+
+Head wrap bounds are the radius of the furthest quad corner, computed from the
+shared forward and side extents. Body/corpse bounds include extrusion and drift;
+food bounds include both vacuum endpoints and the greater of halo/streak width.
+Contrails and developer overlays use both endpoints plus their shared width.
+All retain six vertices per primitive, including each selected arena copy.
+
+The independent analytic regression derives spark trajectory extrema, both bow
+polynomial bounds, breathing/taper quantization, head ornament extents, and
+rotating food shape bounds. Integration tests compare those supports to emitted
+vertices and UV scale, sweep all 256 effect-age bytes, and check the newly
+covered impact edge/corner copies. Existing independent-tiling tests cover every
+primitive, anisotropic projections, corpses, and arenas spanning multiple copies.
+The allocation regression continues to exercise growth, effects and resets.

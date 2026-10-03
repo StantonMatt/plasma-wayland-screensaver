@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! Literal GLSL constants are the single source of the CPU geometry contract.
+//! This tiny decimal reader runs only at compile time; no build script, heap,
+//! dependency, shader parsing or extra work is introduced per frame.
+const SHADER: &str = include_str!("../../../../../src/shaders/snake.frag");
+const fn value(name: &str) -> f64 {
+    let source = SHADER.as_bytes();
+    let key = name.as_bytes();
+    let mut i = 0;
+    while i + key.len() < source.len() {
+        let mut n = 0;
+        while n < key.len() && source[i + n] == key[n] { n += 1; }
+        if n == key.len() && source[i + n] == b' ' {
+            i += n;
+            while source[i] == b' ' || source[i] == b'=' { i += 1; }
+            let mut result = 0.0;
+            let mut fraction = 0.0;
+            while source[i] != b';' {
+                let digit = source[i];
+                if digit == b'.' { fraction = 1.0; }
+                else {
+                    assert!(digit >= b'0' && digit <= b'9', "bounds must be positive decimal literals");
+                    if fraction == 0.0 { result = result * 10.0 + (digit - b'0') as f64; }
+                    else { fraction *= 0.1; result += (digit - b'0') as f64 * fraction; }
+                }
+                i += 1;
+            }
+            return result;
+        }
+        i += 1;
+    }
+    panic!("missing shader bounds constant");
+}
+
+pub(super) const BODY: f64 = value("BOUNDS_BODY");
+pub(super) const HEAD_BACK: f64 = value("BOUNDS_HEAD_BACK");
+pub(super) const HEAD_BOOST_BACK: f64 = value("BOUNDS_HEAD_BOOST_BACK");
+pub(super) const HEAD_FRONT: f64 = value("BOUNDS_HEAD_FRONT");
+pub(super) const HEAD_SIDE: f64 = value("BOUNDS_HEAD_SIDE");
+pub(super) const HEAD_BOOST_SIDE: f64 = value("BOUNDS_HEAD_BOOST_SIDE");
+pub(super) const FOOD: f64 = value("BOUNDS_FOOD");
+pub(super) const IMPACT: f64 = value("BOUNDS_IMPACT");
+pub(super) const RING: f64 = value("BOUNDS_RING");
+pub(super) const CONTRAIL: f64 = value("BOUNDS_CONTRAIL");
+pub(super) const VACUUM: f64 = value("BOUNDS_VACUUM");
+pub(super) const DEVELOPER: f64 = value("BOUNDS_DEVELOPER");
+pub(super) const CORPSE_DRIFT: f64 = value("BOUNDS_CORPSE_DRIFT");
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn analytic_fragment_support_fits_geometry_contract() {
+        let aa = value("BOUNDS_AA");
+        let head_aa = value("BOUNDS_HEAD_AA");
+        let food_aa = value("BOUNDS_FOOD_AA");
+        let breath = value("BOUNDS_BREATH");
+        // Keep this independent oracle coupled to the expressions whose extrema
+        // it derives. Editing their math requires updating the derivation too.
+        for expression in [
+            "falloff(abs(acrossR)/(2.4*w))", "1.2+7.0*progress*(0.6+hash(seed+float(k)*2.0)*0.6)",
+            "2.2*(1.0-age)", "line(effectCoord,direction*start,direction*end,0.012)",
+            "1.95-0.70*y*y", "0.286+2.352*y-1.238*y*y", "falloff(length(eye)/1.15)",
+            "1.30+1.32*extension", "abs(q.x)/0.85+abs(q.y)/1.6",
+            "vec2 R=vec2(1.9,0.6)", "1.4*px",
+            "dot(p-a,d)/max(dot(d,d),0.000001)",
+            "extent=tier==0?1.75:tier==1?1.85:tier==2?2.0:2.15",
+            "aaD=max(fwidth(d),0.008)",
+            "aaG=clamp(fwidth(gd),0.008,BOUNDS_FOOD_AA)",
+            "1.0+(kind==9?2.2:5.0)*progress",
+            "sx=(p.x-0.05)/1.37", "spade=1.10*sqrt", "float k=0.15",
+            "shadow=mask(sd-0.13)", "abs(p.y)-0.56", "abs(cd)-0.035",
+            "falloff(length(p-vec2(0.02,0.0))/1.0)",
+            "vec2(1.30+1.32*extension,0.22*extension),0.045",
+            "b1=mask(s1-0.08)", "b2=mask(s2-0.08)",
+            "step(y,1.85)", "step(y,2.4)",
+            "r-1.05", "r-1.0", "(dd-1.0)*0.75",
+            "falloff(r/4.6)", "falloff(r/4.4)", "falloff(r/3.0)", "falloff(r/4.0)",
+            "4.5*a", "smoothstep(0.55*px,1.1*px,abs(f)/max(gl,0.0001))",
+            "px=clamp(length(vec2(dFdx(p.x),dFdy(p.x))),0.0001,BOUNDS_FOOD_PIXEL)", "return coverage(d,min(aa,limit))",
+            "kind==1?BOUNDS_HEAD_AA:(kind==2||kind==3||kind==4||kind==8)?BOUNDS_FOOD_AA:BOUNDS_AA",
+        ] { assert!(SHADER.contains(expression), "rederive shader support: {expression}"); }
+        // The smallest ordinary taper is .22; rounded alpha may add .5/255.
+        let body_wave = 2.4 * breath * (1.0 + 0.5 / 255.0 / 0.22);
+        let body_halo = 2.15 * breath * (1.0 + 0.5 / 255.0 / 0.22);
+        assert!(BODY >= body_wave.max(body_halo));
+        // At tight bends / on corpse pieces, interpolated ribbonLimit caps
+        // every term, including rounded alpha and breathing, to the extrusion.
+        assert!(SHADER.contains("edge=ribbonLimit*BOUNDS_BODY"));
+        assert!(SHADER.contains("edgeFade=edge>0.0?1.0-smoothstep(max(0.0,edge-BOUNDS_AA),edge,abs(acrossR)):0.0"));
+        let age = 14.6 / 16.8;
+        let spark_end = 1.2 + 8.4 * (2.0 * age - age * age) + 2.2 * (1.0 - age);
+        let spark_extent = spark_end + (0.012 + aa) * value("BOUNDS_EFFECT_UNITS");
+        assert!(IMPACT >= spark_extent);
+        assert!(RING >= 6.0 + (0.012 + aa) * value("BOUNDS_EFFECT_UNITS"));
+        assert!(SHADER.contains("smoothstep(6.0,BOUNDS_RING,length(coord))"));
+
+        assert!(HEAD_FRONT >= 1.30 + 1.32 + 0.045 + head_aa); // tongue capsule + AA
+        assert!(HEAD_SIDE >= 0.56 + 1.15); // both eye glows, incl. flare
+        assert!(HEAD_BACK >= 1.0); // explicit neck fade
+        assert!(HEAD_BACK >= 0.60 + 0.035 + head_aa); // crown outline
+        assert!(HEAD_SIDE >= 0.8 + 0.035 + head_aa);
+        assert!(HEAD_FRONT >= 0.02 + 1.0); // crown additive glow
+        assert!(HEAD_SIDE >= (2.15_f64.max(1.42 + food_aa)) * 0.84 / 1.14); // head halo, max tier
+        assert!(HEAD_FRONT >= 0.05 + 1.37 * (1.0 + (0.13 + head_aa) / 1.10));
+        assert!(HEAD_SIDE >= 1.10 + 0.15 / 4.0 + 0.13 + head_aa); // neck smooth union
+        // The normalized polynomial distance has an x support widened by
+        // sqrt(1+slope^2). Sample both closed intervals, including endpoints.
+        for j in 0..=10000 {
+            let y = 0.3 + (1.85 - 0.3) * j as f64 / 10000.0;
+            let x = 1.95 - 0.70 * y * y;
+            let dx = (0.08 + head_aa) * (1.0 + 1.96 * y * y).sqrt();
+            assert!(x + dx <= HEAD_FRONT && x - dx >= -HEAD_BOOST_BACK);
+            let y = 1.0 + 1.4 * j as f64 / 10000.0;
+            let x = 0.286 + 2.352 * y - 1.238 * y * y;
+            let dx = (0.08 + head_aa) * (1.0 + (2.352 - 2.476 * y).powi(2)).sqrt();
+            assert!(x + dx <= HEAD_FRONT && x - dx >= -HEAD_BOOST_BACK);
+        }
+        assert!(HEAD_BOOST_SIDE >= 2.4); // hard bow y gate; no AA beyond it
+        let px = value("BOUNDS_FOOD_PIXEL");
+        assert!(FOOD >= 4.6); // largest halo, pulse changes amplitude only
+        assert!(FOOD >= 4.5); // spark twinkle cross has a hard length gate
+        assert!(FOOD >= 1.6 * (1.0 + food_aa / 0.75)); // rotated shard rhombus
+        assert!(FOOD >= 1.05 + food_aa); // spark/pellet/prism discs
+        assert!(FOOD >= 1.9 + 1.4 * px + food_aa); // rotating orbit dot
+        // gl <= 1/.6 and length(q/R) >= r/1.9: conservative ellipse ring bound.
+        assert!(FOOD >= 1.9 * (1.0 + 1.1 * px / 0.6));
+        // Streaks / contrails have compact transverse support, and vacuum /
+        // steering streaks stop at their endpoints, without pixel-sized AA.
+        assert!(SHADER.contains("streak=max(0.0,1.0-abs(coord.x))"));
+        assert!(SHADER.contains("(1.0-clamp(coord.y,0.0,1.0))*step(0.0,coord.y)"));
+        let vertex = include_str!("../../../../../src/shaders/snake.vert");
+        assert!(vertex.contains("ribbonLimit=abs(uv.x)"));
+    }
+}

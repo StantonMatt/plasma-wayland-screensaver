@@ -1412,3 +1412,50 @@ fn all_candidate_controls_survive_alias_slots_and_escape_bookkeeping() {
         }
     }
 }
+
+#[test]
+fn v2_safety_uses_tapered_tail_radii_and_refreshes_widths_after_length_changes() {
+    for same in [false,true] {for wrap in [false,true] {
+        let mut w=arena(wrap);line(&mut w,0,Point{x:500.0,y:400.0},0.0,100);
+        let owner=if same {0} else {1};
+        if !same {line(&mut w,1,Point{x:900.0,y:600.0},0.0,100);}
+        for id in 0..=owner {for j in 1..100 {
+            let p=Point{x:600.0+j as f64,y:650.0};
+            w.segments[id*MAX_SEGMENTS+j]=Segment{current:p,previous:p};
+        }}
+        let head=Point{x:if wrap {2.0} else {500.0},y:400.0};
+        w.segments[0]=Segment{current:head,previous:head};
+        let tail=w.canonical_point(Point{x:head.x-7.0,y:head.y});
+        w.segments[owner*MAX_SEGMENTS+99]=Segment{current:tail,previous:tail};
+        let mut ai=AiController::new();
+        for rules in [crate::RuleSet::Classic,crate::RuleSet::V2] {
+            w.config.rules=rules;ai.tick=u64::MAX;ai.prepare(&w);
+            let mut tests=0;
+            let (hit,_,capped)=ai.body_blocked(&w,w.snake(0).unwrap(),head,head,STEP_SECONDS,0.0,&mut tests);
+            assert!(!capped);assert_eq!(hit,rules==crate::RuleSet::Classic,"same={same}, wrap={wrap}");
+            let contact=w.canonical_point(Point{x:head.x-2.0,y:head.y});
+            let mut tests=0;
+            assert!(ai.body_blocked(&w,w.snake(0).unwrap(),contact,contact,STEP_SECONDS,0.0,&mut tests).0,
+                "a real tapered-tail contact must remain blocked");
+        }
+        assert!((ai.spatial.widths[owner*MAX_SEGMENTS+99]-0.22).abs()<1e-12);
+        w.snakes[owner].len=150;ai.tick=u64::MAX;ai.prepare(&w);
+        assert_eq!(ai.spatial.widths[owner*MAX_SEGMENTS+99],crate::shape::taper(99.0/149.0));
+    }}
+}
+
+#[test]
+fn deposited_barriers_and_self_checks_use_the_same_taper() {
+    let mut w=arena(false);
+    let mut path=[Point::default();73];let mut distance=[0.0;73];
+    for k in 0..=72 {path[k]=Point{x:400.0+2.0*k as f64,y:400.0};distance[k]=2.0*k as f64;}
+    for same in [false,true] {for rules in [crate::RuleSet::Classic,crate::RuleSet::V2] {
+        w.config.rules=rules;
+        let full=crate::world::taper::contact_radius(rules,6.0,6.0,same);
+        let thin=Point{x:420.0,y:407.5};let wide=Point{x:490.0,y:407.5};
+        assert_eq!(AiController::deposited_contact(&w,thin,thin,&path,&distance,60,10.0,100.0,full,(6.0,6.0,same)),rules==crate::RuleSet::Classic);
+        assert!(AiController::deposited_contact(&w,wide,wide,&path,&distance,60,10.0,100.0,full,(6.0,6.0,same)));
+        let contact=Point{x:420.0,y:404.0};
+        assert!(AiController::deposited_contact(&w,contact,contact,&path,&distance,60,10.0,100.0,full,(6.0,6.0,same)));
+    }}
+}

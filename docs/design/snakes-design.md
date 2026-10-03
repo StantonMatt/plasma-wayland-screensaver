@@ -37,7 +37,7 @@ All decisions below are final recommendations, not options.
 | Tier | Length | Markings | Glow |
 |---|---|---|---|
 | Hatchling | < 24 | none; bright, clean tube; head 1.24r, eyes 0.36 | 1.75r, alpha 0.11 |
-| Adult | 24-99 | dark chevrons pointing at the head, one per segment | 1.85r, alpha 0.09 |
+| Adult | 24-99 | dark chevrons pointing at the head, one every 2 segments | 1.85r, alpha 0.09 |
 | Elder | 100-249 | chevrons plus dark saddle bands every 6 segments | 2.0r, alpha 0.11 |
 | Titan | 250+ | chevrons, saddles, and luminous spine dots every 3 segments with a slow light ripple (2.2 rad/s) | 2.15r, alpha 0.13 |
 
@@ -107,7 +107,7 @@ All food is one sprite. Kind is shown by shape.
 - **Prism fruit spawning.** One at a time, every 40-60 s, at the item spawn location rule (section 5.1). It is the prize that makes snakes race and boost.
 - **Expiry.** In the last 3 s of life, food fades out with a flicker. This needs the life fraction exported.
 - **Vacuum streak.** When a snake pulls food in, the streak is a gradient tail from the food away from the head. Today's mechanic is unchanged.
-- **Breathing.** Food pulse and twinkle are computed in the shader from `phase` and time. The CPU no longer computes a per-food `sin`.
+- **Breathing.** Food halo brightness twinkles in the shader from `phase` and time; core size stays fixed. The CPU no longer computes a per-food `sin`.
 
 ---
 
@@ -201,7 +201,7 @@ All effects are tick counters plus radius checks on the existing spatial grid. T
 - **`SnakeMaterial`.** A `QSGMaterial` with a precompiled `.qsb` vertex and fragment shader pair built through `qt_add_shaders`. It adds a build dependency on `qt6-shadertools-dev` and no runtime dependency.
 - **Vertex layout, 24 B:**
   - `pos` (2 floats)
-  - `uv` (2 floats): across in [-1, 1] and along in segment units, anchored at the tail
+  - `uv` (2 floats): physical across distance normalized by the maximum glow radius, and along in segment units, anchored at the tail
   - `color` (4 unsigned bytes)
   - `params` (4 unsigned bytes): primitive kind, tier or effect, flags, wave brightness
 - **Uniforms:** matrix, opacity, time (simulation time plus interpolation, so all monitors agree), and the light direction.
@@ -214,10 +214,10 @@ All effects are tick counters plus radius checks on the existing spatial grid. T
 | Element | Vertices | Extra draw calls | Fragment work | CPU |
 |---|---|---|---|---|
 | Body (tube bands, shadow, glow, markings, sheen, taper, breathing, tier patterns, titan spine lights, effect looks: Surge arcs, Phase scan bands and dashed outline, Venom spine, Frost tint) | **6 per edge** (was 15 per segment), one ribbon 2.15r wide | 0 | about 30 ALU; one branch on the effect byte | Same ribbon walk as today. Taper and wave brightness are about 2 multiply-adds per point. |
-| Head (head shape, eyes, pupil states, blink, nostrils, crown, venom fangs, tongue, boost bow wave) | **6** (one quad, 3.2r x 3.0r, stretched forward 1.5x while boosting) | 0 | about 60 ALU signed-distance shape, head pixels only | Pupil offset and state flags packed into params |
+| Head (head shape, eyes, pupil states, blink, nostrils, crown, venom fangs, tongue, boost bow wave) | **6** (one quad, widened while boosting to contain both bow strokes without stretching the head) | 0 | about 60 ALU signed-distance shape, head pixels only | Pupil offset and state flags packed into params |
 | Light waves (boost, kill, pickup, leader) | 0 (per-vertex brightness byte) | 0 | 1 multiply-add | At most 2 waves x points walked |
 | Boost contrail | at most **84** per boosting snake (14 edges from a 15-entry tail ring buffer) | 0 | streak gradient | Ring buffer per snake, held by the renderer |
-| Food: spark, shard, pellet, prism, expiry fade | **6** (was 63) | 0 | about 20 ALU; pulse and twinkle move from CPU to shader | Removes one `sin` per food per frame |
+| Food: spark, shard, pellet, prism, expiry fade | **6** (was 63) | 0 | about 20 ALU; halo twinkle moves from CPU to shader | Removes one `sin` per food per frame |
 | Vacuum streak | 6 (unchanged) | 0 | gradient | unchanged |
 | Power-up item | **6** each, at most 3 on the field | 0 | hexagon distance field plus one atlas sample | negligible |
 | Magnet ring | 6 | 0 | ring distance field | negligible |

@@ -9,6 +9,7 @@
 #include <QQmlExpression>
 #include <QQmlContext>
 #include <QScreen>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -16,6 +17,76 @@ class OverlaySnakesTest final : public QObject
 {
     Q_OBJECT
 private Q_SLOTS:
+    void reducedMotionPausesSnakes_data()
+    {
+        QTest::addColumn<QString>("behavior");
+        QTest::newRow("independent") << QStringLiteral("independent");
+        QTest::newRow("synchronized") << QStringLiteral("synchronized");
+        QTest::newRow("seamless") << QStringLiteral("seamless");
+    }
+    void reducedMotionPausesSnakes()
+    {
+        QFETCH(QString, behavior);
+        QTemporaryDir dir;
+        Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
+        settings.setVisualModule(QStringLiteral("snakes"));
+        settings.setMonitorBehavior(behavior);
+        settings.setReducedMotion(true);
+        settings.setShowClock(true);
+        settings.setClockMovement(QStringLiteral("bounce"));
+        OverlayManager manager(&settings);
+        QVERIFY(manager.show());
+        auto *screen = QGuiApplication::primaryScreen();
+        auto *root = manager.m_views.value(screen)->rootObject();
+        auto *visual = root->findChild<QQuickItem *>(QStringLiteral("snakeVisualRoot"));
+        auto *scrim = root->findChild<QQuickItem *>(QStringLiteral("clockScrim"));
+        QVERIFY(visual); QVERIFY(scrim);
+        QCOMPARE(scrim->property("status").toInt(), 1); // Image.Ready: qrc texture ships.
+        QCOMPARE(visual->property("reducedMotion").toBool(), true);
+        auto *renderer = visual->findChild<SnakeRenderer *>(QStringLiteral("snakeNativeRenderer"));
+        QVERIFY(renderer);
+        QVERIFY(renderer->shaderTimeFrozen());
+        QVERIFY(!manager.m_sharedAnimationActive); // Bouncing clock remains still.
+        auto *world = manager.m_snakeSimulations.value(screen);
+        QVERIFY(world);
+        if (behavior != QStringLiteral("independent"))
+            QCOMPARE(world, manager.m_sharedSnakeSimulation.get());
+        QSignalSpy presentationTicks(manager.m_presentationClocks.value(screen),
+                                     &PresentationClock::presentationTick);
+        const auto firstTick = world->frame().info.tick;
+        const auto firstTime = world->simulationTime();
+        QTest::qWait(120);
+        QCOMPARE(presentationTicks.count(), 0);
+        QCOMPARE(world->frame().info.tick, firstTick);
+        QCOMPARE(world->simulationTime(), firstTime);
+        world->advance(1.0);
+        manager.advanceSnakeSimulation(screen, 1'000'000'000);
+        manager.advanceSnakeSimulation(screen, 2'000'000'000);
+        QCOMPARE(world->frame().info.tick, firstTick);
+        settings.setReducedMotion(false);
+        QCOMPARE(root->property("reducedMotion").toBool(), false);
+        QVERIFY(!renderer->shaderTimeFrozen());
+        // Toggling the setting does not advance time; the real clock resumes.
+        QCOMPARE(world->frame().info.tick, firstTick);
+        QTRY_VERIFY(world->frame().info.tick > firstTick);
+        QVERIFY(presentationTicks.count() > 0);
+        settings.setReducedMotion(true);
+        QCOMPARE(visual->property("reducedMotion").toBool(), true);
+        QVERIFY(renderer->shaderTimeFrozen());
+        const auto nextTick = world->frame().info.tick;
+        const auto nextTime = world->simulationTime();
+        presentationTicks.clear();
+        QTest::qWait(120);
+        QCOMPARE(presentationTicks.count(), 0);
+        QCOMPARE(world->frame().info.tick, nextTick);
+        QCOMPARE(world->simulationTime(), nextTime);
+        settings.setReducedMotion(false);
+        QTRY_VERIFY(world->frame().info.tick > nextTick);
+        manager.hide();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCOMPARE(manager.m_pendingViewDeletions, 0);
+    }
+
     void viewportCoordinatesFollowWorld_data()
     {
         QTest::addColumn<QString>("visual");
@@ -193,6 +264,11 @@ private Q_SLOTS:
             world = manager.m_snakeSimulations.value(screen);
             QVERIFY(world);
             QCOMPARE(world->viewSize(), QSizeF(600, 400));
+            const auto pausedTick = world->frame().info.tick;
+            world->advance(1.0);
+            manager.advanceSnakeSimulation(screen, 1'000'000'000);
+            manager.advanceSnakeSimulation(screen, 2'000'000'000);
+            QCOMPARE(world->frame().info.tick, pausedTick);
             auto *renderer = manager.m_snakeRenderers.value(screen);
             QCOMPARE(renderer->drawOffsetX(), 0);
             QCOMPARE(renderer->drawOffsetY(), 0);
@@ -231,6 +307,9 @@ private Q_SLOTS:
         auto *world = manager.m_sharedSnakeSimulation.get();
         QVERIFY(world);
         QCOMPARE(manager.m_snakeSimulations.value(nullptr), world);
+        manager.advanceSnakeSimulation(screen, 1'000'000'000);
+        manager.advanceSnakeSimulation(nullptr, 2'000'000'000);
+        QCOMPARE(world->frame().info.tick, 0U); // Both viewports share the pause.
         const bool seamless = behavior == QStringLiteral("seamless");
         QCOMPARE(world->viewSize(), seamless ? QSizeF(19600, 400) : QSizeF(600, 400));
         QCOMPARE(world->config().width, seamless ? 16384 : 600);

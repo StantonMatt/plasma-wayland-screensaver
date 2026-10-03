@@ -223,6 +223,77 @@ private Q_SLOTS:
         sim.applySettings(settings);
         QCOMPARE(sim.palette().first(), QColor("#fff1a8"));
     }
+    void reducedMotionPausesAtStartupAndResumes()
+    {
+        QTemporaryDir dir;
+        Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
+        settings.setReducedMotion(true);
+        SnakeSimulation sim(SnakeSimulation::configuration(settings, 1280, 720, 1));
+        sim.applySettings(settings);
+        const auto tick = sim.frame().info.tick;
+        const auto time = sim.simulationTime();
+        sim.advance(1.0);
+        sim.advanceTo(1'000'000'000);
+        sim.advanceTo(10'000'000'000);
+        QCOMPARE(sim.frame().info.tick, tick);
+        QCOMPARE(sim.simulationTime(), time);
+        QCOMPARE(sim.interpolation(), 0.0);
+        settings.setReducedMotion(false);
+        sim.applySettings(settings);
+        sim.advanceTo(100'000'000'000);
+        QCOMPARE(sim.frame().info.tick, tick); // Paused wall time is discarded.
+        sim.advanceTo(100'033'333'334);
+        QCOMPARE(sim.frame().info.tick, tick + 1);
+        QVERIFY(std::abs(sim.simulationTime() - time - 1.0 / 30) < 1e-9);
+    }
+    void reducedMotionRuntimePauseResetsTimeline_data()
+    {
+        QTest::addColumn<bool>("absoluteTime");
+        QTest::newRow("delta-time") << false;
+        QTest::newRow("presentation-time") << true;
+    }
+    void reducedMotionRuntimePauseResetsTimeline()
+    {
+        QFETCH(bool, absoluteTime);
+        QTemporaryDir dir;
+        Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
+        SnakeSimulation sim(SnakeSimulation::configuration(settings, 1280, 720, 1));
+        sim.applySettings(settings);
+        if (absoluteTime) {
+            sim.advanceTo(1'000'000'000);
+            sim.advanceTo(1'050'000'000);
+        } else {
+            sim.advance(1.0 / 20);
+        }
+        QCOMPARE(sim.frame().info.tick, 1U);
+        QVERIFY(std::abs(sim.interpolation() - 0.5) < 1e-9);
+        const auto time = sim.simulationTime();
+        settings.setReducedMotion(true);
+        sim.applySettings(settings);
+        QCOMPARE(sim.interpolation(), 0.0);
+        sim.advance(1.0);
+        sim.advanceTo(10'000'000'000);
+        sim.advanceTo(20'000'000'000);
+        QCOMPARE(sim.frame().info.tick, 1U);
+        QCOMPARE(sim.simulationTime(), time);
+        double alpha = -1;
+        QCOMPARE(sim.frameAt(100'000'000'000, alpha).info.tick, 1U);
+        QCOMPARE(alpha, 0.0); // Presentation cannot interpolate ahead while paused.
+        settings.setReducedMotion(false);
+        sim.applySettings(settings);
+        if (absoluteTime) {
+            sim.advanceTo(100'000'000'000);
+            QCOMPARE(sim.frame().info.tick, 1U);
+            sim.advanceTo(100'016'666'667);
+        } else {
+            sim.advance(1.0 / 60);
+        }
+        QCOMPARE(sim.frame().info.tick, 1U); // Pre-pause fractional time is discarded.
+        if (absoluteTime) sim.advanceTo(100'033'333'334);
+        else sim.advance(1.0 / 60);
+        QCOMPARE(sim.frame().info.tick, 2U);
+        QVERIFY(std::abs(sim.simulationTime() - time - 1.0 / 30) < 1e-9);
+    }
     void fixedStepAccumulatorClampAndPause()
     {
         SnakeSimulation sim(defaults());

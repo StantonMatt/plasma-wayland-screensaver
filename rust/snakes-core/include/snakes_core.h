@@ -155,6 +155,22 @@ typedef struct snakes_core_render_params {
     uint32_t deadly_walls, developer_mode;
 } snakes_core_render_params;
 typedef struct snakes_core_render_output { size_t vertex_count; uint32_t dense_food, reserved; } snakes_core_render_output;
+// Single-pass shader geometry. Params: kind, tier/effect, flags, wave/look.
+typedef struct snakes_core_shader_vertex {
+    float x, y, across, along;
+    snakes_core_render_color color;
+    uint8_t params[4];
+} snakes_core_shader_vertex;
+int32_t snakes_core_render_set_reduced_motion(snakes_core_renderer *renderer, uint32_t enabled);
+int32_t snakes_core_render_build_shader(snakes_core_renderer *renderer,
+    const snakes_core_frame_info *info,
+    const snakes_core_snake *snakes, size_t snake_count,
+    const snakes_core_segment *segments, size_t segment_count,
+    const snakes_core_food *food, size_t food_count,
+    const snakes_core_event *events, size_t event_count,
+    const snakes_core_render_color *palette, size_t palette_count,
+    const snakes_core_render_params *params, snakes_core_shader_vertex *vertices,
+    size_t vertex_capacity, snakes_core_render_output *output);
 snakes_core_renderer *snakes_core_render_create(void);
 void snakes_core_render_destroy(snakes_core_renderer *renderer);
 int32_t snakes_core_render_reset(snakes_core_renderer *renderer);
@@ -203,6 +219,9 @@ SNAKES_CORE_ASSERT(sizeof(snakes_core_ai_debug_point) == 8);
 SNAKES_CORE_ASSERT(sizeof(snakes_core_ai_debug_record) == 200);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_ai_debug_record, target_food_ids) == 32);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_ai_debug_record, path) == 72);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_shader_vertex) == 24);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_shader_vertex, color) == 16);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_shader_vertex, params) == 20);
 SNAKES_CORE_ASSERT(sizeof(snakes_core_render_color) == 4);
 SNAKES_CORE_ASSERT(sizeof(snakes_core_render_vertex) == 12);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_render_vertex, color) == 8);

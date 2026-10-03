@@ -9,6 +9,8 @@ pub(super) const FILL_LIMIT: usize = 512;
 pub(super) struct Spatial {
     pub heads: Vec<i32>,
     pub next: Vec<i32>,
+    pub widths: Vec<f64>,
+    lengths: [usize; MAX_SNAKES],
     pub food_heads: Vec<i32>,
     pub food_next: [i32; MAX_FOOD],
     pub weight: Vec<f64>,
@@ -197,6 +199,7 @@ mod tests {
 impl Spatial {
     pub fn new() -> Self {
         Self { heads: vec![-1; CELLS], next: vec![-1; MAX_SNAKES*MAX_SEGMENTS],
+            widths: vec![1.0; MAX_SNAKES*MAX_SEGMENTS], lengths: [0; MAX_SNAKES],
             food_heads: vec![-1; CELLS], food_next: [-1; MAX_FOOD], weight: vec![0.0; CELLS],
             occupied: vec![0; CELLS],navigable:vec![0;CELLS],
             neighbours:vec![[usize::MAX;4];CELLS],boundary:vec![false;CELLS],topology:(0,0,false),release:vec![[0.0;MAX_SNAKES];CELLS],space_release:vec![[0.0;MAX_SNAKES];CELLS], visited: vec![0; CELLS], stamp: 0,
@@ -239,6 +242,13 @@ impl Spatial {
         // tick; every read below checks the corresponding mask first.
         let mut motion_squared=0.0_f64;
         for s in w.snakes().filter(|s|s.alive) {
+            let id=s.id as usize;
+            if w.config().rules==crate::RuleSet::V2 && self.lengths[id]!=s.segments.len() {
+                self.lengths[id]=s.segments.len();
+                for j in 0..s.segments.len() {
+                    self.widths[id*MAX_SEGMENTS+j]=crate::world::taper::body_radius(1.0,j as f64,s.segments.len());
+                }
+            }
             let speed=w.motion_limits(s.id as usize,0.0).unwrap().0;
             let rate=s.radius*1.18/(speed*0.65).max(1.0);
             let growth_delay=w.tail_growth_delay(s.id as usize).unwrap();
@@ -257,6 +267,8 @@ impl Spatial {
             }
         }
         self.max_motion=motion_squared.sqrt();
+        // Tapered contacts fit inside this conservative whole-cell turning-room
+        // bound. Exact continuous rollouts use the shared radius profile.
         // A one-cell clearance band keeps coarse connectivity from treating a
         // head-width crack as room for a minimum-radius turn. Tail release is
         // conservative, and the continuous rollout still proves motion safety.

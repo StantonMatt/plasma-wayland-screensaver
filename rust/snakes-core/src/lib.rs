@@ -3,6 +3,7 @@
 mod math;
 mod rng;
 mod render;
+pub mod shape;
 mod world;
 pub mod controller;
 pub mod ai;

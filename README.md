@@ -115,7 +115,7 @@ KDE Frameworks 6.24, and LayerShellQt 6.6.4. Install the build dependencies:
 sudo apt update
 sudo apt install build-essential cargo rustc cmake ninja-build extra-cmake-modules \
   appstream desktop-file-utils lintian shellcheck \
-  qt6-base-dev qt6-declarative-dev qt6-tools-dev \
+  qt6-base-dev qt6-base-private-dev qt6-declarative-dev qt6-shadertools-dev qt6-tools-dev \
   libkf6config-dev libkf6idletime-dev liblayershellqtinterface-dev
 ```
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "snakesimulation.h"
+#include "snakerenderer.h"
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QtQuickTest/quicktest.h>
@@ -8,10 +9,19 @@ class SnakeQmlSetup : public QObject
 {
     Q_OBJECT
     SnakeSimulation simulation{{640, 360, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, 0}};
+public:
+    Q_INVOKABLE bool hasNativeProperty(QObject *target, const QString &name) const
+    {
+        return target && target->metaObject()->indexOfProperty(name.toUtf8().constData()) >= 0;
+    }
 public Q_SLOTS:
-    void applicationAvailable() { registerSnakeTypes(); }
+    void applicationAvailable()
+    {
+        registerSnakeTypes();
+    }
     void qmlEngineAvailable(QQmlEngine *engine)
     {
+        engine->rootContext()->setContextProperty(QStringLiteral("snakeNativeContract"), this);
         simulation.advance(1.0 / 30);
         engine->rootContext()->setContextProperty(QStringLiteral("snakeTestSimulation"), &simulation);
     }

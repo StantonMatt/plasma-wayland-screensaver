@@ -151,14 +151,27 @@ Item {
         onLoaded: {
             item.context = root
             item.frameRate = root.frameRate
-            item.reducedMotion = root.reducedMotion
+            item.reducedMotion = Qt.binding(function() { return root.reducedMotion })
             item.seed = root.seed
             item.animationEpochMs = root.animationEpochMs
         }
     }
 
+    // One pre-rendered radial texture for every visual; no animated gradient
+    // or offscreen pass. PNG alpha is 0.52 * (1 - smoothstep(0, 1, radius)).
+    Image {
+        objectName: "clockScrim"
+        x: clockBox.x + (clockBox.width - width) / 2
+        y: clockBox.y + (clockBox.height - height) / 2
+        width: clockBox.width * 2
+        height: clockBox.height * 3.2
+        visible: root.showClock
+        source: "images/clock-scrim.png"
+    }
+
     Column {
         id: clockBox
+        objectName: "clockBox"
         x: root.clockLocalX(width)
         y: root.clockLocalY(height)
         spacing: 10

@@ -154,6 +154,7 @@ struct Rival {
     angle: f64,
     path: [Point; STEPS+1],
     envelope: [f64; STEPS+1],
+    distance: [f64; STEPS+1],
     escape: [Point;3],
 }
 #[derive(Clone, Copy)]
@@ -178,7 +179,7 @@ struct Candidate {
 }
 
 impl Default for Rival {
-    fn default()->Self {Self {alive:false,radius:0.0,len:0,speed:0.0,turn:0.0,growth_delay:0.0,release_rate:0.0,angle:0.0,path:[Point::default();STEPS+1],envelope:[0.0;STEPS+1],escape:[Point::default();3]}}
+    fn default()->Self {Self {alive:false,radius:0.0,len:0,speed:0.0,turn:0.0,growth_delay:0.0,release_rate:0.0,angle:0.0,path:[Point::default();STEPS+1],envelope:[0.0;STEPS+1],distance:[0.0;STEPS+1],escape:[Point::default();3]}}
 }
 impl Default for Candidate {
     fn default()->Self {Self {body_len:0,kind:2,checked:false,tracks_goal:false,desired:0.0,turn_until:u64::MAX,exit_angle:0.0,angle:0.0,path:[Point::default();STEPS+1],steps:0,score:0.0,clearance:0.0,capped:false,area:0,uncertain:false,attack:Attack::default(),rush:0.0}}
@@ -350,6 +351,7 @@ impl AiController {
                     angle=desired;
                     let (sin,cos)=angle.sin_cos();direction=Point{x:cos,y:sin};
                 }
+                r.distance[j]=r.distance[j-1]+speed*STEP_SECONDS;
                 r.path[j]=w.canonical_point(Point {x:r.path[j-1].x+direction.x*speed*STEP_SECONDS,
                     y:r.path[j-1].y+direction.y*speed*STEP_SECONDS});
             }
@@ -729,10 +731,19 @@ impl AiController {
                 let release=(r.len-j) as f64*r.release_rate+r.growth_delay;
                 if time>release+0.15 {continue;}
                 let p=w.snake(other).unwrap().segments[j].current;
-                let threshold=if same {s.radius*1.48} else {(s.radius+r.radius)*0.78};
+                let body=if w.config().rules==crate::RuleSet::V2 {
+                    // Advancing an old neck sample may widen it; retain the
+                    // maximum width until it has passed the full-width band.
+                    if (j as f64)<0.07*r.len.saturating_sub(1).max(1) as f64 {
+                        let advance=((time-r.growth_delay).max(0.0)/r.release_rate).max(0.0);
+                        let scale=r.len.saturating_sub(1).max(1) as f64;
+                        crate::world::taper::span_radius(r.radius,j as f64/scale,(j as f64+advance)/scale)
+                    } else {r.radius*self.spatial.widths[encoded]}
+                } else {r.radius};
+                let threshold=crate::world::taper::contact_radius(w.config().rules,s.radius,body,same);
                 // Half a tick's motion and a small radius reserve protect the
                 // first swept tick against segments that shift along corners.
-                let margin=if time<=STEP_SECONDS+1e-9 {if same && w.config().rules==crate::RuleSet::V2 {2.0} else {0.75}} else {1.5+(r.speed*STEP_SECONDS*0.35).min(r.radius*0.25)+padding};
+                let margin=if time<=STEP_SECONDS+1e-9 {if same && w.config().rules==crate::RuleSet::V2 {0.75+1.25*body/r.radius} else {0.75}} else {1.5+(r.speed*STEP_SECONDS*0.35).min(r.radius*0.25)+padding};
                 let ap=w.displacement(a,p);
                 let reserve=threshold+margin+if time<=STEP_SECONDS+1e-9 {self.spatial.max_motion} else {0.0};
                 if ap.x<ab.x.min(0.0)-reserve || ap.x>ab.x.max(0.0)+reserve
@@ -911,6 +922,17 @@ impl AiController {
                 if sweep && j>neck_steps && w.distance_squared(p,r.path[0])<(r.speed*t+reach+speed*STEP_SECONDS).powi(2) {
                     for k in (1..=j-neck_steps).step_by(3) {
                         let end=(k+2).min(j-neck_steps);
+                        // Full-width broad phase before any tapered tail powf.
+                        let reserve=reach+2.0+self.rollout_distance[j]-self.rollout_distance[from_index]+3.0*r.speed*STEP_SECONDS;
+                        if w.distance_squared(p,r.path[end])>=reserve*reserve {continue;}
+                        let reach=if w.config().rules==crate::RuleSet::V2 {
+                            let length=r.len.saturating_sub(1).max(1) as f64*r.radius*1.18;
+                            let age=r.distance[j]-r.distance[end];
+                            if age>length {continue;}
+                            let body=crate::world::taper::span_radius(r.radius,
+                                age/length,(r.distance[j]-r.distance[k-1])/length);
+                            crate::world::taper::contact_radius(w.config().rules,s.radius,body,false)
+                        } else {reach};
                         if w.distance_squared(p,r.path[end])<(reach+2.0+self.rollout_distance[j]-self.rollout_distance[from_index]+3.0*r.speed*STEP_SECONDS).powi(2)
                             && w.segments_distance_squared(c.path[from_index],p,r.path[k-1],r.path[end])<(reach+2.0).powi(2) {hit=true;break;}
                     }
@@ -927,7 +949,17 @@ impl AiController {
                     for k in (0..j-age).step_by(3) {
                         let end=(k+3).min(j-age);
                         if self.rollout_distance[j]-self.rollout_distance[end]<s.radius*1.18*10.0 {continue;}
-                        let reach=s.radius*1.48+3.0+max_curve*(4.0*STEP_SECONDS).powi(2)/8.0;
+                        let full=s.radius*1.48+3.0+max_curve*(4.0*STEP_SECONDS).powi(2)/8.0;
+                        let reserve=full+self.rollout_distance[j]-self.rollout_distance[from_index];
+                        if w.distance_squared(p,c.path[end])>=reserve*reserve {continue;}
+                        let body=if w.config().rules==crate::RuleSet::V2 {
+                            let length=c.body_len.saturating_sub(1).max(1) as f64*s.radius*1.18;
+                            if self.rollout_distance[j]-self.rollout_distance[end]>length {continue;}
+                            crate::world::taper::span_radius(s.radius,
+                                (self.rollout_distance[j]-self.rollout_distance[end])/length,
+                                (self.rollout_distance[j]-self.rollout_distance[k])/length)
+                        } else {s.radius};
+                        let reach=crate::world::taper::contact_radius(w.config().rules,s.radius,body,true)+3.0+max_curve*(4.0*STEP_SECONDS).powi(2)/8.0;
                         if w.distance_squared(p,c.path[end])<(reach+self.rollout_distance[j]-self.rollout_distance[from_index]).powi(2)
                             && w.segments_distance_squared(c.path[from_index],p,c.path[k],c.path[end])<reach*reach {hit=true;break;}
                     }

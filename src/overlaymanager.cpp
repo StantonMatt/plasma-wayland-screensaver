@@ -442,6 +442,7 @@ void OverlayManager::updatePresentationClocks()
         it.value()->setRunning(perWindowMotion || m_sharedAnimationActive);
         if (QQuickView *view = m_views.value(it.key())) {
             if (QObject *root = view->rootObject()) {
+                root->setProperty("reducedMotion", m_configuration->reducedMotion());
                 root->setProperty("presentationClock",
                                   QVariant::fromValue(static_cast<QObject *>(it.value())));
             }
