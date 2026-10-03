@@ -101,7 +101,7 @@ set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${PROJECT_HOMEPAGE_URL}")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 set(CPACK_DEBIAN_PACKAGE_DEPENDS
     "qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts")
-set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "xdg-desktop-portal-kde, powerdevil")
+set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "xdg-desktop-portal-kde, powerdevil, libvulkan1, mesa-vulkan-drivers")
 set(CPACK_DEBIAN_COMPRESSION_TYPE "zstd")
 set(CPACK_STRIP_FILES ON)
 set(CPACK_DEBIAN_PACKAGE_CONTROL_STRICT_PERMISSION ON)

@@ -10,6 +10,7 @@ Build-Depends:
  libkf6config-dev (>= 6.0),
  libkf6idletime-dev (>= 6.0),
  liblayershellqtinterface-dev,
+ libvulkan-dev,
  ninja-build,
  qt6-base-dev (>= 6.8),
  qt6-base-private-dev (>= 6.8),
@@ -31,6 +32,8 @@ Depends:
  qml6-module-qtquick-controls,
  qml6-module-qtquick-layouts
 Recommends:
+ libvulkan1,
+ mesa-vulkan-drivers,
  powerdevil,
  xdg-desktop-portal-kde
 Description: Non-locking visual screensaver for KDE Plasma Wayland

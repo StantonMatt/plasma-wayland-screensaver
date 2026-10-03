@@ -376,6 +376,13 @@ session:
 
 ## Troubleshooting
 
+- **Graphics problems or growing memory on NVIDIA Wayland:** startup logs show
+  `PVS graphics backend: vulkan` when Vulkan presentation is available, otherwise
+  OpenGL. To use OpenGL, start a fresh process with `--graphics-api opengl` or
+  `PVS_GRAPHICS_API=opengl`; Qt's `QSG_RHI_BACKEND` and `QT_QUICK_BACKEND`
+  overrides take precedence. Vulkan needs `libvulkan1` and a working driver
+  (Mesa: `mesa-vulkan-drivers`; NVIDIA: its matching Vulkan ICD). See
+  [memory investigation and desktop verification](docs/snakes-gpu-memory.md).
 - **Preview immediately disappears:** a real input/resume event arrived as the
   overlay appeared. Stop touching input devices and retry. KIdleTime deliberately
   treats the first activity as dismissal.

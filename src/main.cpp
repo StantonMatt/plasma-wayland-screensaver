@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "applicationcontroller.h"
 #include "configuration.h"
+#include "graphicsbackend.h"
 #include "overlaymanager.h"
 
 #include <QCommandLineOption>
@@ -33,6 +34,7 @@ bool invokeExisting(const QString &method)
 
 int main(int argc, char *argv[])
 {
+    GraphicsBackend graphicsBackend;
     QGuiApplication app(argc, argv);
     QCoreApplication::setOrganizationDomain(QStringLiteral("kde.org"));
     QCoreApplication::setOrganizationName(QStringLiteral("KDE"));
@@ -57,7 +59,10 @@ int main(int argc, char *argv[])
                                       QStringLiteral("Open the settings window"));
     const QCommandLineOption quit(QStringLiteral("quit"),
                                   QStringLiteral("Stop the running background process"));
-    parser.addOptions({background, preview, developerMode, settings, quit});
+    const QCommandLineOption graphicsApi(QStringLiteral("graphics-api"),
+        QStringLiteral("Prefer graphics API: opengl or vulkan (Qt overrides take precedence)"),
+        QStringLiteral("api"));
+    parser.addOptions({background, preview, developerMode, settings, quit, graphicsApi});
     parser.process(app);
 
     if (parser.isSet(quit)) {
@@ -71,6 +76,8 @@ int main(int argc, char *argv[])
     if (invokeExisting(requestedMethod)) {
         return 0;
     }
+    if (!graphicsBackend.initialize(parser.isSet(graphicsApi)
+            ? parser.value(graphicsApi) : qEnvironmentVariable("PVS_GRAPHICS_API"))) return 2;
 
     // A timed tracing preview needs no desktop power/portal services. The
     // harness supplies a private bus, config and headless Wayland compositor.

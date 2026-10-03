@@ -1,4 +1,16 @@
 # ABI records must explicitly initialize fields added by future ABI revisions.
+add_executable(test-graphicsbackend test_graphicsbackend.cpp)
+target_include_directories(test-graphicsbackend PRIVATE ../src)
+target_link_libraries(test-graphicsbackend PRIVATE GraphicsBackend Qt6::Test)
+add_test(NAME graphics-backend COMMAND test-graphicsbackend)
+
+add_executable(test-graphicsbackend-window test_graphicsbackend_window.cpp)
+target_include_directories(test-graphicsbackend-window PRIVATE ../src)
+target_link_libraries(test-graphicsbackend-window PRIVATE GraphicsBackend Qt6::Test)
+add_test(NAME graphics-backend-window COMMAND test-graphicsbackend-window)
+set_tests_properties(graphics-backend-window PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(test_snakerenderer.cpp test_snakesimulation.cpp test_snakesqml.cpp
         PROPERTIES COMPILE_OPTIONS "-Werror=missing-field-initializers")
