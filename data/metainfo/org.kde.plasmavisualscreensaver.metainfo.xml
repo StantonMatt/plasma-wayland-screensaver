@@ -25,7 +25,7 @@
         <p>Adds glowing hexagon power-ups to Slithering Snakes, with one effect at a time: Surge gives free, back-to-back boosts and a faster snake for chained attacks; Magnet pulls in food from three times as far; Phase lets snakes slip through rivals' bodies until it wears off. Turn power-ups off in Settings.</p>
         <p>Snakes seek power-ups to hunt, scavenge and escape. Crackling arcs, an orbiting magnet ring and a translucent hologram show each effect.</p>
         <p>Keeps OpenGL as the default and adds experimental Vulkan opt-in with PVS_GRAPHICS_API=vulkan or --graphics-api vulkan. Vulkan can stall on NVIDIA layer-shell overlays.</p>
-        <p>Fixes steady memory growth on NVIDIA under Plasma Wayland by preferring legacy egl-wayland, or disabling explicit sync when only egl-wayland2 is available. Respects user overrides; use --keep-egl-wayland2 to opt out.</p>
+        <p>Fixes steady memory growth on NVIDIA under Plasma Wayland by disabling explicit sync for egl-wayland2, even when legacy egl-wayland is installed. Respects user overrides; use --keep-egl-wayland2 to opt out.</p>
       </description>
     </release>
     <release version="0.9.0" date="2026-10-03">

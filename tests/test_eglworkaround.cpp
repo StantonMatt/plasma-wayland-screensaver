@@ -34,13 +34,11 @@ private Q_SLOTS:
         QTest::addColumn<QString>("expectedVariable");
         QTest::addColumn<QString>("expectedValue");
         for (const auto &name : {"default", "wayland", "wayland-egl", "wayland-options", "explicit-opengl",
-                                  "qt-opengl-precedence", "keep-zero"}) {
-            QTest::newRow(name) << QString::fromLatin1(name) << filenames << legacy + QLatin1Char(':') + mesa;
-        }
-        for (const auto &name : {"only-modern", "legacy-missing-library", "legacy-json-absent"}) {
+                                  "qt-opengl-precedence", "keep-zero", "only-modern",
+                                  "legacy-missing-library", "legacy-json-absent"}) {
             QTest::newRow(name) << QString::fromLatin1(name) << disableSync << QStringLiteral("1");
         }
-        for (const auto &name : {"no-plugins", "legacy-only", "modern-missing-library", "xcb", "offscreen",
+        for (const auto &name : {"no-plugins", "non-nvidia", "legacy-only", "modern-missing-library", "xcb", "offscreen",
                                   "minimal", "no-wayland-display", "empty-wayland-display", "pvs-vulkan",
                                   "qt-vulkan", "software", "custom-quick", "unknown-rhi", "invalid-api",
                                   "keep-env", "keep-cli", "filenames", "filenames-empty", "dirs", "dirs-empty",
@@ -68,6 +66,7 @@ private Q_SLOTS:
         if (scenario == QStringLiteral("legacy-missing-library")) configs[1].libraryExists = false;
         if (scenario == QStringLiteral("legacy-json-absent")) configs.removeAt(1);
         if (scenario == QStringLiteral("no-plugins")) configs = {{mesa, false}};
+        if (scenario == QStringLiteral("non-nvidia")) configs = {{mesa, true}};
         if (scenario == QStringLiteral("legacy-only")) configs.removeAt(0);
         if (scenario == QStringLiteral("modern-missing-library")) configs[0].libraryExists = false;
         if (scenario == QStringLiteral("xcb") || scenario == QStringLiteral("offscreen") || scenario == QStringLiteral("minimal")) {
@@ -105,9 +104,17 @@ private Q_SLOTS:
         const QString gbm = QStringLiteral("/usr/share/egl/egl_external_platform.d/15_nvidia_gbm.json");
         const QList<EglWorkaround::PlatformConfig> configs{{modern, true}, {gbm, false}, {etcModern, true},
                                                           {etcLegacy, true}, {mesa, false}, {mesa, false}};
-        const auto result = EglWorkaround::changes(inputs(), configs);
-        QCOMPARE(result.size(), 1);
-        QCOMPARE(result.value(filenames), QStringList({gbm, etcLegacy, mesa}).join(QLatin1Char(':')));
+        const QMap<QString, QString> expected{{disableSync, QStringLiteral("1")}};
+        QCOMPARE(EglWorkaround::changes(inputs(), configs), expected);
+        // A broken copy in either directory must not hide a usable copy.
+        auto mixedConfigs = configs;
+        mixedConfigs[0].libraryExists = false;
+        QCOMPARE(EglWorkaround::changes(inputs(), mixedConfigs), expected);
+        mixedConfigs[0].libraryExists = true;
+        mixedConfigs[2].libraryExists = false;
+        QCOMPARE(EglWorkaround::changes(inputs(), mixedConfigs), expected);
+        mixedConfigs[0].libraryExists = false;
+        QVERIFY(EglWorkaround::changes(inputs(), mixedConfigs).isEmpty());
     }
 
     void startupArguments_data()

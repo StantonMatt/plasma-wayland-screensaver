@@ -26,8 +26,25 @@ The legacy run set
 only `libnvidia-egl-wayland.so.1.1.21` was mapped. Evidence is in
 `~/.local/share/pvs-design/leak/`: `control-samples.txt`,
 `noexplicit-samples.txt`, `oldegl-samples.txt` and `heap-report.txt`.
-These measurements establish the driver workaround in a plain window; repeat
-the real-overlay check below to verify the complete screensaver on a desktop.
+These measurements establish the driver workaround in a plain window.
+
+Real-desktop A/B runs on the same RTX 4090 used three overlays for 90 seconds
+per configuration. Artifacts are in `~/.local/share/pvs-design/leak/ab/`:
+
+| Configuration | CPU (% of one core) | Frame interval p99 (ms) | Maximum interval (ms) | Leak |
+| --- | ---: | ---: | ---: | --- |
+| Legacy egl-wayland v1 | 17 | 31–38 | 150–265 | Fixed |
+| egl-wayland2, `__NV_DISABLE_EXPLICIT_SYNC=1` | 26 | 21–24 | 35–51 | Fixed |
+| egl-wayland2, no workaround | 15 | 22–25 | 50–60 | ~2 MiB/min |
+
+Disabling explicit sync keeps frame pacing close to the unmodified-driver
+baseline and avoids the legacy plugin's long hitches while fixing the leak.
+It costs about 9 percentage points of one core compared with legacy, and 11
+compared with the leaking baseline. The automatic policy prefers this measured
+pacing improvement; it does not claim a CPU improvement. The 0.001 MiB/min
+explicit-sync-disabled slope above is from the small-window probe, rather than
+these overlay timing runs. Repeat the real-overlay check below to verify the
+complete screensaver on another desktop.
 
 ## Automatic NVIDIA workaround
 
@@ -37,21 +54,18 @@ Wayland gets a process-local workaround. The app checks
 reads the NVIDIA JSONs and verifies their referenced libraries exist (including
 SONAMEs in the native loader search paths/cache).
 
-- If both egl-wayland2 and legacy egl-wayland are usable, it sets
-  `__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES` to the platform JSON list excluding
-  `09_nvidia_wayland2.json`. The list includes `10_nvidia_wayland.json` and all
-  other JSONs from both directories, preserving other EGL platforms.
-- If only egl-wayland2 is usable, it sets `__NV_DISABLE_EXPLICIT_SYNC=1`.
+- If NVIDIA egl-wayland2 is usable, it sets `__NV_DISABLE_EXPLICIT_SYNC=1`,
+  whether or not legacy egl-wayland is installed. EGL platform selection is
+  left unchanged.
 - Without usable egl-wayland2, it changes nothing.
 
-The legacy path is preferred because it retains explicit sync. The fallback
-turns explicit sync off only for this process. There is no per-frame work,
-allocation, simulation change or pacing change.
+Explicit sync is disabled only for this process. The policy runs once at
+startup, with no per-frame work or allocation and no simulation or render-loop
+pacing code changes.
 
-The startup log is one of:
+The startup log is:
 
 ```text
-PVS NVIDIA EGL Wayland workaround: __EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES=<colon-separated JSON paths>
 PVS NVIDIA EGL Wayland workaround: __NV_DISABLE_EXPLICIT_SYNC=1
 ```
 
@@ -71,6 +85,11 @@ automatic workaround, start a fresh process with either:
 PVS_KEEP_EGL_WAYLAND2=1 plasma-visual-screensaver --background
 plasma-visual-screensaver --keep-egl-wayland2 --background
 ```
+
+Users who prefer legacy can select it explicitly in a fresh process with
+`__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES` set to their legacy JSON path, as in
+the probe above. The app respects that override and never forces legacy by
+default.
 
 This is an upstream [egl-wayland2](https://github.com/NVIDIA/egl-wayland2) defect; the app works around it rather than
 patching or replacing the system library. No upstream fix or fixed release is
@@ -231,8 +250,9 @@ printf 'Artifacts: %s\n' "$run_dir"
 
 Check `PVS graphics backend: opengl`, the NVIDIA workaround log, and whether
 Snakes visibly renders on every output. Check `/proc/<pid>/maps` during the
-legacy run: it should contain `libnvidia-egl-wayland.so`, not
-`libnvidia-egl-wayland2.so`. Compare another fresh process with
+default workaround run: it should contain `libnvidia-egl-wayland2.so`. An
+explicit legacy comparison should instead map `libnvidia-egl-wayland.so`.
+Compare another fresh process with
 `--keep-egl-wayland2` added, on the same desktop and settings, to reproduce the
 unmodified-driver baseline. Snakes' own steady-state pools can warm up, so
 repeat for longer if a rendering run does not settle. Zero memory growth

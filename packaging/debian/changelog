@@ -10,8 +10,8 @@ plasma-visual-screensaver (0.10.0-1) resolute; urgency=medium
     PVS_GRAPHICS_API=vulkan or --graphics-api vulkan. Vulkan can stall on
     NVIDIA layer-shell overlays.
   * Fix steady memory growth on NVIDIA under Plasma Wayland by working around
-    egl-wayland2's queued release events: prefer legacy egl-wayland, otherwise
-    disable explicit sync. Respect user overrides; add --keep-egl-wayland2.
+    egl-wayland2's queued release events: disable explicit sync, including when
+    legacy is installed. Respect user overrides; add --keep-egl-wayland2.
 
  -- Matthew Stanton <stantonmatthewj@gmail.com>  Sat, 03 Oct 2026 18:56:27 -0300
 

@@ -395,8 +395,9 @@ session:
 
 - **Graphics problems or growing memory on NVIDIA Wayland:** startup logs show
   `PVS graphics backend: opengl` by default. The app works around the
-  egl-wayland2 1.0.1 release-event leak by selecting installed legacy
-  egl-wayland, or disabling explicit sync when only egl-wayland2 is available.
+  egl-wayland2 1.0.1 release-event leak by setting
+  `__NV_DISABLE_EXPLICIT_SYNC=1`, even when legacy egl-wayland is installed.
+  Desktop A/B runs showed fewer long hitches than legacy, at higher CPU cost.
   Look for `PVS NVIDIA EGL Wayland workaround:` in startup logs. Other EGL
   platforms and user-set EGL/explicit-sync overrides are preserved. Start a
   fresh process with `PVS_KEEP_EGL_WAYLAND2=1` or `--keep-egl-wayland2` to opt out.

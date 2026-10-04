@@ -93,21 +93,14 @@ bool EglWorkaround::eligible(const Inputs &inputs)
 QMap<QString, QString> EglWorkaround::changes(const Inputs &inputs, const QList<PlatformConfig> &configs)
 {
     if (!eligible(inputs)) return {};
-    bool hasWayland2 = false, hasLegacy = false;
-    QStringList retained;
     for (const auto &config : configs) {
-        const auto name = QFileInfo(config.path).fileName();
-        if (name == wayland2) {
-            hasWayland2 |= config.libraryExists;
-        } else {
-            retained << config.path;
-            if (name == legacyWayland) hasLegacy |= config.libraryExists;
+        if (config.libraryExists && QFileInfo(config.path).fileName() == wayland2) {
+            // Keep egl-wayland2: legacy fixes the leak too, but introduces
+            // long presentation stalls on the measured NVIDIA desktop.
+            return {{disableSync, QStringLiteral("1")}};
         }
     }
-    if (!hasWayland2) return {};
-    if (!hasLegacy) return {{disableSync, QStringLiteral("1")}};
-    retained.removeDuplicates();
-    return {{filenames, retained.join(QLatin1Char(':'))}};
+    return {};
 }
 
 QList<EglWorkaround::PlatformConfig> EglWorkaround::discoverConfigs(const QStringList &directories,
