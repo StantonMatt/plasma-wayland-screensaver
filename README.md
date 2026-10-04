@@ -395,9 +395,13 @@ session:
 
 - **Graphics problems or growing memory on NVIDIA Wayland:** startup logs show
   `PVS graphics backend: opengl` by default. The app works around the
-  egl-wayland2 1.0.1 release-event leak by setting
-  `__NV_DISABLE_EXPLICIT_SYNC=1`, even when legacy egl-wayland is installed.
-  Desktop A/B runs showed fewer long hitches than legacy, at higher CPU cost.
+  egl-wayland2 release-event leak by draining its swapchain queue while retaining
+  explicit sync on source-verified 1.0.1, 1.0.2 and main (1.0.3). Other/unknown
+  versions or uncertain loader resolution fall back to `__NV_DISABLE_EXPLICIT_SYNC=1`.
+  On three RTX 4090 outputs, drain measured 0.0015 MiB/min and 9.8% of one core,
+  versus 0.0020 MiB/min and 22.8% with explicit sync disabled; p99 intervals also improved.
+  `PVS_EGL_LEAK_FIX=drain|noexplicit|off` selects the policy in a fresh process.
+  Drain must log `PVS EGL drain: active wl_surface=N` for each rendering surface.
   Look for `PVS NVIDIA EGL Wayland workaround:` in startup logs. Other EGL
   platforms and user-set EGL/explicit-sync overrides are preserved. Start a
   fresh process with `PVS_KEEP_EGL_WAYLAND2=1` or `--keep-egl-wayland2` to opt out.

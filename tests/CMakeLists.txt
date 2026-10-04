@@ -4,6 +4,38 @@ target_include_directories(test-eglworkaround PRIVATE ../src)
 target_link_libraries(test-eglworkaround PRIVATE GraphicsBackend Qt6::Test)
 add_test(NAME egl-workaround COMMAND test-eglworkaround)
 
+# Test actual libwayland queue/closure dispatch over a socketpair. The tiny
+# test-only NVIDIA-named caller is isolated from runtime/system library paths.
+find_library(WAYLAND_CLIENT_RUNTIME NAMES wayland-client libwayland-client.so.0 REQUIRED)
+add_library(egldrain-fixture SHARED egldrain_fixture.cpp)
+set_target_properties(egldrain-fixture PROPERTIES AUTOMOC OFF
+    OUTPUT_NAME nvidia-egl-wayland2 VERSION 1.0.1 SOVERSION 1
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/egldrain-fixture")
+target_link_libraries(egldrain-fixture PRIVATE ${CMAKE_DL_LIBS})
+add_library(egldrain-unsupported-fixture SHARED egldrain_fixture.cpp)
+set_target_properties(egldrain-unsupported-fixture PROPERTIES AUTOMOC OFF
+    OUTPUT_NAME nvidia-egl-wayland2 VERSION 9.9.9 SOVERSION 1
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/egldrain-unsupported-fixture")
+target_link_libraries(egldrain-unsupported-fixture PRIVATE ${CMAKE_DL_LIBS})
+foreach(version IN ITEMS 1.0.2 1.0.3)
+    add_library(egldrain-fixture-${version} SHARED egldrain_fixture.cpp)
+    set_target_properties(egldrain-fixture-${version} PROPERTIES AUTOMOC OFF
+        OUTPUT_NAME nvidia-egl-wayland2 VERSION ${version} SOVERSION 1
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/egldrain-fixture-${version}")
+    target_link_libraries(egldrain-fixture-${version} PRIVATE ${CMAKE_DL_LIBS})
+endforeach()
+target_compile_definitions(test-eglworkaround PRIVATE EGL_DRAIN_DISCOVERY_FIXTURE="$<TARGET_FILE:egldrain-fixture-1.0.2>")
+add_dependencies(test-eglworkaround egldrain-fixture-1.0.2)
+add_executable(test-egldrain test_egldrain.cpp)
+target_include_directories(test-egldrain PRIVATE ../src)
+target_compile_definitions(test-egldrain PRIVATE EGL_DRAIN_FIXTURE="$<TARGET_FILE:egldrain-fixture>"
+    EGL_DRAIN_UNSUPPORTED_FIXTURE="$<TARGET_FILE:egldrain-unsupported-fixture>"
+    EGL_DRAIN_FIXTURE_102="$<TARGET_FILE:egldrain-fixture-1.0.2>"
+    EGL_DRAIN_FIXTURE_103="$<TARGET_FILE:egldrain-fixture-1.0.3>")
+target_link_libraries(test-egldrain PRIVATE EglDrain Qt6::Test "${WAYLAND_CLIENT_RUNTIME}")
+add_dependencies(test-egldrain egldrain-fixture egldrain-unsupported-fixture egldrain-fixture-1.0.2 egldrain-fixture-1.0.3)
+add_test(NAME egl-drain COMMAND test-egldrain)
+
 add_executable(test-graphicsbackend test_graphicsbackend.cpp)
 target_include_directories(test-graphicsbackend PRIVATE ../src)
 target_link_libraries(test-graphicsbackend PRIVATE GraphicsBackend Qt6::Test)
@@ -123,6 +155,9 @@ add_test(NAME snakes-core-rust
 
 # Build fixture-only hooks separately; the production C ABI remains feature-free.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME egl-drain-exports
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check-egldrain-exports.py"
+        "$<TARGET_FILE:plasma-visual-screensaver>")
 add_test(NAME frame-timing-gate
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_frame_timing.py")
 add_custom_target(snakes-parity-build ALL

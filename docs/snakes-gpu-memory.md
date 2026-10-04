@@ -7,9 +7,12 @@ overlays rendered. Heaptrack attributed the retained allocations to
 frame per window accumulated until the EGL surface was destroyed.
 
 The cause is NVIDIA's **egl-wayland2 1.0.1**, selected by
-`09_nvidia_wayland2.json`. It creates a private `wl_event_queue` per EGL surface,
-but its explicit-sync presentation path never dispatches that queue. The
-release events remain queued. This is independent of the Snakes simulation,
+`09_nvidia_wayland2.json`. It creates **two** private queues: a surface queue
+and a swapchain queue. The explicit-sync presentation path dispatches the
+surface queue but never dispatches the swapchain queue in steady state. Its
+`wl_buffer` objects inherit the swapchain queue, and have no release listener
+when explicit sync is available. libwayland still queues those events until
+someone dispatches them. This is independent of the Snakes simulation,
 geometry, shaders and Qt Quick scene complexity.
 
 A plain Qt Quick OpenGL window reproduced the leak without screensaver code.
@@ -37,37 +40,59 @@ per configuration. Artifacts are in `~/.local/share/pvs-design/leak/ab/`:
 | egl-wayland2, `__NV_DISABLE_EXPLICIT_SYNC=1` | 26 | 21–24 | 35–51 | Fixed |
 | egl-wayland2, no workaround | 15 | 22–25 | 50–60 | ~2 MiB/min |
 
-Disabling explicit sync keeps frame pacing close to the unmodified-driver
-baseline and avoids the legacy plugin's long hitches while fixing the leak.
-It costs about 9 percentage points of one core compared with legacy, and 11
-compared with the leaking baseline. The automatic policy prefers this measured
-pacing improvement; it does not claim a CPU improvement. The 0.001 MiB/min
-explicit-sync-disabled slope above is from the small-window probe, rather than
-these overlay timing runs. Repeat the real-overlay check below to verify the
-complete screensaver on another desktop.
+Those earlier runs established `noexplicit` as a safe fallback. A later
+comparison on the same RTX 4090 / egl-wayland2 1.0.1 desktop used three outputs
+at 100/175/240 Hz, with **12 minutes untraced per mode** for memory/CPU and a
+separate **90 seconds traced** for frame intervals. Artifacts are in
+`~/.cache/agent-scratch/plasma-wayland-screensaver/leak3-pgcka1wc/`:
+
+| Mode | Anonymous slope (MiB/min) | CPU (% of one core) | Frame interval p99, 100/175/240 Hz (ms) | Maximum (ms) |
+| --- | ---: | ---: | --- | ---: |
+| `noexplicit` | 0.0020 | 22.8 | 19.8 / 23.3 / 20.3 | 34.6 |
+| `drain` | 0.0015 | 9.8 | 17.8 / 21.2 / 18.3 | 23.0 |
+| `off` | 2.14 | 9.2 | 17.8 / 21.2 / 18.3 | — |
+
+Drain logged activation for all three surfaces. It kept memory growth near the
+flat control, reduced CPU by 13 percentage points of one core versus
+`noexplicit`, and matched the leaking baseline's p99 intervals. These results
+make drain the default for source-verified versions. A multi-hour soak is
+running separately; no completed soak result is claimed here. Only 1.0.1 has
+these desktop measurements; support for 1.0.2 and the inspected main source
+is based on identical queue behavior.
 
 ## Automatic NVIDIA workaround
 
 At the start of `main()`, before `QGuiApplication` or any EGL use, OpenGL on
 Wayland gets a process-local workaround. The app checks
 `/usr/share/egl/egl_external_platform.d` and `/etc/egl/egl_external_platform.d`,
-reads the NVIDIA JSONs and verifies their referenced libraries exist (including
-SONAMEs in the native loader search paths/cache).
+reads the platform JSONs and resolves their referenced libraries without
+loading EGL. SONAME resolution uses absolute `LD_LIBRARY_PATH` entries first,
+then the exact native loader-cache entry, then system fallback paths. Symlinks
+are canonicalized before comparing versions. Preflight checks the native ELF
+header and verifies that all four Wayland exports resolve to this executable
+before EGL can cache the named-queue function. Ambiguous library selection,
+relative/tokenized loader paths, preloads/auditing and HWCAP selection fall back
+to `noexplicit`.
 
-- If NVIDIA egl-wayland2 is usable, it sets `__NV_DISABLE_EXPLICIT_SYNC=1`,
-  whether or not legacy egl-wayland is installed. EGL platform selection is
-  left unchanged.
-- Without usable egl-wayland2, it changes nothing.
+| Startup condition (no user overrides) | Policy |
+| --- | --- |
+| Resolved egl-wayland2 1.0.1, 1.0.2 or inspected main (1.0.3), certain loader resolution | Drain swapchain queue; retain explicit sync |
+| Any other/unknown egl-wayland2 version or uncertain resolution | Set `__NV_DISABLE_EXPLICIT_SYNC=1` before EGL initializes |
+| No usable egl-wayland2, or an ineligible backend/platform | No change |
 
-Explicit sync is disabled only for this process. The policy runs once at
-startup, with no per-frame work or allocation and no simulation or render-loop
-pacing code changes.
-
-The startup log is:
+Legacy egl-wayland presence does not affect this choice. The startup log names
+the canonical library when drain is selected. Each rendering surface must then
+log `PVS EGL drain: active wl_surface=N (egl-wayland2 VERSION)`. Unexpected
+queue names/callers and surfaces destroyed without activation are diagnosed.
+If a rendered surface never activates, restart with `PVS_EGL_LEAK_FIX=noexplicit`:
+explicit sync cannot be disabled after EGL initialization. The fallback logs:
 
 ```text
 PVS NVIDIA EGL Wayland workaround: __NV_DISABLE_EXPLICIT_SYNC=1
 ```
+
+The version policy runs once before EGL initializes. Drain adds no per-frame
+heap allocation and does not change simulation or render-loop pacing code.
 
 The check requires `WAYLAND_DISPLAY` and an unset/empty or `wayland*`
 `QT_QPA_PLATFORM` (a Qt `-platform` argument takes precedence). It uses the same
@@ -96,6 +121,113 @@ patching or replacing the system library. No upstream fix or fixed release is
 assumed. Once NVIDIA fixes the queue dispatch, use the opt-out to test the new
 library before removing the workaround. Plugin detection is conservative and
 is not limited to a driver version string.
+
+### Queue drain with explicit sync retained
+
+`PVS_EGL_LEAK_FIX=drain|noexplicit|off` selects the mitigation in a fresh
+process. Unset selects drain on the verified versions and `noexplicit` otherwise.
+An explicit `drain` request uses the same preflight and falls back to
+`noexplicit` on an unsupported version or uncertain resolution. Explicit
+`noexplicit` always disables explicit sync on usable egl-wayland2.
+`off` disables both mitigations;
+unknown/empty values also disable them. The existing keep flag/environment
+and all explicitly set driver/platform variables retain their opt-out behavior.
+In particular, unset `__NV_DISABLE_EXPLICIT_SYNC` before requesting drain;
+even a user-set `0` is an existing driver-policy override.
+
+The drain interposes named-queue creation, pending dispatch, queue destruction
+and display disconnect in the executable. At creation, `dladdr` on the caller
+and `realpath` restrict registration to the **exact canonical library selected
+before EGL initialized**, using the same version allowlist as startup policy.
+Other libraries/versions are forwarded without registration. The two upstream
+names (`EGLSurface(id)` and `EGLSurface(id/swapchain-pointer)`) pair queues by
+display and surface id. No EGL internals are accessed and no Qt window hooks,
+timers, socket reads, flushes, fence waits or per-frame allocation are added.
+
+When egl-wayland2 dispatches its surface queue at the start of
+`eplWlSwapBuffers`, the interposer first dispatches pending events on the
+matching swapchain queue. It forwards to the original Wayland function using
+`dlsym(RTLD_NEXT)`. Source guarantees exclusivity of that surface's `current`
+data on the EGL thread, including the swapchain. The base library holds a
+surface-list read lock throughout the swap hook; destruction takes the write
+lock, so teardown cannot free a copied queue pointer during this drain.
+Creation roundtrips have
+finished at this point. The explicit-sync buffers have no release listeners:
+libwayland discards/frees the closures, without changing syncobj state. If the
+compositor lacks explicit sync, existing release listeners execute normally
+before buffer selection, on the same thread as upstream's implicit dispatch.
+Creation-thread tracking would be unsafe because Qt moves surfaces to render
+threads; this approach follows EGL's existing dispatch call instead.
+
+Queue destruction removes registration; display disconnect also removes it
+because upstream can skip queue destruction once the native display is invalid.
+Registry locking protects only registration/lookup: it is released before any
+Wayland dispatch/listener. A swap starts with one live swapchain before
+`SwapChainRealloc`; ambiguous matches are ignored. Steady state adds a compact
+lookup under one mutex and one nonblocking dispatch. Symbol resolution, caller
+checks and registry growth occur during initialization/queue creation only.
+An activation line is emitted once per swapchain:
+
+```text
+PVS EGL drain: active wl_surface=... (egl-wayland2 1.0.1)
+```
+
+The source investigation used upstream v1.0.1,
+[`c757f0fce6f88f36a9a8c03d897ae43796b6989f`](https://github.com/NVIDIA/egl-wayland2/tree/c757f0fce6f88f36a9a8c03d897ae43796b6989f).
+Relevant references:
+
+- [`wayland-swapchain.c:127–170`](https://github.com/NVIDIA/egl-wayland2/blob/c757f0fce6f88f36a9a8c03d897ae43796b6989f/src/wayland/wayland-swapchain.c#L127-L170): dma-buf wrapper queue, params listener/roundtrip; buffers inherit that queue.
+- [`wayland-swapchain.c:214–232`](https://github.com/NVIDIA/egl-wayland2/blob/c757f0fce6f88f36a9a8c03d897ae43796b6989f/src/wayland/wayland-swapchain.c#L214-L232): explicit sync skips `wl_buffer_add_listener`.
+- [`wayland-swapchain.c:339–347`](https://github.com/NVIDIA/egl-wayland2/blob/c757f0fce6f88f36a9a8c03d897ae43796b6989f/src/wayland/wayland-swapchain.c#L339-L347): swapchain queue name.
+- [`wayland-swapchain.c:501–612,637,729–741`](https://github.com/NVIDIA/egl-wayland2/blob/c757f0fce6f88f36a9a8c03d897ae43796b6989f/src/wayland/wayland-swapchain.c#L501-L741): explicit path uses syncobj timelines; only implicit path dispatches its queue.
+- [`wayland-surface.c:119–144,891–899,1328–1334`](https://github.com/NVIDIA/egl-wayland2/blob/c757f0fce6f88f36a9a8c03d897ae43796b6989f/src/wayland/wayland-surface.c#L119-L144): ownership contract; distinct surface queue; pending dispatch before swapchain reallocation.
+- [`wayland-surface.c:1057–1085`](https://github.com/NVIDIA/egl-wayland2/blob/c757f0fce6f88f36a9a8c03d897ae43796b6989f/src/wayland/wayland-surface.c#L1057-L1085): driver quiesces surface callbacks before teardown.
+- [`platform-base.c:515–524,547–586,1054–1077,1082–1122`](https://github.com/NVIDIA/egl-wayland2/blob/c757f0fce6f88f36a9a8c03d897ae43796b6989f/src/base/platform-base.c#L547-L586): swap holds the surface-list read lock and validates the current draw surface; destruction takes the write lock.
+- [Wayland 1.24 `wayland-client.c:1551–1654,1671–1714,2183–2194`](https://github.com/wayland-mirror/wayland/blob/1.24.0/src/wayland-client.c#L1551-L1714): queueing even without a listener; dispatch frees the closure under Wayland's normal read-thread synchronization.
+
+v1.0.2 (`5a2c1cbe0e737cfc3fd89441ab9e40d72c81126e`) and current main
+(`ce0eb711fbfb48de7b42bb615847587d15d4bab5`, meson version 1.0.3, rechecked
+2026-10-04) have the same queue creation, names, surface ownership and dispatch
+behavior as 1.0.1. Both still lack the explicit-path queue dispatch. Main's frame-callback
+limit fix concerns compositor objects with swap interval zero, not this client
+release queue. No environment variable, EGL attribute or swap-interval option
+in the inspected source drains this queue while retaining explicit sync.
+
+Do not drain all driver queues from a timer or creation thread: the queues have
+listeners and EGL-owned data with different lifetimes. A Qt after-swap hook also
+needs a reliable surface/queue association and teardown protection; matching
+at upstream's existing dispatch provides both. Surface recreation adds stalls
+and allocation, and legacy/Vulkan have already failed desktop pacing checks.
+
+Focused tests use an isolated test-only caller DSO and actual libwayland over a
+socketpair, with no compositor/GPU. They check listener-free releases, correct
+queue selection, malformed/untrusted creation, render-thread migration,
+recreation/disconnect, errors, listeners, and zero C++ allocations in 1000
+steady dispatches. They do not establish real NVIDIA binding, memory slope,
+frame pacing or desktop CPU cost.
+
+Desktop handoff (build/test scheduling belongs to the orchestrator):
+
+```bash
+cmake -S . -B build-leak3 -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+heavy cmake --build build-leak3 -j 2
+heavy bash "$HOME/.local/share/pvs-design/leak/verify-leak3.sh" \
+  "$PWD/build-leak3/bin/plasma-visual-screensaver" 12
+```
+
+The script builds nothing and refuses an existing D-Bus owner. It uses the
+current visual/configuration and normal desktop bus, runs control-noexplicit,
+drain and off, samples Anonymous/process CPU every 10 seconds, excludes 60
+seconds of warmup, and prints least-squares slope and CPU as a percentage of
+one core. Each mode then runs a separate 90-second timed `PVS_FRAME_TRACE`
+preview to report frame-interval p50/p99/max by named output (first 5 seconds
+excluded). Keeping tracing separate avoids counting retained trace rows as
+the leak. It saves CSVs, logs and maps on disk and stops only its own PIDs.
+Keep all overlays visible and do not provide input; arrange desktop power
+settings for timed previews, which bypass inhibition services. Reject runs
+without actual frames or drain activation. Establish memory near the control's
+flat slope and CPU/pacing near off. The measured comparison above passed these
+checks and selected drain as the default for the verified versions.
 
 Vulkan remains experimental: on this desktop with three layer-shell overlays,
 it presented zero frames in two runs (basic loop/FIFO, then threaded loop/swap
@@ -201,7 +333,7 @@ CONFIG
 env -u QSG_RHI_BACKEND -u QT_QUICK_BACKEND -u PVS_GRAPHICS_API \
   -u PVS_FRAME_TRACE -u PVS_FRAME_TRACE_DURATION_MS \
   -u __EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES -u __EGL_EXTERNAL_PLATFORM_CONFIG_DIRS \
-  -u __NV_DISABLE_EXPLICIT_SYNC -u PVS_KEEP_EGL_WAYLAND2 \
+  -u __NV_DISABLE_EXPLICIT_SYNC -u PVS_KEEP_EGL_WAYLAND2 -u PVS_EGL_LEAK_FIX \
   XDG_CONFIG_HOME="$run_dir/config" QSG_INFO=1 \
   ./build-vkfix/bin/plasma-visual-screensaver --graphics-api opengl --preview \
   > "$run_dir/app.log" 2>&1 &
@@ -265,7 +397,7 @@ interfering with an installed D-Bus service, run:
 ```bash
 env -u QSG_RHI_BACKEND -u QT_QUICK_BACKEND -u PVS_GRAPHICS_API \
   -u __EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES -u __EGL_EXTERNAL_PLATFORM_CONFIG_DIRS \
-  -u __NV_DISABLE_EXPLICIT_SYNC -u PVS_KEEP_EGL_WAYLAND2 \
+  -u __NV_DISABLE_EXPLICIT_SYNC -u PVS_KEEP_EGL_WAYLAND2 -u PVS_EGL_LEAK_FIX \
   XDG_CONFIG_HOME="$run_dir/config" QSG_INFO=1 \
   PVS_FRAME_TRACE="$run_dir/frames.csv" PVS_FRAME_TRACE_DURATION_MS=300000 \
   dbus-run-session -- ./build-vkfix/bin/plasma-visual-screensaver --graphics-api opengl --preview \
