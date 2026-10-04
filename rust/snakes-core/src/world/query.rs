@@ -117,6 +117,11 @@ impl World {
             s.boost_cost.saturating_sub(s.boost_paid) as usize
         } else if effects::modifiers(s.effect_kind,s.effect_ticks).free_boost {0} else {2+s.len/100})
     }
+    /// Additional physical inputs used to invalidate the controller's cached
+    /// single-burst schedules. These counters have no presentation payload.
+    pub(crate) fn motion_cache_counters(&self,id:usize)->(u8,u8,bool) {
+        let s=&self.snakes[id];(s.boost_cost,s.boost_paid,self.growth_slots>0)
+    }
     /// Exact mechanics speed/turn limits for a proposed rush. Recomputes the
     /// growth-block flag just as move_snake does, without changing the world.
     pub fn motion_limits(&self, id: usize, rush: f64) -> Option<(f64, f64)> {

@@ -203,8 +203,10 @@ struct Candidate {
     turn_until: u64,
     exit_angle: f64,
     angle: f64,
+    turn_exit: f64,
     path: [Point; STEPS+1],
     steps: usize,
+    simulated_steps:usize,
     score: f64,
     venom_goal:Option<VenomPlan>,
     clearance: f64,
@@ -220,7 +222,7 @@ impl Default for Rival {
     fn default()->Self {Self {alive:false,radius:0.0,len:0,speed:0.0,turn:0.0,growth_delay:0.0,release_rate:0.0,angle:0.0,observed_turn:0.0,forecast_angle:0.0,direction:Point::default(),dynamic:false,path:[Point::default();STEPS+1],envelope:[0.0;STEPS+1],distance:[0.0;STEPS+1],escape:[Point::default();3]}}
 }
 impl Default for Candidate {
-    fn default()->Self {Self {body_len:0,effects:forecast::Snapshot::default(),kind:2,checked:false,tracks_goal:false,desired:0.0,turn_until:u64::MAX,exit_angle:0.0,angle:0.0,path:[Point::default();STEPS+1],steps:0,score:0.0,venom_goal:None,clearance:0.0,capped:false,area:0,uncertain:false,attack:Attack::default(),replies:0,rush:0.0}}
+    fn default()->Self {Self {body_len:0,effects:forecast::Snapshot::default(),kind:2,checked:false,tracks_goal:false,desired:0.0,turn_until:u64::MAX,exit_angle:0.0,angle:0.0,turn_exit:0.0,path:[Point::default();STEPS+1],steps:0,simulated_steps:0,score:0.0,venom_goal:None,clearance:0.0,capped:false,area:0,uncertain:false,attack:Attack::default(),replies:0,rush:0.0}}
 }
 
 /// Cached single-burst schedules; all steady-state storage belongs to the controller.
@@ -258,6 +260,27 @@ impl Motion {
             m.max_curve=m.max_curve.max(expired_limits.0*expired_limits.1);
         }
         m
+    }
+}
+
+/// Every input read by the single-burst forecast and its speed/turn/radius
+/// helpers. Pose, trail and intent do not affect these limits. Exact keys
+/// deliberately invalidate on counter changes rather than approximate expiry.
+#[derive(Clone, Copy, PartialEq)]
+struct MotionKey {
+    generation:u32,len:usize,birth_len:usize,radius:f64,base_radius:f64,growth:f64,speed_bias:f64,
+    effect_kind:u8,effect_ticks:u16,boost_ticks:u8,boost_cost:u8,boost_paid:u8,cooldown_ticks:u8,
+    width:f64,height:f64,speed:f64,intelligence:f64,rules:crate::RuleSet,growth_available:bool,rush:f64,
+}
+impl MotionKey {
+    fn observed(w:&World,id:usize)->Self {
+        let s=&w.snakes[id];let c=w.config();
+        let (boost_cost,boost_paid,growth_available)=w.motion_cache_counters(id);
+        Self {generation:s.generation,len:s.len,birth_len:s.birth_len,radius:s.radius,base_radius:s.base_radius,
+            growth:s.growth,speed_bias:s.traits.speed_bias,effect_kind:s.effect_kind,effect_ticks:s.effect_ticks,
+            boost_ticks:s.boost_ticks,boost_cost,boost_paid,cooldown_ticks:s.cooldown_ticks,
+            width:c.width,height:c.height,speed:c.speed,intelligence:c.intelligence,rules:c.rules,
+            growth_available,rush:if c.rules==crate::RuleSet::Classic {s.rush} else {0.0}}
     }
 }
 
@@ -318,17 +341,22 @@ pub struct DecisionDiagnostic {
 #[derive(Clone)]
 pub struct AiController {
     #[cfg(test)]
+    reference_queries:bool,
+    #[cfg(test)]
     venom_searches:std::cell::Cell<usize>,
     spatial: Spatial,
+    motion_keys:[Option<MotionKey>;MAX_SNAKES],
     body_cache: [BodyCache;256],
     candidates: Option<Box<[Candidate;CANDIDATES]>>,
     rollout_distance: [f64;STEPS+1],
+    rollout_projection: [f64;STEPS+1],
     rival_necks:[[u16;STEPS+1];MAX_SNAKES],
     neck_owner:usize,
     neck_horizons:[u16;MAX_SNAKES],
     cache_epoch: u64,
     diagnostic_enabled: bool,
     profile_enabled: bool,
+    collision_effects:bool,
     profile: [u128;5],
     forecast_profile: [u128;5],
     decisions: [DecisionDiagnostic; MAX_SNAKES],
@@ -363,7 +391,7 @@ pub struct AiController {
 impl Default for AiController {fn default() -> Self {Self::new()}}
 impl AiController {
     pub fn new() -> Self {
-        Self {spatial:Spatial::new(),candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],rival_necks:[[0;STEPS+1];MAX_SNAKES],neck_owner:MAX_SNAKES,neck_horizons:[0;MAX_SNAKES],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,profile:[0;5],forecast_profile:[0;5], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],
+        Self {#[cfg(test)] reference_queries:false,spatial:Spatial::new(),motion_keys:[None;MAX_SNAKES],candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],rollout_projection:[0.0;STEPS+1],rival_necks:[[0;STEPS+1];MAX_SNAKES],neck_owner:MAX_SNAKES,neck_horizons:[0;MAX_SNAKES],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,collision_effects:false,profile:[0;5],forecast_profile:[0;5], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],
             rivals:[Rival::default();MAX_SNAKES],
             #[cfg(test)]
             venom_searches:std::cell::Cell::new(0),opportunity_rivals:Box::new([Rival::default();MAX_SNAKES]),opportunity_mask:0,rival_limits:[[(0.0,0.0);STEPS+1];MAX_SNAKES], simulation_rivals:Some(Box::new([Rival::default();MAX_SNAKES])),item_forecast:forecast::Items::default(),initial_effects:forecast::Timeline::default(),effects:forecast::Timeline::default(),opportunities:forecast::Timeline::default(),look_deltas:[Point::default();MAX_SNAKES],capsule_etas:[[f64::INFINITY;MAX_SNAKES];crate::MAX_ITEMS],prism:None,food:[None;MAX_FOOD + crate::MAX_ITEMS],
@@ -423,8 +451,14 @@ impl AiController {
         self.max_radius=0.0;self.max_forecast_speed=0.0;self.phase_sweeps.fill(0);
         for s in w.snakes().filter(|s|s.alive) {
             let id=s.id as usize;
-            self.motion[id]=Motion::forecast(w,id,if w.config().rules==crate::RuleSet::Classic {w.observed_rush(id).unwrap()} else {0.0});
-            self.boosted_motion[id]=if w.boost_ready(id) {Motion::forecast(w,id,0.6)} else {self.motion[id]};
+            let key=MotionKey::observed(w,id);
+            let refresh=self.motion_keys[id]!=Some(key);
+            #[cfg(test)] let refresh=refresh || self.reference_queries;
+            if refresh {
+                self.motion[id]=Motion::forecast(w,id,key.rush);
+                self.boosted_motion[id]=if w.boost_ready(id) {Motion::forecast(w,id,0.6)} else {self.motion[id]};
+                self.motion_keys[id]=Some(key);
+            }
             let (speed,turn)=self.motion[id].at(0);
             self.max_forecast_speed=self.max_forecast_speed.max(self.motion[id].max_speed);
             self.max_radius=self.max_radius.max(s.radius);self.planning_speed[s.id as usize]=speed;
@@ -507,6 +541,8 @@ impl AiController {
             self.simulation_rivals=Some(scratch);
         }
         self.effects=forecast.effects;
+        self.collision_effects=self.effects.collision_effects();
+        #[cfg(test)] {self.collision_effects|=self.reference_queries;}
         let paths_time=forecast_clock.map(|t|t.elapsed().as_nanos());
         if let Some(t)=paths_time {self.forecast_profile[1]+=t-bounds_time.unwrap();}
         self.item_forecast.contests(w,&self.rivals,&self.motion,&self.effects);
@@ -1145,10 +1181,13 @@ impl AiController {
         self.body_blocked_phase(w,s,a,b,time,padding,tests,self.effects.phased(s.id as usize,phase::step(time)),&self.effects)
     }
     fn body_blocked_phase(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline) -> (bool,f64,bool) {
+        self.body_blocked_phase_flags::<true>(w,s,a,b,time,padding,tests,phased,effects)
+    }
+    fn body_blocked_phase_flags<const EFFECTS:bool>(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline) -> (bool,f64,bool) {
         let mut bite=None;
-        if effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) {
-            self.body_query::<true>(w,s,a,b,time,padding,tests,phased,effects,&mut bite,phase::step(time).saturating_sub(1),None)
-        } else {self.body_query::<false>(w,s,a,b,time,padding,tests,phased,effects,&mut bite,phase::step(time).saturating_sub(1),None)}
+        if EFFECTS && effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) {
+            self.body_query::<true,true>(w,s,a,b,time,padding,tests,phased,effects,&mut bite,phase::step(time).saturating_sub(1),None)
+        } else {self.body_query::<false,EFFECTS>(w,s,a,b,time,padding,tests,phased,effects,&mut bite,phase::step(time).saturating_sub(1),None)}
     }
     #[cfg(test)]
     fn body_blocked_effects<const BITES:bool>(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&mut forecast::Timeline)->(bool,f64,bool) {
@@ -1156,14 +1195,14 @@ impl AiController {
     }
     fn body_blocked_effects_from<const BITES:bool>(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&mut forecast::Timeline,start:usize,physical_rivals:Option<&[Rival;MAX_SNAKES]>)->(bool,f64,bool) {
         let mut bite=None;
-        let result=self.body_query::<BITES>(w,s,a,b,time,padding,tests,phased,effects,&mut bite,start,physical_rivals);
+        let result=self.body_query::<BITES,true>(w,s,a,b,time,padding,tests,phased,effects,&mut bite,start,physical_rivals);
         if !result.0 {if let Some((other,cut))=bite {
             let step=phase::step(time);
             effects.sever_cut[other]=cut;effects.bite_step[other]=step;effects.consumed_at[s.id as usize]=step;
         }}
         result
     }
-    fn body_query<const BITES:bool>(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline,bite_result:&mut Option<(usize,usize)>,start:usize,physical_rivals:Option<&[Rival;MAX_SNAKES]>)->(bool,f64,bool) {
+    fn body_query<const BITES:bool,const EFFECTS:bool>(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline,bite_result:&mut Option<(usize,usize)>,start:usize,physical_rivals:Option<&[Rival;MAX_SNAKES]>)->(bool,f64,bool) {
         let phase_step=phase::step(time);
         if phased {return (false,200.0,false);}
         let key=self.spatial.key(w.canonical_point(a));
@@ -1176,7 +1215,7 @@ impl AiController {
             // first-step margin reaches 2px; later margins are capped by r/4.
             let contact=crate::world::taper::contact_radius(w.config().rules,s.radius,self.max_radius,false);
             let margin=if first {2.0} else {1.5+self.max_radius*0.25+padding};
-            ordinary.max(spatial::query_radius(contact,margin,effects.max_reach_scale(phase_step),motion))
+            ordinary.max(spatial::query_radius(contact,margin,if EFFECTS {effects.max_reach_scale(phase_step)} else {1.0},motion))
         } else {ordinary};
         let root_x=(key%self.spatial.cols) as isize;
         let root_y=(key/self.spatial.cols) as isize;
@@ -1188,6 +1227,12 @@ impl AiController {
         let mut clearance=200.0_f64;
         let mut bite=None;
         let length2=ab.x*ab.x+ab.y*ab.y;
+        // Reject distant records before release/taper work. Full-width bodies
+        // and the largest neck margin bound every exact threshold below. Keep
+        // traversal and visit accounting unchanged, including capped queries.
+        let mut reserves=[0.0;MAX_SNAKES];
+        let min_x=ab.x.min(0.0);let max_x=ab.x.max(0.0);
+        let min_y=ab.y.min(0.0);let max_y=ab.y.max(0.0);
         let (xs,ys)=self.spatial.spans(key,x0,x1,y0,y1);
         for y in ys {for x in xs.clone() {
             let Some(k)=self.spatial.offset(key,x,y) else {continue;};
@@ -1199,9 +1244,24 @@ impl AiController {
                 let encoded=at as usize; at=self.spatial.next[encoded];
                 let other=encoded/MAX_SEGMENTS;let j=encoded%MAX_SEGMENTS;
                 let same=other==s.id as usize;
-                if !same && effects.phased(other,phase_step) {continue;}
+                if EFFECTS && !same && effects.phased(other,phase_step) {continue;}
                 if same && (!w.config().self_collisions || j as f64+neck_advance<10.0) {continue;}
                 let r=&self.rivals[other];
+                let seg=w.segments[encoded];let p=seg.current;
+                let ap=w.displacement(a,p);
+                if reserves[other]==0.0 {
+                    let contact=crate::world::taper::contact_radius(w.config().rules,s.radius,r.radius,same);
+                    let margin=if first {if same && w.config().rules==crate::RuleSet::V2 {2.0} else {0.75}}
+                        else {1.5+(r.speed*STEP_SECONDS*0.35).min(r.radius*0.25)+padding};
+                    let scale=if !EFFECTS || same {1.0} else {effects.reach_scale(other,phase_step)};
+                    // Match the narrow phase's multiplication/addition order.
+                    reserves[other]=spatial::query_radius(contact*scale,margin*scale,1.0,motion);
+                }
+                let reserve=reserves[other];
+                let distant=ap.x<min_x-reserve || ap.x>max_x+reserve
+                    || ap.y<min_y-reserve || ap.y>max_y+reserve;
+                #[cfg(test)] let distant=distant && !self.reference_queries;
+                if distant {continue;}
                 if BITES && effects.sever_cut[other]>0 && j>=effects.sever_cut[other] {continue;}
                 if BITES && bite.is_some_and(|(victim,cut)|victim==other && j>=cut) {continue;}
                 // 65% of current speed allows for growth, slowing and curved
@@ -1211,7 +1271,6 @@ impl AiController {
                     effects.bite_step[other] as f64*STEP_SECONDS+(sever-j) as f64*r.release_rate+r.growth_delay
                 } else {(r.len-j) as f64*r.release_rate+r.growth_delay};
                 if time>release+0.15 {continue;}
-                let p=w.snake(other).unwrap().segments[j].current;
                 let body=if sever>0 && effects.bite_step[other]<phase_step {
                     // The retained endpoint is a tapered tail now, not the
                     // original full-width mid-body. Keeping its old width
@@ -1230,17 +1289,15 @@ impl AiController {
                 // Half a tick's motion and a small radius reserve protect the
                 // first swept tick against segments that shift along corners.
                 let margin=if time<=STEP_SECONDS+1e-9 {if same && w.config().rules==crate::RuleSet::V2 {0.75+1.25*body/r.radius} else {0.75}} else {1.5+(r.speed*STEP_SECONDS*0.35).min(r.radius*0.25)+padding};
-                let scale=if same {1.0} else {effects.reach_scale(other,phase_step)};
+                let scale=if !EFFECTS || same {1.0} else {effects.reach_scale(other,phase_step)};
                 let threshold=physical_contact*scale;
                 let margin=margin*scale;
-                let ap=w.displacement(a,p);
                 let reserve=spatial::query_radius(threshold,margin,1.0,if first {self.spatial.max_motion} else {0.0});
                 if ap.x<ab.x.min(0.0)-reserve || ap.x>ab.x.max(0.0)+reserve
                     || ap.y<ab.y.min(0.0)-reserve || ap.y>ab.y.max(0.0)+reserve {continue;}
                 let fraction=if length2>0.0001 {((ap.x*ab.x+ap.y*ab.y)/length2).clamp(0.0,1.0)} else {0.0};
                 let mut d=(ap.x-ab.x*fraction).powi(2)+(ap.y-ab.y*fraction).powi(2);
                 if time<=STEP_SECONDS+1e-9 {
-                    let seg=w.snake(other).unwrap().segments[j];
                     let velocity=w.displacement(seg.previous,seg.current);
                     let future=w.canonical_point(Point{x:p.x+velocity.x,y:p.y+velocity.y});
                     d=w.segments_distance_squared(a,b,p,future);
@@ -1272,23 +1329,27 @@ impl AiController {
     fn cached_body_blocked(&mut self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize)->(bool,f64,bool) {
         {let effects=self.effects;self.cached_body_blocked_phase(w,s,a,b,time,padding,tests,effects.phased(s.id as usize,phase::step(time)),&effects)}
     }
+    #[cfg(test)]
     fn cached_body_blocked_phase(&mut self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline)->(bool,f64,bool) {
-        if effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) {
+        self.cached_body_blocked_phase_flags::<true>(w,s,a,b,time,padding,tests,phased,effects)
+    }
+    fn cached_body_blocked_phase_flags<const EFFECTS:bool>(&mut self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline)->(bool,f64,bool) {
+        if EFFECTS && effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) {
             return self.body_blocked_phase(w,s,a,b,time,padding,tests,phased,effects);
         }
         let hash=a.x.to_bits().wrapping_mul(0x9e3779b97f4a7c15)^a.y.to_bits().rotate_left(23)
             ^b.x.to_bits().rotate_left(41)^b.y.to_bits().rotate_left(11)^time.to_bits().rotate_left(7);
         let key=(hash^(hash>>32)) as usize&255;
         let old=self.body_cache[key];
-        let phase_bits=effects.phase_bits(phase::step(time));
-        let surge_bits=effects.surge_bits(phase::step(time));
+        let phase_bits=if EFFECTS {effects.phase_bits(phase::step(time))} else {0};
+        let surge_bits=if EFFECTS {effects.surge_bits(phase::step(time))} else {0};
         if old.epoch==self.cache_epoch && old.id==s.id as usize && old.a==a && old.b==b && old.time==time && old.padding==padding && old.speed==self.planning_speed[s.id as usize] && old.phased==phased && old.phase_bits==phase_bits && old.surge_bits==surge_bits {
             *tests+=old.visits;
             if *tests>NARROW_LIMIT {return (true,old.result.1,true);}
             return old.result;
         }
         let before=*tests;
-        let result=self.body_blocked_phase(w,s,a,b,time,padding,tests,phased,effects);
+        let result=self.body_blocked_phase_flags::<EFFECTS>(w,s,a,b,time,padding,tests,phased,effects);
         if !result.2 {
             self.body_cache[key]=BodyCache {epoch:self.cache_epoch,id:s.id as usize,a,b,time,padding,speed:self.planning_speed[s.id as usize],visits:*tests-before,phased,phase_bits,surge_bits,result};
         }
@@ -1332,8 +1393,9 @@ impl AiController {
         // Ordinary candidates must not pay for capsules only a new burst reaches.
         let boosted=kind==12 || ((kind==0 || kind==1 || state.escape_boost) && state.rush>=0.5)
             || (proposed.valid && proposed.control(w.tick()).1>=0.5);
-        if self.item_forecast.reachable(s.id as usize,horizon,boosted) {self.rollout_simulation::<true>(w,s,state,kind,horizon,c,&mut rivals);}
-        else {self.rollout_simulation::<false>(w,s,state,kind,horizon,c,&mut rivals);}
+        if self.item_forecast.reachable(s.id as usize,horizon,boosted) {self.rollout_simulation::<true,true>(w,s,state,kind,horizon,c,&mut rivals);}
+        else if self.collision_effects {self.rollout_simulation::<false,true>(w,s,state,kind,horizon,c,&mut rivals);}
+        else {self.rollout_simulation::<false,false>(w,s,state,kind,horizon,c,&mut rivals);}
         c.venom_goal=if alternate {Some(VenomPlan {goal:state.goal,target:state.venom_target,
             generation:state.venom_generation,index:state.venom_index,standoff:state.venom_standoff})} else {None};
         self.simulation_rivals=Some(rivals);
@@ -1345,7 +1407,7 @@ impl AiController {
         result.effects.set_guard(s.id as usize,state.guarding,state.target & !target::ITEM_BIT);
         result
     }
-    fn rollout_simulation<const ITEMS:bool>(&mut self,w:&World,s:SnakeView<'_>,state:State,kind:usize,horizon:usize,c:&mut Candidate,rivals:&mut [Rival;MAX_SNAKES]) {
+    fn rollout_simulation<const ITEMS:bool,const EFFECTS:bool>(&mut self,w:&World,s:SnakeView<'_>,state:State,kind:usize,horizon:usize,c:&mut Candidate,rivals:&mut [Rival;MAX_SNAKES]) {
         let forecast_clock=self.profile_enabled.then(std::time::Instant::now);
         let proposed=if kind==1 {state.attack} else if kind==7 || kind==8 {state.attack_options[kind-7]} else {Attack::default()};
         let attack=if self.attack_usable(w,s,state,proposed) {proposed} else {Attack::default()};
@@ -1369,7 +1431,7 @@ impl AiController {
         c.kind=kind;c.checked=false;c.tracks_goal=tracks_goal;c.desired=0.0;
         c.turn_until=match kind {1|12=>state.turn_until,7|8=>w.tick()+16,9|10=>w.tick()+32,_=>u64::MAX};
         c.exit_angle=if kind==1 || kind==12 {state.exit_angle} else {0.0};
-        c.angle=s.angle;c.steps=0;c.score=0.0;c.clearance=200.0;
+        c.angle=s.angle;c.turn_exit=0.0;c.steps=0;c.simulated_steps=0;c.score=0.0;c.clearance=200.0;
         c.capped=false;c.area=0;c.uncertain=false;c.attack=attack;c.replies=0;c.rush=rush;
         c.path[0]=s.segments[0].current;
         let goal=state.waypoint.unwrap_or(state.goal);
@@ -1385,13 +1447,14 @@ impl AiController {
         let mut tests=0;
         let mut trajectory_state=state;
         let mut direction=Point {x:s.angle.cos(),y:s.angle.sin()};
+        let forward=direction;
         let mut rotation=(turn*STEP_SECONDS).sin_cos();
-        self.rollout_distance[0]=0.0;
+        self.rollout_distance[0]=0.0;self.rollout_projection[0]=0.0;
         let mut checked=0;
         let mut max_curve=if w.config().rules==crate::RuleSet::V2 {motion.max_curve} else if attack.valid {let limits=w.motion_limits(s.id as usize,attack.burst).unwrap();
             (limits.0*limits.1).max(crossing_limits.0*crossing_limits.1)} else {speed*turn};
 
-        let mut previous_phase=forecast.effects.phased(s.id as usize,1);let mut previous_bits=forecast.effects.phase_bits(1);let mut previous_surge=forecast.effects.surge_bits(1);let mut phase_start=0;
+        let mut previous_phase=EFFECTS && forecast.effects.phased(s.id as usize,1);let mut previous_bits=if EFFECTS {forecast.effects.phase_bits(1)} else {0};let mut previous_surge=if EFFECTS {forecast.effects.surge_bits(1)} else {0};let mut phase_start=0;
         let mut near=0u16;let mut defeated=0u16;
         let mut reached=target.is_some_and(|(p,contact)|contact.collected() || (tracks_goal && contact.with_guard(state.guarding).ahead(w,c.path[0],s.angle,speed*STEP_SECONDS,p)));
         for (other,r) in self.rivals.iter().enumerate() {
@@ -1459,11 +1522,16 @@ impl AiController {
                 c.angle=normalize_angle(desired);
                 let (sin,cos)=c.angle.sin_cos();direction=Point{x:cos,y:sin};
             }
-            if j==16 && kind!=1 && kind!=12 && kind!=9 && kind!=10 {c.exit_angle=c.angle;}
+            if j==16 {
+                c.turn_exit=c.angle;
+                if kind!=1 && kind!=12 && kind!=9 && kind!=10 {c.exit_angle=c.angle;}
+            }
             let p=w.canonical_point(Point {x:c.path[j-1].x+direction.x*speed*STEP_SECONDS,
                 y:c.path[j-1].y+direction.y*speed*STEP_SECONDS});
-            c.path[j]=p;
-            if target.is_some_and(|(target,contact)|contact.with_guard(state.guarding).reached_with(w.distance_squared(p,target),if ITEMS {forecast.effects.before(s.id as usize,j)} else {self.initial_effects.observed_before(s.id as usize,j)},j)) {reached=true;}
+            c.path[j]=p;c.simulated_steps=j;
+            let projection=(p.x-c.path[0].x)*forward.x+(p.y-c.path[0].y)*forward.y;
+            self.rollout_projection[j]=self.rollout_projection[j-1].max(projection);
+            if !reached && target.is_some_and(|(target,contact)|contact.with_guard(state.guarding).reached_with(w.distance_squared(p,target),if ITEMS {forecast.effects.before(s.id as usize,j)} else {self.initial_effects.observed_before(s.id as usize,j)},j)) {reached=true;}
             let participant_clock=(ITEMS && self.profile_enabled).then(std::time::Instant::now);
             let changed_movement=ITEMS && forecast.movement_changed() & !(1<<s.id)!=0;
             if changed_movement {Self::advance_rivals(w,rivals,&self.motion,&forecast,j,1<<s.id,Some((&self.effects,&self.rivals)),None);}
@@ -1478,11 +1546,11 @@ impl AiController {
             } else {forecast.sweep_needed=false;}
             if changed_movement {Self::update_envelopes(w,rivals,&self.motion,&forecast,j,1<<s.id,Some((&self.effects,&self.rivals)));}
             if let Some(t)=participant_clock {self.forecast_profile[4]+=t.elapsed().as_nanos();}
-            let phased=forecast.effects.phased(s.id as usize,j);
+            let phased=EFFECTS && forecast.effects.phased(s.id as usize,j);
             let phase_changed=phased!=previous_phase;
             let approaching_phase=ITEMS && forecast.sweep_needed;previous_phase=phased;
-            let rival_phase_changed=previous_bits!=forecast.effects.phase_bits(j);previous_bits=forecast.effects.phase_bits(j);
-            let surge_changed=previous_surge!=forecast.effects.surge_bits(j);previous_surge=forecast.effects.surge_bits(j);
+            let rival_phase_changed=previous_bits!=(if EFFECTS {forecast.effects.phase_bits(j)} else {0});previous_bits=if EFFECTS {forecast.effects.phase_bits(j)} else {0};
+            let surge_changed=previous_surge!=(if EFFECTS {forecast.effects.surge_bits(j)} else {0});previous_surge=if EFFECTS {forecast.effects.surge_bits(j)} else {0};
             if phased {phase_start=j;}
 
             // Even a first-step collision is checked. A tactic feasibility
@@ -1509,9 +1577,9 @@ impl AiController {
             // Finish the old stage before changing speed/turn. Every consumer
             // uses this same interval, including head and deposited-self sweeps.
             let bite_exit=forecast.effects.consumed_at[s.id as usize];
-            let sweep=(bite_exit>0 && j<=bite_exit+3) || (forecast.effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) && forecast.effects.at(s.id as usize,j).is(crate::effects::EffectKind::Venom)) || approaching_phase || (ITEMS && forecast.effects.movement_event(j)) || rival_phase_changed || surge_changed || phase_changed || j==1 || j%4==0 || j==horizon || (attack.valid && w.tick()+j as u64==attack.turn_at)
+            let sweep=(bite_exit>0 && j<=bite_exit+3) || ((EFFECTS && forecast.effects.may_have(s.id as usize,crate::effects::EffectKind::Venom)) && forecast.effects.at(s.id as usize,j).is(crate::effects::EffectKind::Venom)) || approaching_phase || (ITEMS && forecast.effects.movement_event(j)) || rival_phase_changed || surge_changed || phase_changed || j==1 || j%4==0 || j==horizon || (attack.valid && w.tick()+j as u64==attack.turn_at)
                 || (w.config().rules==crate::RuleSet::V2 && (if ITEMS {forecast.motion(w,s.id as usize,rush,&motion,j+1)} else {motion.at(j)})!=(speed,turn))
-                || forecast.effects.phase_bits(j+1)!=previous_bits || forecast.effects.surge_bits(j+1)!=previous_surge
+                || (if EFFECTS {forecast.effects.phase_bits(j+1)} else {0})!=previous_bits || (if EFFECTS {forecast.effects.surge_bits(j+1)} else {0})!=previous_surge
                 || self.phase_sweeps[j/64]&(1u64<<(j%64))!=0;
             let from_index=if phase_changed || rival_phase_changed {j-1} else {checked};
             let span=(j-from_index) as f64*STEP_SECONDS;
@@ -1527,9 +1595,9 @@ impl AiController {
             if sweep {
                 let from=c.path[from_index];
                 checked=j;
-                let (hit,clearance,capped)=if forecast.effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) {
+                let (hit,clearance,capped)=if EFFECTS && forecast.effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) {
                     self.body_blocked_effects_from::<true>(w,s,from,p,t,padding,&mut tests,phased,&mut forecast.effects,from_index,Some(rivals))
-                } else {self.cached_body_blocked_phase(w,s,from,p,t,padding,&mut tests,phased,&forecast.effects)};
+                } else {self.cached_body_blocked_phase_flags::<EFFECTS>(w,s,from,p,t,padding,&mut tests,phased,&forecast.effects)};
                 c.clearance=c.clearance.min(clearance); c.capped|=capped;
                 if hit {break;}
             }
@@ -1537,15 +1605,16 @@ impl AiController {
             let mut active=if sweep && (j==1 || state.revise_opponents) {near & !defeated} else {0};
             while active!=0 {
                 let other=active.trailing_zeros() as usize;active&=active-1;
-                if !forecast.effects.contact(s.id as usize,other,j) {continue;}
-                let r=Self::forecast_rival(rivals,&self.rivals,other);
+                if EFFECTS && !forecast.effects.contact(s.id as usize,other,j) {continue;}
+                let dynamic=ITEMS && rivals[other].dynamic;
+                let r=if dynamic {&rivals[other]} else {&self.rivals[other]};
                 let winning=c.body_len>=r.len+if w.config().rules==crate::RuleSet::V2 {4} else {6};
                 let physical_reach=(s.radius+r.radius)*0.82;
-                let reach=physical_reach*forecast.effects.reach_scale(other,j);
+                let reach=physical_reach*(if EFFECTS {forecast.effects.reach_scale(other,j)} else {1.0});
                 // A bounded turn envelope widens with time, but not into an
                 // arbitrary reachable disk that would paralyze all pursuit.
-                let envelope_scale=if rivals[other].dynamic {1.0} else {forecast.effects.reach_scale(other,j)/self.effects.reach_scale(other,j)};
-                let (rival_speed,rival_turn)=if rivals[other].dynamic {forecast.motion(w,other,0.0,&self.motion[other],j)} else {self.rival_limits[other][j]};
+                let envelope_scale=if dynamic {1.0} else {(if EFFECTS {forecast.effects.reach_scale(other,j)} else {1.0})/(if EFFECTS {self.effects.reach_scale(other,j)} else {1.0})};
+                let (rival_speed,rival_turn)=if dynamic {forecast.motion(w,other,0.0,&self.motion[other],j)} else {self.rival_limits[other][j]};
                 let envelope=r.envelope[j]*envelope_scale+padding+rival_speed*rival_turn*span*span/8.0;
                 let head_near=w.distance_squared(p,r.path[j])<spatial::query_radius(reach,envelope+3.0,1.0,self.rollout_distance[j]-self.rollout_distance[from_index]+r.distance[j]-r.distance[from_index]).powi(2);
                 if !winning && head_near && w.segments_distance_squared(c.path[from_index],p,r.path[from_index],r.path[j])<(reach+envelope+3.0).powi(2) {hit=true;break;}
@@ -1556,7 +1625,7 @@ impl AiController {
                     // Actual forecast travel, including pickup/expiry speed
                     // changes, determines the exempt head-sized neck piece.
                     let newest=r.distance[j]-(physical_reach+5.0);
-                    let neck_end=if rivals[other].dynamic {r.distance[..j].partition_point(|&distance|distance<=newest).saturating_sub(1)} else {self.rival_necks[other][j] as usize};
+                    let neck_end=if dynamic {r.distance[..j].partition_point(|&distance|distance<=newest).saturating_sub(1)} else {self.rival_necks[other][j] as usize};
                     for k in (1..=neck_end).step_by(3) {
                         let end=(k+2).min(neck_end);
                         // Full-width broad phase before any tapered tail powf.
@@ -1570,7 +1639,7 @@ impl AiController {
                                 age/length,(r.distance[j]-r.distance[k-1])/length);
                             crate::world::taper::contact_radius(w.config().rules,s.radius,body,false)
                         } else {reach};
-                        let reach=reach*forecast.effects.reach_scale(other,j);
+                        let reach=reach*(if EFFECTS {forecast.effects.reach_scale(other,j)} else {1.0});
                         if w.distance_squared(p,r.path[end])<spatial::query_radius(reach,2.0,1.0,self.rollout_distance[j]-self.rollout_distance[from_index]+r.distance[end]-r.distance[k-1]).powi(2)
                             && w.segments_distance_squared(c.path[from_index],p,r.path[k-1],r.path[end])<(reach+2.0).powi(2) {hit=true;break;}
                     }
@@ -1584,10 +1653,20 @@ impl AiController {
             if w.config().self_collisions && !phased {
                 let age=(s.radius*1.18*10.0/(if attack.valid || w.config().rules==crate::RuleSet::V2 {maximum_speed} else {speed})/STEP_SECONDS).ceil() as usize;
                 if sweep && j>age {
-                    for k in (0..j-age).step_by(3) {
+                    let full=s.radius*1.48+3.0+max_curve*(4.0*STEP_SECONDS).powi(2)/8.0;
+                    let from=c.path[from_index];
+                    let from_projection=(from.x-c.path[0].x)*forward.x+(from.y-c.path[0].y)*forward.y;
+                    // Every older deposited edge is behind this prefix maximum
+                    // on the initial heading's axis. If the entire current
+                    // sweep is more than the full contact reserve ahead, no
+                    // edge can collide. The 1px slack dwarfs floating-point
+                    // projection error; seam wrapping retains the exact scan.
+                    let separated=w.config().deadly_walls
+                        && projection.min(from_projection)-self.rollout_projection[j-age]>full+1.0;
+                    #[cfg(test)] let separated=separated && !self.reference_queries;
+                    if !separated {for k in (0..j-age).step_by(3) {
                         let end=(k+3).min(j-age);
                         if self.rollout_distance[j]-self.rollout_distance[end]<s.radius*1.18*10.0 {continue;}
-                        let full=s.radius*1.48+3.0+max_curve*(4.0*STEP_SECONDS).powi(2)/8.0;
                         let reserve=spatial::query_radius(full,0.0,1.0,self.rollout_distance[j]-self.rollout_distance[from_index]+self.rollout_distance[end]-self.rollout_distance[k]);
                         if w.distance_squared(p,c.path[end])>=reserve*reserve {continue;}
                         let body=if w.config().rules==crate::RuleSet::V2 {
@@ -1600,7 +1679,7 @@ impl AiController {
                         let reach=crate::world::taper::contact_radius(w.config().rules,s.radius,body,true)+3.0+max_curve*(4.0*STEP_SECONDS).powi(2)/8.0;
                         if w.distance_squared(p,c.path[end])<spatial::query_radius(reach,0.0,1.0,self.rollout_distance[j]-self.rollout_distance[from_index]+self.rollout_distance[end]-self.rollout_distance[k]).powi(2)
                             && w.segments_distance_squared(c.path[from_index],p,c.path[k],c.path[end])<reach*reach {hit=true;break;}
-                    }
+                    }}
                 }
             }
             if hit {break;}
@@ -1656,7 +1735,7 @@ impl AiController {
             let prey=self.opportunity_rival(state.prey-1);
             let mut intercept=f64::MAX;let mut cutoff=f64::MAX;
             for j in (4..=c.steps).step_by(4) {
-                if !forecast.effects.phased(s.id as usize,j) && !self.opportunities.phased(state.prey-1,j) {
+                if !(EFFECTS && forecast.effects.phased(s.id as usize,j)) && !self.opportunities.phased(state.prey-1,j) {
                     intercept=intercept.min(w.distance_squared(c.path[j],prey.path[j]));
                 }
                 // Placing a neck 0.4--0.8s ahead of the target leaves a body
@@ -1852,7 +1931,33 @@ impl Controller for AiController {
                 if (kind==9 || kind==10) && !extended {candidates[kind]=candidates[2];area_alias[kind]=Some(2);continue;}
                 if kind==11 && (w.config().rules==crate::RuleSet::Classic || state.rush==0.0) {candidates[kind]=candidates[0];area_alias[kind]=Some(0);continue;}
                 if kind==12 && (w.config().rules!=crate::RuleSet::V2 || !w.boost_ready(id) || (state.venom_target==0 && candidates[1].steps>=18)) {candidates[kind]=candidates[2];area_alias[kind]=Some(2);continue;}
-                if kind==2 && candidates[1].checked && !candidates[1].attack.valid && !state.track_goal && state.turn_until==u64::MAX && normalize_angle(state.desired-s.angle).abs()<1e-12
+                // Goal-tracking direct and retained controls integrate the
+                // same trajectory when neither proposes an attack. Preserve
+                // the direct slot's control metadata and its own area query.
+                #[cfg(test)] let reuse_tracking=!self.reference_queries;
+                #[cfg(not(test))] let reuse_tracking=true;
+                let source=if kind==7 {5} else {6};
+                if reuse_tracking && (kind==7 || kind==8) && state.venom_target==0
+                    && !state.attack_options[kind-7].valid && candidates[source].checked
+                    && candidates[source].simulated_steps<=16 && candidates[source].steps<horizon {
+                    // These compound turns differ only AFTER movement 16.
+                    // Reuse an exact failed prefix, retaining the compound
+                    // slot's exit controls, tie order and independent area work.
+                    candidates[kind]=candidates[source];candidates[kind].kind=kind;
+                    candidates[kind].turn_until=w.tick()+16;
+                    let turn=if w.config().rules==crate::RuleSet::V2 {self.motion[id].at(0).1}
+                        else {w.motion_limits(id,candidates[kind].rush).unwrap().1};
+                    let fixed=s.angle+if kind==7 {3.0} else {-3.0};
+                    candidates[kind].exit_angle=if candidates[kind].simulated_steps==16 {candidates[kind].turn_exit}
+                        else {normalize_angle(s.angle+normalize_angle(fixed-s.angle).clamp(-turn*STEP_SECONDS*16.0,turn*STEP_SECONDS*16.0))};
+                } else if reuse_tracking && kind==0 && state.track_goal && !state.attack.valid
+                    && candidates[1].tracks_goal && !candidates[1].attack.valid
+                    && candidates[1].rush==Self::candidate_rush(w,s,state,kind,Attack::default()) {
+                    candidates[kind]=candidates[1];
+                    candidates[kind].kind=kind;candidates[kind].turn_until=u64::MAX;
+                    candidates[kind].exit_angle=candidates[kind].turn_exit;
+                    candidates[kind].area=0;candidates[kind].uncertain=false;
+                } else if kind==2 && candidates[1].checked && !candidates[1].attack.valid && !state.track_goal && state.turn_until==u64::MAX && normalize_angle(state.desired-s.angle).abs()<1e-12
                     && candidates[1].rush==Self::candidate_rush(w,s,state,kind,Attack::default()) {
                     candidates[kind]=candidates[1];area_alias[kind]=Some(1);
                 } else {self.rollout_into(w,s,state,kind,horizon,&mut candidates[kind]);}

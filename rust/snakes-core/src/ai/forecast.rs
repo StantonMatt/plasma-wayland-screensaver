@@ -137,6 +137,11 @@ impl Timeline {
         if kind==EffectKind::Venom {return self.venom_possible&(1<<id)!=0;}
         self.initial[id].is(kind) || self.pickups[..self.count].iter().any(|p|p.id as usize==id && p.effect.is(kind))
     }
+    pub fn collision_effects(&self)->bool {
+        self.venom_possible!=0
+            || self.initial.iter().any(|e|e.is(EffectKind::Phase) || e.is(EffectKind::Surge))
+            || self.pickups[..self.count].iter().any(|p|p.effect.is(EffectKind::Phase) || p.effect.is(EffectKind::Surge))
+    }
     pub fn movement_bits(&self)->u16 {self.movement_mask}
     pub fn movement_event(&self,step:usize)->bool {
         self.pickups[..self.count].iter().any(|p|p.step as usize==step && self.movement_mask&(1<<p.id)!=0)

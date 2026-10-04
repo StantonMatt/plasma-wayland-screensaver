@@ -1076,9 +1076,9 @@ fn candidate_scratch_never_reads_a_previous_decisions_unused_path() {
     for _ in 0..3000 {
         for c in poisoned.candidates.as_mut().unwrap().iter_mut() {
             c.path.fill(Point{x:f64::NAN,y:f64::NAN});
-            c.steps=STEPS;c.score=f64::NAN;c.area=usize::MAX;c.checked=true;
+            c.steps=STEPS;c.score=f64::NAN;c.turn_exit=f64::NAN;c.area=usize::MAX;c.checked=true;
         }
-        poisoned.rollout_distance.fill(f64::NAN);
+        poisoned.rollout_distance.fill(f64::NAN);poisoned.rollout_projection.fill(f64::NAN);
         a.step(&mut plain);b.step(&mut poisoned);
         assert_eq!(a.stats(),b.stats());assert_eq!(a.rng_state(),b.rng_state());
         for (sa,sb) in a.snakes().zip(b.snakes()) {
@@ -2641,4 +2641,75 @@ fn reply_forecast_uses_current_guard_instead_of_previous_observation() {
         ai.initial_effects.set_guard(0,previous,77);
         assert_eq!(ai.reply_blocked(&w,w.snake(0).unwrap(),&c,w.snake(1).unwrap(),0.0,0,0.0,&[0.0;73]),!guarding);
     }}
+}
+
+
+#[test]
+fn tick_fast_paths_match_exact_queries_and_duplicate_tracking_rollouts() {
+    // Compare all candidate controls/scores, not only the winner. The reference
+    // retains the original tapered-query and deposited-trail scans and runs
+    // both equivalent tracking candidates independently.
+    for rules in [crate::RuleSet::Classic,crate::RuleSet::V2] {
+        for deadly_walls in [false,true] {
+            for reference_settings in [false,true] {
+                let cfg=Config {width:3440.0,height:1440.0,density:if reference_settings {30.0} else {100.0},
+                    trails:100.0,scale:if reference_settings {185.0} else {100.0},
+                    speed:if reference_settings {230.0} else {100.0},intelligence:100.0,
+                    self_collisions:true,seed:73,rules,deadly_walls,..Config::default()};
+                let mut fast_world=World::new(cfg).unwrap();let mut reference_world=World::new(cfg).unwrap();
+                let mut fast=AiController::new();fast.enable_diagnostics();
+                let mut exact=AiController::new();exact.enable_diagnostics();exact.reference_queries=true;
+                for tick in 0..600 {
+                    fast_world.step(&mut fast);reference_world.step(&mut exact);
+                    assert_eq!(fast_world.rng_state(),reference_world.rng_state());
+                    assert_eq!(fast_world.stats().deaths,reference_world.stats().deaths);
+                    for (a,b) in fast_world.snakes().zip(reference_world.snakes()) {
+                        assert_eq!((a.generation,a.angle.to_bits(),a.desired_angle.to_bits(),a.flags,a.segments.len()),
+                            (b.generation,b.angle.to_bits(),b.desired_angle.to_bits(),b.flags,b.segments.len()),
+                            "rules={rules:?} walls={deadly_walls} reference={reference_settings} tick={tick}");
+                        for (a,b) in a.segments.iter().zip(b.segments) {
+                            assert_eq!((a.current.x.to_bits(),a.current.y.to_bits()),(b.current.x.to_bits(),b.current.y.to_bits()));
+                        }
+                        assert_eq!(format!("{:?}",fast.decision(a.id as usize)),format!("{:?}",exact.decision(b.id as usize)),
+                            "candidate parity rules={rules:?} walls={deadly_walls} reference={reference_settings} tick={tick}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn retained_motion_schedules_invalidate_on_physical_inputs() {
+    let mut w=World::diagnostic_arena(Config {rules:crate::RuleSet::V2,density:0.0,
+        width:1600.0,height:1000.0,..Config::default()},
+        &[(Point{x:800.0,y:500.0},0.0,180,0.5)],&[]).unwrap();
+    let mut ai=AiController::new();
+    let changes:[fn(&mut World);17]=[
+        |w|w.snakes[0].len+=1,|w|w.snakes[0].birth_len+=1,
+        |w|w.snakes[0].radius+=0.1,|w|w.snakes[0].base_radius+=0.1,
+        |w|w.snakes[0].growth=12.0,|w|w.snakes[0].traits.speed_bias+=0.1,
+        |w|{w.snakes[0].effect_kind=1;w.snakes[0].effect_ticks=8;},
+        |w|w.snakes[0].effect_ticks=3,|w|w.snakes[0].boost_ticks=24,
+        |w|w.snakes[0].cooldown_ticks=16,|w|w.config.width+=100.0,
+        |w|w.config.height+=100.0,|w|w.config.speed+=100.0,
+        |w|w.config.intelligence+=10.0,
+        |w|w.config.rules=crate::RuleSet::Classic,|w|w.snakes[0].rush=0.4,
+        |w|w.snakes[0].generation+=1,
+    ];
+    for change in std::iter::once((|_:&mut World|{}) as fn(&mut World)).chain(changes) {
+        change(&mut w);
+        // Reobserve on a later logical tick without altering the test input.
+        ai.tick=u64::MAX;ai.prepare(&w);
+        let plain=Motion::forecast(&w,0,if w.config().rules==crate::RuleSet::Classic {w.observed_rush(0).unwrap()} else {0.0});
+        let boosted=if w.boost_ready(0) {Motion::forecast(&w,0,0.6)} else {plain};
+        for (cached,exact) in [(ai.motion[0],plain),(ai.boosted_motion[0],boosted)] {
+            for j in 0..=STEPS {
+                assert_eq!(cached.at(j),exact.at(j));
+                assert_eq!(cached.radii[j.min(24)].to_bits(),exact.radii[j.min(24)].to_bits());
+            }
+            assert_eq!((cached.max_speed,cached.max_curve,cached.expiry,cached.expired_limits),
+                (exact.max_speed,exact.max_curve,exact.expiry,exact.expired_limits));
+        }
+    }
 }
