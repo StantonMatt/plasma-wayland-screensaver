@@ -45,6 +45,7 @@ impl World {
         copy.food.clone_from(&self.food);
         copy.items.clone_from(&self.items);
         copy.item_timer = self.item_timer;
+        copy.prism_timer = self.prism_timer;
         copy.next_item = self.next_item;
         copy.last_item_kind = self.last_item_kind;
         copy.trails.clone_from(&self.trails);

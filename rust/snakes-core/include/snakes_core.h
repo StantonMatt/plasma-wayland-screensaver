@@ -55,6 +55,7 @@ extern "C" {
 #define SNAKES_CORE_NO_ITEM 255u
 #define SNAKES_CORE_FLAG_STRIKE 256u
 #define SNAKES_CORE_FLAG_FLIP_HELD 512u
+#define SNAKES_CORE_FACE_PRISM_TARGET 4u /* committed to the one live seed/fruit */
 #define SNAKES_CORE_FACE_OBSERVED 2u /* authoritative mood, including Calm=0 */
 #define SNAKES_CORE_MOOD_CALM 0u
 #define SNAKES_CORE_MOOD_SLEEPY 1u
@@ -142,7 +143,7 @@ typedef struct snakes_core_snake {
     uint8_t effect_kind, boost_ticks; /* remaining ticks, including latest tick */
     uint8_t mood, mood_intensity; /* enum above; intensity 0..255 onset ramp */
     uint16_t mood_age_ticks; /* saturating age of current mood, zero on switch */
-    uint8_t target_item, face_flags; /* compact current slot/255; bit 0 guarding, bit 1 authoritative mood (including Calm) */
+    uint8_t target_item, face_flags; /* compact current slot/255; bit 0 guarding, bit 1 authoritative mood (including Calm), bit 2 prism target */
     uint16_t jaw_ticks; /* remaining yawn/strike jaw animation ticks */
     float look_x, look_y; /* wrapped world-space DELTA head -> look target */
     float pupil_x, pupil_y; /* head-local offset in head radii */
@@ -166,7 +167,7 @@ typedef struct snakes_core_food {
     uint64_t ripe_tick; /* PrismSeed's absolute edible tick; 0 for ordinary food */
     float motion_origin_x, motion_origin_y; /* Meteor launch point, world units */
     uint16_t motion_ticks, captured_by; /* flight countdown; 0 free, vortex slot+1 */
-    uint32_t food_flags; /* reserved for ownership/motion flags; currently zero */
+    uint32_t food_flags; /* prism race: IDs+1 bits 0..3/4..7, second leads bit 8, contested bit 9; otherwise zero */
 } snakes_core_food;
 typedef struct snakes_core_item {
     uint64_t id;

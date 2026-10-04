@@ -1314,3 +1314,60 @@ pass IQ 100/deadly to reproduce the user's collision settings.
 See [R11_STEP_A_REPORT.md](../../R11_STEP_A_REPORT.md) for focused verification,
 measurements and the ABI handoff to renderer workers. The preceding pursuit
 section records the staged baseline and its historical measurements.
+
+## S2: planned prism prizes (0.12.0)
+
+A single prize is cached during preparation, independently of the 64-food
+shortlist budget. Ripe Prism has strategic AI value 90 (nutrition remains 5);
+the seed uses `90 / (1 + remaining_seconds * .35)`. Trailing contenders retain
+interest rather than inheriting ordinary-food loser penalties. Discovering a
+prize respects recovery rejection, and empty shortlist slots do not hide food
+index zero. Contact forecasts wait until the same endpoint as feeding and
+vacuum claims; overlapping an unripe target never proves collection.
+
+Early arrivals reuse the guard/coil tangent planner with radius
+`max(5.5 * radius, 1.35 * speed / turn, speed * .7 seconds,
+1.1 * min(body_length, speed * 3 seconds) / TAU)`. Body length includes
+the 1.18-radius segment spacing. This leaves clearance for the short wait,
+without demanding that every snake fit its entire body into a closed ring. Approach handedness is
+chosen from the current radial/head-heading cross product and held during the
+orbit. Its center starts one orbit radius to that side of the actual head,
+so entry is tangent to the current heading and the approaching prize can lie
+near the circle edge. Radial correction scales with the orbit. The existing collision and
+room gates still choose movement. Intentional vulture turns are exempt from
+circling debt and stalled-target rejection. An established wait lasts until
+the final six countdown ticks; release clears old turn-direction hysteresis
+and commitment. Rollouts include the timed transition from orbit to pounce;
+they never reject a short wait on the assumption it will orbit forever. Nearby
+prizes use moving-body rollouts in place of static route rejection; a ripe
+prize gets four seconds to make progress before ordinary stall recovery.
+Safe forecasted captures receive a 600-point utility bonus,
+which ranks below safety and available space.
+
+Close races use turn-aware rival ETAs within 25% to propose a checked boost.
+A late seed pounce can propose that boost only when its estimated boosted
+arrival does not precede ripening. Larger prize contenders reuse capsule
+cutoffs while keeping the direct prize route as a candidate. Ripening ends
+retained ambush controls immediately, including between strategy slots, and
+ripe tactical revisions keep the prize pounce. Existing hunters
+give prey within 12 prey radii of a seed a 100% score premium; a cutoff with
+verified blocked responses near the seed values each response at 250 rather
+than 150. Size, boost-payment, Phase, collision and room gates are unchanged.
+
+Prism placement uses the same twelve XY RNG draws as capsule placement but
+prefers live heads without capsule commitments (falling back to all live
+heads), then projects candidates onto their approach-side circles at 3.1–3.5
+seconds of travel. This puts the first pass just after ripening. Candidates require six base radii of continuous-body clearance;
+the placement score favors the earliest two turn-aware arrivals. Capsules
+retain their uniform maximum-clearance placement, and Classic still takes no
+Prism scheduler draws. Countdown, nutrition, ripe lifetime and shared pickup
+eligibility are unchanged.
+
+The scorecard reports spawned/picked/pending counts, ripe-to-eaten median,
+contested seeds, how many had at least twenty degrees of intentional orbit,
+vulture episodes/full turns/snake-seconds, and kills within 12 victim radii
+of seeds and of either prize phase. `--prism-trace` prints exact per-prize
+delays for pooled multi-seed medians. `--prism-motion-trace` prints the first
+prize's live heads, goals, orbit state and safe forecast endpoints. Observer
+work and its allocations remain outside timed ticks. See
+[R12_PRISM_REPORT.md](../../R12_PRISM_REPORT.md) for sample counts and gates.

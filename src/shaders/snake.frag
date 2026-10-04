@@ -93,6 +93,14 @@ vec3 moodAccent(vec3 c) {
     if(ub.paletteMode==1.0) return vec3(dot(c,vec3(0.2126,0.7152,0.0722)));
     return ub.paletteMode==2.0?mix(c,vec3(1),0.3):c;
 }
+// Prism family: palette-independent spectrum (hue 0 red, 1/3 green, 2/3 blue),
+// 20% toward white like the prototype. Mono is flat silver so shape carries it.
+vec3 spectral(float h) {
+    vec3 k=clamp(abs(fract(h+vec3(0.0,2.0/3.0,1.0/3.0))*6.0-3.0)-1.0,0.0,1.0);
+    k=mix(k,vec3(1),0.2);
+    if(ub.paletteMode==1.0) return vec3(0.86);
+    return ub.paletteMode==2.0?mix(k,vec3(1),0.3):k;
+}
 float hexagon(vec2 p,float r) {
     const vec3 k=vec3(-0.8660254,0.5,0.5773503);
     p=abs(p);p-=2.0*min(dot(k.xy,p),0.0)*k.xy;
@@ -503,20 +511,67 @@ void main() {
     } else if(kind==4) {              // spent pellet
         core=mask(r-1.0)*0.55;
         glow=c*0.16*falloff(r/3.0);
-    } else {                          // prism fruit (kind 8)
-        core=mask(r-1.0);
-        float g=clamp(length(p-vec2(-0.30,-0.35))/1.25,0.0,1.0);
-        vec3 mid=mix(c,white,0.4);
-        rgb=g<0.45?mix(white,mid,g/0.45):mix(mid,c*0.75,(g-0.45)/0.55);
-        float a=t*0.5;vec2 q=mat2(cos(a),-sin(a),sin(a),cos(a))*p;
-        vec2 R=vec2(1.9,0.6);float f=length(q/R)-1.0;float gl=length(q/(R*R))/max(length(q/R),0.001);
-        float ring=1.0-smoothstep(0.55*px,1.1*px,abs(f)/max(gl,0.0001));
-        float oa=t*1.6;float dot1=mask(length(q-vec2(cos(oa)*1.9,sin(oa)*0.6))-1.4*px);
-        over+=mix(c,white,0.6)*ring*0.55+white*dot1;
-        glow=mix(c,white,0.3)*0.55*tw*falloff(r/4.0);
+    } else if(packed.w>254.5) {       // prism seed: p is in prism visual units (Rust scales the quad 1.6x)
+        float progress=packed.z/255.0;
+        float angle=mod(atan(p.x+0.000001,-p.y)+6.283185,6.283185);   // 0 at top, clockwise
+        float hw=max(0.10,0.9*px);
+        float ring=1.0-smoothstep(hw,hw+px,abs(r-2.7));
+        float fill=step(angle,progress*6.283185)*step(0.001,progress);
+        over+=(spectral(angle/6.283185)*fill*0.95+vec3(0.20)*(1.0-fill))*ring;
+        // fuse spark at the arc's leading end
+        float ea=progress*6.283185;
+        vec2 tip=vec2(sin(ea),-cos(ea))*2.7;
+        float td=length(p-tip);
+        over+=white*(mask(td-max(0.17,1.1*px))*0.9+falloff(td/0.9)*0.5)*step(0.001,progress)*step(progress,0.999);
+        // pearl grows 0.35 -> 0.8
+        float sr=0.35+0.45*progress;
+        core=mask(r-sr);
+        float g=clamp(length(p-vec2(-0.30,-0.35)*sr)/(1.25*sr),0.0,1.0);
+        rgb=mix(white,vec3(0.80,0.84,0.92),smoothstep(0.2,1.0,g));
+        glow=vec3(0.80,0.86,1.0)*(0.18+0.32*progress)*falloff(r/4.0);
+    } else {                          // ripe prism fruit (kind 8); packed.w = ripe age, 0..254 over ~1 s
+        bool moving=ub.motionScale==1.0;
+        float pop=packed.w/254.0;
+        float spin=moving?t*0.12:0.0;
+        float grow=moving?1.0+0.16*sin(min(pop/0.45,1.0)*3.14159)*(1.0-pop)-0.15*(1.0-smoothstep(0.0,0.12,pop)):1.0;
+        float R=1.0*grow;
+        float rr=r/R;
+        core=mask(r-R);
+        float angle=atan(p.y,p.x)/6.283185;
+        // pearl with an iridescent fresnel rim
+        float g=clamp(length(p-vec2(-0.32,-0.38)*R)/(1.3*R),0.0,1.0);
+        vec3 pearl=mix(white,mix(spectral(angle+spin),white,0.45),smoothstep(0.15,0.75,g));
+        rgb=mix(pearl,spectral(angle+spin+0.5)*0.95,smoothstep(0.62,1.0,rr)*0.85);
+        // halo ring: full spectrum around the circle, turning slowly; drains in the last 5 s
+        float life=packed.z/255.0*30.0;
+        float drain=clamp(life/5.0,0.0,1.0);
+        float ra=mod(atan(p.x+0.000001,-p.y)+6.283185,6.283185);
+        float hw=max(0.11,0.9*px);
+        float halo=(1.0-smoothstep(hw,hw+px,abs(r-1.75)))*step(ra,drain*6.283185+0.0001);
+        over+=spectral(ra/6.283185+spin)*halo*0.95*(1.0-core);
+        // eight dispersion rays outside the halo, long/short alternating
+        float rot=moving?t*0.25:0.2;
+        float sector=6.283185/8.0;
+        float a8=atan(p.y,p.x)+rot;
+        float idx=floor(a8/sector+0.5);
+        float local=a8-idx*sector;
+        vec2 q=vec2(cos(local),sin(local))*r;
+        float longRay=mod(idx,2.0)==0.0?1.0:0.0;
+        float len=mix(2.35,2.85,longRay);
+        float ray=mask(line(q,vec2(2.05,0.0),vec2(len,0.0),max(0.07,0.6*px)));
+        over+=spectral(idx/8.0+spin)*ray*(0.55+0.3*longRay)*(1.0-core);
+        // ripening pop: one expanding ring and a brief brighter glow
+        float shockRadius=1.75+2.4*pop;
+        // At tiny display scales, keep the pixel-wide shock inside the unchanged quad.
+        float shockOuter=min(hw+px,BOUNDS_FOOD-shockRadius);
+        float shockInner=shockOuter<hw+px?min(hw,shockOuter*0.5):hw;
+        float shock=(1.0-smoothstep(shockInner,shockOuter,abs(r-shockRadius)))*(1.0-pop)*step(pop,0.999);
+        over+=mix(white,spectral(ra/6.283185),0.5)*shock*0.8;
+        glow=mix(spectral(spin*2.0),white,0.65)*(0.85*tw+0.5*(1.0-pop))*falloff(r/4.6);
     }
     float expiry=1.0;
     float fadeThreshold=kind==4?96.0:26.0;
-    if(kind!=2 && packed.z<fadeThreshold) expiry=packed.z/fadeThreshold*(0.65+0.35*sin(t*18.0+phase));
+    if(kind==8) expiry=packed.w>254.5?1.0:clamp(packed.z/8.5,0.0,1.0);   // prize: the halo drains, then a 1 s fade, no blink
+    else if(kind!=2 && packed.z<fadeThreshold) expiry=packed.z/fadeThreshold*(0.65+0.35*sin(t*18.0+phase));
     fragColor=composite(rgb,core,glow,over,expiry);
 }

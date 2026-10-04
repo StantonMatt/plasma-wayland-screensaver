@@ -30,7 +30,8 @@ void main() {
             vec3 c=mix(color.rgb,vec3(1),max(0.0,0.30-dot(color.rgb,vec3(0.2126,0.7152,0.0722)))*1.1);
             vec3 gold=vec3(1.0,0.847,0.29);
             if((int(packed.y+0.5)&64)!=0) gold=mix(gold,vec3(1),0.85);
-            vec3 accent=origin>=1 && origin<=5?waveAccent(origin):origin==7?gold:mix(c,vec3(1),0.75);
+            // origin 0 with light: the vertex's own colour (Feast rainbow), barely whitened.
+            vec3 accent=origin>=1 && origin<=5?waveAccent(origin):origin==7?gold:mix(c,vec3(1),origin==0?0.2:0.75);
             waveLight=accent*(packed.w/255.0);
         }
     }

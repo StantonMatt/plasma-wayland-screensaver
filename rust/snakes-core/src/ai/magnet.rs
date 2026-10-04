@@ -56,11 +56,11 @@ mod tests {
                     life: 30.0, owner: -1, kind,
                     feast: if kind == FoodKind::Shard { 1 } else { 0 }, ..Food::default() });
             }
-            assert_eq!(target(&w), 1, "ordinary {kind:?}");
+            assert_eq!(target(&w), if kind==FoodKind::Prism {2} else {1}, "ordinary {kind:?}");
             w.snakes[0].effect_kind = EffectKind::Magnet as u8; w.snakes[0].effect_ticks = 300;
             assert_eq!(target(&w), 2, "magnet {kind:?}");
             w.snakes[0].effect_ticks = 1;
-            assert_eq!(target(&w), 1, "expiry {kind:?}");
+            assert_eq!(target(&w), if kind==FoodKind::Prism {2} else {1}, "expiry {kind:?}");
             w.snakes[0].effect_ticks = 300; w.config.rules = RuleSet::Classic;
             assert_eq!(target(&w), 1, "classic {kind:?}");
         }
@@ -70,9 +70,10 @@ mod tests {
         let mut w=scenario();
         w.snakes[0].effect_kind=EffectKind::Magnet as u8;
         w.snakes[0].effect_ticks=300;
-        for (id,x,y,kind) in [(1,540.0,300.0,FoodKind::Spark),(2,620.0,400.0,FoodKind::Prism)] {
+        // Isolate Magnet's death-field utility from Prism's strategic prize value.
+        for (id,x,y,kind) in [(1,540.0,300.0,FoodKind::Spark),(2,620.0,400.0,FoodKind::Shard)] {
             w.food.push(Food {id,p:crate::Point{x,y},value:1.0,life:30.0,
-                owner:-1,kind,..Food::default()});
+                owner:-1,kind,feast:if kind==FoodKind::Shard {1} else {0},..Food::default()});
         }
         assert_eq!(target(&w),2);
         let mut ai=AiController::new();ai.prepare(&w);

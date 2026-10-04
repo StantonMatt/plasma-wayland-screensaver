@@ -177,3 +177,13 @@ pipeline log: `/tmp/snakes-perf-paired-pipeline-final.txt`; original and final
 scorecards: `/tmp/snakes-perf-before-matrix.txt` and `/tmp/snakes-perf-last-matrix.txt`.
 Final opt-in AI profile: `/tmp/snakes-perf-last-profile.txt`. All commands are
 one-shot; no server, watcher, or background benchmark remains running.
+
+
+## S2 (0.12.0) prism release slice
+
+See [R12_PRISM_REPORT.md](R12_PRISM_REPORT.md) for the ABI-v3 prism scheduler,
+AI, renderer, focused checks and final paired measurements against 0.11.0.
+Mature geometry is 1.003x baseline; chaos/matched mature is 1.047x at 8736
+vertices. Standard mean tick delta is +0.01215 ms and reference delta is
+-0.00205 ms; allocation checks stay at zero. Desktop capture, process CPU and
+frame-pacing gates remain unverified.

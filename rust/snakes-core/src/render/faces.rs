@@ -85,10 +85,39 @@ impl Renderer {
         }
     }
     pub(super) fn shader_races(&self,info:&FrameInfo,p:&Params,palette:&[Color],snakes:&[SnakeRecord],segments:&[SegmentRecord],sink:&mut SpriteSink<'_>) {
+        self.shader_race_items(info,p,palette,snakes,segments,sink,&self.items[..self.item_count.min(crate::MAX_CAPSULES)],self.item_radius,6);
+    }
+    pub(super) fn shader_prism_races(&self,info:&FrameInfo,p:&Params,palette:&[Color],snakes:&[SnakeRecord],segments:&[SegmentRecord],food:&[FoodRecord],sink:&mut SpriteSink<'_>) {
+        let Some(f)=food.iter().find(|f|matches!(f.kind,3|4) && food_valid(f)) else {return;};
+        let pos=P::new(f.x as f64,f.y as f64);let arena=P::new(info.world_width,info.world_height);
+        let mut item=ItemRecord {x:f.x,y:f.y,kind:1,life_ticks:750,leader_snake_id:u32::MAX,
+            contender_ids:[u32::MAX;2],contender_etas:[f32::INFINITY;2],..ItemRecord::default()};
+        let mut distances=[f64::INFINITY;2];
+        for s in snakes.iter().filter(|s|s.face_flags&4!=0 && s.alive!=0 && snake_valid(s) && s.segment_count>0) {
+            let head=position(&segments[s.segment_offset as usize],moving(s),info,p);
+            let d=P::new(delta(head.x,pos.x,arena.x,p.deadly_walls!=0),delta(head.y,pos.y,arena.y,p.deadly_walls!=0));
+            let distance=d.length();let eta=(distance/s.radius.max(1.0)+crate::normalize_angle(d.y.atan2(d.x)-s.angle).abs()) as f32;
+            if let Some(slot)=(0..2).find(|&i|distance<distances[i]) {
+                if slot==0 {distances[1]=distances[0];item.contender_ids[1]=item.contender_ids[0];item.contender_etas[1]=item.contender_etas[0];}
+                distances[slot]=distance;item.contender_ids[slot]=s.id;item.contender_etas[slot]=eta;
+            }
+        }
+        if f.food_flags!=0 {
+            item.contender_ids=[(f.food_flags&15).checked_sub(1).unwrap_or(u32::MAX),((f.food_flags>>4)&15).checked_sub(1).unwrap_or(u32::MAX)];
+            item.contender_etas=if f.food_flags&512!=0 {[1.0,1.0]} else if f.food_flags&256!=0 {[2.0,1.0]} else {[1.0,2.0]};
+        }
+        item.contender_count=item.contender_ids.iter().filter(|&&id|id!=u32::MAX).count() as u8;
+        item.leader_snake_id=item.contender_ids[if f.food_flags!=0 {usize::from(f.food_flags&256!=0)} else {usize::from(item.contender_etas[1]<item.contender_etas[0])}];
+        // Six arcs total, including the two prism racers. Capsules keep their
+        // established ordering when no seed/fruit is present.
+        self.shader_race_items(info,p,palette,snakes,segments,sink,&[item],f.size as f64*2.04*super::shader::PRISM_VISUAL,2);
+    }
+    pub(super) fn shader_race_items(&self,info:&FrameInfo,p:&Params,palette:&[Color],snakes:&[SnakeRecord],segments:&[SegmentRecord],sink:&mut SpriteSink<'_>,items:&[ItemRecord],item_radius:f64,budget:usize) {
         let sx=p.scale_x;let sy=p.scale_y;let scale=(sx*sy).sqrt();
         let arena=P::new(info.world_width,info.world_height);let walls=p.deadly_walls!=0;
-        for item in &self.items[..self.item_count.min(crate::MAX_CAPSULES)] {
-            if !items::valid_item(item) || self.item_radius<=0.0 {continue;}
+        let mut drawn=0;
+        for item in items {
+            if !items::valid_item(item) || item_radius<=0.0 {continue;}
             let pos=P::new(item.x as f64,item.y as f64);
             let etas=item.contender_etas;
             let contested=etas.iter().all(|v|v.is_finite() && *v>=0.0) && etas[0].max(etas[1])<=etas[0].min(etas[1])*1.18;
@@ -96,13 +125,15 @@ impl Renderer {
             let track_owner=if contenders.contains(&item.leader_snake_id) {item.leader_snake_id}
                 else {contenders.first().copied().unwrap_or(u32::MAX)};
             for &id in contenders {
+                if drawn==budget {return;}
                 let Some(s)=snakes.iter().find(|s|s.id==id && s.alive!=0 && s.flags&flags::CORPSE==0 && s.segment_count>0 && s.radius>0.0 && snake_valid(s)) else {continue;};
                 let head=position(&segments[s.segment_offset as usize],moving(s),info,p);
                 if !head.finite() {continue;}
+                drawn+=1;
                 let d=P::new(delta(pos.x,head.x,arena.x,walls),delta(pos.y,head.y,arena.y,walls));
                 let closeness=(1.0-(d.length()-3.0*s.radius)/(34.0*s.radius)).clamp(0.0,1.0);
                 let angle=(d.y*sy).atan2(d.x*sx).rem_euclid(std::f64::consts::TAU);
-                let radius=self.item_radius*scale;
+                let radius=item_radius*scale;
                 // Stroke is in pixels, so minimum-size projections need a
                 // larger quad; UV remains in capsule radii for the 1.62 ring.
                 let extent=(radius*3.4).max(radius*1.62+12.0);

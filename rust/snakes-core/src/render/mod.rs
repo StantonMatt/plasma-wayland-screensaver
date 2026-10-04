@@ -3,6 +3,7 @@
 //! preceding the final vertex conversion stays f64, as in the Qt renderer.
 mod geometry;
 mod faces;
+mod prism;
 mod shader;
 pub(crate) mod items;
 pub use shader::ShaderVertex;
@@ -46,6 +47,12 @@ pub(crate) fn frame_valid(info: &FrameInfo, p: &Params) -> bool {
         && [p.scale_x,p.scale_y].iter().all(|x|*x==0.0 || (1.0e-6..=1.0e6).contains(x))
         && coordinate(p.offset_x) && coordinate(p.offset_y) && coordinate(p.presentation_time)
         && (0.0..=1.0).contains(&p.interpolation) && p.deadly_walls<=1 && p.developer_mode<=1
+}
+// Reduced motion freezes the procedural clock, not simulation event lifetimes.
+// Keep ordinary presentation sampling unchanged (including historical fixtures).
+#[inline]
+fn event_time(info: &FrameInfo, p: &Params, calm: bool) -> f64 {
+    if calm { p.presentation_time.max(info.simulation_time) } else { p.presentation_time }
 }
 // Frozen snapshots can retain the last moving tick's previous coordinates.
 // Use the same policy for the body and every head-attached primitive/overlay.
@@ -157,6 +164,7 @@ pub struct Renderer {
     event_tick: Option<u64>,
     tapers: Vec<f64>,
     brightness: Vec<u8>,
+    rainbow: Vec<Color>,
     // Only mixed-colour waves need per-sample origins; retained, never allocated per frame.
     wave_origins: Vec<u8>,
     taper_lengths: [usize;MAX_SNAKES],
@@ -203,6 +211,7 @@ impl Renderer {
             event_tick: None,
             tapers: vec![0.0;MAX_SNAKES*MAX_SEGMENTS],
             brightness: vec![0;MAX_SEGMENTS],
+            rainbow: vec![Color::default();MAX_SEGMENTS],
             wave_origins: vec![0;MAX_SEGMENTS],
             taper_lengths: [0;MAX_SNAKES],
             reduced_motion: false,
@@ -319,7 +328,8 @@ impl Renderer {
             } else {
                 1.0
             };
-            let size = world_size*scale;
+            let raw_size = world_size*scale;
+            let size = raw_size*if matches!(f.kind,3|4) {shader::PRISM_VISUAL} else {1.0};
             let c = color(f.color_index);
             let pos = P::new(f.x as f64, f.y as f64);
             // Include minimum-sized highlights and the entire vacuum streak,
@@ -335,12 +345,12 @@ impl Renderer {
                 max = pos+margin;
             }
             let mut streak = P::default();
-            let streak_width = (size*0.38).max(0.5);
+            let streak_width = (raw_size*0.38).max(0.5);
             if f.attraction>0.0 {
                 let pull = P::new(delta(pos.x, f.attraction_x as f64, info.world_width, walls)*sx, delta(pos.y, f.attraction_y as f64, info.world_height, walls)*sy);
                 let len = pull.length();
                 if len>0.001 {
-                    streak = pull/len*(size*(2.0+f.attraction as f64*5.0));
+                    streak = pull/len*(raw_size*(2.0+f.attraction as f64*5.0));
                     if !walls {
                         let end = pos-P::new(streak.x*inverse_x, streak.y*inverse_y);
                         let margin = P::new(streak_width*inverse_x, streak_width*inverse_y);
@@ -368,12 +378,20 @@ impl Renderer {
                     } else {
                         30
                     }), sides);
-                    sink.disc(center, size, c.alpha(if pellet {
+                    sink.disc(center, if f.kind==4 {size*(0.4+0.45*f.life_fraction as f64/255.0)} else {size}, c.alpha(if pellet {
                         110
                     } else {
                         230
                     }), sides);
-                    if !pellet {
+                    if f.kind==4 {
+                        let progress=f.life_fraction as f64/255.0;
+                        for j in 0..12 {
+                            let a=(j as f64/12.0*std::f64::consts::TAU)-std::f64::consts::FRAC_PI_2;
+                            let b=((j+1) as f64/12.0*std::f64::consts::TAU)-std::f64::consts::FRAC_PI_2;
+                            let tint=items::tint(prism::HUES[j/2],palette).alpha(if j as f64/12.0<progress {210} else {45});
+                            sink.segment(center+P::new(a.cos(),a.sin())*(size*2.7),center+P::new(b.cos(),b.sin())*(size*2.7),(size*0.08).max(0.5),tint);
+                        }
+                    } else if !pellet {
                         sink.disc(center-P::new(size*0.24, size*0.24), (size*0.3).max(0.7), Color::new(255, 255, 255, 215), if self.dense {
                             4
                         } else {
@@ -390,11 +408,15 @@ impl Renderer {
                 continue;
             }
             let pickup_waves=self.waves[s.id as usize].map(|w| {
-                let center=(p.presentation_time-w.time)*1.3*(n-1) as f64;
-                if w.active && w.kind!=0 && (0.0..(n as f64+3.5)).contains(&center) {
+                let center=(event_time(info,p,self.reduced_motion)-w.time)*1.3*(n-1) as f64;
+                if w.active && w.kind!=0 && w.kind!=8 && (0.0..(n as f64+3.5)).contains(&center) {
                     (center,w.kind)
                 } else { (0.0,0) }
             });
+            let rainbow=prism::rainbow(s,self.waves[s.id as usize],info,p,self.reduced_motion,palette,
+                color(s.color_index),&mut self.rainbow[..n]);
+            let gulp_centers=prism::centers(s,info,p,self.reduced_motion);
+            let has_gulp=gulp_centers.iter().any(|c|c.1>0.0);
             let has_pickup_wave=pickup_waves.iter().any(|&(_,kind)|kind!=0);
             let body = &segments[s.segment_offset as usize..s.segment_offset as usize+n];
             let points = &mut self.points[..n];
@@ -461,7 +483,7 @@ impl Renderer {
             let active_kind=if s.alive!=0 && !corpse && s.effect_ticks>0 {s.effect_kind} else {0};
             let effect_time=if self.reduced_motion {0.0} else {p.presentation_time};
             let fade = if corpse {
-                (1.0-(p.presentation_time-self.corpses[s.id as usize].time).max(0.0)/0.55).clamp(0.0, 1.0)
+                (1.0-(event_time(info,p,self.reduced_motion)-self.corpses[s.id as usize].time).max(0.0)/0.55).clamp(0.0, 1.0)
             } else if active_kind==3 {
                 0.45+0.06*(effect_time*9.0).sin()
             } else {
@@ -478,7 +500,7 @@ impl Renderer {
                 let mut previous: Option<P>=None;
                 for i in 0..trail.len {
                     let index = (trail.head+15-trail.len+i)%15;
-                    let age = p.presentation_time - info.simulation_time
+                    let age = event_time(info,p,self.reduced_motion) - info.simulation_time
                         + info.tick.saturating_sub(trail.ticks[index]) as f64 * crate::STEP_SECONDS;
                     if age >= 0.5 { continue; }
                     let pos = trail.points[index];
@@ -532,6 +554,7 @@ impl Renderer {
                                 *to = map(*v+shift);
                             }
                             prepare(&mapped[first..last], &mut self.normals[first..last], &mut self.valid[first..last]);
+                            if has_gulp {prism::widen(&mut self.normals[..n],gulp_centers);}
                             if !split || layer==0 {
                                 let outline = if active_kind==1 {
                                     items::accent(1,palette).alpha(215)
@@ -542,7 +565,7 @@ impl Renderer {
                                 if end==n-1 { sink.disc(mapped[end], radius*1.275, outline, 12); }
                             }
                             if !split || layer==1 {
-                                if has_pickup_wave {
+                                if has_pickup_wave || rainbow {
                                     for edge in start..end {
                                         let mut weight=0.0_f64;let mut kind=0;
                                         for &(center,origin) in &pickup_waves {
@@ -552,7 +575,7 @@ impl Renderer {
                                         }
                                         let accent=items::accent(kind,palette);
                                         let mix=|a:u8,b:u8|(a as f64+(b as f64-a as f64)*weight).round() as u8;
-                                        let tint=Color::new(mix(c.red,accent.red),mix(c.green,accent.green),mix(c.blue,accent.blue),245).fade(fade);
+                                        let tint=if rainbow {self.rainbow[edge].alpha(245).fade(fade)} else {Color::new(mix(c.red,accent.red),mix(c.green,accent.green),mix(c.blue,accent.blue),245).fade(fade)};
                                         sink.ribbon(&mapped[edge..=edge+1],&self.normals[edge..=edge+1],&self.valid[edge..=edge+1],radius*0.96,tint);
                                     }
                                 } else {

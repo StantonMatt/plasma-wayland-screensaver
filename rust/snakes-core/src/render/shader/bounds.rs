@@ -65,7 +65,9 @@ mod tests {
             "2.2*(1.0-age)", "line(effectCoord,direction*start,direction*end,0.012)",
             "1.95-0.70*y*y", "0.286+2.352*y-1.238*y*y", "falloff(length(eye)/eyeRadius)",
             "1.30+1.32*extension", "abs(q.x)/0.85+abs(q.y)/1.6",
-            "vec2 R=vec2(1.9,0.6)", "1.4*px",
+            "float sr=0.35+0.45*progress", "float grow=moving?1.0+0.16*sin",
+            "abs(r-2.7)", "abs(r-1.75)", "mix(2.35,2.85,longRay)",
+            "float shockRadius=1.75+2.4*pop", "min(hw+px,BOUNDS_FOOD-shockRadius)",
             "dot(p-a,d)/max(dot(d,d),0.000001)",
             "extent=tier==0?1.75:tier==1?1.85:tier==2?2.0:2.15",
             "aaD=max(fwidth(d),0.008)",
@@ -79,7 +81,7 @@ mod tests {
             "step(y,1.85)", "step(y,2.4)",
             "r-1.05", "r-1.0", "(dd-1.0)*0.75",
             "falloff(r/4.6)", "falloff(r/4.4)", "falloff(r/3.0)", "falloff(r/4.0)",
-            "4.5*a", "smoothstep(0.55*px,1.1*px,abs(f)/max(gl,0.0001))",
+            "4.5*a",
             "px=clamp(length(vec2(dFdx(p.x),dFdy(p.x))),0.0001,BOUNDS_FOOD_PIXEL)", "return coverage(d,min(aa,limit))",
             "kind==1?BOUNDS_HEAD_AA:(kind==2||kind==3||kind==4||kind==8)?BOUNDS_FOOD_AA:BOUNDS_AA",
         ] { assert!(SHADER.contains(expression), "rederive shader support: {expression}"); }
@@ -165,9 +167,13 @@ mod tests {
         assert!(FOOD >= 4.5); // spark twinkle cross has a hard length gate
         assert!(FOOD >= 1.6 * (1.0 + food_aa / 0.75)); // rotated shard rhombus
         assert!(FOOD >= 1.05 + food_aa); // spark/pellet/prism discs
-        assert!(FOOD >= 1.9 + 1.4 * px + food_aa); // rotating orbit dot
-        // gl <= 1/.6 and length(q/R) >= r/1.9: conservative ellipse ring bound.
-        assert!(FOOD >= 1.9 * (1.0 + 1.1 * px / 0.6));
+        assert!(FOOD >= 1.16 + food_aa); // prism orb, including overshoot
+        assert!(FOOD >= 2.7 + 0.10_f64.max(0.9*px) + px); // seed track
+        assert!(FOOD >= 2.7 + 0.17_f64.max(1.1*px) + food_aa); // fuse core
+        assert!(FOOD >= 2.7 + 0.9); // fuse halo
+        assert!(FOOD >= 1.75 + 0.11_f64.max(0.9*px) + px); // ripe halo
+        assert!(FOOD >= 2.85 + 0.07_f64.max(0.6*px) + food_aa); // dispersion rays
+        assert!(FOOD >= 1.75 + 2.4); // shock outer stroke/AA compacted above
         // Streaks / contrails have compact transverse support, and vacuum /
         // steering streaks stop at their endpoints, without pixel-sized AA.
         assert!(SHADER.contains("streak=max(0.0,1.0-abs(coord.x))"));

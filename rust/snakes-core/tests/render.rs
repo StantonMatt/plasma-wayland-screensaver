@@ -849,7 +849,7 @@ fn shader_layout_and_per_element_budgets() {
         assert!(((out[body-1].y-out[body-4].y).abs()-8.0*0.22*2.5*2.0).abs()<0.0001);
         assert_eq!((out[body-1].y+out[body-4].y)*0.5,200.0);
     }
-    for kind in 0..4 {
+    for kind in 0..=4 {
         let f=FoodRecord{x:200.0,y:200.0,size:4.0,kind,life_fraction:255,..Default::default()};
         let n=RenderHandle::new().build_shader(&info(),&[],&[],&[f],&[],&palette(),&params(),&mut out).vertex_count;
         assert_eq!(n,6);
@@ -1110,10 +1110,11 @@ fn shader_contrail_has_shared_width_and_brightness_at_every_join() {
 #[test]
 fn shader_food_uses_exported_sizes_and_full_vacuum_streak() {
     let mut out=[ShaderRenderVertex::default();1024];
-    for kind in 0..4 {
+    for kind in 0..=4 {
         let f=FoodRecord{x:200.0,y:200.0,size:4.0,kind,life_fraction:255,..Default::default()};
         let n=RenderHandle::new().build_shader(&info(),&[],&[],&[f],&[],&palette(),&params(),&mut out).vertex_count;
-        assert_eq!(n,6);assert!((out[5].x-out[0].x-2.0*4.6*4.0).abs()<1.0e-4);
+        let visual_scale=if matches!(kind,3|4) {1.6} else {1.0};
+        assert_eq!(n,6);assert!((out[5].x-out[0].x-2.0*4.6*4.0*visual_scale).abs()<1.0e-4);
     }
     let f=FoodRecord{x:200.0,y:200.0,size:4.0,attraction:0.8,attraction_x:300.0,attraction_y:200.0,life_fraction:255,..Default::default()};
     let n=RenderHandle::new().build_shader(&info(),&[],&[],&[f],&[],&palette(),&params(),&mut out).vertex_count;
@@ -1175,7 +1176,7 @@ fn shader_all_primitive_wrap_bounds_match_independent_tiling() {
             let b = std::array::from_fn::<_, 3, _>(|j| SegmentRecord {
                 x: x as f32 - j as f32, y: y as f32,
                 previous_x: x as f32 - j as f32, previous_y: y as f32 });
-            let food = std::array::from_fn::<_, 4, _>(|kind| FoodRecord {
+            let food = std::array::from_fn::<_, 5, _>(|kind| FoodRecord {
                 x: x as f32, y: y as f32, size: 4.0, kind: kind as u8,
                 attraction: 1.0, attraction_x: x as f32 + 1.0,
                 attraction_y: y as f32 + 1.0, life_fraction: 255, ..Default::default() });
@@ -1870,4 +1871,268 @@ fn classic_pupils_remain_inside_iris_for_all_looks_moods_and_scales() {
             assert_eq!(pupils,42);
         }
     }}}}
+}
+
+#[test]
+fn prism_gulp_rainbow_change_no_vertex_counts_or_allocations() {
+    let mut r=RenderHandle::new();let mut s=snake();s.segment_count=48;
+    let b:Vec<_>=(0..48).map(|i|SegmentRecord{x:600.0-i as f32*7.0,y:300.0,previous_x:600.0-i as f32*7.0,previous_y:300.0}).collect();
+    let mut out=vec![ShaderRenderVertex::default();8192];let mut fallback=vec![RenderVertex::default();8192];
+    let base=r.build_shader(&info(),&[s],&b,&[],&[],&palette(),&params(),&mut out).vertex_count;
+    let old=r.build(&info(),&[s],&b,&[],&[],&palette(),&params(),&mut fallback).vertex_count;
+    s.bulges=[snakes_core::Bulge {start_tick:585,duration_ticks:55,strength:0.35,..Default::default()},snakes_core::Bulge {start_tick:580,duration_ticks:55,strength:0.35,..Default::default()}];
+    let feast=EventRecord {tick:585,snake_id:0,generation:1,kind:10,duration_ticks:55,..Default::default()};
+    r.reset();
+    COUNT.with(|c|c.set(Some(0)));
+    let new=r.build_shader(&info(),&[s],&b,&[],&[feast],&palette(),&params(),&mut out).vertex_count;
+    let classic=r.build(&info(),&[s],&b,&[],&[feast],&palette(),&params(),&mut fallback).vertex_count;
+    let allocs=COUNT.with(|c|c.replace(None).unwrap());assert_eq!(allocs,0);assert_eq!(base,new);assert_eq!(old,classic);
+    assert!(out[..new].iter().any(|v|v.params[0]==0 && v.color.red>77));
+    assert!(out[..new].iter().any(|v|v.params[0]==0 && v.params[3]>=150 && v.params[2]&50==0));
+    let seed=FoodRecord {id:88,x:300.0,y:300.0,size:10.0,kind:4,life_fraction:128,..Default::default()};
+    let n=r.build_shader(&info(),&[],&[],&[seed],&[],&palette(),&params(),&mut out).vertex_count;
+    assert_eq!(n,6);assert_eq!(out[0].params,[8,0,128,255]);
+    assert!((out[0].x as f64-(seed.x as f64-10.0*1.6*4.6)).abs()<0.001);
+}
+
+#[test]
+fn prism_age_packing_visual_scale_and_vacuum_stay_independent() {
+    let mut r=RenderHandle::new();let mut out=[ShaderRenderVertex::default();128];
+    let mut p=params();
+    let mut f=FoodRecord {id:88,x:300.0,y:300.0,size:10.0,kind:3,life_fraction:200,ripe_tick:600,..Default::default()};
+    for (calm,age,expected) in [(false,0.0,0),(false,0.5,127),(false,1.0,254),
+        (true,0.3,127),(true,0.6,254),(false,2.0,254)] {
+        r.reduced_motion=calm;p.presentation_time=20.0+age;
+        let n=r.build_shader(&info(),&[],&[],&[f],&[],&palette(),&p,&mut out).vertex_count;
+        assert_eq!(n,6);assert_eq!(out[0].params,[8,0,200,expected]);
+        assert!((out[0].x as f64-(300.0-10.0*1.6*4.6)).abs()<0.001);
+    }
+    p.presentation_time=20.0;r.reduced_motion=false;
+    f.ripe_tick=585;
+    r.build_shader(&info(),&[],&[],&[f],&[],&palette(),&p,&mut out);
+    assert_eq!(out[0].params[3],127);
+    f.ripe_tick=0;
+    r.build_shader(&info(),&[],&[],&[f],&[],&palette(),&p,&mut out);
+    assert_eq!(out[0].params[3],254);
+    f.ripe_tick=601;
+    r.build_shader(&info(),&[],&[],&[f],&[],&palette(),&p,&mut out);
+    assert_eq!(out[0].params[3],0);
+    f.kind=4;
+    r.build_shader(&info(),&[],&[],&[f],&[],&palette(),&p,&mut out);
+    assert_eq!(out[0].params[3],255);
+    // Even malformed attracted prize records keep the ordinary streak dimensions.
+    f.attraction=1.0;f.attraction_x=400.0;f.attraction_y=300.0;
+    let mut baseline=[ShaderRenderVertex::default();6];
+    for kind in 0..=4 {
+        f.kind=kind;
+        let n=r.build_shader(&info(),&[],&[],&[f],&[],&palette(),&p,&mut out).vertex_count;
+        assert_eq!(n,12);
+        if kind==0 {baseline.copy_from_slice(&out[..6]);}
+        else {assert_eq!(out[..6],baseline);}
+        if kind<=2 {assert!((out[6].x as f64-(300.0-10.0*4.6)).abs()<0.001);assert_eq!(out[6].params[3],0);}
+    }
+}
+
+#[test]
+fn prism_rainbow_and_boost_keep_the_strongest_light_origin_without_allocating() {
+    let mut s=snake();s.segment_count=80;s.flags=flags::BOOSTING;
+    let b:Vec<_>=(0..80).map(|j|SegmentRecord {x:900.0-j as f32*7.0,y:300.0,
+        previous_x:900.0-j as f32*7.0,previous_y:300.0}).collect();
+    let feast=EventRecord {tick:570,snake_id:0,generation:1,kind:10,duration_ticks:92,..Default::default()};
+    let mut out=vec![ShaderRenderVertex::default();8192];
+    for walls in [0,1] {for calm in [false,true] {
+        let mut r=RenderHandle::new();r.reduced_motion=calm;
+        let p=RenderParams {deadly_walls:walls,..params()};
+        COUNT.with(|c|c.set(Some(0)));
+        let n=r.build_shader(&info(),&[s],&b,&[],&[feast],&palette(),&p,&mut out).vertex_count;
+        let allocations=COUNT.with(|c|c.replace(None).unwrap());assert_eq!(allocations,0);
+        let mut origins=[0usize;8];
+        for v in out[..n].iter().filter(|v|v.params[0]==0 && v.params[3]>0) {
+            let origin=((v.params[2]>>1)&1)|((v.params[2]>>3)&6);origins[origin as usize]+=1;
+            if origin==0 {assert!(v.params[3]<=153);}
+        }
+        assert!(origins[0]>0 && origins[6]>0,"walls={walls}, calm={calm}, origins={origins:?}");
+        assert_eq!(origins.iter().sum::<usize>(),origins[0]+origins[6]);
+    }}
+}
+
+#[test]
+fn classic_prism_seed_ring_uses_spectrum_and_scales_without_more_vertices() {
+    let mut r=RenderHandle::new();let mut out=[RenderVertex::default();512];
+    let f=FoodRecord {id:88,x:300.0,y:300.0,size:10.0,kind:4,life_fraction:255,..Default::default()};
+    let pal=[RenderColor {red:12,green:32,blue:62,alpha:255}];
+    let n=r.build(&info(),&[],&[],&[f],&[],&pal,&params(),&mut out).vertex_count;
+    assert_eq!(n,120); // unchanged two 8-sided discs and twelve 6-vertex ring segments
+    let hues=[[255,100,120],[255,180,90],[245,240,120],[120,245,170],[100,205,255],[195,145,255]];
+    for (j,segment) in out[48..n].chunks_exact(6).enumerate() {
+        let expected=hues[j/2];
+        assert!(segment.iter().all(|v|[v.color.red,v.color.green,v.color.blue]==expected && v.color.alpha==210));
+    }
+    // The pulsed classic halo uses the same 1.6 display factor; sim size is borrowed unchanged.
+    let pulse=0.82+(params().presentation_time*3.0).sin()*0.18;
+    assert!((out[1].x as f64-(300.0+10.0*pulse*1.6*3.2)).abs()<0.001);
+    assert_eq!(f.size,10.0);
+}
+
+#[test]
+fn prism_contested_second_leader_keeps_its_bright_arc() {
+    let mut r=RenderHandle::new();let mut a=snake();a.face_flags=4;
+    let mut b=a;b.id=1;b.segment_offset=3;b.color_index=1;
+    let mut segments=body().to_vec();segments.extend_from_slice(&body());
+    let pal=[palette()[0],RenderColor {red:255,green:150,blue:100,alpha:255}];
+    let f=FoodRecord {id:88,x:250.0,y:200.0,size:8.0,kind:4,life_fraction:128,
+        food_flags:1 | (2<<4) | 256 | 512,..Default::default()};
+    let mut out=vec![ShaderRenderVertex::default();8192];
+    let n=r.build_shader(&info(),&[a,b],&segments,&[f],&[],&pal,&params(),&mut out).vertex_count;
+    let arcs:Vec<_>=out[..n].iter().filter(|v|v.params[0]==17).collect();assert_eq!(arcs.len(),12);
+    let leader:Vec<_>=arcs.iter().filter(|v|v.params[3]&1!=0).collect();assert_eq!(leader.len(),6);
+    assert!(leader.iter().all(|v|v.params[3]&2!=0 && v.color==pal[1]));
+    let radius=f.size as f64*2.04*1.6;
+    let extent=(radius*3.4).max(radius*1.62+12.0);
+    assert!((arcs[0].x as f64-(f.x as f64-extent)).abs()<0.001);
+}
+
+
+#[test]
+fn reduced_motion_retained_events_after_freeze_advance_and_expire_without_allocating() {
+    let mut i=info();let p=params();let s=snake();let b=body();let pal=palette();
+    let mut shader=[ShaderRenderVertex::default();1024];let mut classic=[RenderVertex::default();4096];
+    // Exercise every retained transient family, including pickup head flare.
+    for (event_kind,sprite_kind) in [(0,6),(4,7),(2,12),(6,13),(7,13)] {
+        for use_shader in [false,true] {
+            let mut r=RenderHandle::new();r.reduced_motion=true;
+            r.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut shader);
+            i.tick=690;i.simulation_time=23.0;
+            let e=EventRecord {tick:690,kind:event_kind,other_snake_id:1,x:200.0,y:200.0,..Default::default()};
+            if use_shader {
+                let n=r.build_shader(&i,&[s],&b,&[],&[e],&pal,&p,&mut shader).vertex_count;
+                assert_eq!(shader[..n].iter().filter(|v|v.params[0]==sprite_kind).count(),6);
+                if event_kind==2 {assert!(shader[..n].iter().any(|v|v.params[0]==1 && v.params[1]&128!=0));}
+                i.tick=699;i.simulation_time=23.3;
+                let n=r.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut shader).vertex_count;
+                if event_kind==2 {assert!(shader[..n].iter().filter(|v|v.params[0]==1).all(|v|v.params[1]&128==0));}
+                i.tick=708;i.simulation_time=23.6;
+                COUNT.with(|c|c.set(Some(0)));
+                let n=r.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut shader).vertex_count;
+                assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+                assert_eq!(shader[..n].iter().filter(|v|v.params[0]==sprite_kind).count(),0);
+            } else {
+                let n=r.build(&i,&[s],&b,&[],&[e],&pal,&p,&mut classic).vertex_count;
+                i.tick=708;i.simulation_time=23.6;
+                COUNT.with(|c|c.set(Some(0)));
+                let expired=r.build(&i,&[s],&b,&[],&[],&pal,&p,&mut classic).vertex_count;
+                assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+                if event_kind!=4 {assert!(n>expired,"classic event {event_kind} must expire");}
+            }
+            i=info();
+        }
+    }
+}
+
+#[test]
+fn reduced_motion_feast_after_freeze_reaches_both_render_formats_and_expires() {
+    let mut i=info();let mut r=RenderHandle::new();r.reduced_motion=true;
+    let mut s=snake();s.segment_count=48;let p=params();let pal=palette();
+    let b:Vec<_>=(0..48).map(|j|SegmentRecord {x:600.0-j as f32*7.0,y:300.0,
+        previous_x:600.0-j as f32*7.0,previous_y:300.0}).collect();
+    let mut out=vec![ShaderRenderVertex::default();8192];let mut fallback=vec![RenderVertex::default();8192];
+    r.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out);
+    i.tick=705;i.simulation_time=23.5;
+    s.bulges[0]=snakes_core::Bulge {start_tick:690,duration_ticks:55,strength:0.35,..Default::default()};
+    let feast=EventRecord {tick:690,snake_id:0,generation:1,kind:10,duration_ticks:55,..Default::default()};
+    COUNT.with(|c|c.set(Some(0)));
+    let n=r.build_shader(&i,&[s],&b,&[],&[feast],&pal,&p,&mut out).vertex_count;
+    let m=r.build(&i,&[s],&b,&[],&[feast],&pal,&p,&mut fallback).vertex_count;
+    assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+    assert!(out[..n].iter().any(|v|v.params[0]==0 && v.params[3]>=150 && v.color.red>pal[0].red));
+    assert!(fallback[..m].iter().any(|v|v.color.red>pal[0].red && v.color.green<pal[0].green));
+    i.tick=735;i.simulation_time=24.5;
+    let n=r.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+    assert!(out[..n].iter().filter(|v|v.params[0]==0).all(|v|v.params[3]==0 && v.color.red==pal[0].red));
+    let m=r.build(&i,&[s],&b,&[],&[],&pal,&p,&mut fallback).vertex_count;
+    let mut plain=RenderHandle::new();plain.reduced_motion=true;
+    let mut reference=vec![RenderVertex::default();8192];s.bulges=[Default::default();2];
+    let expected=plain.build(&i,&[s],&b,&[],&[],&pal,&p,&mut reference).vertex_count;
+    assert_eq!(&fallback[..m],&reference[..expected]);
+}
+
+
+#[test]
+fn reduced_motion_snapshot_effects_keep_advancing_after_clock_freeze() {
+    let (mut i,mut s,b,mut items)=s1_fixture();
+    let p=params();let pal=palette();let mut r=RenderHandle::new();r.reduced_motion=true;
+    let mut out=[ShaderRenderVertex::default();4096];
+    i.tick=690;i.simulation_time=23.0;i.bubble_count=1;
+    let mut f=FoodRecord {id:88,x:300.0,y:300.0,size:10.0,kind:3,life_fraction:200,ripe_tick:690,..Default::default()};
+    // Frozen procedural time is older than all these newly started effects.
+    for age in [0u16,3,9,15,18,25,27,30] {
+        i.tick=690+age as u64;i.simulation_time=23.0+age as f64/30.0;
+        i.bubbles[0].age_ticks=age;
+        s[0].mood=5;s[0].happy_ticks=45-age;s[0].effect_kind=1;s[0].effect_ticks=36-age;
+        s[1].mood=1;s[1].jaw_ticks=39-age;
+        items[0].landing_ticks=30-age;items[0].age_ticks=age;items[0].life_ticks=750-age;
+        r.set_items(&items[..1],12.0);f.life_fraction=200-age as u8;
+        COUNT.with(|c|c.set(Some(0)));
+        let n=r.build_shader(&i,&s,&b,&[f],&[],&pal,&p,&mut out).vertex_count;
+        assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+        let vertices=&out[..n];
+        let bubble=vertices.iter().find(|v|v.params[0]==16);
+        if age<27 {
+            let bubble=bubble.unwrap();
+            let fade=(age as f64/3.24).min(1.0)*((27-age) as f64/5.4).min(1.0);
+            assert_eq!(bubble.color.alpha,(fade*255.0).round() as u8);
+            let quad:Vec<_>=vertices.iter().filter(|v|v.params[0]==16).collect();
+            assert!((quad[1].x-quad[0].x-2.0*(s[0].radius as f32*1.3).max(12.5)).abs()<0.001);
+        } else {assert!(bubble.is_none());}
+        let heads:Vec<_>=vertices.iter().filter(|v|v.params[0]==1).step_by(6).collect();
+        let jaw=|v:&ShaderRenderVertex|(v.params[3]>>6)|((v.params[2]&128)>>5);
+        assert_eq!(jaw(heads[0]),if age<17 {7} else {0},"blep age {age}");
+        let yawn=(std::f64::consts::PI*(age as f64/23.4).min(1.0)).sin();
+        assert_eq!(jaw(heads[1]),(yawn*7.0).round() as u8,"yawn age {age}");
+        let prism=vertices.iter().find(|v|v.params[0]==8).unwrap();
+        assert_eq!(prism.params[3],(age as f64*254.0/18.0).min(254.0) as u8);
+        assert_eq!(prism.params[2],f.life_fraction,"expiry is authoritative");
+        let item=vertices.iter().find(|v|v.params[0]==11).unwrap();
+        assert_eq!(item.params[2],if age<30 {128+(age as f64/30.0*127.0).round() as u8} else {127});
+        let warning=vertices.iter().find(|v|v.params[0]==14).unwrap();
+        assert_eq!(warning.params[3],((age as f64/36.0)*255.0).round() as u8);
+        // Contest state uses current ETAs; its pulse is disabled by motionScale.
+        assert!(vertices.iter().filter(|v|v.params[0]==17).any(|v|v.params[3]&2!=0));
+    }
+}
+
+#[test]
+fn reduced_motion_corpse_and_contrail_lifetimes_advance_after_freeze() {
+    let p=params();let pal=palette();let b=body();let mut out=[ShaderRenderVertex::default();1024];
+    let mut fallback=[RenderVertex::default();4096];
+    for shader in [false,true] {
+        let mut r=RenderHandle::new();r.reduced_motion=true;let mut i=info();let mut s=snake();
+        r.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out);
+        i.tick=690;i.simulation_time=23.0;s.alive=0;s.flags=flags::CORPSE;
+        if shader {
+            let n=r.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+            assert!(out[..n].iter().any(|v|v.params[0]==0 && v.color.alpha>0));
+        } else {
+            let n=r.build(&i,&[s],&b,&[],&[],&pal,&p,&mut fallback).vertex_count;
+            assert!(fallback[..n].iter().any(|v|v.color.alpha>0));
+        }
+        i.tick=711;i.simulation_time=23.7;
+        if shader {
+            let n=r.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+            assert!(out[..n].iter().all(|v|v.color.alpha==0));
+        } else {
+            let n=r.build(&i,&[s],&b,&[],&[],&pal,&p,&mut fallback).vertex_count;
+            assert!(fallback[..n].iter().all(|v|v.color.alpha==0));
+        }
+    }
+    let mut r=RenderHandle::new();r.reduced_motion=true;let mut s=snake();s.flags=flags::BOOSTING;
+    let mut i=FrameInfo {tick:690,simulation_time:23.0,..info()};
+    r.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out);
+    let moved=b.map(|v|SegmentRecord {x:v.x+8.0,previous_x:v.x+8.0,..v});
+    i.tick+=1;i.simulation_time+=1.0/30.0;
+    let n=r.build_shader(&i,&[s],&moved,&[],&[],&pal,&p,&mut out).vertex_count;
+    assert!(out[..n].iter().any(|v|v.params[0]==10));
+    i.tick=711;i.simulation_time=23.7;
+    let n=r.build_shader(&i,&[s],&moved,&[],&[],&pal,&p,&mut out).vertex_count;
+    assert!(out[..n].iter().all(|v|v.params[0]!=10 && v.params[0]!=9));
 }

@@ -8,6 +8,7 @@ use std::time::Instant;
 #[path="support/phase_contact.rs"] mod phase_contact;
 #[path="support/capsules.rs"] mod capsules;
 #[path="support/diagnostics.rs"] mod diagnostics;
+#[path="support/prisms.rs"] mod prisms;
 use diagnostics::{ScoreController,Diagnostics};
 #[allow(dead_code)]
 #[path="support/accounting.rs"] mod accounting;
@@ -40,8 +41,11 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
     let mut phase_used=0u64; let mut phase_expiries=0u64; let mut phase_clear_expiries=0u64;
     let mut phase_contact_ticks=0u64; let mut used=[false;MAX_SNAKES];
     let mut capsules=capsules::Capsules::new();
+    let mut prisms=prisms::Prisms::default();
+    let motion_trace=std::env::args().any(|s|s=="--prism-motion-trace");
+    let mut trace_prism=None;
     for tick in 0..ticks {
-        capsules.before(&w);
+        capsules.before(&w);prisms.before(&w);
         for s in w.snakes() {
             let id=s.id as usize;
             before[id]=Before {alive:s.alive,head:s.segments.first().map(|p|p.current).unwrap_or_default(),
@@ -57,7 +61,17 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
         controller.begin();
         if let Some(d)=&mut diagnostics {d.before(tick,&w,&controller);}
         let start=Instant::now();w.step(&mut controller);times.push(start.elapsed().as_secs_f64()*1000.0);
-        capsules.after(&w,&controller.tactics);
+        capsules.after(&w,&controller.tactics);prisms.after(&w,&controller,&controller.tactics);
+        if motion_trace {
+            if trace_prism.is_none() {trace_prism=w.foods().find(|f|f.kind==snakes_core::FoodKind::PrismSeed).map(|f|f.id);}
+            if tick%15==0 {if let Some(f)=w.foods().find(|f|Some(f.id)==trace_prism) {
+                println!("prism_motion tick={} kind={:?} remaining={} pos={:?}",w.tick(),f.kind,f.motion_ticks,f.position);
+                if let Some(ai)=controller.ai() {for s in w.snakes().filter(|s|s.alive) {
+                    let d=ai.debug(s.id as usize).unwrap();
+                    println!("  id={} target={} vulture={} head={:?} angle={:.2} safe={:.2} flags={} exit={:?}",s.id,ai.selected_target(s.id as usize).unwrap(),ai.vulturing(s.id as usize),s.segments[0].current,s.angle,d.safe_seconds,d.flags,d.path[d.path_count.saturating_sub(1) as usize]);
+                }}
+            }}
+        }
         if let Some(d)=&mut diagnostics {d.after(tick,&controller);}
         for event in w.frame_events() {
             if event.kind==snakes_core::EventKind::Pickup {
@@ -124,6 +138,7 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
             }
         }
     }
+    prisms.report(std::env::args().any(|s|s=="--prism-trace"));
     capsules.report(label,cfg,std::env::args().any(|s|s=="--capsule-trace"));
     if let Some(ai)=controller.ai().filter(|ai|ai.profile()[4]!=0) {println!("ai_profile_ns {:?}",ai.profile());}
     if let Some(d)=diagnostics {d.report();}
@@ -137,7 +152,7 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
 fn main() {
     let args:Vec<String>=std::env::args().collect();
     if args.iter().any(|s|s=="--help") {
-        println!("ai_scorecard [minutes=8] [seed] [IQ=100/50] [deadly/wrap] [--ai-only] [--diagnostics] [--profile] [--trace] [--classic] [--no-power-ups] [--capsule-trace] [--user-settings]");return;
+        println!("ai_scorecard [minutes=8] [seed] [IQ=100/50] [deadly/wrap] [--ai-only] [--diagnostics] [--profile] [--trace] [--classic] [--no-power-ups] [--capsule-trace] [--user-settings] [--prism-trace]");return;
     }
     let positional:Vec<&String>=args.iter().skip(1).filter(|s|!s.starts_with("--")).collect();
     let minutes=positional.first().map(|s|s.parse().unwrap()).unwrap_or(8);

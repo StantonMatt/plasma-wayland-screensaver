@@ -241,7 +241,7 @@ Body along coordinates count from the tail. The four params bytes mean:
 | Vacuum / debug direction | 5 | reserved | reserved | reserved |
 | Continuous contrail | 10 | reserved | reserved | reserved |
 | Impact / succession / boost ring | 6 / 7 / 9 | event seed | reserved | normalized effect age |
-| Prism (reserved for R4) | 8 | phase | remaining life fraction | reserved |
+| Prism / PrismSeed (S2) | 8 | phase | ripe life / seed progress | 255 seed; 0..254 ripe age over 1 s (0.6 s in Calm) |
 
 Kinds 11–31 reserve item and power-up sprites. No atlas is needed until R3.
 All allocations occur when the render handle or retained QSG buffer is created
@@ -369,9 +369,10 @@ paths preserve their separate drift and exact seam translations.
 Per-length taper bytes are retained, with no steady-state allocation.
 
 Contrails have kind 10, constant along UV, and shared per-end width/colour/alpha
-(half-width 0.465r*u, alpha 0.35*u², 35% white). Food keeps its exported size;
-only halo brightness twinkles. Shards use a slim rhombus, and prism fruit has
-a shaded orb, gradient-normalised ellipse ring and orbit dot. Vacuum streaks
+(half-width 0.465r*u, alpha 0.35*u², 35% white). Ordinary food keeps its exported size;
+the prism family uses a 1.6x display factor without changing simulation size.
+Only halo brightness twinkles. Shards use a slim rhombus, and prism fruit has
+an iridescent pearl, circular spectral halo and eight dispersion rays. Vacuum streaks
 use half-width 0.65s, length s*(3+8*attraction), 0.75 peak and 40% white tint.
 
 The deterministic 1280x720 capture fixture uses black, the shipped ocean
@@ -380,8 +381,8 @@ lengths 16/48/110/260/280, and tangent-aligned heads. Two extra snakes expose
 a full boost tail and a tight spiral. The food row uses actual representative
 exported sizes (spark 0.321R, shard 0.3405R, pellet 0.295R). The prototype's
 pellet is 0.20R, but the simulation exports 0.295R: this fixture deliberately
-shows the production size. Prism spawning is R4; its reserved fixture size is
-the approved 0.62R. Fifteen compact physics snapshots expose boost trails
+shows the production size. The separate S2 prism fixture uses the production
+0.62R simulation size at a base radius of 8.1px. Fifteen compact physics snapshots expose boost trails
 without requiring simulation or AI changes.
 
 ### Fragment support and geometry contract
@@ -429,7 +430,7 @@ body radius; head values are head radii; food values are exported food size.
 | Spark food halo / twinkle cross / core | 4.6 / 4.5 / unbounded AA → 4.6 / 4.5 / <=1.85 | 4.6 | Shared 4.6 |
 | Essence shard halo / rotated rhombus | 4.4 / unbounded AA → 4.4 / <=3.307 | 4.6 | Shared 4.6 |
 | Spent pellet halo / core | 3.0 / unbounded AA → 3.0 / <=1.8 | 4.6 | Shared 4.6 |
-| Prism halo / ring / rotating orbit dot / core | 4.0 / unbounded pixel-AA ornaments → 4.0 / <=3.99 / <=3.54 / <=1.8 | 4.6 | Shared 4.6 |
+| Prism glow / seed ring / fuse / ripe halo / rays / core / pop | 4.6 / <=3.84 / <=4.16 / <=2.89 / <=4.01 / <=1.96 / <=4.6 | 4.6 visual radii | Shared 4.6, with prism display factor 1.6 |
 | Food pulse / expiry | Unchanged: modulates amplitude, never size | 4.6 | Shared 4.6 |
 | Vacuum streak | Unchanged width/length; explicit start gate: half-width max(0.65*s,0.5px), length s*(3+8*attraction) | Endpoint bounds + width | Shared 0.65, same bounds |
 | Developer steering | Unchanged width/length; explicit start gate: half-width 1.2px; length max(7*r,52) projected per axis | Endpoint bounds + width | Shared 1.2, same bounds |
@@ -626,3 +627,62 @@ shader geometry and checks that capsule icons and all five emote glyphs have
 visible atlas pixels. Real-GPU legibility and pacing remain desktop checks.
 S1 measurements and the distinction between the historical >11k stress
 fixture and the matched ~8.6k spec/chaos fixtures are in `R11_STEP_B_REPORT.md`.
+
+## S2 prism sprites, gulps and Feast colours
+
+PrismSeed reuses the existing six-vertex kind-8 quad, displayed at 1.6x the
+simulation size. A white pearl grows from .35 to .8 visual radii inside a
+spectral information ring at 2.7 radii, filling clockwise from the top with a
+white fuse spark. Ripe fruit has an iridescent pearl, spectral halo at 1.75 radii,
+eight alternating dispersion rays, and a stronger glow. Its ripe-age byte drives
+one expanding ring over 1 s plus orb overshoot. The shock stroke is bounded
+inside the quad even at tiny display scales. The halo drains over the final 5 s;
+a 1 s fade replaces expiry blinking. Colours are independent of the snake palette:
+Mono is silver and Pastel mixes 30% white. The 12-byte fallback scales its discs
+and draws twelve seed-ring segments, two per hue-table entry.
+
+Gulps scale existing normals in a band of about thirteen body samples per gulp;
+Gaussian width is `1 + .35 exp(-((i-center)/2.1)^2)`. Overlaps take the maximum.
+Feast colours interpolate a six-entry hue table over about 22 body samples:
+a two-segment front, five full-strength head-side segments, then an exponential
+wake cut at 20 segments. Hue spans 11 segments and drifts continuously at 0.3 cycles/s.
+Scratch colour alpha carries up to 0.6 light strength; the shader merges it with
+other wave lights, using origin zero for the vertex's own hue. The wake uses the
+Feast event's retained `duration_ticks`, matching the gulp even
+when meal growth or boost payments change body length. Each overlapping Feast
+keeps its own duration. The wake fades for 0.5 s after the bulge reaches the tail.
+Both paths
+add zero primitives for gulps and rainbow, retain allocated scratch and preserve
+vertex counts. The ordinary shader ribbon retains its original hot loop and calling signature;
+gulps and rainbow use a separate feature path. Mono body accents retain 12% chroma;
+Pastel mixes 30% white. Calm freezes halo/ray rotation and body hue drift, retains
+seed information, removes orb overshoot, and shortens the pop, gulps and wake by
+40% (0.3 s tail fade). The frozen procedural clock controls rotation, pulse and
+hue drift; event lifetimes use at least the advancing simulation clock in Calm.
+This also applies to retained pickup/kill waves, head flares, transient rings,
+corpse fades and contrails. Bubbles, jaws, landing, ripening and expiry retain
+their authoritative snapshot ages/countdowns. Calm rays use a fixed 0.2 rad offset.
+Prism contest arcs
+sit outside the seed ring and rays at 3.3048 visual radii, reuse kind 17 and
+share the existing six-arc scene cap. There are no new flashing signals:
+halo hue turns at 0.12 rev/s, rays at 0.25 rad/s, and glow twinkles at ±15%, 0.35 Hz.
+
+Capture on an accessible desktop (no servers needed):
+
+```sh
+QT_QPA_PLATFORM=wayland QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl QSG_RENDER_LOOP=basic \
+  SNAKES_CAPTURE_PATH="$PWD/build-s2/prism.png" \
+  build-s2/bin/test-snakerenderer captureShaderFixture:prism
+QT_QPA_PLATFORM=wayland QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl QSG_RENDER_LOOP=basic \
+  SNAKES_CAPTURE_PATH="$PWD/build-s2/prism-mono.png" \
+  build-s2/bin/test-snakerenderer captureShaderFixture:prism-mono
+```
+
+Both prism rows use real proportions: seeds at 0/33/67/100%, a ripe fruit beside
+a Surge capsule and sparks, two committed hatchlings racing, and three gulps
+(hatchling, adult, violet) with Happy/Heart. `REAL_SHIFT` offsets ripe/gulp start
+ticks (negative advances age; e.g. -30 settles the pop), `REAL_LIFE` sets the ripe
+life byte (0..255), `REAL_CALM=1` freezes the presentation clock, and
+`REAL_BOOST=1` overlays boost waves. No `REAL_FIXTURE` switch is needed.
+The S2 chaos fixture adds two active gulps and a Feast wave
+without extra vertices. Hardware capture/pacing still requires a live GPU session.

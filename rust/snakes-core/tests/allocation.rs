@@ -194,3 +194,26 @@ fn zero_allocations_with_all_r3_effects_simultaneously_active() {
     assert!(simultaneous,"all three effects must coexist during measured ticks");
     assert!(w.snakes().all(|s|s.effect_ticks==0));
 }
+
+#[test]
+fn zero_allocations_prism_schedule_feast_bulges_and_ai() {
+    let mut w=World::new(Config {rules:RuleSet::V2,deadly_walls:false,..Config::default()}).unwrap();
+    let mut ai=ai::AiController::new();
+    let (mut saw_seed,mut saw_feast,mut saw_two_gulps)=(false,false,false);
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    for tick in 0..2200 {
+        // Repeated early feasts overlap both gulp slots; leave the remaining
+        // run untouched so the real scheduler and 90-tick ripening execute.
+        if tick<120 && tick%15==0 {
+            let p=w.snakes().find(|s|s.alive).unwrap().segments[0].current;
+            w.food.retain(|f|f.kind!=FoodKind::Prism && f.kind!=FoodKind::PrismSeed);
+            w.food.push(world::Food {id:10000+tick,p,kind:FoodKind::Prism,value:5.0,life:30.0,owner:-1,..Default::default()});
+        }
+        w.step(&mut ai);
+        saw_seed|=w.foods().any(|f|f.kind==FoodKind::PrismSeed);
+        saw_feast|=w.frame_events().any(|e|e.kind==EventKind::Feast);
+        saw_two_gulps|=w.snakes().any(|s|s.face.bulges.iter().all(|b|b.strength>0.0 && w.tick()<b.start_tick+b.duration_ticks as u64));
+    }
+    ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
+    assert!(saw_seed && saw_feast && saw_two_gulps,"scheduler/Feast/two-slot paths must execute");
+}

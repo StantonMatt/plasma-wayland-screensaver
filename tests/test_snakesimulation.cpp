@@ -179,19 +179,30 @@ private Q_SLOTS:
         for (const auto &frame : sim.m_storage)
             buffers.push_back({frame->snakes.data(), frame->segments.data(), frame->food.data(),
                                frame->snakes.capacity(), frame->segments.capacity(), frame->food.capacity()});
-        for (int i = 0; i < 200; ++i) {
+        for (int tick = 0; tick < 200; ++tick) {
             sim.advanceTo(time += 33'333'334);
             current.presentAt(time);
-        }
-        QCOMPARE(sim.m_storage.size(), poolSize); // No new frame/control-block allocations.
-        for (size_t i = 0; i < poolSize; ++i) {
-            const auto &frame = sim.m_storage[i];
-            QCOMPARE(frame->snakes.data(), buffers[i].snakes);
-            QCOMPARE(frame->segments.data(), buffers[i].segments);
-            QCOMPARE(frame->food.data(), buffers[i].food);
-            QCOMPARE(frame->snakes.capacity(), buffers[i].a);
-            QCOMPARE(frame->segments.capacity(), buffers[i].b);
-            QCOMPARE(frame->food.capacity(), buffers[i].c);
+            QCOMPARE(sim.m_storage.size(), poolSize); // No new frame/control-block allocations.
+            for (size_t i = 0; i < poolSize; ++i) {
+                const auto &frame = sim.m_storage[i];
+                // The world can still reach a new high water after warmup.
+                // Within each buffer's existing capacity, exports must reuse
+                // its allocation, including leased/history buffers.
+                if (frame->snakes.size() <= buffers[i].a) {
+                    QCOMPARE(frame->snakes.data(), buffers[i].snakes);
+                    QCOMPARE(frame->snakes.capacity(), buffers[i].a);
+                }
+                if (frame->segments.size() <= buffers[i].b) {
+                    QCOMPARE(frame->segments.data(), buffers[i].segments);
+                    QCOMPARE(frame->segments.capacity(), buffers[i].b);
+                }
+                if (frame->food.size() <= buffers[i].c) {
+                    QCOMPARE(frame->food.data(), buffers[i].food);
+                    QCOMPARE(frame->food.capacity(), buffers[i].c);
+                }
+                buffers[i] = {frame->snakes.data(), frame->segments.data(), frame->food.data(),
+                              frame->snakes.capacity(), frame->segments.capacity(), frame->food.capacity()};
+            }
         }
         const auto newest = sim.frame().info.tick;
         sim.setPresentationLead(4'166'667); // Refresh change to 240 Hz.

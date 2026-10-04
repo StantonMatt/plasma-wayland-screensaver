@@ -24,11 +24,12 @@ pub(super) struct Effect {
     snake_id: u32, generation: u32, seed: u8,
 }
 #[derive(Clone, Copy, Default)]
-pub(super) struct Wave { pub(super) time: f64, pub(super) active: bool, pub(super) kind: u8 }
+pub(super) struct Wave { pub(super) time: f64, pub(super) active: bool, pub(super) kind: u8, pub(super) duration_ticks: u16 }
 
 #[inline(always)]
 fn wave_flags(origin:u8)->u8 { ((origin&1)<<1)|((origin&6)<<3) }
 
+pub(super) const PRISM_VISUAL:f64=1.6;
 pub(super) struct SpriteSink<'a> { pub(super) out: &'a mut [ShaderVertex], pub(super) count: usize, pub(super) view: P }
 impl SpriteSink<'_> {
     #[inline]
@@ -121,6 +122,47 @@ impl SpriteSink<'_> {
                     previous[0].params[1]=packed[1];previous[1].params[1]=packed[1];
                 }
                 let normal=normals[i]*w;let cc=c.alpha(taper_bytes[i]);
+                packed[3]=brightness[i];
+                if MIXED {packed[2]=(packed[2]&!50)|origins[i];}
+                let current=[Self::make_vertex(b+normal,widths[i],along,cc,packed),
+                             Self::make_vertex(b-normal,-widths[i],along,cc,packed)];
+                self.push_quad([previous[0],previous[1],current[0],current[1]]);
+                previous=current;previous_cached=true;
+            } else { previous_cached=false; }
+            previous_valid=true;previous_width=w;a=b;
+        }
+    }
+
+    // Separate feature path keeps the ordinary ribbon ABI and hot loop intact.
+    fn live_prism_ribbon<const MIXED:bool>(&mut self, points:&[P], normals:&[P], valid:&[bool], widths:&[f64],
+                   taper_bytes:&[u8], brightness:&[u8], origins:&[u8], r:f64, c:Color, params:[u8;4], colors:&[Color], rainbow:bool, gulp:bool) {
+        let mut previous=[ShaderVertex::default();2];
+        let mut previous_valid=false;let mut previous_cached=false;
+        let mut previous_width=0.0_f64;let mut a=P::default();
+        if self.view.x<=0.0 || self.view.y<=0.0 { return; }
+        let envelope=r*BODY;
+        for i in 0..points.len() {
+            if !valid[i] { previous_valid=false;previous_cached=false;continue; }
+            let b=points[i];let w=envelope*widths[i];
+            let width=previous_width.max(w)*if gulp {1.35} else {1.0};
+            // If the edge starts inside the viewport its bounds necessarily
+            // intersect it. Only boundary/offscreen edges need the full AABB.
+            let inside=a.x>0.0 && a.x<self.view.x && a.y>0.0 && a.y<self.view.y;
+            if previous_valid && (inside || visible(a.x.min(b.x)-width,a.y.min(b.y)-width,
+                (b.x-a.x).abs()+2.0*width,(b.y-a.y).abs()+2.0*width,self.view)) {
+                let mut packed=params;packed[1]|=if i<=3 { 32 } else { 0 };
+                let along=(points.len()-1-i) as f64;
+                if !previous_cached {
+                    let normal=normals[i-1]*previous_width;
+                    let cc=if rainbow {colors[i-1]} else {c}.alpha(taper_bytes[i-1]);
+                    packed[3]=brightness[i-1];
+                    if MIXED {packed[2]=(packed[2]&!50)|origins[i-1];}
+                    previous=[Self::make_vertex(a+normal,widths[i-1],along+1.0,cc,packed),
+                              Self::make_vertex(a-normal,-widths[i-1],along+1.0,cc,packed)];
+                } else {
+                    previous[0].params[1]=packed[1];previous[1].params[1]=packed[1];
+                }
+                let normal=normals[i]*w;let cc=if rainbow {colors[i]} else {c}.alpha(taper_bytes[i]);
                 packed[3]=brightness[i];
                 if MIXED {packed[2]=(packed[2]&!50)|origins[i];}
                 let current=[Self::make_vertex(b+normal,widths[i],along,cc,packed),
@@ -241,6 +283,11 @@ impl Renderer {
                 || !coordinate32(e.x) || !coordinate32(e.y) { continue; }
             let time=info.simulation_time-(info.tick-e.tick) as f64*crate::STEP_SECONDS;
             let radius=snakes.iter().find(|s|s.id==e.snake_id).map_or(8.0,|s|s.radius);
+            if e.kind==crate::EventKind::Feast as u8 && (e.snake_id as usize)<MAX_SNAKES {
+                if snakes.iter().any(|s|s.id==e.snake_id && s.generation==e.generation && s.alive!=0) {
+                    let waves=&mut self.waves[e.snake_id as usize];waves[1]=waves[0];waves[0]=Wave {time,active:true,kind:8,duration_ticks:e.duration_ticks};
+                }
+            }
             if e.kind==0 || e.kind==4 {
                 self.effect(Effect { p:P::new(e.x as f64,e.y as f64),time,radius,
                     color:e.color_index,kind:if e.kind==0 { 6 } else { 7 },active:true,
@@ -252,12 +299,12 @@ impl Renderer {
                     snake_id:e.snake_id,generation:0,seed:e.tick as u8});
                 if e.kind==2 && (e.snake_id as usize)<MAX_SNAKES {
                     let waves=&mut self.waves[e.snake_id as usize];
-                    waves[1]=waves[0];waves[0]=Wave {time,active:true,kind:e.other_snake_id as u8};
+                    waves[1]=waves[0];waves[0]=Wave {time,active:true,kind:e.other_snake_id as u8,..Wave::default()};
                 }
             }
             if e.kind==0 && (e.other_snake_id as usize)<MAX_SNAKES {
                 let waves=&mut self.waves[e.other_snake_id as usize];
-                waves[1]=waves[0];waves[0]=Wave { time,active:true,kind:0 };
+                waves[1]=waves[0];waves[0]=Wave { time,active:true,kind:0,..Wave::default() };
             }
         }
         for s in snakes {
@@ -298,14 +345,15 @@ impl Renderer {
         let mut sink=SpriteSink { out:output,count:0,view };
         for f in food {
             if !food_valid(f) { continue; }
-            let size=f.size as f64*scale;
+            let raw_size=f.size as f64*scale;
+            let size=raw_size*if matches!(f.kind,3|4) {PRISM_VISUAL} else {1.0};
             let extent=size*FOOD;let pos=P::new(f.x as f64,f.y as f64);
             let mut min=pos;let mut max=pos;
-            let mut streak=P::default();let sw=(size*VACUUM).max(0.5);
+            let mut streak=P::default();let sw=(raw_size*VACUUM).max(0.5);
             if f.attraction>0.0 {
                 let pull=P::new(delta(pos.x,f.attraction_x as f64,arena.x,walls)*sx,delta(pos.y,f.attraction_y as f64,arena.y,walls)*sy);
                 let len=pull.length();if len>0.001 {
-                    streak=pull/len*(size*(3.0+f.attraction as f64*8.0));
+                    streak=pull/len*(raw_size*(3.0+f.attraction as f64*8.0));
                     let end=pos-P::new(streak.x/sx,streak.y/sy);
                     min=P::new(min.x.min(end.x),min.y.min(end.y));max=P::new(max.x.max(end.x),max.y.max(end.y));
                 }
@@ -313,7 +361,10 @@ impl Renderer {
             let phase=f.phase as f64/std::f64::consts::TAU;
             let phase=if (0.0..1.0).contains(&phase) { phase } else { phase.rem_euclid(1.0) };
             let phase=(phase*255.0).round() as u8;
-            let c=color(f.color_index);let params=[if f.kind==3 { 8 } else { 2+f.kind.min(2) },phase,f.life_fraction,0];
+            let c=color(f.color_index);let ripe_age=if f.kind==3 && f.ripe_tick!=0 {
+                ((info.tick.saturating_sub(f.ripe_tick) as f64+(p.presentation_time-info.simulation_time).max(0.0)*30.0)*254.0/if self.reduced_motion {18.0} else {30.0}).min(254.0) as u8
+            } else {254};
+            let params=[if f.kind==3 || f.kind==4 { 8 } else { 2+f.kind.min(2) },phase,f.life_fraction,if f.kind==4 {255} else if f.kind==3 {ripe_age} else {0}];
             if walls {
                 let center=map(pos);
                 if streak.x!=0.0 || streak.y!=0.0 { sink.streak(center,center-streak,sw,c.alpha(191),[5,0,0,0]); }
@@ -354,13 +405,18 @@ impl Renderer {
                 self.taper_lengths[id]=n;self.shader_taper_lengths[id]=n;
             }
             prepare_shader(mapped,&mut self.normals[..n],&mut self.valid[..n],&mut self.shader_limits[..n],widths,r*BODY);
+            let gulp_centers=if s.bulges.iter().any(|b|b.duration_ticks!=0 && b.strength>0.0) {prism::centers(s,info,p,self.reduced_motion)} else {[(-100.0,0.0);2]};
+            let gulp=gulp_centers.iter().any(|c|c.1>0.0);
+            if gulp {prism::widen(&mut self.normals[..n],gulp_centers);}
             let tier=if n<24 { 0 } else if n<100 { 1 } else if n<250 { 2 } else { 3 };
             let active_kind=if s.alive!=0 && !corpse && s.effect_ticks>0 {s.effect_kind&7} else {0};
             let flags=s.flags as u8;let c=color(s.color_index);
+            let rainbow=self.waves[id].iter().any(|w|w.active && w.kind==8)
+                && prism::rainbow(s,self.waves[id],info,p,self.reduced_motion,palette,c,&mut self.rainbow[..n]);
             if moving(s) && s.flags&flags::BOOSTING!=0 {
                 let trail=&self.trails[id];let mut prev:Option<(P,f64)>=None;
                 for i in 0..trail.len { let index=(trail.head+15-trail.len+i)%15;
-                    let age=p.presentation_time-info.simulation_time+info.tick.saturating_sub(trail.ticks[index]) as f64*crate::STEP_SECONDS;
+                    let age=event_time(info,p,self.reduced_motion)-info.simulation_time+info.tick.saturating_sub(trail.ticks[index]) as f64*crate::STEP_SECONDS;
                     if age>=0.5 { continue; }let pos=trail.points[index];
                     let u=1.0-age.max(0.0)/0.5;
                     if let Some((a,ua))=prev { let b=a+P::new(delta(a.x,pos.x,arena.x,walls),delta(a.y,pos.y,arena.y,walls));let w=CONTRAIL*r*ua.max(u);
@@ -369,11 +425,12 @@ impl Renderer {
                     }prev=Some((pos,u));
                 }
             }
-            let age=if corpse { ((p.presentation_time-self.corpses[id].time)/(0.55*motion_scale)).clamp(0.0,1.0) } else { 0.0 };
+            let age=if corpse { ((event_time(info,p,self.reduced_motion)-self.corpses[id].time)/(0.55*motion_scale)).clamp(0.0,1.0) } else { 0.0 };
             // Select at most two waves once per snake, not once per vertex.
             let mut waves=[(0.0_f64,0.0_f64,0_u8);2];let mut wave_count=0;
             for w in self.waves[id] {
-                let center=(p.presentation_time-w.time)/motion_scale*if w.kind==0 {1.1} else {1.3}*(n-1) as f64;
+                if w.kind==8 {continue;}
+                let center=(event_time(info,p,self.reduced_motion)-w.time)/motion_scale*if w.kind==0 {1.1} else {1.3}*(n-1) as f64;
                 if w.active && center>=-3.5 && center<(n as f64+3.5) {
                     waves[wave_count]=(center,if w.kind==0 {1.0} else {0.95},if w.kind==0 {6} else {w.kind});wave_count+=1;
                 }
@@ -387,8 +444,8 @@ impl Renderer {
                 if center<(n as f64+3.5) { waves[wave_count]=(center,0.5,7);wave_count+=1; }
             }
             let common_origin=waves[0].2;
-            let mixed=wave_count==2 && waves[1].2!=common_origin;
-            let body_flags=(flags & !50)|if mixed {0} else {wave_flags(common_origin)};
+            let mixed=(wave_count==2 && waves[1].2!=common_origin) || (rainbow && wave_count>0);
+            let body_flags=(flags & !50)|if mixed || rainbow {0} else {wave_flags(common_origin)};
             self.brightness[..n].fill(0);
             if mixed {self.wave_origins[..n].fill(0);}
             for &(center,strength,kind) in &waves[..wave_count] {
@@ -403,16 +460,30 @@ impl Renderer {
                     } else {self.brightness[j]=self.brightness[j].max(light);}
                 }
             }
+            if rainbow {
+                for j in 0..n {
+                    let light=self.rainbow[j].alpha;
+                    if light>self.brightness[j] {self.brightness[j]=light;if mixed {self.wave_origins[j]=0;}}
+                }
+            }
             // Body envelope includes waves, breathing and taper quantization. Per-edge seam selection
             // bounds even multi-lap bodies, and normals are computed only once.
             if walls && !corpse {
                 let params=[0,tier|(active_kind<<2)|if white_crown { 64 } else { 0 },body_flags,0];
-                if mixed {
-                    sink.live_ribbon::<true>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
-                        taper_bytes,&self.brightness[..n],&self.wave_origins[..n],r,c,params);
+                if !rainbow && !gulp {
+                    if mixed {
+                        sink.live_ribbon::<true>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
+                            taper_bytes,&self.brightness[..n],&self.wave_origins[..n],r,c,params);
+                    } else {
+                        sink.live_ribbon::<false>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
+                            taper_bytes,&self.brightness[..n],&[],r,c,params);
+                    }
+                } else if mixed {
+                    sink.live_prism_ribbon::<true>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
+                        taper_bytes,&self.brightness[..n],&self.wave_origins[..n],r,c,params,&self.rainbow[..n],rainbow,gulp);
                 } else {
-                    sink.live_ribbon::<false>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
-                        taper_bytes,&self.brightness[..n],&[],r,c,params);
+                    sink.live_prism_ribbon::<false>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
+                        taper_bytes,&self.brightness[..n],&[],r,c,params,&self.rainbow[..n],rainbow,gulp);
                 }
             } else { for i in 1..n {
                 if !self.valid[i-1] || !self.valid[i] { continue; }
@@ -444,15 +515,19 @@ impl Renderer {
                 let across=[u0*shrink,u1*shrink];
                 let end_wave=if corpse { params[3] } else { self.brightness[i] };
                 let end_origin=if !corpse && mixed {Some(self.wave_origins[i])} else {None};
-                let width=w0.max(w1);let along=[(n-i) as f64,(n-1-i) as f64];
+                let width=w0.max(w1)*if gulp {1.35} else {1.0};let along=[(n-i) as f64,(n-1-i) as f64];
                 if walls {
+                    let begin=sink.count;
                     sink.body_edge(ma,mb,an,bn,width,across,tapers,along,cc,params,end_wave,end_origin);
+                    if rainbow {prism_edge_colors(&mut sink,begin,self.rainbow[i-1],self.rainbow[i]);}
                 } else {
                     let margin=P::new((width+r*CORPSE_DRIFT)/sx,(width+r*CORPSE_DRIFT)/sy);
                     let (xs,ys)=copies(P::new(a.x.min(b.x),a.y.min(b.y)),P::new(a.x.max(b.x),a.y.max(b.y)),margin,arena,false);
                     for x in xs.first..=xs.last { for y in ys.first..=ys.last {
                         let shift=P::new(x as f64*xs.extent*sx,y as f64*ys.extent*sy);
+                        let begin=sink.count;
                         sink.body_edge(ma+shift,mb+shift,an,bn,width,across,tapers,along,cc,params,end_wave,end_origin);
+                        if rainbow {prism_edge_colors(&mut sink,begin,self.rainbow[i-1],self.rainbow[i]);}
                     }}
                 }
 
@@ -484,7 +559,7 @@ impl Renderer {
                 ((std::f64::consts::PI*((39-s.jaw_ticks.min(39)) as f64/(39.0*motion_scale)).min(1.0)).sin()*7.0).round() as u8
             } else {0};
             let look=quantize(s.pupil_x,0.18)|(quantize(s.pupil_y,0.35)<<3)|((jaw&3)<<6);
-            let flare=self.waves[id].iter().any(|w|w.active && (0.0..0.5*motion_scale).contains(&(p.presentation_time-w.time)));
+            let flare=self.waves[id].iter().any(|w|w.active && (0.0..0.5*motion_scale).contains(&(event_time(info,p,self.reduced_motion)-w.time)));
             let head_flags=(flags & 65) | (mood<<1) | ((jaw&4)<<5) | if active_kind==3 {flags::PHASED as u8} else {0};
             let params=[1,tier|(intensity<<2)|if white_crown {64} else {0}|if flare {128} else {0},head_flags,look];
             let margin=P::new(hr*(HEAD_FRONT*HEAD_FRONT+half_width*half_width).sqrt()/sx,hr*(HEAD_FRONT*HEAD_FRONT+half_width*half_width).sqrt()/sy);let (xs,ys)=copies(head,head,margin,arena,walls);
@@ -511,12 +586,15 @@ impl Renderer {
 
         }
         self.shader_items(info,p,palette,&mut sink);
-        self.shader_races(info,p,palette,snakes,segments,&mut sink);
+        if snakes.iter().any(|s|s.alive!=0 && s.face_flags&4!=0) {
+            self.shader_race_items(info,p,palette,snakes,segments,&mut sink,&self.items[..self.item_count.min(crate::MAX_CAPSULES)],self.item_radius,4);
+            self.shader_prism_races(info,p,palette,snakes,segments,food,&mut sink);
+        } else {self.shader_races(info,p,palette,snakes,segments,&mut sink);}
         self.shader_bubbles(info,p,palette,snakes,segments,&mut sink);
         let mut effect_budget=EffectBudget::default();
         for age_index in 0..self.effects.len() {
             let e=self.effects[(self.effect_head+self.effects.len()-1-age_index)%self.effects.len()];
-            let duration=(if e.kind==6 { 0.5 } else if e.kind==9 { 0.28 } else if e.kind>=12 {0.5} else { 0.6 })*motion_scale;let age=p.presentation_time-e.time;
+            let duration=(if e.kind==6 { 0.5 } else if e.kind==9 { 0.28 } else if e.kind>=12 {0.5} else { 0.6 })*motion_scale;let age=event_time(info,p,self.reduced_motion)-e.time;
             if !e.active || !(0.0..duration).contains(&age) { continue; }
             let extent=if e.kind==6 { IMPACT } else { RING };
             let r=e.radius*scale*extent;let (xs,ys)=copies(e.p,e.p,P::new(r/sx,r/sy),arena,walls);
@@ -578,5 +656,11 @@ mod tests {
                 assert_eq!(packed[1],base[1]);
             }
         }
+    }
+}
+
+fn prism_edge_colors(sink:&mut SpriteSink<'_>,begin:usize,a:Color,b:Color) {
+    for (j,v) in sink.out.iter_mut().enumerate().take(sink.count).skip(begin) {
+        let c=if [0,1,4].contains(&(j-begin)) {a} else {b};v.color=c.alpha(v.color.alpha);
     }
 }
