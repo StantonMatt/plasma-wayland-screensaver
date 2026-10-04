@@ -15,16 +15,21 @@ struct Inputs {
 struct PlatformConfig {
     QString path;
     bool libraryExists = false;
+    QString resolvedLibrary{};
+    bool drainSafe = true;
 };
+enum class LeakFix { Off, NoExplicit, Drain };
 
 // Pure startup policy. Explicitly set environment variables, including empty
 // values, belong to the user. No filesystem or process environment access.
 Inputs startupInputs(const QStringList &arguments, const QProcessEnvironment &environment);
 bool eligible(const Inputs &inputs);
+LeakFix selectedFix(const Inputs &inputs, const QList<PlatformConfig> &configs);
 QMap<QString, QString> changes(const Inputs &inputs, const QList<PlatformConfig> &configs);
 
 // Inventory is kept separate from policy so missing/broken installations can
 // be tested without loading an EGL library or requiring a desktop session.
-QList<PlatformConfig> discoverConfigs(const QStringList &directories, const QStringList &libraryDirectories);
+QList<PlatformConfig> discoverConfigs(const QStringList &directories, const QStringList &libraryDirectories,
+                                     const QMap<QString, QString> &cachedLibraries = {}, bool drainSafe = true);
 void apply(int argc, char *argv[]);
 }

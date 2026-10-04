@@ -28,6 +28,76 @@ class EglWorkaroundTest final : public QObject
 {
     Q_OBJECT
 private Q_SLOTS:
+    void leakFixModes()
+    {
+        const QList<EglWorkaround::PlatformConfig> configs{{modern, true, QStringLiteral("/lib/libnvidia-egl-wayland2.so.1.0.1")}};
+        auto in = inputs();
+        QCOMPARE(EglWorkaround::selectedFix(in, configs), EglWorkaround::LeakFix::Drain);
+        for (const auto &mode : {"drain", "noexplicit", "off", "", "typo"}) {
+            in.environment.insert(QStringLiteral("PVS_EGL_LEAK_FIX"), QString::fromLatin1(mode));
+            const auto expected = qstrcmp(mode, "drain") == 0 ? EglWorkaround::LeakFix::Drain
+                : qstrcmp(mode, "noexplicit") == 0 ? EglWorkaround::LeakFix::NoExplicit : EglWorkaround::LeakFix::Off;
+            QCOMPARE(EglWorkaround::selectedFix(in, configs), expected);
+            QCOMPARE(EglWorkaround::changes(in, configs).contains(disableSync), expected == EglWorkaround::LeakFix::NoExplicit);
+            QCOMPARE(EglWorkaround::selectedFix(in, {{modern, false}}), EglWorkaround::LeakFix::Off);
+            auto optedOut = in;
+            optedOut.keepWayland2 = true;
+            QCOMPARE(EglWorkaround::selectedFix(optedOut, configs), EglWorkaround::LeakFix::Off);
+            for (const auto &variable : {disableSync, filenames, configDirs}) {
+                optedOut = in;
+                optedOut.environment.insert(variable, QStringLiteral("0"));
+                QCOMPARE(EglWorkaround::selectedFix(optedOut, configs), EglWorkaround::LeakFix::Off);
+            }
+            in.graphics.platform = QStringLiteral("offscreen");
+            QCOMPARE(EglWorkaround::selectedFix(in, configs), EglWorkaround::LeakFix::Off);
+            in.graphics.platform.clear();
+        }
+    }
+
+    void versionPolicy_data()
+    {
+        QTest::addColumn<QString>("version");
+        QTest::addColumn<bool>("safe");
+        QTest::addColumn<bool>("drain");
+        for (const auto &version : {"1.0.1", "1.0.2", "1.0.3"}) {
+            QTest::newRow(version) << QString::fromLatin1(version) << true << true;
+        }
+        for (const auto &version : {"1", "1.0.0", "1.0.4", "1.0.10", "1.0.1.custom", "unknown"}) {
+            QTest::newRow(version) << QString::fromLatin1(version) << true << false;
+        }
+        QTest::newRow("uncertain-loader") << QStringLiteral("1.0.1") << false << false;
+    }
+
+    void versionPolicy()
+    {
+        QFETCH(QString, version);
+        QFETCH(bool, safe);
+        QFETCH(bool, drain);
+        const QString library = QStringLiteral("/lib/libnvidia-egl-wayland2.so.") + version;
+        const QList<EglWorkaround::PlatformConfig> configs{{modern, true, library, safe}};
+        auto in = inputs();
+        const auto expected = drain ? EglWorkaround::LeakFix::Drain : EglWorkaround::LeakFix::NoExplicit;
+        QCOMPARE(EglWorkaround::selectedFix(in, configs), expected);
+        QCOMPARE(EglWorkaround::changes(in, configs).contains(disableSync), !drain);
+        in.environment.insert(QStringLiteral("PVS_EGL_LEAK_FIX"), QStringLiteral("drain"));
+        QCOMPARE(EglWorkaround::selectedFix(in, configs), expected);
+        in.environment.insert(QStringLiteral("PVS_EGL_LEAK_FIX"), QStringLiteral("noexplicit"));
+        QCOMPARE(EglWorkaround::selectedFix(in, configs), EglWorkaround::LeakFix::NoExplicit);
+        in.environment.insert(QStringLiteral("PVS_EGL_LEAK_FIX"), QStringLiteral("off"));
+        QCOMPARE(EglWorkaround::selectedFix(in, configs), EglWorkaround::LeakFix::Off);
+    }
+
+    void conflictingResolvedLibrariesFallBack()
+    {
+        const QList<EglWorkaround::PlatformConfig> configs{
+            {modern, true, QStringLiteral("/lib/libnvidia-egl-wayland2.so.1.0.1")},
+            {modern, true, QStringLiteral("/other/libnvidia-egl-wayland2.so.1.0.2")}};
+        QCOMPARE(EglWorkaround::selectedFix(inputs(), configs), EglWorkaround::LeakFix::NoExplicit);
+        auto same = configs;
+        same[1].resolvedLibrary = same[0].resolvedLibrary;
+        QCOMPARE(EglWorkaround::selectedFix(inputs(), same), EglWorkaround::LeakFix::Drain);
+    }
+
     void policy_data()
     {
         QTest::addColumn<QString>("scenario");
@@ -153,7 +223,10 @@ private Q_SLOTS:
     {
         QTest::addColumn<QString>("kind");
         QTest::addColumn<bool>("valid");
-        for (const auto &kind : {"absolute", "relative", "soname", "symlink"}) {
+        for (const auto &kind : {"absolute", "relative", "soname", "symlink", "cache", "search-before-cache", "custom-json"}) {
+            QTest::newRow(kind) << QString::fromLatin1(kind) << true;
+        }
+        for (const auto &kind : {"not-elf", "wrong-architecture"}) {
             QTest::newRow(kind) << QString::fromLatin1(kind) << true;
         }
         for (const auto &kind : {"missing", "directory", "broken-symlink", "malformed", "no-icd", "no-library"}) {
@@ -170,13 +243,17 @@ private Q_SLOTS:
         QDir root(tmp.path());
         QVERIFY(root.mkdir(QStringLiteral("config")));
         QVERIFY(root.mkdir(QStringLiteral("lib")));
-        const auto library = root.filePath(QStringLiteral("lib/actual.so"));
-        QFile lib(library);
-        QVERIFY(lib.open(QIODevice::WriteOnly));
-        lib.close();
+        const auto library = root.filePath(QStringLiteral("lib/libnvidia-egl-wayland2.so.1.0.2"));
+        QVERIFY(QFile::copy(QString::fromLocal8Bit(EGL_DRAIN_DISCOVERY_FIXTURE), library));
+        if (kind == QStringLiteral("not-elf") || kind == QStringLiteral("wrong-architecture")) {
+            QFile lib(library);
+            QVERIFY(lib.open(QIODevice::ReadWrite));
+            QVERIFY(lib.seek(kind == QStringLiteral("not-elf") ? 0 : 18));
+            QCOMPARE(lib.write("X", 1), qint64(1));
+        }
         QString reference = library;
-        if (kind == QStringLiteral("relative")) reference = QStringLiteral("../lib/actual.so");
-        if (kind == QStringLiteral("soname")) reference = QStringLiteral("actual.so");
+        if (kind == QStringLiteral("relative")) reference = QStringLiteral("../lib/libnvidia-egl-wayland2.so.1.0.2");
+        if (kind == QStringLiteral("soname") || kind == QStringLiteral("cache") || kind == QStringLiteral("search-before-cache")) reference = QStringLiteral("libnvidia-egl-wayland2.so.1.0.2");
         if (kind == QStringLiteral("missing")) reference = root.filePath(QStringLiteral("missing.so"));
         if (kind == QStringLiteral("directory")) reference = root.filePath(QStringLiteral("lib"));
         if (kind == QStringLiteral("symlink") || kind == QStringLiteral("broken-symlink")) {
@@ -187,16 +264,31 @@ private Q_SLOTS:
         if (kind == QStringLiteral("malformed")) json = "{broken";
         if (kind == QStringLiteral("no-icd")) json = "{}";
         if (kind == QStringLiteral("no-library")) json = "{\"ICD\":{}}";
-        const auto path = root.filePath(QStringLiteral("config/09_nvidia_wayland2.json"));
+        const auto path = root.filePath(kind == QStringLiteral("custom-json")
+            ? QStringLiteral("config/custom-platform.json") : QStringLiteral("config/09_nvidia_wayland2.json"));
         QFile config(path);
         QVERIFY(config.open(QIODevice::WriteOnly));
         QCOMPARE(config.write(json), json.size());
         config.close();
+        QMap<QString, QString> cache;
+        if (kind == QStringLiteral("cache") || kind == QStringLiteral("search-before-cache")) {
+            cache.insert(reference, library);
+        }
+        if (kind == QStringLiteral("search-before-cache")) {
+            const auto unknown = root.filePath(QStringLiteral("lib/libnvidia-egl-wayland2.so.9.9.9"));
+            QVERIFY(QFile::copy(library, unknown));
+            cache.insert(reference, unknown);
+        }
         const auto configs = EglWorkaround::discoverConfigs({root.filePath(QStringLiteral("absent")), root.filePath(QStringLiteral("config"))},
-                                                           {root.filePath(QStringLiteral("lib"))});
+                                                           kind == QStringLiteral("cache") ? QStringList{} : QStringList{root.filePath(QStringLiteral("lib"))}, cache);
         QCOMPARE(configs.size(), 1);
         QCOMPARE(configs.front().path, path);
         QCOMPARE(configs.front().libraryExists, valid);
+        QCOMPARE(configs.front().resolvedLibrary, valid ? library : QString());
+        const bool shouldDrain = valid && kind != QStringLiteral("relative")
+            && kind != QStringLiteral("not-elf") && kind != QStringLiteral("wrong-architecture");
+        QCOMPARE(EglWorkaround::selectedFix(inputs(), configs), !valid ? EglWorkaround::LeakFix::Off
+                 : shouldDrain ? EglWorkaround::LeakFix::Drain : EglWorkaround::LeakFix::NoExplicit);
     }
 };
 QTEST_APPLESS_MAIN(EglWorkaroundTest)

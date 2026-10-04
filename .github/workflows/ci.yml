@@ -103,6 +103,15 @@ jobs:
           dpkg-buildpackage -b -us -uc
           lintian --display-info --pedantic --fail-on error ../plasma-visual-screensaver_*_amd64.changes
 
+      - name: Check drain exports in stripped CMake and Debian packages
+        run: |
+          for package in "$RUNNER_TEMP"/dist/*.deb ../plasma-visual-screensaver_*_amd64.deb; do
+            destination=$(mktemp -d "$RUNNER_TEMP/drain-exports.XXXXXX")
+            dpkg-deb --extract "$package" "$destination"
+            python3 scripts/check-egldrain-exports.py "$destination/usr/bin/plasma-visual-screensaver"
+            rm -rf "$destination"
+          done
+
       - name: Upload installable package
         uses: actions/upload-artifact@v6
         with:

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "eglworkaround.h"
+#include "egldrain.h"
 
 #include <QDebug>
 #include <QDir>
@@ -11,19 +12,48 @@
 
 namespace {
 const QString wayland2 = QStringLiteral("09_nvidia_wayland2.json");
-const QString legacyWayland = QStringLiteral("10_nvidia_wayland.json");
 const QString filenames = QStringLiteral("__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES");
 const QString configDirs = QStringLiteral("__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS");
 const QString disableSync = QStringLiteral("__NV_DISABLE_EXPLICIT_SYNC");
 
-QStringList libraryDirectories(const QProcessEnvironment &environment)
+struct LibrarySearch {
+    QStringList directories;
+    QMap<QString, QString> cache;
+    bool drainSafe = true;
+};
+
+bool nativeLibrary(const QString &path)
 {
-    QStringList paths = environment.value(QStringLiteral("LD_LIBRARY_PATH")).split(QLatin1Char(':'), Qt::SkipEmptyParts);
-    paths << QStringLiteral("/lib/x86_64-linux-gnu") << QStringLiteral("/usr/lib/x86_64-linux-gnu")
-          << QStringLiteral("/lib64") << QStringLiteral("/usr/lib64")
-          << QStringLiteral("/lib") << QStringLiteral("/usr/lib");
-    // Include native libraries installed outside the default search paths.
-    // Read the loader's cache without dlopen: no EGL code runs before policy.
+    if (path.isEmpty()) return false;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    const auto header = file.read(20);
+    // A loader search can skip a wrong-architecture file and continue to a
+    // different version. Only trust ELF64 little-endian x86-64 shared objects.
+    return header.size() == 20 && header.startsWith("\177ELF")
+        && header[4] == 2 && header[5] == 1 && header[6] == 1
+        && header[16] == 3 && header[17] == 0 && header[18] == 62 && header[19] == 0;
+}
+
+LibrarySearch librarySearch(const QProcessEnvironment &environment)
+{
+    LibrarySearch result;
+    // dlopen searches LD_LIBRARY_PATH before the exact SONAME cache entry.
+    // Do not approximate the cache by searching all its directories: that can
+    // choose a different version from the one the dynamic loader will use.
+    if (environment.contains(QStringLiteral("LD_LIBRARY_PATH"))) {
+        result.directories = environment.value(QStringLiteral("LD_LIBRARY_PATH")).split(QLatin1Char(':'));
+        for (const auto &path : result.directories) {
+            if (!QDir::isAbsolutePath(path) || path.contains(QLatin1Char('$')) || path.contains(QLatin1Char(';')))
+                result.drainSafe = false;
+            // HWCAP subdirectories can precede the base file. Fail safely
+            // instead of trying to reproduce glibc's CPU capability selection.
+            if (QFileInfo::exists(QDir(path).filePath(QStringLiteral("glibc-hwcaps")))) result.drainSafe = false;
+        }
+    }
+    for (const auto &key : {"LD_PRELOAD", "LD_AUDIT"}) {
+        if (!environment.value(QString::fromLatin1(key)).isEmpty()) result.drainSafe = false;
+    }
     QProcess cache;
     cache.start(QStringLiteral("/sbin/ldconfig"), {QStringLiteral("-p")}, QIODevice::ReadOnly);
     if (cache.waitForStarted(1000) && cache.waitForFinished(1000)
@@ -31,17 +61,22 @@ QStringList libraryDirectories(const QProcessEnvironment &environment)
         const auto lines = QString::fromLocal8Bit(cache.readAllStandardOutput()).split(QLatin1Char('\n'));
         for (const auto &line : lines) {
             const auto arrow = line.indexOf(QStringLiteral(" => "));
-            if (arrow >= 0 && line.left(arrow).contains(QStringLiteral("x86-64"))) {
-                paths << QFileInfo(line.mid(arrow + 4).trimmed()).absolutePath();
-            }
+            if (arrow < 0 || !line.left(arrow).contains(QStringLiteral("x86-64"))) continue;
+            const auto soname = line.trimmed().section(QLatin1Char(' '), 0, 0);
+            const auto path = line.mid(arrow + 4).trimmed();
+            if (line.left(arrow).contains(QStringLiteral("hwcap"))) result.drainSafe = false;
+            if (!result.cache.contains(soname)) result.cache.insert(soname, path);
         }
+    } else {
+        result.drainSafe = false;
     }
     if (cache.state() != QProcess::NotRunning) {
         cache.kill();
         cache.waitForFinished(1000);
     }
-    paths.removeDuplicates();
-    return paths;
+    // glibc's native fallback directories follow the cache.
+    result.directories.removeDuplicates();
+    return result;
 }
 }
 
@@ -90,47 +125,74 @@ bool EglWorkaround::eligible(const Inputs &inputs)
         && !inputs.environment.contains(disableSync);
 }
 
-QMap<QString, QString> EglWorkaround::changes(const Inputs &inputs, const QList<PlatformConfig> &configs)
+EglWorkaround::LeakFix EglWorkaround::selectedFix(const Inputs &inputs, const QList<PlatformConfig> &configs)
 {
-    if (!eligible(inputs)) return {};
+    if (!eligible(inputs)) return LeakFix::Off;
+    const auto mode = inputs.environment.value(QStringLiteral("PVS_EGL_LEAK_FIX"), QStringLiteral("drain"));
+    // Unknown/empty explicit values preserve the established opt-out behavior.
+    if (mode != QStringLiteral("noexplicit") && mode != QStringLiteral("drain")) return LeakFix::Off;
+    QString resolved;
+    bool found = false;
+    bool safe = true;
     for (const auto &config : configs) {
-        if (config.libraryExists && QFileInfo(config.path).fileName() == wayland2) {
-            // Keep egl-wayland2: legacy fixes the leak too, but introduces
-            // long presentation stalls on the measured NVIDIA desktop.
-            return {{disableSync, QStringLiteral("1")}};
+        if (config.libraryExists && (QFileInfo(config.path).fileName() == wayland2
+                || QFileInfo(config.resolvedLibrary).fileName().startsWith(QStringLiteral("libnvidia-egl-wayland2.so.")))) {
+            found = true;
+            safe &= config.drainSafe && EglDrain::supportedVersion(config.resolvedLibrary.toLocal8Bit().constData());
+            if (!resolved.isEmpty() && resolved != config.resolvedLibrary) safe = false;
+            resolved = config.resolvedLibrary;
         }
     }
+    if (!found) return LeakFix::Off;
+    // Even an explicit drain request falls back when its runtime caller guard
+    // would reject the resolved version. EGL cannot change sync policy later.
+    return mode == QStringLiteral("drain") && safe ? LeakFix::Drain : LeakFix::NoExplicit;
+}
+
+QMap<QString, QString> EglWorkaround::changes(const Inputs &inputs, const QList<PlatformConfig> &configs)
+{
+    if (selectedFix(inputs, configs) == LeakFix::NoExplicit) return {{disableSync, QStringLiteral("1")}};
     return {};
 }
 
 QList<EglWorkaround::PlatformConfig> EglWorkaround::discoverConfigs(const QStringList &directories,
-                                                               const QStringList &libraryDirectories)
+                                                               const QStringList &libraryDirectories,
+                                                               const QMap<QString, QString> &cachedLibraries,
+                                                               bool drainSafe)
 {
     QList<PlatformConfig> configs;
     for (const auto &directory : directories) {
         const auto files = QDir(directory).entryInfoList({QStringLiteral("*.json")}, QDir::Files, QDir::Name);
         for (const auto &file : files) {
-            bool libraryExists = false;
-            if (file.fileName() == wayland2 || file.fileName() == legacyWayland) {
-                QFile json(file.absoluteFilePath());
-                if (json.open(QIODevice::ReadOnly)) {
-                    const auto library = QJsonDocument::fromJson(json.readAll()).object()
-                        .value(QStringLiteral("ICD")).toObject().value(QStringLiteral("library_path")).toString();
-                    if (QDir::isAbsolutePath(library)) {
-                        libraryExists = QFileInfo(library).isFile();
-                    } else if (library.contains(QLatin1Char('/'))) {
-                        libraryExists = QFileInfo(QDir(directory).filePath(library)).isFile();
-                    } else if (!library.isEmpty()) {
-                        for (const auto &path : libraryDirectories) {
-                            if (QFileInfo(QDir(path).filePath(library)).isFile()) {
-                                libraryExists = true;
-                                break;
-                            }
+            QString resolved;
+            bool safe = drainSafe;
+            QFile json(file.absoluteFilePath());
+            if (json.open(QIODevice::ReadOnly)) {
+                const auto library = QJsonDocument::fromJson(json.readAll()).object()
+                    .value(QStringLiteral("ICD")).toObject().value(QStringLiteral("library_path")).toString();
+                if (QDir::isAbsolutePath(library)) {
+                    if (QFileInfo(library).isFile()) resolved = QFileInfo(library).canonicalFilePath();
+                } else if (library.contains(QLatin1Char('/'))) {
+                    // Relative dlopen paths are not a verified loader contract.
+                    safe = false;
+                    if (QFileInfo(QDir(directory).filePath(library)).isFile())
+                        resolved = QFileInfo(QDir(directory).filePath(library)).canonicalFilePath();
+                } else if (!library.isEmpty()) {
+                    for (const auto &path : libraryDirectories) {
+                        const QFileInfo candidate(QDir(path).filePath(library));
+                        if (candidate.isFile()) { resolved = candidate.canonicalFilePath(); break; }
+                    }
+                    if (resolved.isEmpty() && QFileInfo(cachedLibraries.value(library)).isFile())
+                        resolved = QFileInfo(cachedLibraries.value(library)).canonicalFilePath();
+                    if (resolved.isEmpty()) {
+                        for (const auto &path : {"/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu", "/lib64", "/usr/lib64", "/lib", "/usr/lib"}) {
+                            const QFileInfo candidate(QDir(QString::fromLatin1(path)).filePath(library));
+                            if (candidate.isFile()) { resolved = candidate.canonicalFilePath(); break; }
                         }
                     }
                 }
             }
-            configs.append({file.absoluteFilePath(), libraryExists});
+            configs.append({file.absoluteFilePath(), !resolved.isEmpty(), resolved, safe && nativeLibrary(resolved)});
         }
     }
     return configs;
@@ -144,11 +206,34 @@ void EglWorkaround::apply(int argc, char *argv[])
     if (!eligible(inputs)) return;
     const QStringList directories{QStringLiteral("/usr/share/egl/egl_external_platform.d"),
                                   QStringLiteral("/etc/egl/egl_external_platform.d")};
-    // Most systems do not install NVIDIA's plugin. Avoid querying ldconfig there.
-    bool installed = false;
-    for (const auto &directory : directories) installed |= QFileInfo::exists(QDir(directory).filePath(wayland2));
-    if (!installed) return;
-    const auto overrides = changes(inputs, discoverConfigs(directories, libraryDirectories(inputs.environment)));
+    // Most non-NVIDIA systems have no external-platform configs. A renamed
+    // JSON must still be recognized by its resolved NVIDIA library path.
+    bool hasConfigs = false;
+    for (const auto &directory : directories)
+        hasConfigs |= !QDir(directory).entryList({QStringLiteral("*.json")}, QDir::Files).isEmpty();
+    if (!hasConfigs) return;
+    const auto search = librarySearch(inputs.environment);
+    const auto configs = discoverConfigs(directories, search.directories, search.cache, search.drainSafe);
+    if (selectedFix(inputs, configs) == LeakFix::Drain) {
+        for (const auto &config : configs) {
+            if (EglDrain::supportedVersion(config.resolvedLibrary.toLocal8Bit().constData())) {
+                const auto library = config.resolvedLibrary.toLocal8Bit();
+                if (EglDrain::enable(library.constData())) {
+                    qInfo().noquote() << "PVS NVIDIA EGL Wayland workaround: drain selected before EGL initialization:"
+                                     << config.resolvedLibrary << "(explicit sync unchanged; expect active wl_surface log for each rendering surface)";
+                    return;
+                }
+            }
+        }
+        // Cannot normally fail: selectedFix and enable share the same guard.
+        qWarning("PVS EGL drain: preflight failed; using noexplicit before EGL initialization");
+        if (qputenv("__NV_DISABLE_EXPLICIT_SYNC", "1"))
+            qInfo("PVS NVIDIA EGL Wayland workaround: __NV_DISABLE_EXPLICIT_SYNC=1");
+        return;
+    }
+    const auto overrides = changes(inputs, configs);
+    if (!overrides.isEmpty() && inputs.environment.value(QStringLiteral("PVS_EGL_LEAK_FIX")) != QStringLiteral("noexplicit"))
+        qInfo("PVS EGL drain: unverified version or loader resolution; using noexplicit before EGL initialization");
     for (auto it = overrides.cbegin(); it != overrides.cend(); ++it) {
         if (qputenv(it.key().toLocal8Bit().constData(), it.value().toLocal8Bit())) {
             qInfo().noquote() << QStringLiteral("PVS NVIDIA EGL Wayland workaround: %1=%2").arg(it.key(), it.value());
