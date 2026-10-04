@@ -1,3 +1,11 @@
+plasma-visual-screensaver (0.13.0-1ppa1~resolute1) resolute; urgency=medium
+
+  * Add Venom capsules. Holders hunt rivals and bite their bodies to sever
+    their tails. Severed tails thrash, then shatter into food.
+  * Show an acid spine, fangs and a strike pose on Venom holders.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Sun, 04 Oct 2026 08:00:30 -0300
+
 plasma-visual-screensaver (0.12.0-1ppa1~resolute1) resolute; urgency=medium
 
   * Add prism seeds to Slithering Snakes with a three-second ripening timer.
