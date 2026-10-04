@@ -25,6 +25,7 @@ pub(super) struct Spatial {
     pub occupied: Vec<u16>,
     navigable: Vec<u16>,
     neighbours: Vec<[usize; 4]>,
+    clearance_neighbours: Vec<[u16; 9]>,
     boundary: Vec<bool>,
     topology: (usize, usize, bool),
     release: Vec<[f32; MAX_SNAKES]>,
@@ -164,6 +165,12 @@ mod tests {
                         }
                     }}
                     assert_eq!(seen,expected,"clearance wrap={wrap} {cols}x{rows}");
+                    grid.prepare_topology();
+                    seen.fill(false);
+                    for k in grid.clearance_neighbours[root] {
+                        if k!=u16::MAX {assert!(!seen[k as usize]);seen[k as usize]=true;}
+                    }
+                    assert_eq!(seen,expected,"cached clearance wrap={wrap} {cols}x{rows}");
                     let weight=(0..cols*rows).filter(|&k|expected[k]).map(|k|grid.weight[k]).sum::<f64>();
                     assert_eq!(grid.cluster_weight(root),weight,"cluster wrap={wrap} {cols}x{rows}");
                     seen.fill(false);
@@ -210,7 +217,7 @@ impl Spatial {
             widths: vec![1.0; MAX_SNAKES*MAX_SEGMENTS], lengths: [0; MAX_SNAKES],
             food_heads: vec![-1; CELLS], food_next: [-1; MAX_FOOD], weight: vec![0.0; CELLS],
             occupied: vec![0; CELLS],navigable:vec![0;CELLS],
-            neighbours:vec![[usize::MAX;4];CELLS],boundary:vec![false;CELLS],topology:(0,0,false),release:vec![[0.0;MAX_SNAKES];CELLS],space_release:vec![[0.0;MAX_SNAKES];CELLS], visited: vec![0; CELLS], stamp: 0,
+            neighbours:vec![[usize::MAX;4];CELLS],clearance_neighbours:vec![[u16::MAX;9];CELLS],boundary:vec![false;CELLS],topology:(0,0,false),release:vec![[0.0;MAX_SNAKES];CELLS],space_release:vec![[0.0;MAX_SNAKES];CELLS], visited: vec![0; CELLS], stamp: 0,
             area_seen: vec![0;CELLS],future:vec![0;CELLS],future_stamp:0,future_active:false,area_label:vec![0;CELLS],area_stamp:0,area_mask:0,area_count:0,area_limit:FILL_LIMIT,area_time:-1.0,area_result:[(0,false);32],
             queue: [0; FILL_LIMIT], parent: [0; FILL_LIMIT],depth:[0;FILL_LIMIT], cols: 1, rows: 1,
             dx: 1.0, dy: 1.0,max_motion:0.0, wrap: false }
@@ -227,6 +234,12 @@ impl Spatial {
                 neighbours[index] = self.offset(key,x,y).unwrap_or(usize::MAX);
             }
             self.neighbours[key] = neighbours;
+            let mut clearance=[u16::MAX;9];let mut count=0;
+            let (xs,ys)=self.local_spans(1);
+            for y in ys {for x in xs.clone() {
+                if let Some(k)=self.offset(key,x,y) {clearance[count]=k as u16;count+=1;}
+            }}
+            self.clearance_neighbours[key]=clearance;
             self.boundary[key] = !self.wrap && (key%self.cols==0 || key%self.cols+1==self.cols
                 || key/self.cols==0 || key/self.cols+1==self.rows);
         }
@@ -282,9 +295,11 @@ impl Spatial {
         // conservative, and the continuous rollout still proves motion safety.
         for key in 0..n {
             let mask=self.occupied[key];if mask==0 {continue;}
-            let (xs,ys)=self.local_spans(1);
-            for y in ys {for x in xs.clone() {
-                if let Some(k)=self.offset(key,x,y) {
+            // Topology and traversal order are fixed for an arena. Reuse the
+            // exact 3x3 bucket list instead of dividing/wrapping each insertion.
+            for k in self.clearance_neighbours[key] {
+                if k!=u16::MAX {
+                    let k=k as usize;
                     let previous=self.navigable[k];
                     self.navigable[k]|=mask;
                     let mut bits=mask;
@@ -293,7 +308,7 @@ impl Spatial {
                         self.space_release[k][id]=if previous&(1<<id)==0 {self.release[key][id]} else {self.space_release[k][id].max(self.release[key][id])};
                     }
                 }
-            }}
+            }
         }
         for (i,f) in w.foods().enumerate() {
             let key = self.key(f.position);
