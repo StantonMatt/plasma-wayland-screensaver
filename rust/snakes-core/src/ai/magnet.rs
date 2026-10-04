@@ -1,21 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Scavenging utility enters target selection before routing and safe rollouts.
 //! Never adjust the final checked steering: increased reach is not immunity.
-use crate::{effects::EffectKind, FoodKind, FoodView};
+use crate::{effects::EffectKind, FoodKind};
+use super::target::TargetFood;
 #[cfg(test)] use crate::{SnakeView, World};
 
 #[inline]
-pub(super) fn scavenging(food:FoodView)->bool {
+pub(super) fn scavenging(food:TargetFood)->bool {
     food.kind==FoodKind::Prism || food.feast_id!=0
 }
 
 #[cfg(test)]
 #[inline]
-pub(super) fn food_bonus(world: &World, snake: SnakeView<'_>, food: FoodView, eta: f64) -> f64 {
+pub(super) fn food_bonus(world: &World, snake: SnakeView<'_>, food: impl Into<TargetFood>, eta: f64) -> f64 {
     food_bonus_effect(food,super::forecast::Track::observed(world,snake).before(crate::effects::forecast_step(eta)))
 }
 
-pub(super) fn food_bonus_effect(food:FoodView,effect:super::forecast::Effect)->f64 {
+pub(super) fn food_bonus_effect(food:impl Into<TargetFood>,effect:super::forecast::Effect)->f64 {
+    let food=food.into();
     if !effect.is(EffectKind::Magnet) {return 0.0;}
     if food.kind==FoodKind::Prism {2.0} else if food.feast_id!=0 {1.5} else {0.0}
 }

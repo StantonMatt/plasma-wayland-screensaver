@@ -227,6 +227,8 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
     // Freeze all presentation-time animation at the same boundary for both
     // geometry formats, including transient ages and discrete head animation.
     snakes_core_render_set_reduced_motion(node->renderer.get(), uint32_t(m_shaderTimeFrozen));
+    snakes_core_render_set_clock_rect(node->renderer.get(), m_clockRect.x(), m_clockRect.y(),
+                                     qMax(0.0, m_clockRect.width()), qMax(0.0, m_clockRect.height()));
     const qreal animationTime = m_shaderTimeFrozen ? m_frozenShaderTime : m_shaderTime;
     if (shader) {
         auto *material = static_cast<SnakeMaterial *>(node->material());
@@ -242,7 +244,7 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
         node->historyThrough.reset();
         node->epoch = m_renderEpoch;
     }
-    const auto &info = m_frame ? m_frame->info : snakes_core_frame_info{0, 0, 1, 1, 0};
+    const auto &info = m_frame ? m_frame->info : snakes_core_frame_info{0, 0, 1, 1, 0, 1, 0, {}, {}};
     const snakes_core_render_params params{
         width(), height(),
         m_scaleToViewport ? width() / m_worldWidth : m_worldToViewX,

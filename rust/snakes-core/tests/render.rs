@@ -877,7 +877,7 @@ fn shader_geometry_fingerprints() {
         let n=RenderHandle::new().build_shader(&info(),&s,&b,&f,&[],&palette(),&p,&mut out).vertex_count;
         (n,shader_fingerprint(&out[..n]))
     });
-    assert_eq!(actual,[(10896,0x0a9a46fc82e9c96eu64),(12804,0xa160b80bf7465416u64)]);
+    assert_eq!(actual,[(10896,0x0eca5ce6f83aeca6u64),(12804,0x595240754ced00beu64)]);
 
 }
 #[test]
@@ -1650,4 +1650,224 @@ fn shader_capsules_of_every_kind_and_age_match_independent_tiling() {
             assert_eq!(n,expected,"kind={kind}, age={age_ticks}, corner={corner}, scale={sx},{sy}");
         }}}
     }
+}
+
+fn s1_fixture()->(FrameInfo,[SnakeRecord;6],[SegmentRecord;18],[ItemRecord;3]) {
+    let mut i=info();i.bubble_count=3;
+    i.bubbles=std::array::from_fn(|j|snakes_core::Bubble{snake_id:j as u32,generation:1,age_ticks:12,glyph:j as u8,..Default::default()});
+    let snakes=std::array::from_fn(|j|SnakeRecord{id:j as u32,segment_offset:j as u32*3,
+        mood:(j+1) as u8,mood_intensity:255,target_item:(j/2) as u8,..snake()});
+    let segments=std::array::from_fn(|j|SegmentRecord{x:300.0+(j/3) as f32*100.0-(j%3) as f32*8.0,y:300.0,
+        previous_x:300.0+(j/3) as f32*100.0-(j%3) as f32*8.0,previous_y:300.0});
+    let items=std::array::from_fn(|j|ItemRecord{id:j as u64+1,x:400.0+j as f32*100.0,y:400.0,kind:1+j as u8,
+        age_ticks:40,life_ticks:740,contender_count:2,contender_ids:[2*j as u32,2*j as u32+1],
+        contender_etas:[1.0,1.17],leader_snake_id:2*j as u32,..Default::default()});
+    (i,snakes,segments,items)
+}
+#[test]
+fn s1_head_moods_pack_without_changing_body_or_vertex_budget() {
+    let mut r=RenderHandle::new();let mut out=[ShaderRenderVertex::default();256];let mut baseline=out;
+    let mut s=snake();s.flags=flags::HUNTING|flags::TRAPPED;
+    let n=r.build_shader(&info(),&[s],&body(),&[],&[],&palette(),&params(),&mut baseline).vertex_count;
+    for mood in 0..9 {
+        s.mood=mood;s.mood_intensity=255;s.pupil_x=0.18;s.pupil_y=-0.35;s.jaw_ticks=20;s.happy_ticks=45;
+        let count=r.build_shader(&info(),&[s],&body(),&[],&[],&palette(),&params(),&mut out).vertex_count;
+        assert_eq!(n,count);
+        assert_eq!(&out[..12],&baseline[..12],"body flags stay unchanged, mood {mood}");
+        let head=&out[12..n];
+        // Mood zero with old trapped flags is the compatibility path.
+        assert!(head.iter().all(|v|(v.params[2]>>1)&15==if mood==0 {6} else {mood}));
+        assert!(head.iter().all(|v|(v.params[1]>>2)&15==15));
+        assert_eq!(head[0].params[3]&63,6);
+        if matches!(mood,1|5) {assert!((head[0].params[3]>>6)|((head[0].params[2]&128)>>5)>0);}
+    }
+    s.flags=0;s.mood=3;s.mood_intensity=0;
+    let n=r.build_shader(&info(),&[s],&body(),&[],&[],&palette(),&params(),&mut out).vertex_count;
+    assert_eq!((out[n-1].params[1]>>2)&15,0);
+}
+#[test]
+fn authoritative_calm_ignores_hunt_boost_and_urgent_flags_in_both_renderers() {
+    let mut r=RenderHandle::new();let mut shader=[ShaderRenderVertex::default();256];
+    let mut s=snake();s.face_flags=FACE_OBSERVED;s.mood_intensity=255;
+    let calm=build(&mut r,s,params());
+    for flag in [flags::HUNTING,flags::BOOSTING,flags::TRAPPED,flags::FROZEN] {
+        s.flags=flag;
+        let n=r.build_shader(&info(),&[s],&body(),&[],&[],&palette(),&params(),&mut shader).vertex_count;
+        let head:Vec<_>=shader[..n].iter().filter(|v|v.params[0]==1).collect();
+        assert!(!head.is_empty());assert!(head.iter().all(|v|(v.params[2]>>1)&15==0));
+        // Frozen/boost flags may change body rendering; hunting only changes
+        // legacy eyes, so authoritative Calm must be byte-identical here.
+        if flag==flags::HUNTING {assert_eq!(build(&mut r,s,params()),calm);}
+    }
+    // Explicitly absent faces still provide the old flag-driven expression.
+    s.face_flags=0;s.flags=flags::HUNTING;
+    let n=r.build_shader(&info(),&[s],&body(),&[],&[],&palette(),&params(),&mut shader).vertex_count;
+    assert!(shader[..n].iter().filter(|v|v.params[0]==1).all(|v|(v.params[2]>>1)&15==2 && (v.params[1]>>2)&15==15));
+    assert_ne!(build(&mut r,s,params()),calm);
+}
+#[test]
+fn authoritative_hunt_onset_ramps_shader_intensity_and_classic_eyes() {
+    let mut r=RenderHandle::new();let mut shader=[ShaderRenderVertex::default();256];
+    let mut s=snake();s.face_flags=FACE_OBSERVED;s.flags=flags::HUNTING;s.mood_intensity=0;
+    let calm=build(&mut r,s,params());s.mood=2;
+    assert_eq!(build(&mut r,s,params()),calm,"zero onset blends to Calm");
+    let mut last_blue=255;
+    for age in 0u16..=6 {
+        s.mood_intensity=(age*255/6) as u8;
+        let n=r.build_shader(&info(),&[s],&body(),&[],&[],&palette(),&params(),&mut shader).vertex_count;
+        assert!(shader[..n].iter().filter(|v|v.params[0]==1).all(|v|(v.params[2]>>1)&15==2 && (v.params[1]>>2)&15==(age*15/6) as u8));
+        let vertices=build(&mut r,s,params());
+        let eye=vertices.iter().find(|v|v.color.red==255 && v.color.green>=190 && v.color.blue>=80).unwrap().color;
+        assert!(eye.blue<=last_blue);assert!(last_blue-eye.blue<=30);last_blue=eye.blue;
+    }
+    assert_eq!(last_blue,80);
+}
+#[test]
+fn s1_bubble_cap_clock_exclusion_identity_and_calm_life() {
+    let (mut i,s,b,items)=s1_fixture();let mut r=RenderHandle::new();r.set_items(&items,12.0);
+    let mut out=[ShaderRenderVertex::default();1024];let p=params();
+    for clock in [[0.0;4],[280.0,250.0,280.0,90.0],[0.0,0.0,3440.0,1440.0]] {
+        r.set_clock_rect(clock);i.bubble_count=u32::MAX;
+        let n=r.build_shader(&i,&s,&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+        let bubble:Vec<_>=out[..n].iter().filter(|v|v.params[0]==16).collect();
+        assert_eq!(bubble.len(),if clock[2]>0.0 {0} else {18});
+        for quad in bubble.chunks_exact(6) {
+            let (minx,maxx,miny,maxy)=quad.iter().fold((f32::INFINITY,f32::NEG_INFINITY,f32::INFINITY,f32::NEG_INFINITY),|(a,b,c,d),v|(a.min(v.x),b.max(v.x),c.min(v.y),d.max(v.y)));
+            assert!(minx>=0.0 && maxx<=3440.0 && miny>=0.0 && maxy<=1440.0);
+            assert!(clock[2]==0.0 || maxx<=clock[0] as f32 || minx>=(clock[0]+clock[2]) as f32 || maxy<=clock[1] as f32 || miny>=(clock[1]+clock[3]) as f32);
+        }
+    }
+    r.set_clock_rect([0.0;4]);i.bubbles[0].generation=2;i.bubbles[1]=i.bubbles[2];
+    let n=r.build_shader(&i,&s,&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert_eq!(out[..n].iter().filter(|v|v.params[0]==16).count(),6);
+    i.bubbles[2].age_ticks=28;r.reduced_motion=true;
+    let n=r.build_shader(&i,&s,&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    // Duplicate age-12 copy still renders once.
+    assert_eq!(out[..n].iter().filter(|v|v.params[0]==16).count(),6);
+    i.bubbles[1].age_ticks=28;
+    let n=r.build_shader(&i,&s,&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert_eq!(out[..n].iter().filter(|v|v.params[0]==16).count(),0);
+    unsafe {assert_eq!(snakes_core_render_set_clock_rect(&mut r,f64::NAN,0.0,2.0,3.0),INVALID_ARGUMENT);}
+}
+#[test]
+fn s1_races_landing_and_zero_steady_state_allocations() {
+    let (mut i,mut s,b,mut items)=s1_fixture();let mut r=RenderHandle::new();let mut p=params();
+    let mut shader=[ShaderRenderVertex::default();4096];let mut classic=[RenderVertex::default();8192];
+    r.set_items(&items,12.0);
+    let n=r.build_shader(&i,&s,&b,&[],&[],&palette(),&p,&mut shader).vertex_count;
+    assert_eq!(shader[..n].iter().filter(|v|v.params[0]==16).count(),18);
+    assert_eq!(shader[..n].iter().filter(|v|v.params[0]==17).count(),36);
+    for v in shader[..n].iter().filter(|v|v.params[0]==17) {assert_eq!(v.params[3]&2,2);}
+    COUNT.with(|c|c.set(Some(0)));
+    for t in 0..1000 {
+        i.tick+=1;i.simulation_time+=1.0/30.0;p.presentation_time=i.simulation_time;
+        r.reduced_motion=t%2==0;r.set_clock_rect([300.0,260.0,100.0,80.0]);
+        for snake in &mut s {snake.mood=(t%9) as u8;snake.pupil_x=0.12;snake.pupil_y=-0.2;}
+        items[0].landing_ticks=30-(t%30) as u16;r.set_items(&items,12.0);
+        let n=r.build_shader(&i,&s,&b,&[],&[],&palette(),&p,&mut shader).vertex_count;
+        assert!(n<shader.len());
+        assert!(shader[..n].iter().filter(|v|v.params[0]==11 && v.params[1]==1).all(|v|v.params[2]>=128));
+        assert!(r.build(&i,&s,&b,&[],&[],&palette(),&p,&mut classic).vertex_count<classic.len());
+    }
+    assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+}
+#[test]
+fn s1_contest_arcs_match_independent_wrap_tiles_including_pixel_stroke() {
+    let (_,s,b,mut items)=s1_fixture();
+    for (sx,sy) in [(1.0_f64,1.0_f64),(0.01,0.02),(0.02,0.01)] {
+        let i=FrameInfo{world_width:1000.0,world_height:1000.0,..info()};
+        let p=RenderParams{scale_x:sx,scale_y:sy,viewport_width:1000.0*sx,viewport_height:1000.0*sy,deadly_walls:0,..params()};
+        items[0].x=1.0;items[0].y=1.0;
+        let mut wrapped=RenderHandle::new();wrapped.set_items(&items[..1],4.0);
+        let mut out=[ShaderRenderVertex::default();4096];
+        let n=wrapped.build_shader(&i,&s,&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+        let actual=out[..n].iter().filter(|v|v.params[0]==17).count();
+        let mut expected=0;
+        for x in -4..=4 {for y in -4..=4 {
+            let mut tiled=RenderHandle::new();tiled.set_items(&items[..1],4.0);
+            let p=RenderParams{deadly_walls:1,offset_x:x as f64*1000.0*sx,offset_y:y as f64*1000.0*sy,..p};
+            let n=tiled.build_shader(&i,&s,&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+            expected+=out[..n].iter().filter(|v|v.params[0]==17).count();
+        }}
+        assert_eq!(actual,expected);assert!(actual>=48);
+    }
+}
+
+#[test]
+fn s1_calm_authoritative_ages_advance_while_shader_clock_is_frozen() {
+    let (mut i,s,b,mut items)=s1_fixture();
+    let mut r=RenderHandle::new();r.reduced_motion=true;
+    i.tick+=90;i.simulation_time+=3.0; // shader presentation clock remains at 20
+    items[0].landing_ticks=15;r.set_items(&items,12.0);
+    let mut out=[ShaderRenderVertex::default();4096];
+    let n=r.build_shader(&i,&s,&b,&[],&[],&palette(),&params(),&mut out).vertex_count;
+    assert_eq!(out[..n].iter().filter(|v|v.params[0]==16).count(),18);
+    assert!(out[..n].iter().filter(|v|v.params[0]==16).all(|v|v.color.alpha==255));
+    assert!(out[..n].iter().filter(|v|v.params[0]==11 && v.params[1]==items[0].kind).all(|v|v.params[2]==192));
+    for bubble in &mut i.bubbles {bubble.age_ticks=28;}
+    let n=r.build_shader(&i,&s,&b,&[],&[],&palette(),&params(),&mut out).vertex_count;
+    assert_eq!(out[..n].iter().filter(|v|v.params[0]==16).count(),0);
+}
+
+#[test]
+fn s1_track_is_once_per_item_and_halo_quad_has_pixel_margin() {
+    let (i,s,b,mut items)=s1_fixture();
+    let mut r=RenderHandle::new();let mut out=[ShaderRenderVertex::default();1024];
+    for leader in [0,1,u32::MAX] {
+        items[0].leader_snake_id=leader;r.set_items(&items[..1],0.5);
+        let n=r.build_shader(&i,&s,&b,&[],&[],&palette(),&params(),&mut out).vertex_count;
+        let arcs:Vec<_>=out[..n].iter().filter(|v|v.params[0]==17).collect();
+        assert_eq!(arcs.len(),12);
+        assert_eq!(arcs.iter().filter(|v|v.params[3]&4!=0).count(),6);
+        assert!(arcs[if leader==1 {6} else {0}].params[3]&4!=0);
+        let extent=0.5*1.62+12.0;
+        assert!((arcs[0].x as f64-(items[0].x as f64-extent)).abs()<0.001);
+        assert!((arcs[0].across as f64+extent/0.5).abs()<0.001);
+    }
+}
+#[test]
+fn s1_hatchling_bubble_has_minimum_size_and_yawn_has_seven_steps() {
+    let (mut i,mut s,b,_)=s1_fixture();i.bubble_count=1;s[0].radius=2.0;
+    let mut r=RenderHandle::new();let mut out=[ShaderRenderVertex::default();1024];
+    r.reduced_motion=true;
+    let n=r.build_shader(&i,&s,&b,&[],&[],&palette(),&params(),&mut out).vertex_count;
+    let bubble:Vec<_>=out[..n].iter().filter(|v|v.params[0]==16).collect();
+    assert_eq!(bubble.len(),6);assert_eq!(bubble[1].x-bubble[0].x,25.0);
+    r.reduced_motion=false;i.bubble_count=0;s[0].mood=1;
+    let mut steps=0u8;
+    for ticks in 1..=39 {
+        s[0].jaw_ticks=ticks;
+        let n=r.build_shader(&i,&s,&b,&[],&[],&palette(),&params(),&mut out).vertex_count;
+        let h=out[..n].iter().find(|v|v.params[0]==1).unwrap();
+        let jaw=(h.params[3]>>6)|((h.params[2]&128)>>5);
+        steps|=1<<jaw;
+    }
+    assert_eq!(steps,255);
+}
+
+
+#[test]
+fn classic_pupils_remain_inside_iris_for_all_looks_moods_and_scales() {
+    for scale in [0.08,0.4,1.0,2.0] {for angle in [0.0,1.2,3.4] {for mood in 0..9 {for intensity in [0,128,255] {
+        for (x,y) in [(0.0,0.0),(0.18,0.0),(-0.18,0.35),(0.18,-0.35)] {
+            let mut s=snake();s.angle=angle;s.face_flags=FACE_OBSERVED;s.mood=mood;s.mood_intensity=intensity;s.pupil_x=x;s.pupil_y=y;
+            let mut p=params();p.scale_x=scale;p.scale_y=scale;p.interpolation=1.0;
+            let r=s.radius*scale;let iris=(r*0.31).max(1.7);
+            let head=(200.0*scale,200.0*scale);
+            let eyes=[-1.0,1.0].map(|side|(head.0+angle.cos()*r*0.48-angle.sin()*r*0.46*side,
+                head.1+angle.sin()*r*0.48+angle.cos()*r*0.46*side));
+            let out=build(&mut RenderHandle::new(),s,p);
+            let mut pupils=0;
+            for v in out.iter().filter(|v|v.color==RenderColor {red:17,green:19,blue:26,alpha:255}) {
+                pupils+=1;
+                assert!(eyes.iter().any(|&(ex,ey)|(0..8).all(|edge| {
+                    let normal=(edge as f64+0.5)*std::f64::consts::FRAC_PI_4;
+                    (v.x as f64-ex)*normal.cos()+(v.y as f64-ey)*normal.sin()
+                        <=iris*(std::f64::consts::PI/8.0).cos()+0.0001
+                })),
+                    "mood={mood} intensity={intensity} look={x},{y} scale={scale} angle={angle}");
+            }
+            assert_eq!(pupils,42);
+        }
+    }}}}
 }

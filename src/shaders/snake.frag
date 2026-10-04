@@ -51,6 +51,19 @@ float mask(float d) {
 }
 float ellipse(vec2 p,vec2 r) { return (length(p/r)-1.0)*min(r.x,r.y); }
 float line(vec2 p,vec2 a,vec2 b,float w) { vec2 d=b-a;return length(p-a-d*clamp(dot(p-a,d)/max(dot(d,d),0.000001),0.0,1.0))-w; }
+// iq's signed triangle distance; only the three capped bubble quads use it.
+float sdTriangle(vec2 p,vec2 p0,vec2 p1,vec2 p2) {
+    vec2 e0=p1-p0,e1=p2-p1,e2=p0-p2;
+    vec2 v0=p-p0,v1=p-p1,v2=p-p2;
+    vec2 pq0=v0-e0*clamp(dot(v0,e0)/dot(e0,e0),0.0,1.0);
+    vec2 pq1=v1-e1*clamp(dot(v1,e1)/dot(e1,e1),0.0,1.0);
+    vec2 pq2=v2-e2*clamp(dot(v2,e2)/dot(e2,e2),0.0,1.0);
+    float orientation=sign(e0.x*e2.y-e0.y*e2.x);
+    vec2 d=min(min(vec2(dot(pq0,pq0),orientation*(v0.x*e0.y-v0.y*e0.x)),
+                   vec2(dot(pq1,pq1),orientation*(v1.x*e1.y-v1.y*e1.x))),
+                   vec2(dot(pq2,pq2),orientation*(v2.x*e2.y-v2.y*e2.x)));
+    return -sqrt(d.x)*sign(d.y);
+}
 float hash(float n) { return fract(sin(n*127.1)*43758.5453); }
 vec3 lift(vec3 c) { float l=dot(c,vec3(0.2126,0.7152,0.0722));return mix(c,vec3(1),max(0.0,0.30-l)*1.1); }
 float falloff(float u) { u=1.0-clamp(u,0.0,1.0); return u*u; }   // matches the prototype's radial glow sprite
@@ -68,6 +81,18 @@ vec3 itemAccent(int k) {
     if(ub.paletteMode==2.0) a=mix(a,vec3(1),0.3);
     return a;
 }
+// One padded SDF sample shared by capsules and speech glyphs.
+float atlasMask(int icon,vec2 p,float extent) {
+    vec2 tile=vec2(float(icon%4),float(icon/4));
+    vec2 uv=clamp(p/extent,-1.0,1.0)*0.5+0.5;
+    float distance=texture(iconAtlas,(tile*32.0+vec2(0.5)+uv*31.0)/128.0).r-0.5;
+    return smoothstep(-max(fwidth(distance),0.025),max(fwidth(distance),0.025),distance)
+        *float(max(abs(p.x),abs(p.y))<extent);
+}
+vec3 moodAccent(vec3 c) {
+    if(ub.paletteMode==1.0) return vec3(dot(c,vec3(0.2126,0.7152,0.0722)));
+    return ub.paletteMode==2.0?mix(c,vec3(1),0.3):c;
+}
 float hexagon(vec2 p,float r) {
     const vec3 k=vec3(-0.8660254,0.5,0.5773503);
     p=abs(p);p-=2.0*min(dot(k.xy,p),0.0)*k.xy;
@@ -77,6 +102,8 @@ float hexagon(vec2 p,float r) {
 void main() {
     int kind=int(packed.x+0.5), tier=int(packed.y+0.5)&3, flags=int(packed.z+0.5);
     bool boosting=(flags&1)!=0, hunting=(flags&4)!=0, trapped=(flags&8)!=0, leader=(flags&64)!=0;
+    int mood=kind==1?(flags>>1)&15:0;
+    if(kind==1) {hunting=mood==2;trapped=mood==6;}
     vec3 c=lift(base.rgb); vec3 white=vec3(1);vec3 gold=vec3(1.0,0.847,0.29);
     float chroma=max(base.r,max(base.g,base.b))-min(base.r,min(base.g,base.b));
     bool mono=chroma<0.05;
@@ -92,24 +119,60 @@ void main() {
         float inner=mask(abs(hexagon(q,0.675))-0.015)*0.35;
         vec3 accent=base.rgb;
         vec3 rgb=mix(vec3(0.022,0.029,0.055),accent,max(rim,inner));
-        // The padded 32px tile maps the icon's [-1,1] local square. Exactly
-        // one R8 SDF sample, with a derivative-sized contour for stable AA.
-        int icon=int(packed.y+0.5)-1;
-        vec2 tile=vec2(float(icon%4),float(icon/4));
-        vec2 iconCoord=clamp(p/0.66,-1.0,1.0)*0.5+0.5;
-        vec2 atlasCoord=(tile*32.0+vec2(0.5)+iconCoord*31.0)/128.0;
-        float distance=texture(iconAtlas,atlasCoord).r-0.5;
-        float iconMask=smoothstep(-max(fwidth(distance),0.025),max(fwidth(distance),0.025),distance);
-        iconMask*=float(max(abs(p.x),abs(p.y))<0.66);
+        float iconMask=atlasMask(int(packed.y+0.5)-1,p,0.66);
         rgb=mix(rgb,mix(accent,white,0.35),iconMask);
         float orbit=t*2.2;
         float spark=falloff(length(p-vec2(cos(orbit),sin(orbit))*1.3)/0.5);
         vec3 glow=accent*(falloff(length(p)/BOUNDS_CAPSULE)*0.32+spark*0.8);
-        float birth=packed.z/255.0;
+        bool incoming=packed.z>=128.0;
+        float birth=incoming?(packed.z-128.0)/127.0:packed.z/127.0;
+        if(incoming) {
+            // Same capsule quad: closing target, four ticks, dashed ghost hex.
+            float radius=2.8-1.8*birth;
+            float target=mask(abs(length(p)-radius)-0.035)*(0.45+0.40*birth);
+            float ticks=mask(line(abs(q),vec2(radius+0.10,0),vec2(radius+0.45,0),0.04))
+                +mask(line(abs(q),vec2(0,radius+0.10),vec2(0,radius+0.45),0.04));
+            float dash=step(0.5,fract(atan(q.y,q.x)*6.0/3.141593));
+            vec3 telegraph=accent*(target+ticks*0.65+rim*dash*0.4+iconMask*(0.25+0.35*birth));
+            fragColor=vec4(min(telegraph,vec3(0.9))*base.a*ub.opacity,0);return;
+        }
         if(birth<1.0) glow+=accent*mask(abs(length(p)-(3.0-2.0*birth))-0.035)*(1.0-birth)*0.7;
         float life=packed.w/255.0*25.0;
         float blink=life<3.0?0.65+0.35*sin(t*(18.0+24.0*(1.0-life/3.0))):1.0;
         fragColor=composite(rgb,body,min(glow,vec3(0.9)),vec3(0),blink);return;
+    }
+    if(kind==16) {
+        // Screen-aligned speech quad with a minimum half-extent of 12.5px.
+        vec2 p=coord;
+        float circle=length(p-vec2(0,-0.10))-0.75;
+        float tail=sdTriangle(p,vec2(-0.29,0.52),vec2(-0.525,0.34),vec2(-0.66,0.84));
+        float d=min(circle,tail);
+        float aa=fwidth(d);
+        float fill=coverage(d,aa),rim=coverage(abs(d)-max(0.042,0.75*aa),aa);
+        float glyph=atlasMask(7+int(packed.y+0.5),p-vec2(0,-0.10),0.61);
+        vec3 rgb=mix(vec3(0.025,0.035,0.055),base.rgb,max(rim*0.85,glyph));
+        fragColor=vec4(rgb*fill,fill)*base.a*ub.opacity;return;
+    }
+    if(kind==17) {
+        float c=packed.y/255.0;
+        float angle=packed.z/255.0*6.283185;
+        // Rotated dot avoids atan per arc pixel; CPU supplies the direction.
+        float angular=dot(normalize(coord+vec2(0.000001)),vec2(cos(angle),sin(angle)));
+        float r=length(coord);
+        float px=max(length(vec2(dFdx(r),dFdy(r))),0.0001);
+        int state=int(packed.w+0.5);
+        float pulse=(state&2)!=0 && ub.motionScale==1.0?0.84+0.16*sin(t*6.911504):1.0;
+        float hw=0.35+0.85*c;
+        float arc=smoothstep(cos(hw)-0.03,cos(hw)+0.03,angular);
+        bool lead=(state&1)!=0;
+        float halfStroke=(1.0+1.2*c)*(lead?1.15:0.9);
+        float dr=abs(r-1.62);
+        float core=coverage(dr-halfStroke*px,px)*arc;
+        float h=max(0.0,1.0-dr/((3.0*halfStroke+2.0)*px)); float halo=h*h*arc;
+        float a=(0.5+0.5*c)*(lead?1.0:0.8)*pulse;
+        vec3 col=mix(lift(base.rgb),vec3(1),0.25);
+        float track=(state&4)!=0?coverage(dr-0.5*px,px)*0.10:0.0;
+        fragColor=vec4((col*(core+0.25*halo)*a+vec3(track))*ub.opacity,0);return;
     }
     if(kind==12 || kind==13 || kind==14) {
         float age=packed.w/255.0;float r=length(coord);vec3 accent=base.rgb;
@@ -229,7 +292,12 @@ void main() {
         fragColor=composite(rgb,alpha,glow,over,corpse?packed.w/255.0:activeFade)*edgeFade;return;
     }
     if(kind==1) {
-        vec2 p=coord;float seed=float((int(packed.y+0.5)>>2)&15);
+        float intensity=float((int(packed.y+0.5)>>2)&15)/15.0;
+        float jaw=float(((int(packed.w+0.5)>>6)&3)|((flags&128)>>5))/7.0;
+        bool moving=ub.motionScale==1.0;
+        vec2 p=coord;
+        if(mood==8 && moving) p.y+=0.05*sin(t*69.11504)*intensity;
+        float seed=base.r*13.0+base.g*7.0+base.b*5.0;
         bool flare=(int(packed.y+0.5)&128)!=0;
         float hr=tier==0?1.24:1.14;
         // spade (ellipse centre 0.05, radii 1.37 x 1.10) smooth-unioned with the neck, no flat back.
@@ -267,23 +335,66 @@ void main() {
         float blink=blinkPhase<blinkDuration?max(0.10,abs(2.0*blinkPhase/blinkDuration-1.0)):1.0;
         float er=tier==0?0.36:0.30;
         vec2 eye=vec2(p.x-0.50,abs(p.y)-0.56);
-        vec3 irisColor=leader?mix(gold,white,0.25):trapped?vec3(0.925,0.941,0.973):hunting?vec3(1,0.588,0.196):mix(vec3(1,0.769,0.329),c,0.22);
-        if(mono) irisColor=hunting?white:vec3(0.78,0.82,0.86);
+        vec3 calmColor=leader?mix(gold,white,0.25):mix(vec3(1,0.769,0.329),c,0.22);
+        vec3 irisColor=calmColor;
+        float lid=1.0,pupilWidth=0.075,pupilHeight=0.20;
+        bool roundPupil=false;
+        // One mood dispatch; shared eye SDFs keep each branch compact.
+        switch(mood) {
+        case 1: break;
+        case 2: irisColor=vec3(1,0.588,0.196);pupilWidth=0.035;pupilHeight=0.24;break;
+        case 3: irisColor=white;er*=1.0+0.25*intensity;roundPupil=true;break;
+        case 4: irisColor=vec3(1,0.39,0.16);pupilWidth=0.035;break;
+        case 5: lid=1.0;break;
+        case 6: irisColor=vec3(0.925,0.941,0.973);roundPupil=true;break;
+        case 7: irisColor=vec3(0.7,0.82,1);break;
+        case 8: irisColor=vec3(0.78,0.933,1);lid=0.42;break;
+        }
+        irisColor=mix(calmColor,moodAccent(irisColor),intensity);
+        if(mono || ub.paletteMode==1.0) irisColor=mix(vec3(0.78,0.82,0.86),white,float(hunting)*intensity);
         if(flare) irisColor=mix(irisColor,white,0.85);
-        if(hunting||leader||flare) {
-            // eye glow lights the head skin too (drawn before the eye, like the prototype).
-            vec3 eg=(leader?gold:irisColor)*falloff(length(eye)/1.15)*(flare?0.75:hunting?0.35:0.15);
+        if(hunting||leader||flare||mood==4) {
+            float eyeRadius=mood==8?1.1:1.15;
+            vec3 eg=(leader?gold:irisColor)*falloff(length(eye)/eyeRadius)*(flare?0.75:hunting?mix(leader?0.15:0.0,0.35,intensity):mood==4?0.18*intensity:0.15);
             rgb+=eg;glow+=eg;
         }
+        blink*=mix(1.0,lid,intensity);
         float socket=mask(ellipse(eye,vec2(er*1.12,er*1.12*max(0.3,blink))));
         float iris=mask(ellipse(eye,vec2(er,er*blink)));
+        if(mood==5) {socket*=1.0-intensity;iris*=1.0-intensity;}
+        vec3 skin=rgb;vec3 dark=vec3(0.016,0.02,0.04);
         rgb=mix(rgb,vec3(0.016,0.02,0.04),socket);rgb=mix(rgb,irisColor,iris);
-        float look=(packed.w-128.0)/127.0*0.9;
-        vec2 pupil=eye-vec2(cos(look)*0.07,sin(look)*0.09*sign(p.y));
-        if(trapped) pupil-=vec2(sin(t*31.0+sign(p.y))*0.05,cos(t*27.0+sign(p.y))*0.04);
-        float pd=trapped?length(pupil)-0.06:ellipse(pupil,vec2(hunting?0.035:0.075,(hunting?0.24:0.20)*er/0.30*blink));
-        rgb=mix(rgb,vec3(0.02,0.024,0.043),mask(pd)*iris*step(0.4,blink));
-        rgb=mix(rgb,white,mask(length(eye-vec2(-0.055,(ly*0.10-0.06)*sign(p.y)))-0.065)*iris*0.9);
+        int look=int(packed.w+0.5);
+        vec2 offset=vec2((float(look&7)-3.0)/3.0*0.18,(float((look>>3)&7)-3.0)/3.0*0.35);
+        vec2 pupil=eye-offset*vec2(1,sign(p.y));
+        if((trapped||mood==3) && moving) pupil-=vec2(sin(t*31.0+sign(p.y))*0.05,cos(t*27.0+sign(p.y))*0.04)*intensity;
+        float pd=ellipse(pupil,vec2(mix(0.075,pupilWidth,intensity),mix(0.20,pupilHeight,intensity)*er/0.30*blink));
+        if(roundPupil) pd=mix(pd,length(pupil)-0.06,intensity);
+        float pupilMask=mask(pd)*iris*step(0.4,blink);
+        if(mood==5) {
+            // Forward/lateral coordinates: closed arcs bulge toward the tail.
+            vec2 a=eye-vec2(0.12,0.0); vec2 q=vec2(abs(a.y),-a.x);
+            const vec2 sc=vec2(0.9128,0.4085); float rr=er*0.95;
+            float ad=((sc.y*q.x>sc.x*q.y)?length(q-sc*rr):abs(length(q)-rr))-0.075;
+            pupilMask=mix(pupilMask,mask(ad),intensity);
+        } else if(mood==7) {
+            float a=atan(eye.y,eye.x)+(moving?t*0.7:0.0);
+            float spiral=mask(abs(sin(a*2.0-length(eye)*23.0))*0.10-0.035)*iris;
+            pupilMask=mix(pupilMask,spiral,intensity);
+        }
+        rgb=mix(rgb,vec3(0.02,0.024,0.043),pupilMask);
+        rgb=mix(rgb,white,mask(length(eye-vec2(-0.055,(ly*0.10-0.06)*sign(p.y)))-0.065)*iris*0.9*(1.0-intensity*float(mood==5 || mood==7)));
+        if(mood==4) {
+            // Rear lid and V brows pointing at the snout.
+            float bd=(-0.05*er-0.55*eye.y-eye.x)*0.8762;
+            float cover=mask(-bd)*mask(length(eye)-er*1.12-0.02);
+            float brow=mask(abs(bd)-0.06)*mask(length(eye)-er*1.38);
+            rgb=mix(rgb,skin,cover*intensity);rgb=mix(rgb,dark,brow*0.95*intensity);
+        } else if(mood==1) {
+            float ld=-0.02*er-eye.x;
+            rgb=mix(rgb,skin,mask(-ld)*mask(length(eye)-er*1.12-0.02)*intensity);
+            rgb=mix(rgb,dark,mask(abs(ld)-0.035)*mask(length(eye)-er*1.15)*0.75*intensity);
+        }
         float crownCover=0.0;
         if(leader) {
             // bowed band + 3 backward spikes, dark-gold outline, additive crown glow.
@@ -301,12 +412,31 @@ void main() {
         }
         float alpha=max(max(body,shadow),crownCover);
         rgb=mix(vec3(0.008,0.012,0.031),rgb,max(body,crownCover)/max(alpha,0.0001));
+        if(mood==1 && jaw>0.0) {
+            float m=mask(ellipse(p-vec2(1.08,0),vec2(0.34*jaw+0.02,0.50*jaw+0.02)))*intensity;
+            float in_=mask(ellipse(p-vec2(1.0,0),vec2(0.16*jaw,0.24*jaw)+0.001))*intensity;
+            rgb=mix(rgb,(mono||ub.paletteMode==1.0)?vec3(0.06):vec3(0.08,0.016,0.04),m*0.95);
+            rgb=mix(rgb,(mono||ub.paletteMode==1.0)?vec3(0.55):vec3(0.75,0.27,0.36),in_*0.9);alpha=max(alpha,m);
+        }
         float tp=(hunting?1.4:3.0)+hash(seed+4.0)*(hunting?4.6:5.0);
         float phase=mod(ub.animationTime+hash(seed+5.0)*tp,tp);float tongueDuration=0.34*ub.motionScale;
         float extension=phase<tongueDuration?sin(phase/tongueDuration*3.141593):0.0;
+        if(mood==5 && jaw>0.0) extension=0.58*intensity;
         if(extension>0.01) {
             vec2 joint=vec2(1.30+extension,0);float tongue=mask(min(line(p,vec2(1.30,0),joint,0.05),min(line(p,joint,vec2(1.30+1.32*extension,0.22*extension),0.045),line(p,joint,vec2(1.30+1.32*extension,-0.22*extension),0.045))));
-            float visibleTongue=tongue*(1.0-body);rgb=mix(rgb,mono?vec3(0.82):vec3(1,0.361,0.478),visibleTongue);alpha=max(alpha,visibleTongue);
+            float visibleTongue=tongue*(1.0-body);rgb=mix(rgb,(mono||ub.paletteMode==1.0)?vec3(0.82):vec3(1,0.361,0.478),visibleTongue);alpha=max(alpha,visibleTongue);
+        }
+        if(mood==3) {
+            // Doubled temple tear stays within the 1.75 side envelope with AA.
+            vec2 drop=(p-vec2(-0.25,1.37))*0.5;
+            float dropDistance=2.0*min(length(drop-vec2(0,0.025))-0.12,
+                max(abs(drop.x)-(drop.y+0.18)*0.45,max(-0.18-drop.y,drop.y)));
+            float sweat=coverage(dropDistance,clamp(fwidth(dropDistance),0.008,0.08))*intensity;
+            rgb=mix(rgb,moodAccent(vec3(0.7,0.88,1)),sweat);alpha=max(alpha,sweat);
+        } else if(mood==8 && moving) {
+            float q=fract(t*0.8+seed*0.31)*0.9;
+            float breath=falloff(length(p-vec2(1.65+0.55*q,0))/(0.28+0.40*q))*(1.0-q/0.9)*0.5*intensity;
+            glow+=moodAccent(vec3(0.78,0.933,1))*breath;
         }
         if(boosting) {
             // bow wave, two strokes fitted to the prototype beziers; needs the widened boost quad.

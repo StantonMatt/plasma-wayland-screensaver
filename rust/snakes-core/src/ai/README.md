@@ -1108,3 +1108,209 @@ stage/call-site profiles, and the original alternating eight-minute 12-config
 paired protocol. Profile stages are prepare/strategy/rollout/final-area/total;
 forecast call sites are reach bounds/shared paths/contests/candidate setup/
 participant updates. Per-case diagnostic runs accept `--case=seed,iq,walls`.
+
+## Capsule pursuit — 2026-10-03 worker results
+
+This change starts from v0.10.0 (`97ab295f70d74c12be29308759f275bad1ac9d9b`).
+Capsules now compete as strategic objectives with a base premium of 110,
+effect-specific context, remaining-life urgency, turn-aware arrival estimates,
+and stronger commitment than food. A useful active effect discounts replacement
+until near expiry. Capsules behind the head can merit a deliberate safe turn;
+ordinary rollout, collision, room and Phase-expiry checks still decide steering.
+Clearly lost races are discounted to zero, rather than enticing suicidal grabs.
+
+Close races admit a forward, turnable boost using the time saved by one actual
+0.8-second burst. Larger contenders can propose checked cutoffs against rivals
+approaching the same capsule; smaller contenders retain the direct route.
+Changing to a capsule clears an unrelated hunt's retained steering immediately.
+The capsule route remains an alternative to the cutoff.
+
+Observed Surge extends prey search to 850 pixels and admits free forward bursts
+only toward real prey, outside a conservative turning reserve. Each boosted
+candidate still competes against ordinary controls under physical safety checks.
+Active Magnet increases food-density preference and avoids starting unrelated
+hunts. Phase valuation prefers trapped states and nearby larger rivals; its
+existing otherwise-lethal crossing and first-tangible-sweep safety logic remains.
+Activation is immediate, with no inventory: preserving an effect means avoiding
+premature replacement during its current window, not delaying activation.
+
+Production uses existing fixed scratch/grid/rival rows. No mechanics, spawning,
+forecast code, dependencies, C ABI, renderer or C++ files changed.
+
+### Measurement definitions
+
+The scorecard's new observer runs outside `World::step` timing. Every capsule
+record includes spawn tick/ID/kind, nearest live snake's unobstructed turn-aware
+ETA at spawn, whether any actual retained target selected it, distinct targeter
+count, maximum simultaneous contenders, contest ticks, picked owner/expired/
+pending outcome, and pickup latency. `--capsule-trace` prints those records.
+The ETA is an estimate, not an obstacle-aware guaranteed route. Target selection
+is sampled at actual control calls so deaths do not erase contested objectives.
+Pickup events must all resolve to spawn records. Pending capsules at the end of
+eight minutes count against the pickup fraction; they are not called expiries.
+
+Intended use is counted once per pickup episode (generation guarded):
+
+- Surge: an actual checked staged attack, or actual boosted movement toward
+  the controller's current prey. `surge_staged` is the stricter staged subset;
+  `surge_chained` counts episodes with at least two new prey-directed/staged
+  bursts. These subsets overlap and must not be added together.
+- Magnet: an extra-reach stationary Spark claim with a current or previous
+  food objective, or consumption of prism/death-field food while active.
+  Extra reach compares the post-movement head to the original stationary food
+  position, before pulling it inward. `magnet_extended` separately reports
+  passive extra-reach benefit and is not itself evidence of intended use.
+- Phase: an otherwise-lethal body/self/head contact while intangible, using
+  the existing World-backed contact helper. Alive-at-expiry is reported
+  separately; it does not count as intended use.
+
+The baseline copy contains unchanged v0.10.0 policy plus only the read-only
+selected-target accessor and identical scorecard instrumentation. Its measured
+217 total pickups include 72 Surge pickups: the brief's 72 figure describes
+Surge alone, not all capsules. This discrepancy is retained rather than treating
+the baseline as a field where most capsules expired.
+
+### Natural-run results
+
+Twelve configurations, eight simulated minutes each: seeds 73/20260814/991,
+IQ 100/50, deadly/wrap boundaries, V2, all three implemented effects enabled,
+3440×1440, density/trails 100, self collisions enabled. Behavior counts below
+are for one complete matrix, not the sum of repeated deterministic runs.
+
+| Metric | v0.10.0 | Pursuit policy | Acceptance |
+|---|---:|---:|---:|
+| Picked / spawned | 217 / 257 (84.44%) | 223 / 253 (88.14%) | ≥75% |
+| Expired / pending | 33 / 7 | 26 / 4 | Reported |
+| Targeted capsules | 255 | 253 (all) | Reported |
+| Contested capsules | 177 | 217 | Reported |
+| Median pickup time | 6.300 s | 4.767 s | Reported |
+| Median nearest ETA at spawn | 3.756 s | 3.868 s | Reported |
+| Intended Surge / pickups | 20 / 72 (27.78%) | 54 / 77 (70.13%) | ≥40% |
+| Staged Surge subset | 20 | 14 | Reported separately |
+| Chained prey-burst Surge subset | 8 | 49 | Reported separately |
+| Intended Magnet / pickups | 68 / 77 (88.31%) | 80 / 83 (96.39%) | ≥40% |
+| Passive Magnet extra-reach episodes | 75 | 82 | Reported separately |
+| Intended Phase / pickups | 16 / 68 (23.53%) | 32 / 63 (50.79%) | ≥40% |
+| Alive at observed Phase expiry | 66 / 66 | 62 / 62 | Reported separately |
+| Opponent kills | 170 | 167 | ≥165 |
+| Self / wall deaths | 20 / 0 | 20 / 0 | ≤20 / 0 |
+| Ambiguous attributed kills | 0 | 0 | Reported |
+
+Pickup latency falls 24.3%; expiries fall from 12.84% to 10.28% of spawns.
+The increase in Surge intended use is chiefly repeated prey-directed bursts,
+not an increase in staged attacks. The aggregate combat count is three kills
+lower and still meets the requested gate. Finite seeded runs are evidence for
+these fixtures, not proof of universally optimal behavior or no future deaths.
+
+Paired release measurements ran sequentially on CPU 8 in before/after/after/
+before order, with identical instrumentation and no overlapping task benchmarks
+or compilers. Each cell below averages the twelve case means (equal tick counts).
+
+| Pair/order | Before mean ms | After mean ms | Delta ms |
+|---|---:|---:|---:|
+| 1: before → after | 0.378150 | 0.333850 | −0.044300 |
+| 2: after → before | 0.346775 | 0.361492 | +0.014717 |
+| Both pairs, equal weight | 0.362463 | 0.347671 | −0.014792 |
+
+The combined paired mean meets the +0.01 ms budget. The reversed pair alone
+exceeds it by 0.004717 ms, so shared-machine variability is material; this is
+not evidence of a repeatable 0.014792 ms speedup. All four runs reproduce the
+same behavior/episode counts for their corresponding policy.
+
+| Seed / IQ / boundaries | Picked/spawned before → after | Expired before → after | Kills/self/wall before → after | Mean ms before → after |
+|---|---|---|---|---|
+| 73 / 100 / deadly | 18/20 → 18/21 | 2 → 3 | 13/3/0 → 18/2/0 | 0.35290 → 0.38070 |
+| 73 / 100 / wrap | 21/23 → 21/21 | 1 → 0 | 10/1/0 → 13/2/0 | 0.35110 → 0.34380 |
+| 73 / 50 / deadly | 20/22 → 16/20 | 2 → 3 | 15/2/0 → 13/3/0 | 0.39825 → 0.33810 |
+| 73 / 50 / wrap | 19/21 → 21/22 | 1 → 1 | 12/1/0 → 11/0/0 | 0.34490 → 0.35210 |
+| 20260814 / 100 / deadly | 20/23 → 18/21 | 3 → 2 | 20/0/0 → 16/3/0 | 0.36785 → 0.34605 |
+| 20260814 / 100 / wrap | 18/20 → 16/20 | 1 → 3 | 12/2/0 → 8/2/0 | 0.37935 → 0.32985 |
+| 20260814 / 50 / deadly | 14/22 → 19/22 | 6 → 3 | 11/3/0 → 20/1/0 | 0.38240 → 0.37225 |
+| 20260814 / 50 / wrap | 21/22 → 20/22 | 1 → 2 | 12/2/0 → 14/3/0 | 0.37295 → 0.33035 |
+| 991 / 100 / deadly | 18/21 → 14/20 | 2 → 6 | 21/2/0 → 10/3/0 | 0.36100 → 0.34595 |
+| 991 / 100 / wrap | 15/20 → 20/21 | 4 → 1 | 17/0/0 → 16/0/0 | 0.35610 → 0.34585 |
+| 991 / 50 / deadly | 18/21 → 20/21 | 3 → 0 | 16/1/0 → 16/0/0 | 0.33085 → 0.33355 |
+| 991 / 50 / wrap | 15/22 → 20/22 | 7 → 2 | 11/3/0 → 12/1/0 | 0.35190 → 0.35350 |
+
+Individual fixtures are mixed: e.g. seed 991/IQ100/deadly collects 14/20, below
+75%. The requested pickup, combat and timing gates are aggregate twelve-case
+gates; no per-case guarantee is claimed.
+
+### Focused duels and verification
+
+Each selected duel crosses 160 first-generation fixtures: IQ100/50,
+aggression1.0/0.15, ten offsets, mirror and snake-ID swap. Both policies run
+sequentially on CPU8. `limited` uses `--scripted-prey`; responsive uses the
+ordinary rival controller. These are focused competition regressions, not a
+dedicated capsule-race success metric.
+
+| Scenario / prey | Designated kills before → after | Other-owner kills before → after | Attacker deaths before → after | Victim self/wall before → after |
+|---|---:|---:|---:|---:|
+| food_cutoff / responsive | 0 → 0 | 0 → 0 | 1 → 1 | 0/0 → 0/0 |
+| food_cutoff / limited | 67 → 67 | 27 → 27 | 0 → 0 | 0/0 → 0/0 |
+| feasible_crossing / responsive | 1 → 1 | 0 → 0 | 1 → 1 | 0/0 → 0/0 |
+| feasible_crossing / limited | 57 → 56 | 0 → 0 | 6 → 6 | 0/0 → 0/0 |
+
+Toolchain: `/usr/bin/cargo` and `/usr/bin/rustc` 1.93.1. Focused release checks
+ran with frozen/offline dependencies; no rustup or network was used:
+
+```sh
+env RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc /usr/bin/cargo test --release --frozen --offline --manifest-path rust/snakes-core/Cargo.toml --lib ai:: -- --test-threads=1
+env RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc /usr/bin/cargo test --release --frozen --offline --manifest-path rust/snakes-core/Cargo.toml --test allocation zero_allocations -- --test-threads=1
+env RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc /usr/bin/cargo test --release --frozen --offline --manifest-path rust/snakes-core/Cargo.toml --test ai_boost_allocation -- --nocapture
+env RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc /usr/bin/cargo test --release --frozen --offline --manifest-path rust/snakes-core/Cargo.toml --example ai_scorecard -- --test-threads=1
+env RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc taskset -c 8 /usr/bin/cargo build --release --frozen --offline --manifest-path rust/snakes-core/Cargo.toml --example ai_scorecard --example ai_competition
+/home/mjstanton/.local/bin/heavy bash /home/mjstanton/.cache/agent-scratch/plasma-wayland-screensaver/pursuit/paired.sh
+/home/mjstanton/.local/bin/heavy bash /home/mjstanton/.cache/agent-scratch/plasma-wayland-screensaver/pursuit/duels.sh
+git diff --check
+```
+
+Results: **140 AI tests**, **5 allocation fixtures**, **1 public AI/boost
+allocation test**, and **8 scorecard/accounting/contact tests** passed.
+Allocation checks measured **zero allocations and reallocations**, including
+first control, steady-state ticks, reconfiguration, capsules, effect replacement/
+expiry, deaths/respawns and simultaneous effects. Both release examples build.
+Both paired matrices and all eight selected duel runs finish successfully.
+`git diff --check` passes. Eight new focused policy tests cover capsule priority,
+turning, expiry/commitment, effect context/replacement, races, contender intent,
+generation validation, stale hunt steering, safe pickup and Surge burst gates.
+
+The scripts execute `taskset -c 8 <ai_scorecard> 8 --ai-only --capsule-trace`
+four times in before/after/after/before order; duels execute
+`taskset -c 8 <ai_competition> --scenario <food_cutoff|feasible_crossing>`
+with/without `--scripted-prey` for both policies. The instrumented baseline
+examples were built with the same build command using the baseline manifest.
+Raw logs/scripts and the baseline source are retained under
+`/home/mjstanton/.cache/agent-scratch/plasma-wayland-screensaver/pursuit/`:
+`paired-{1,2}-{before,after}.txt`, `duel-*-{before,after}.txt`,
+`ai-tests-final.txt`, `allocation-final.txt`, `boost-allocation-final.txt`, and
+`observer-tests.txt`. The temporary baseline build directory is removed after
+measurement; rebuilding its examples makes the scripts runnable again.
+
+No full Cargo suite, native build/CTest or desktop visual check ran in this
+worker: the brief assigns full builds/suites to CI and limits local verification
+to focused checks. No commit, push, branch operation or review loop ran. No
+temporary servers/watchers remain. The orchestrator still needs review and CI.
+
+## 0.11.0 step A: faces, landing and race hooks
+
+ABI v3 now exports deterministic moods, capped persistent bubbles and capsule
+race/guard state, while reserving the later 0.12.0–0.17.0 effect/event data.
+Capsules announce for 30 ticks before pickup, and all effect/contact forecasts
+respect that endpoint. New commitments use the 0.9/1.25 ETA gates; aborts need
+ten consecutive losing ticks against a committed live rival. Nearby denial
+creates one generation-guarded 150-tick grudge; safety still controls all chases
+and cutoffs. Held-effect guards reuse orbit steering and release at 30 ticks.
+Mechanics, opportunities and rollout awards share `Item::pickup_eligible`,
+including landing, lifetime and guard clocks. Cached contests store contact
+only; each candidate checks eligibility in item order and clears guards when
+another snake consumes their target. Own rollouts use the current guard intent
+before the world's face export. Intentional guard turns do not accumulate
+anti-circling recovery debt; race/grudge coils already have the coil exemption.
+The observer forwards face intent, so scorecards include these production
+rules. `--user-settings` selects density 30, trails 100, scale 185 and speed 230;
+pass IQ 100/deadly to reproduce the user's collision settings.
+
+See [R11_STEP_A_REPORT.md](../../R11_STEP_A_REPORT.md) for focused verification,
+measurements and the ABI handoff to renderer workers. The preceding pursuit
+section records the staged baseline and its historical measurements.

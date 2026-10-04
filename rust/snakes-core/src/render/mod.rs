@@ -2,12 +2,14 @@
 //! Per-window, allocation-free classic triangle tessellation. All arithmetic
 //! preceding the final vertex conversion stays f64, as in the Qt renderer.
 mod geometry;
+mod faces;
 mod shader;
 pub(crate) mod items;
 pub use shader::ShaderVertex;
 use geometry::{P, Sink, delta, wrap, copies, visible, prepare};
 use crate::ffi::{SnakeRecord, SegmentRecord, FoodRecord, ItemRecord, EventRecord, FrameInfo};
 use crate::{flags, MAX_SNAKES, MAX_SEGMENTS};
+use faces::head_mood;
 // Far beyond supported worlds (<=16384) and physical radii, but small
 // enough that all projected/effect coordinates stay representable as f32.
 // Use comparisons: they reject NaN and infinities without a separate scan.
@@ -162,6 +164,7 @@ pub struct Renderer {
     items: [ItemRecord;crate::MAX_ITEMS],
     item_count: usize,
     item_radius: f64,
+    clock_rect: [f64;4],
     effects: [shader::Effect;8],
     effect_head: usize,
     waves: [[shader::Wave;2];MAX_SNAKES],
@@ -206,6 +209,7 @@ impl Renderer {
             items: [ItemRecord::default();crate::MAX_ITEMS],
             item_count: 0,
             item_radius: 0.0,
+            clock_rect: [0.0;4],
             effects: [shader::Effect::default();8],
             effect_head: 0,
             waves: [[shader::Wave::default();2];MAX_SNAKES],
@@ -572,20 +576,23 @@ impl Renderer {
                             let side = P::new(-forward.y, forward.x);
                             for direction in [-1.0, 1.0] {
                                 let eye = head+forward*(radius*0.48)+side*(radius*0.46*direction);
-                                let white = if s.flags&flags::HUNTING!=0 {
-                                    Color::new(255, 190, 80, 255)
+                                let observed=faces::has_mood(s);
+                                let mood=if !observed && s.flags&flags::HUNTING==0 && s.flags&flags::FROZEN==0 && s.flags&flags::TRAPPED==0 {0} else {head_mood(s)};
+                                let intensity=if observed {s.mood_intensity as f64/255.0} else {1.0};
+                                let white=if !observed {
+                                    if s.flags&flags::HUNTING!=0 {Color::new(255,190,80,255)} else {Color::new(255,255,255,255)}
                                 } else {
-                                    Color::new(255, 255, 255, 255)
+                                    let calm=faces::eye_color(0,palette);let active=faces::eye_color(mood,palette);
+                                    let mix=|a:u8,b:u8|(a as f64+(b as f64-a as f64)*intensity).round() as u8;
+                                    Color::new(mix(calm.red,active.red),mix(calm.green,active.green),mix(calm.blue,active.blue),255)
                                 };
-                                let pupil = if s.flags&flags::TRAPPED!=0 {
-                                    0.12
-                                } else if s.flags&flags::HUNTING!=0 {
-                                    0.30
-                                } else {
-                                    0.48
-                                };
+                                let active_pupil=if matches!(mood,3|6) {0.12} else if matches!(mood,2|4) {0.30} else {0.48};
+                                let pupil=0.48+(active_pupil-0.48)*intensity;
                                 sink.disc(eye, eye_r, white.fade(fade), 8);
-                                sink.disc(eye+forward*(eye_r*0.34), eye_r*pupil, Color::new(17, 19, 26, 255).fade(fade), 7);
+                                // Contain the complete pupil, including the legacy bias.
+                                // The eight-sided iris has inradius r*cos(pi/8).
+                                let offset=faces::pupil_offset(P::new(eye_r*0.34+s.pupil_x as f64*radius,s.pupil_y as f64*radius),eye_r*(0.9238795325112867-pupil));
+                                sink.disc(eye+forward*offset.x+side*offset.y, eye_r*pupil, Color::new(17, 19, 26, 255).fade(fade), 7);
                             }
                             if s.flags&flags::LEADER!=0 {
                                 let center = head-forward*(radius*0.32);

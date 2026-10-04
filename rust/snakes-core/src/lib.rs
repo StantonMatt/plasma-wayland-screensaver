@@ -11,7 +11,7 @@ pub mod ffi;
 pub use math::{ Point, normalize_angle, wrap_coordinate };
 pub use rng::WorldRng;
 pub use world::effects;
-pub use world::{ Item, MAX_ITEMS, Config, ConfigError, RuleSet, FoodKind, EventKind, FrameEvent, flags, MAX_EVENTS, CollisionEvent, DeathReason, FoodView, Segment, SnakeView, Stats, Traits, World, MAX_SNAKES, MAX_SEGMENTS, MAX_FOOD, STEP_SECONDS };
+pub use world::{ Mood, Glyph, FaceState, Bubble, Bulge, WorldEventState, MAX_BUBBLES, MAX_CONTENDERS, Item, MAX_ITEMS, MAX_CAPSULES, Config, ConfigError, RuleSet, FoodKind, EventKind, FrameEvent, flags, MAX_EVENTS, CollisionEvent, DeathReason, FoodView, Segment, SnakeView, Stats, Traits, World, MAX_SNAKES, MAX_SEGMENTS, MAX_FOOD, STEP_SECONDS };
 
 #[cfg(feature = "parity")]
 pub use world::parity;

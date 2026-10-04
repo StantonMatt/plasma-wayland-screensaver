@@ -14,7 +14,7 @@ int main(void) {
         assert(isfinite(d.path[i].x) && isfinite(d.path[i].y));
     }
     assert(snakes_core_ai_debug(w, 14, &d) == SNAKES_CORE_INVALID_ARGUMENT);
-    snakes_core_steering_input input = {0, 0, 0.4, 0};
+    snakes_core_steering_input input = {0, 0, 0.4, 0, 0, 0};
     assert(snakes_core_set_steering(w, &input, 1) == SNAKES_CORE_OK);
     assert(snakes_core_ai_debug(w, 0, &d) == SNAKES_CORE_OK);
     assert(d.path_count == 0 && d.target_count == 0);

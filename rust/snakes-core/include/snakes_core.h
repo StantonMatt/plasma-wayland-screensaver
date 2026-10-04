@@ -6,7 +6,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#define SNAKES_CORE_ABI_VERSION 2u
+#define SNAKES_CORE_ABI_VERSION 3u
 #define SNAKES_CORE_RULE_DEFAULT 0u /* V2 */
 #define SNAKES_CORE_RULE_CLASSIC 1u
 #define SNAKES_CORE_RULE_V2 2u
@@ -30,7 +30,8 @@ extern "C" {
 #define SNAKES_CORE_MAX_EVENTS 32u
 #define SNAKES_CORE_MAX_SNAKES 14u
 #define SNAKES_CORE_MAX_FOOD 480u
-#define SNAKES_CORE_MAX_ITEMS 3u
+#define SNAKES_CORE_MAX_ITEMS 4u /* 3 capsules + 1 future vortex */
+#define SNAKES_CORE_MAX_CAPSULES 3u
 #define SNAKES_CORE_POWER_UPS_DEFAULT 0u
 #define SNAKES_CORE_POWER_UPS_ON 0u
 #define SNAKES_CORE_POWER_UPS_OFF 0x80000000u
@@ -40,11 +41,51 @@ extern "C" {
 #define SNAKES_CORE_EFFECT_PHASE 3u
 #define SNAKES_CORE_EFFECT_VENOM 4u
 #define SNAKES_CORE_EFFECT_FROST 5u
+#define SNAKES_CORE_ACTION_FLIP 1u
+#define SNAKES_CORE_EFFECT_FLIP 6u
+#define SNAKES_CORE_EFFECT_WHIRLPOOL 7u
+#define SNAKES_CORE_ITEM_VORTEX 8u
+#define SNAKES_CORE_WORLD_EVENTS_OFF 0x40000000u
+#define SNAKES_CORE_ITEM_LANDING_TICKS 30u
+#define SNAKES_CORE_PRISM_RIPEN_TICKS 90u
+#define SNAKES_CORE_BUBBLE_LIFE_TICKS 45u
+#define SNAKES_CORE_MAX_BUBBLES 3u
+#define SNAKES_CORE_MAX_CONTENDERS 2u
+#define SNAKES_CORE_NO_SNAKE UINT32_MAX
+#define SNAKES_CORE_NO_ITEM 255u
+#define SNAKES_CORE_FLAG_STRIKE 256u
+#define SNAKES_CORE_FLAG_FLIP_HELD 512u
+#define SNAKES_CORE_FACE_OBSERVED 2u /* authoritative mood, including Calm=0 */
+#define SNAKES_CORE_MOOD_CALM 0u
+#define SNAKES_CORE_MOOD_SLEEPY 1u
+#define SNAKES_CORE_MOOD_HUNTING 2u
+#define SNAKES_CORE_MOOD_SCARED 3u
+#define SNAKES_CORE_MOOD_ANGRY 4u
+#define SNAKES_CORE_MOOD_HAPPY 5u
+#define SNAKES_CORE_MOOD_TRAPPED 6u
+#define SNAKES_CORE_MOOD_DIZZY 7u
+#define SNAKES_CORE_MOOD_FROZEN 8u
+#define SNAKES_CORE_GLYPH_ALERT 0u
+#define SNAKES_CORE_GLYPH_QUESTION 1u
+#define SNAKES_CORE_GLYPH_ANGER 2u
+#define SNAKES_CORE_GLYPH_SLEEP 3u
+#define SNAKES_CORE_GLYPH_HEART 4u
+#define SNAKES_CORE_FOOD_PRISM_SEED 4u
+#define SNAKES_CORE_FOOD_METEOR 5u
+#define SNAKES_CORE_FOOD_STAR 6u
+#define SNAKES_CORE_EVENT_EMOTE 8u
+#define SNAKES_CORE_EVENT_FLIP 9u
+#define SNAKES_CORE_EVENT_FEAST 10u
+#define SNAKES_CORE_EVENT_VORTEX_BURST 11u
+#define SNAKES_CORE_EVENT_WORLD_EVENT 12u
+#define SNAKES_CORE_WORLD_EVENT_NONE 0u
+#define SNAKES_CORE_WORLD_EVENT_STARFALL 1u
+#define SNAKES_CORE_WORLD_EVENT_NIGHTFALL 2u
 #define SNAKES_CORE_EVENT_ITEM_SPAWN 5u
 #define SNAKES_CORE_EVENT_ITEM_EXPIRY 6u
 #define SNAKES_CORE_EVENT_EFFECT_EXPIRY 7u
-/* Config bit 31 disables power-ups; other reserved bits/fields must be zero.
- * R3 uses the reserved config word, preserving all ABI v2 sizes and offsets. */
+/* Config bit 31 disables power-ups; bit 30 disables world events. Both
+ * default on (word zero). All other reserved bits/fields must be zero. */
 #define SNAKES_CORE_OK 0
 #define SNAKES_CORE_INVALID_ARGUMENT 1
 #define SNAKES_CORE_BUFFER_TOO_SMALL 2
@@ -65,7 +106,33 @@ typedef struct snakes_core_config {
 typedef struct snakes_core_steering_input {
     uint32_t id, generation;
     double desired_angle, rush; /* Classic: rush in [0,1]; V2: rush>0 requests boost; generation 0 matches any */
+    uint32_t actions, reserved; /* action bit 0 requests held Flip; inert in step A; reserved zero */
 } snakes_core_steering_input;
+/* Tick-based visual-only bulge: centre travels from origin_segment toward the
+ * tail over duration_ticks; strength is fractional widening (0..0.35). Zero
+ * duration disables a slot. No collision geometry changes. */
+typedef struct snakes_core_bulge {
+    uint64_t start_tick;
+    uint16_t duration_ticks, origin_segment;
+    float strength;
+} snakes_core_bulge;
+/* Persistent, capped bubble snapshot. Age 0..44; identity includes generation.
+ * Glyph also travels in Emote.other_snake_id. reserved must remain zero. */
+typedef struct snakes_core_bubble {
+    uint32_t snake_id, generation;
+    uint16_t age_ticks;
+    uint8_t glyph, reserved;
+} snakes_core_bubble;
+/* Reserved world event state. Tick window and zone are world coordinates.
+ * night: 0..1 fade amount; ambient: 0..1 tube brightness (1 by default).
+ * phase: 0 inactive, 1 telegraph, 2 active, 3 fading; meteor_count <=24.
+ * Starfall and Nightfall may overlap: night/ambient persist independently of
+ * the Starfall zone window. All schedulers are inert in step A. */
+typedef struct snakes_core_world_event {
+    uint64_t start_tick, end_tick;
+    float x, y, radius, night, ambient;
+    uint8_t kind, phase, meteor_count, reserved;
+} snakes_core_world_event;
 typedef struct snakes_core_snake {
     uint32_t id, generation, alive, color_index;
     double radius, angle, desired_angle;
@@ -73,6 +140,21 @@ typedef struct snakes_core_snake {
     uint32_t flags;
     uint16_t effect_ticks;
     uint8_t effect_kind, boost_ticks; /* remaining ticks, including latest tick */
+    uint8_t mood, mood_intensity; /* enum above; intensity 0..255 onset ramp */
+    uint16_t mood_age_ticks; /* saturating age of current mood, zero on switch */
+    uint8_t target_item, face_flags; /* compact current slot/255; bit 0 guarding, bit 1 authoritative mood (including Calm) */
+    uint16_t jaw_ticks; /* remaining yawn/strike jaw animation ticks */
+    float look_x, look_y; /* wrapped world-space DELTA head -> look target */
+    float pupil_x, pupil_y; /* head-local offset in head radii */
+    uint16_t frozen_ticks, dizzy_ticks, bite_immunity_ticks, stump_ticks;
+    uint16_t thaw_immunity_ticks, breath_ticks, flip_grace_ticks, happy_ticks;
+    /* Above counters reserved for Frost, Flip, Venom, breath and happy blep.
+     * happy_ticks: >18 means the first 27 ticks of the 45-tick celebration. */
+    uint32_t grudge_snake_id; /* UINT32_MAX if absent; valid only with ticks */
+    uint16_t grudge_ticks, reserved; /* remaining; reserved zero */
+    uint32_t grudge_generation; /* prevents grudges following a respawn */
+    uint64_t flip_tick; /* last in-place reversal; 0 before any Flip */
+    snakes_core_bulge bulges[2]; /* fixed slots, inactive in step A */
 } snakes_core_snake;
 typedef struct snakes_core_segment { float x, y, previous_x, previous_y; } snakes_core_segment;
 typedef struct snakes_core_food {
@@ -81,18 +163,39 @@ typedef struct snakes_core_food {
     uint32_t color_index;
     uint8_t kind, life_fraction; /* 0 expired, 255 full; vacuum locks lifetime */
     uint16_t reserved;
+    uint64_t ripe_tick; /* PrismSeed's absolute edible tick; 0 for ordinary food */
+    float motion_origin_x, motion_origin_y; /* Meteor launch point, world units */
+    uint16_t motion_ticks, captured_by; /* flight countdown; 0 free, vortex slot+1 */
+    uint32_t food_flags; /* reserved for ownership/motion flags; currently zero */
 } snakes_core_food;
 typedef struct snakes_core_item {
     uint64_t id;
     float x, y;
     uint8_t kind, reserved_byte;
-    uint16_t age_ticks, life_ticks, reserved; /* life_ticks: remaining */
+    uint16_t age_ticks, life_ticks, reserved; /* life_ticks: remaining incl landing */
+    uint64_t pickable_from_tick; /* first completed endpoint eligible for pickup */
+    uint32_t leader_snake_id; /* best ETA committed racer, UINT32_MAX if none */
+    float leader_eta; /* seconds, distance/speed + abs(heading error)/turn rate */
+    uint16_t landing_ticks; /* max(pickable_from_tick - frame.tick, 0), <=30 */
+    uint8_t contender_count, state; /* <=2; state reserved for vortex phase */
+    uint32_t contender_ids[2]; /* two nearest committed heads; unused UINT32_MAX */
+    float contender_etas[2]; /* seconds; unused +infinity; leader may be outside */
+    uint32_t guard_snake_id; /* held-effect guard, UINT32_MAX if none */
+    float radius; /* physical capsule / vortex radius, world units */
+    float captured_value; /* reserved Whirlpool absorbed nutrition */
+    uint16_t charge_ticks, reserved_v3; /* vortex remaining charge; reserved zero */
+    uint32_t owner_generation; /* reserved vortex owner lifetime identity */
+    uint32_t owner_snake_id, reserved_owner; /* UINT32_MAX when absent; reserved zero */
 } snakes_core_item;
 typedef struct snakes_core_event {
     uint64_t tick;
     float x, y;
     uint32_t snake_id, other_snake_id, color_index;
     uint8_t kind, reserved[3];
+    uint16_t cut_index, duration_ticks; /* Sever's first removed segment; animation life */
+    uint32_t generation, other_generation; /* actor/other identity, zero when unused */
+    float value; /* Feast/VortexBurst nutrition, zero otherwise */
+    uint64_t release_tick; /* delayed Sever essence release / world event endpoint */
 } snakes_core_event;
 /* Kill: snake_id victim, other_snake_id first rival owner (UINT32_MAX for
  * wall/self). Succession: new/previous leader (UINT32_MAX for no predecessor).
@@ -103,6 +206,10 @@ typedef struct snakes_core_frame_info {
     uint64_t tick;
     double simulation_time, world_width, world_height;
     uint64_t geometry_generation;
+    float ambient; /* 1 normal; future Nightfall fades to 0.28 */
+    uint32_t bubble_count; /* <=3; persistent snapshot, independent of event ring */
+    snakes_core_bubble bubbles[3]; /* only prefix bubble_count is live */
+    snakes_core_world_event world_event;
 } snakes_core_frame_info;
 typedef struct snakes_core_statistics {
     uint32_t alive, total_segments, food, reserved;
@@ -132,7 +239,11 @@ double snakes_core_item_radius(const snakes_core_world *world);
 /* Latest tick's event ring, oldest first, at most MAX_EVENTS. Reading does not
  * consume it; step(world,n) retains only the last tick. Overflow evicts oldest.
  * Failure changes no output. For pickup/spawn/item expiry/effect expiry,
- * other_snake_id is the effect kind; snake_id is UINT32_MAX for field items. */
+ * other_snake_id is the effect kind; snake_id is UINT32_MAX for field items.
+ * Emote: snake_id owner, other_snake_id glyph. Sever: victim/biter and cut_index.
+ * Flip/Feast: actor. WorldEvent: snake_id UINT32_MAX, other_snake_id event kind,
+ * duration_ticks window; value 1 start / 0 end. Vortex uses item kind 8 (not
+ * effect kind 7); age/life/charge, captured_value and owner identity are reserved. */
 int32_t snakes_core_export_extras(const snakes_core_world *world,
     snakes_core_item *items, size_t item_capacity,
     snakes_core_event *events, size_t event_capacity);
@@ -179,6 +290,9 @@ typedef struct snakes_core_shader_vertex {
     snakes_core_render_color color;
     uint8_t params[4];
 } snakes_core_shader_vertex;
+/* Local monitor pixels; empty width/height disables clock exclusion. */
+int32_t snakes_core_render_set_clock_rect(snakes_core_renderer *renderer,
+    double x, double y, double width, double height);
 int32_t snakes_core_render_set_reduced_motion(snakes_core_renderer *renderer, uint32_t enabled);
 int32_t snakes_core_render_build_shader(snakes_core_renderer *renderer,
     const snakes_core_frame_info *info,
@@ -214,18 +328,32 @@ int32_t snakes_core_render_build(snakes_core_renderer *renderer,
 #define SNAKES_CORE_ASSERT(c) _Static_assert(c, #c)
 #endif
 SNAKES_CORE_ASSERT(sizeof(snakes_core_config) == 80);
-SNAKES_CORE_ASSERT(sizeof(snakes_core_steering_input) == 24);
-SNAKES_CORE_ASSERT(sizeof(snakes_core_snake) == 56);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_steering_input) == 32);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_snake) == 152);
 SNAKES_CORE_ASSERT(sizeof(snakes_core_segment) == 16);
-SNAKES_CORE_ASSERT(sizeof(snakes_core_food) == 48);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_steering_input, actions) == 24);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_bulge) == 16);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_bubble) == 12);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_world_event) == 40);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, mood) == 56);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, look_x) == 64);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, flip_tick) == 112);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, bulges) == 120);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_food, ripe_tick) == 48);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_item, pickable_from_tick) == 24);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_item, contender_ids) == 44);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_event, cut_index) == 32);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_frame_info, bubbles) == 48);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_frame_info, world_event) == 88);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_food) == 72);
 SNAKES_CORE_ASSERT(sizeof(snakes_core_frame_sizes) == 24);
-SNAKES_CORE_ASSERT(sizeof(snakes_core_frame_info) == 40);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_frame_info) == 128);
 SNAKES_CORE_ASSERT(sizeof(snakes_core_statistics) == 56);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, radius) == 16);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_food, color_index) == 36);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_statistics, deaths) == 16);
-SNAKES_CORE_ASSERT(sizeof(snakes_core_item) == 24);
-SNAKES_CORE_ASSERT(sizeof(snakes_core_event) == 32);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_item) == 88);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_event) == 56);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_config, rule_set) == 72);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_config, power_ups) == 76);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, flags) == 48);

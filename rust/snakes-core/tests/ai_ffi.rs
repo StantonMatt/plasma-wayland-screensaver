@@ -17,7 +17,7 @@ fn default_ai_debug_and_scripted_switch_preserve_the_abi() {
         assert_eq!(snakes_core_ai_debug(h,99,&mut d),INVALID_ARGUMENT);
         assert_eq!(d.path_count,saved.path_count);
         assert_eq!(snakes_core_ai_debug(h,0,std::ptr::null_mut()),INVALID_ARGUMENT);
-        let input=SteeringInput {id:0,generation:0,desired_angle:0.4,rush:0.0};
+        let input=SteeringInput {id:0,generation:0,desired_angle:0.4,rush:0.0, actions:0,reserved:0};
         assert_eq!(snakes_core_set_steering(h,&input,1),OK);
         assert_eq!(snakes_core_step(h,2),OK);
         assert_eq!(snakes_core_ai_debug(h,0,&mut d),OK);
@@ -30,5 +30,5 @@ fn default_ai_debug_and_scripted_switch_preserve_the_abi() {
     }
     assert_eq!(std::mem::size_of::<AiDebugRecord>(),200);
     assert_eq!(std::mem::offset_of!(AiDebugRecord,path),72);
-    assert_eq!(snakes_core_abi_version(),2);
+    assert_eq!(snakes_core_abi_version(),3);
 }

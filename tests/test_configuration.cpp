@@ -35,6 +35,7 @@ private Q_SLOTS:
         QCOMPARE(config.snakeSelfCollisions(), false);
         QCOMPARE(config.snakeDeadlyWalls(), true);
         QCOMPARE(config.snakePowerUps(), true);
+        QCOMPARE(config.snakeWorldEvents(), true);
         QCOMPARE(config.clockMovement(), QStringLiteral("bounce"));
         QCOMPARE(config.clockSpeed(), QStringLiteral("normal"));
         QCOMPARE(config.coverPanels(), true);
@@ -95,6 +96,7 @@ private Q_SLOTS:
             config.setSnakeSelfCollisions(true);
             config.setSnakeDeadlyWalls(false);
             config.setSnakePowerUps(false);
+            config.setSnakeWorldEvents(false);
             config.setShowClock(false);
             config.setClockMovement(QStringLiteral("center"));
             config.setClockSpeed(QStringLiteral("fast"));
@@ -121,6 +123,7 @@ private Q_SLOTS:
         QCOMPARE(loaded.snakeSelfCollisions(), true);
         QCOMPARE(loaded.snakeDeadlyWalls(), false);
         QCOMPARE(loaded.snakePowerUps(), false);
+        QCOMPARE(loaded.snakeWorldEvents(), false);
         QCOMPARE(loaded.showClock(), false);
         QCOMPARE(loaded.clockMovement(), QStringLiteral("center"));
         QCOMPARE(loaded.clockSpeed(), QStringLiteral("fast"));
@@ -147,6 +150,7 @@ private Q_SLOTS:
             {QStringLiteral("snakeSelfCollisions"), true},
             {QStringLiteral("snakeDeadlyWalls"), false},
             {QStringLiteral("snakePowerUps"), false},
+            {QStringLiteral("snakeWorldEvents"), false},
             {QStringLiteral("showClock"), false},
             {QStringLiteral("clockSpeed"), QStringLiteral("fast")},
             {QStringLiteral("frameRate"), 120},
@@ -164,6 +168,7 @@ private Q_SLOTS:
         QCOMPARE(config.snakeSelfCollisions(), true);
         QCOMPARE(config.snakeDeadlyWalls(), false);
         QCOMPARE(config.snakePowerUps(), false);
+        QCOMPARE(config.snakeWorldEvents(), false);
         QCOMPARE(config.showClock(), false);
         QCOMPARE(config.clockSpeed(), QStringLiteral("fast"));
         QCOMPARE(config.frameRate(), 120);

@@ -73,7 +73,7 @@ impl AiController {
                 attack=Attack {valid:true,side,prey:state.prey,prey_generation:state.prey_generation,start:w.tick(),turn_at:w.tick()+switch as u64,end:w.tick()+(ticks+18) as u64,
                     approach:bearing,crossing,burst,crossing_rush,point,prey_heading:theta,error:0.0,free_boost:v2 && w.boost_segment_cost(s.id as usize)==Some(0),effect_kind:s.effect_kind,effect_ticks:s.effect_ticks,limits:Some([fast,fast_turn,slow,slow_turn,s.radius,s.segments.len() as f64])};
                 let mut pos=head;let mut angle=s.angle;
-                let mut forecast=forecast::Forecast::cached(w,self.initial_effects,&self.item_forecast,arrive,1<<s.id);
+                let mut forecast=self.intent_forecast::<true>(w,s,state,arrive,1<<s.id);
                 for rival in &mut rivals {rival.dynamic=false;}
                 for j in 0..arrive {
                     let (desired,rush)=attack.control(w.tick()+j as u64);
@@ -116,19 +116,19 @@ impl AiController {
         for j in 1..=72 {attacker_distance[j]=attacker_distance[j-1]+w.distance_squared(c.path[j-1],c.path[j]).sqrt();}
         let mut rivals=[Rival::default();MAX_SNAKES];
         for (offset,delay,rush) in [(0.0,0,0.0),(1.6,0,0.0),(-1.6,0,0.0),(1.6,6,0.0),(-1.6,6,0.0),(0.0,0,1.0)] {
-            blocked+=self.reply_simulation(w,s,c,victim,offset,delay,rush,&attacker_distance,&mut rivals) as usize;
+            blocked+=self.reply_simulation(w,s,state,c,victim,offset,delay,rush,&attacker_distance,&mut rivals) as usize;
         }
         blocked
     }
     #[cfg(test)]
     pub(super) fn reply_blocked(&self,w:&World,s:SnakeView<'_>,c:&Candidate,victim:SnakeView<'_>,offset:f64,delay:usize,rush:f64,attacker_distance:&[f64;73])->bool {
-        self.reply_simulation(w,s,c,victim,offset,delay,rush,attacker_distance,&mut [Rival::default();MAX_SNAKES])
+        self.reply_simulation(w,s,self.states[s.id as usize],c,victim,offset,delay,rush,attacker_distance,&mut [Rival::default();MAX_SNAKES])
     }
-    fn reply_simulation(&self,w:&World,s:SnakeView<'_>,c:&Candidate,victim:SnakeView<'_>,offset:f64,delay:usize,rush:f64,attacker_distance:&[f64;73],rivals:&mut [Rival;MAX_SNAKES])->bool {
+    fn reply_simulation(&self,w:&World,s:SnakeView<'_>,state:State,c:&Candidate,victim:SnakeView<'_>,offset:f64,delay:usize,rush:f64,attacker_distance:&[f64;73],rivals:&mut [Rival;MAX_SNAKES])->bool {
         let reach=(s.radius+victim.radius)*0.78;
         let motion=if rush>0.0 {self.boosted_motion[victim.id as usize]} else {self.motion[victim.id as usize]};
         let (speed,turn)=w.motion_limits(victim.id as usize,rush).unwrap();
-        let mut forecast=forecast::Forecast::cached(w,self.initial_effects,&self.item_forecast,72,(if c.rush>0.0 {1<<s.id} else {0}) | (if rush>0.0 {1<<victim.id} else {0}));
+        let mut forecast=self.intent_forecast::<true>(w,s,state,72,(if c.rush>0.0 {1<<s.id} else {0}) | (if rush>0.0 {1<<victim.id} else {0}));
         for rival in rivals.iter_mut() {rival.dynamic=false;}
         let mut path=[victim.segments[0].current;73];let mut angle=victim.angle;
         let mut victim_distance=[0.0;73];

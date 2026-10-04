@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! C ABI v2. Handles and buffers must be valid, aligned, nonoverlapping memory
+//! C ABI v3. Handles and buffers must be valid, aligned, nonoverlapping memory
 //! and calls on one handle must be serialized. Nulls, invalid numeric inputs,
 //! flags, IDs and insufficient capacities return status codes, without panic.
 use std::{ mem::{ align_of, size_of }, ptr };
@@ -8,7 +8,8 @@ use crate::controller::{ Controller, Steering };
 pub const OK: i32 = 0;
 pub const INVALID_ARGUMENT: i32 = 1;
 pub const BUFFER_TOO_SMALL: i32 = 2;
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
+pub const WORLD_EVENTS_OFF:u32 = 0x4000_0000;
 pub const POWER_UPS_OFF: u32 = 0x8000_0000;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -29,7 +30,7 @@ pub struct CoreConfig {
 }
 impl CoreConfig {
     fn checked(self) -> Option<Config> {
-        if self.self_collisions>1 || self.deadly_walls>1 || self.rule_set>2 || !matches!(self.reserved,0 | POWER_UPS_OFF) {
+        if self.self_collisions>1 || self.deadly_walls>1 || self.rule_set>2 || self.reserved & !(POWER_UPS_OFF|WORLD_EVENTS_OFF)!=0 {
             return None;
         }
         let c = Config {
@@ -44,7 +45,8 @@ impl CoreConfig {
             palette_size: self.palette_size,
             self_collisions: self.self_collisions!=0,
             deadly_walls: self.deadly_walls!=0,
-            power_ups: self.reserved != POWER_UPS_OFF,
+            power_ups: self.reserved & POWER_UPS_OFF == 0,
+            world_events:self.reserved & WORLD_EVENTS_OFF == 0,
             rules: if self.rule_set == 1 { crate::RuleSet::Classic } else { crate::RuleSet::V2 }
         };
         c.validate().ok().map(|()|c)
@@ -65,7 +67,7 @@ impl From<Config> for CoreConfig {
             self_collisions: c.self_collisions as u32,
             deadly_walls: c.deadly_walls as u32,
             rule_set: if c.rules == crate::RuleSet::Classic { 1 } else { 2 },
-            reserved: if c.power_ups { 0 } else { POWER_UPS_OFF },
+            reserved: (if c.power_ups {0} else {POWER_UPS_OFF}) | (if c.world_events {0} else {WORLD_EVENTS_OFF}),
         }
     }
 }
@@ -75,8 +77,11 @@ pub struct SteeringInput {
     pub id: u32,
     pub generation: u32,
     pub desired_angle: f64,
-    pub rush: f64
+    pub rush: f64,
+    pub actions:u32,pub reserved:u32,
 }
+/// Face flags bit 1 distinguishes authoritative Calm from absent legacy data.
+pub const FACE_OBSERVED:u8=2;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SnakeRecord {
@@ -93,6 +98,13 @@ pub struct SnakeRecord {
     pub effect_ticks: u16,
     pub effect_kind: u8,
     pub boost_ticks: u8,
+    pub mood:u8,pub mood_intensity:u8,pub mood_age_ticks:u16,
+    pub target_item:u8,pub face_flags:u8,pub jaw_ticks:u16,
+    pub look_x:f32,pub look_y:f32,pub pupil_x:f32,pub pupil_y:f32,
+    pub frozen_ticks:u16,pub dizzy_ticks:u16,pub bite_immunity_ticks:u16,pub stump_ticks:u16,
+    pub thaw_immunity_ticks:u16,pub breath_ticks:u16,pub flip_grace_ticks:u16,pub happy_ticks:u16,
+    pub grudge_snake_id:u32,pub grudge_ticks:u16,pub reserved:u16,pub grudge_generation:u32,
+    pub flip_tick:u64,pub bulges:[crate::world::Bulge;2],
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -117,6 +129,8 @@ pub struct FoodRecord {
     pub kind: u8,
     pub life_fraction: u8,
     pub reserved: u16,
+    pub ripe_tick:u64,pub motion_origin_x:f32,pub motion_origin_y:f32,
+    pub motion_ticks:u16,pub captured_by:u16,pub food_flags:u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -124,6 +138,11 @@ pub struct ItemRecord {
     pub id: u64, pub x: f32, pub y: f32,
     pub kind: u8, pub reserved_byte: u8,
     pub age_ticks: u16, pub life_ticks: u16, pub reserved: u16,
+    pub pickable_from_tick:u64,pub leader_snake_id:u32,pub leader_eta:f32,
+    pub landing_ticks:u16,pub contender_count:u8,pub state:u8,
+    pub contender_ids:[u32;crate::world::MAX_CONTENDERS],pub contender_etas:[f32;crate::world::MAX_CONTENDERS],
+    pub guard_snake_id:u32,pub radius:f32,pub captured_value:f32,pub charge_ticks:u16,
+    pub reserved_v3:u16,pub owner_generation:u32,pub owner_snake_id:u32,pub reserved_owner:u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -131,6 +150,8 @@ pub struct EventRecord {
     pub tick: u64, pub x: f32, pub y: f32,
     pub snake_id: u32, pub other_snake_id: u32, pub color_index: u32,
     pub kind: u8, pub reserved: [u8; 3],
+    pub cut_index:u16,pub duration_ticks:u16,pub generation:u32,pub other_generation:u32,
+    pub value:f32,pub release_tick:u64,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -149,7 +170,9 @@ pub struct FrameInfo {
     pub simulation_time: f64,
     pub world_width: f64,
     pub world_height: f64,
-    pub geometry_generation: u64
+    pub geometry_generation: u64,
+    pub ambient:f32,pub bubble_count:u32,pub bubbles:[crate::world::Bubble;crate::world::MAX_BUBBLES],
+    pub world_event:crate::world::WorldEventState,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -179,6 +202,7 @@ struct InputController<'a> {
     ai: &'a mut crate::ai::AiController
 }
 impl Controller for InputController<'_> {
+    fn face_intent(&self,id:u32)->crate::controller::FaceIntent {if self.scripted {crate::controller::FaceIntent::default()} else {self.ai.face_intent(id)}}
     fn intent_flags(&self, id: u32) -> Option<u32> {
         if self.scripted { Some(0) } else { self.ai.intent_flags(id) }
     }
@@ -309,7 +333,7 @@ pub unsafe extern "C" fn snakes_core_set_steering(handle: *mut WorldHandle, inpu
         if i.id as usize>=h.world.snake_count() || !(Steering {
             desired_angle: i.desired_angle,
             rush: i.rush
-        }).is_valid() || inputs[i.id as usize].is_some() {
+        }).is_valid() || i.actions & !1!=0 || i.reserved!=0 || inputs[i.id as usize].is_some() {
             return INVALID_ARGUMENT;
         }
         inputs[i.id as usize] = Some(i);
@@ -394,7 +418,15 @@ pub unsafe extern "C" fn snakes_core_export_frame(handle: *const WorldHandle, sn
                 segment_offset: offset as u32,
                 segment_count: s.segments.len() as u32,
                 flags: s.flags, effect_ticks: s.effect_ticks,
-                effect_kind: s.effect_kind, boost_ticks: s.boost_ticks
+                effect_kind: s.effect_kind, boost_ticks: s.boost_ticks,
+                mood:s.face.mood as u8,mood_intensity:s.face.intensity,mood_age_ticks:s.face.age,
+                target_item:w.items().position(|item|item.id==s.face.target_id).map_or(255,|i|i as u8),face_flags:(if s.face.guarding {1} else {0}) | if w.config().rules==crate::RuleSet::V2 {FACE_OBSERVED} else {0},jaw_ticks:s.face.jaw_ticks,
+                look_x:s.face.look.x as f32,look_y:s.face.look.y as f32,pupil_x:s.face.pupil.x as f32,pupil_y:s.face.pupil.y as f32,
+                frozen_ticks:s.face.frozen_ticks,dizzy_ticks:s.face.dizzy_ticks,bite_immunity_ticks:s.face.bite_immunity_ticks,
+                stump_ticks:s.face.stump_ticks,thaw_immunity_ticks:s.face.thaw_immunity_ticks,breath_ticks:s.face.breath_ticks,
+                flip_grace_ticks:s.face.flip_grace_ticks,happy_ticks:s.face.happy_ticks,grudge_snake_id:s.face.grudge_id,
+                grudge_ticks:s.face.grudge_ticks,grudge_generation:s.face.grudge_generation,flip_tick:s.face.flip_tick,
+                bulges:s.face.bulges,reserved:0
             });
         }
         for seg in s.segments {
@@ -409,7 +441,7 @@ pub unsafe extern "C" fn snakes_core_export_frame(handle: *const WorldHandle, sn
             offset+=1;
         }
     }
-    for (i, f) in w.foods().enumerate() {
+    for (i, (f, payload)) in w.foods().zip(w.food.iter()).enumerate() {
         unsafe {
             ptr::write(food.add(i), FoodRecord {
                 id: f.id,
@@ -421,7 +453,9 @@ pub unsafe extern "C" fn snakes_core_export_frame(handle: *const WorldHandle, sn
                 attraction_x: f.attraction_target.x as f32,
                 attraction_y: f.attraction_target.y as f32,
                 color_index: f.color_index,
-                kind: f.kind as u8, life_fraction: f.life_fraction, reserved: 0
+                kind: f.kind as u8, life_fraction: f.life_fraction, reserved: 0,
+                ripe_tick:payload.ripe_tick,motion_origin_x:payload.motion_origin.x as f32,motion_origin_y:payload.motion_origin.y as f32,
+                motion_ticks:f.motion_ticks,captured_by:payload.captured_by,food_flags:0
             });
         }
     }
@@ -431,12 +465,14 @@ pub unsafe extern "C" fn snakes_core_export_frame(handle: *const WorldHandle, sn
             simulation_time: w.simulation_time(),
             world_width: w.config().width,
             world_height: w.config().height,
-            geometry_generation: w.geometry_generation()
+            geometry_generation: w.geometry_generation(),ambient:if w.world_event.ambient>0.0 {w.world_event.ambient} else {1.0},
+            bubble_count:w.bubbles().len() as u32,bubbles:std::array::from_fn(|i|w.bubbles().get(i).copied().unwrap_or_default()),
+            world_event:w.world_event
         });
     }
     OK
 }
-/// Exports ABI v2's bounded event ring and live items atomically.
+/// Exports ABI v3's bounded event ring and live items atomically.
 /// Failure leaves all outputs untouched. Events belong to the latest tick only;
 /// read/export does not consume them. Excess events evict the oldest entry.
 /// # Safety
@@ -452,13 +488,19 @@ pub unsafe extern "C" fn snakes_core_export_extras(handle: *const WorldHandle,
     if !buffer(items, item_capacity, w.items().len()) || !buffer(events, event_capacity, count) { return INVALID_ARGUMENT; }
     for (i,item) in w.items().enumerate() {
         unsafe { ptr::write(items.add(i), ItemRecord {id:item.id,x:item.position.x as f32,y:item.position.y as f32,
-            kind:item.kind as u8,reserved_byte:0,age_ticks:item.age_ticks,life_ticks:item.life_ticks,reserved:0}); }
+            kind:item.kind as u8,reserved_byte:0,age_ticks:item.age_ticks,life_ticks:item.life_ticks,reserved:0,
+            pickable_from_tick:item.pickable_from_tick,leader_snake_id:item.leader_snake_id,leader_eta:item.leader_eta,
+            landing_ticks:item.pickable_from_tick.saturating_sub(w.tick()).min(u16::MAX as u64) as u16,
+            contender_count:item.contender_count,state:0,contender_ids:item.contender_ids,contender_etas:item.contender_etas,
+            guard_snake_id:item.guard_snake_id,radius:item.radius as f32,captured_value:item.captured_value,
+            charge_ticks:item.charge_ticks,owner_generation:item.owner_generation,owner_snake_id:item.owner_snake_id,reserved_v3:0,reserved_owner:0}); }
     }
     for (i,e) in w.frame_events().enumerate() {
         unsafe { ptr::write(events.add(i), EventRecord { tick: e.tick,
             x: e.position.x as f32, y: e.position.y as f32, snake_id: e.snake_id,
             other_snake_id: e.other_snake_id, color_index: e.color_index,
-            kind: e.kind as u8, reserved: [0; 3] }); }
+            kind: e.kind as u8, reserved: [0; 3],cut_index:e.cut_index,duration_ticks:e.duration_ticks,
+            generation:e.generation,other_generation:e.other_generation,value:e.value,release_tick:e.release_tick }); }
     }
     OK
 }
@@ -493,15 +535,29 @@ const _: () =  {
     assert!(crate::MAX_FOOD==480); // SNAKES_CORE_MAX_FOOD, used by history-only LOD replay.
     assert!(size_of::<CoreConfig>()==80);
     assert!(align_of::<CoreConfig>()==8);
-    assert!(size_of::<SteeringInput>()==24);
-    assert!(size_of::<SnakeRecord>()==56);
+    assert!(size_of::<SteeringInput>()==32);
+    assert!(size_of::<SnakeRecord>()==152);
     assert!(size_of::<SegmentRecord>()==16);
-    assert!(size_of::<FoodRecord>()==48);
+    assert!(size_of::<FoodRecord>()==72);
     assert!(size_of::<FrameSizes>()==24);
-    assert!(size_of::<FrameInfo>()==40);
+    assert!(size_of::<FrameInfo>()==128);
     assert!(size_of::<CoreStats>()==56);
-    assert!(size_of::<ItemRecord>()==24);
-    assert!(size_of::<EventRecord>()==32);
+    assert!(size_of::<ItemRecord>()==88);
+    assert!(size_of::<EventRecord>()==56);
+    assert!(size_of::<crate::world::Bubble>()==12);
+    assert!(size_of::<crate::world::Bulge>()==16);
+    assert!(size_of::<crate::world::WorldEventState>()==40);
+    assert!(std::mem::offset_of!(SteeringInput,actions)==24);
+    assert!(std::mem::offset_of!(SnakeRecord,mood)==56);
+    assert!(std::mem::offset_of!(SnakeRecord,look_x)==64);
+    assert!(std::mem::offset_of!(SnakeRecord,flip_tick)==112);
+    assert!(std::mem::offset_of!(SnakeRecord,bulges)==120);
+    assert!(std::mem::offset_of!(FoodRecord,ripe_tick)==48);
+    assert!(std::mem::offset_of!(ItemRecord,pickable_from_tick)==24);
+    assert!(std::mem::offset_of!(ItemRecord,contender_ids)==44);
+    assert!(std::mem::offset_of!(EventRecord,cut_index)==32);
+    assert!(std::mem::offset_of!(FrameInfo,bubbles)==48);
+    assert!(std::mem::offset_of!(FrameInfo,world_event)==88);
     assert!(std::mem::offset_of!(CoreConfig, rule_set)==72);
     assert!(std::mem::offset_of!(SnakeRecord, flags)==48);
     assert!(std::mem::offset_of!(SnakeRecord, effect_ticks)==52);
@@ -572,6 +628,28 @@ mod v2_tests {
     use super::*;
     use crate::{Point, RuleSet, flags};
     #[test]
+    fn cold_future_food_payload_round_trips_without_expanding_ai_view() {
+        assert!(size_of::<crate::FoodView>() <= 128);
+        unsafe {
+            let cfg=CoreConfig::from(Config::default());
+            let mut handle=ptr::null_mut();
+            assert_eq!(snakes_core_create(&cfg,&mut handle),OK);
+            let payload=&mut (&mut (*handle).world.food)[0];
+            payload.ripe_tick=90;payload.motion_origin=Point{x:12.5,y:30.25};
+            payload.motion_ticks=17;payload.captured_by=4;
+            let mut snakes=[SnakeRecord::default();MAX_SNAKES];
+            let mut segments=vec![SegmentRecord::default();crate::MAX_SNAKES*crate::MAX_SEGMENTS];
+            let mut food=[FoodRecord::default();crate::MAX_FOOD];
+            let mut info=FrameInfo::default();
+            assert_eq!(snakes_core_export_frame(handle,snakes.as_mut_ptr(),snakes.len(),
+                segments.as_mut_ptr(),segments.len(),food.as_mut_ptr(),food.len(),&mut info),OK);
+            assert_eq!(food[0].ripe_tick,90);
+            assert_eq!((food[0].motion_origin_x,food[0].motion_origin_y),(12.5,30.25));
+            assert_eq!((food[0].motion_ticks,food[0].captured_by),(17,4));
+            snakes_core_destroy(handle);
+        }
+    }
+    #[test]
     fn leader_hysteresis_round_trips_through_ffi() {
         unsafe {
             let cfg=CoreConfig::from(Config{rules:RuleSet::V2,..Config::default()});
@@ -579,7 +657,7 @@ mod v2_tests {
             (*handle).world=World::diagnostic_arena(Config{width:4096.0,height:1440.0,density:0.0,
                 rules:RuleSet::V2,deadly_walls:false,..Config::default()},
                 &[(Point{x:1500.0,y:400.0},0.0,30,1.0),(Point{x:3000.0,y:1000.0},0.0,29,1.0)],&[]).unwrap();
-            let input=SteeringInput{id:0,generation:0,desired_angle:0.0,rush:0.0};
+            let input=SteeringInput{id:0,generation:0,desired_angle:0.0,rush:0.0, actions:0,reserved:0};
             assert_eq!(snakes_core_set_steering(handle,&input,1),OK);
             let mut snakes=[SnakeRecord::default();MAX_SNAKES];
             let mut segments=vec![SegmentRecord::default();crate::MAX_SNAKES*crate::MAX_SEGMENTS];
@@ -608,7 +686,7 @@ mod v2_tests {
             (*handle).world=World::diagnostic_arena(Config{width:4096.0,height:1440.0,density:0.0,
                 rules:RuleSet::V2,..Config::default()},
                 &[(Point{x:2000.0,y:700.0},0.0,30,1.0)],&[]).unwrap();
-            let input=SteeringInput{id:0,generation:1,desired_angle:0.0,rush:0.01};
+            let input=SteeringInput{id:0,generation:1,desired_angle:0.0,rush:0.01, actions:0,reserved:0};
             assert_eq!(snakes_core_set_steering(handle,&input,1),OK);
             assert_eq!(snakes_core_step(handle,1),OK);
             let mut sizes=FrameSizes::default();assert_eq!(snakes_core_get_frame_sizes(handle,&mut sizes),OK);
@@ -632,7 +710,7 @@ mod v2_tests {
             // A scripted wall strike retains the full final body and exports an impact.
             let generation=(*handle).world.snake(0).unwrap().generation;
             (*handle).world.diagnostic_body(0,&[Point{x:4095.9,y:700.0};30],0.0).unwrap();
-            let input=SteeringInput{id:0,generation,desired_angle:0.0,rush:0.0};
+            let input=SteeringInput{id:0,generation,desired_angle:0.0,rush:0.0, actions:0,reserved:0};
             assert_eq!(snakes_core_set_steering(handle,&input,1),OK);assert_eq!(snakes_core_step(handle,1),OK);
             assert_eq!(snakes_core_get_frame_sizes(handle,&mut sizes),OK);assert_eq!(sizes.segments,30);
             let mut stats=CoreStats::default();assert_eq!(snakes_core_stats(handle,&mut stats),OK);assert_eq!(stats.total_segments,0);
@@ -790,7 +868,18 @@ pub unsafe extern "C" fn snakes_core_render_set_reduced_motion(renderer: *mut Re
     OK
 }
 
-/// Copies at most three immutable item records into fixed renderer storage.
+/// Screen-space clock exclusion, independent of the world projection.
+/// Empty width/height disables it. All values must be finite and bounded.
+/// # Safety
+/// The handle must be live and exclusively borrowed during this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snakes_core_render_set_clock_rect(renderer:*mut RenderHandle,x:f64,y:f64,w:f64,h:f64)->i32 {
+    if !valid(renderer) || ![x,y,w,h].iter().all(|v|crate::render::coordinate(*v)) || w<0.0 || h<0.0 {return INVALID_ARGUMENT;}
+    unsafe {&mut *renderer}.set_clock_rect([x,y,w,h]);
+    OK
+}
+
+/// Copies at most four immutable item records into fixed renderer storage.
 /// # Safety
 /// Live exclusive renderer; items is a readable, aligned, disjoint array.
 #[unsafe(no_mangle)]

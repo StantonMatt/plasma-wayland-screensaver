@@ -1761,6 +1761,8 @@ fn target_contact_retains_capsules_until_physical_contact_in_live_and_rollout_co
     for magnet in [false,true] {for distance in [19.7,19.8,30.0] {
         let mut w=contact_fixture(case,magnet,2,Point{x:400.0,y:0.0});
         move_contact_target(&mut w,case,Point{x:400.0,y:distance});
+        // Exercise the pickup disk after the held-effect guard has released.
+        if magnet {w.snakes[2].effect_ticks=30;}
         let mut ai=AiController::new();ai.prepare(&w);
         let f=ai.food[MAX_FOOD].unwrap();let s=w.snake(2).unwrap();
         let state=State {generation:s.generation,target:f.id,target_index:MAX_FOOD,goal:f.position,
@@ -2482,4 +2484,155 @@ fn opportunity_effects_distinguish_unavoidable_and_possible_pickups() {
     w.items.push(crate::Item{id:77,kind:EffectKind::Phase,position:item,radius:12.0,life_ticks:100,..Default::default()});
     let mut ai=AiController::new();ai.prepare(&w);
     assert!(!ai.opportunities.phased(1,1),"lower ID can turn/boost into this capsule");
+}
+
+#[test]
+fn landing_delay_is_shared_by_world_contacts_opportunities_and_forecasts() {
+    let pos=Point{x:500.0,y:400.0};
+    let mut w=World::diagnostic_arena(crate::Config {rules:crate::RuleSet::V2,density:0.0,self_collisions:false,..crate::Config::default()},
+        &[(pos,0.0,1,0.9)],&[]).unwrap();
+    w.items.push(crate::Item{id:77,kind:crate::effects::EffectKind::Surge,position:pos,
+        radius:12.0,life_ticks:780,pickable_from_tick:31,..crate::Item::default()});
+    let mut forecast=super::forecast::Forecast::new(&w,super::forecast::Timeline::new(&w));
+    for step in 1..=30 {
+        forecast.advance(&w,step,|_|pos,0.0);
+        assert_eq!(forecast.effects.at(0,step).kind,0,"incoming item cannot change forecast motion");
+    }
+    forecast.advance(&w,31,|_|pos,0.0);assert_eq!(forecast.effects.at(0,31).kind,1);
+    let mut ai=AiController::new();ai.prepare(&w);
+    assert_eq!(ai.opportunities.before(0,2).kind,0,"overlap is not an unavoidable incoming pickup");
+    let mut straight=crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering{desired_angle:s.angle,rush:0.0});
+    for _ in 0..30 {w.segments[0].current=pos;w.step(&mut straight);assert_eq!(w.items.len(),1);}
+    w.segments[0].current=pos;w.step(&mut straight);assert!(w.items.is_empty());
+    assert_eq!(w.snake(0).unwrap().effect_kind,1);
+}
+
+#[test]
+fn pickup_eligibility_matches_world_for_guards_landing_and_item_order() {
+    use crate::effects::EffectKind;
+    // Original effect ticks include World's imminent decrement. Large contact
+    // disks keep endpoints certain so this tests eligibility, not steering.
+    for (guarding,ticks,landing,life,rival,second,guard_target) in [
+        (false,100,0,100,false,false,77), // ordinary replacement
+        (false,0,5,100,false,false,77),  // landing releases exactly on tick 5
+        (false,0,5,3,false,false,77),    // expiry precedes landing
+        (true,100,0,100,false,false,77),// deferred throughout the horizon
+        (true,35,0,100,false,false,77), // release at 30, not 31
+        (true,31,0,100,false,true,77),  // consuming the guard target clears it
+        (true,31,0,100,false,true,78),  // earlier replacement renews deferral
+        (true,100,0,100,true,true,77),  // lower guard yields; rival clears it
+    ] {for kind in [EffectKind::Phase,EffectKind::Surge] {
+        let mut w=arena(true);w.config.rules=crate::RuleSet::V2;w.config.self_collisions=false;
+        line(&mut w,0,Point{x:400.0,y:400.0},0.0,1);
+        w.snakes[0].effect_kind=if ticks>0 {EffectKind::Magnet as u8} else {0};
+        w.snakes[0].effect_ticks=ticks;
+        w.faces[0].guarding=guarding;w.faces[0].target_id=guard_target;
+        if rival {line(&mut w,1,Point{x:400.0,y:600.0},0.0,1);}
+        w.items.push(crate::Item{id:77,kind,position:Point{x:400.0,y:400.0},
+            radius:1000.0,life_ticks:life,pickable_from_tick:landing,..Default::default()});
+        if second {w.items.push(crate::Item{id:78,kind:EffectKind::Phase,position:Point{x:400.0,y:400.0},
+            radius:1000.0,life_ticks:100,..Default::default()});}
+        struct Observe {ai:AiController,first:Option<World>,intents:[crate::controller::FaceIntent;MAX_SNAKES]}
+        impl Controller for Observe {
+            fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
+                if self.first.is_none() {self.first=Some(w.diagnostic_snapshot());}
+                self.ai.prepare(w);
+                self.intents[s.id as usize]=crate::controller::FaceIntent {
+                    guarding:s.face.guarding,target_id:s.face.target_id,..Default::default()};
+                Steering {desired_angle:s.angle,rush:0.0}
+            }
+            fn face_intent(&self,id:u32)->crate::controller::FaceIntent {self.intents[id as usize]}
+        }
+        let mut c=Observe {ai:AiController::new(),first:None,intents:[Default::default();MAX_SNAKES]};
+        w.step(&mut c);
+        let observed=c.first.take().unwrap();
+        let initial=forecast::Timeline::new(&observed);
+        let mut exact=forecast::Forecast::new(&observed,initial);
+        let items=c.ai.item_forecast;
+        let mut cached=forecast::Forecast::cached(&observed,initial,&items,STEPS,0);
+        let mut dynamic=forecast::Forecast::cached(&observed,initial,&items,STEPS,0);
+        let mut pickup_count=0;
+        for step in 1..=40 {
+            if step>1 {w.step(&mut c);}
+            let positions=std::array::from_fn::<_,MAX_SNAKES,_>(|id|w.snake(id).filter(|s|s.alive).map_or(Point::default(),|s|s.segments[0].current));
+            exact.advance(&observed,step,|id|positions[id],0.0);
+            cached.advance_cached(&observed,step,|id|positions[id],0,&items,0.0);
+            dynamic.advance_cached(&observed,step,|id|positions[id],u16::MAX,&items,0.0);
+            let pickups=w.frame_events().filter(|e|e.kind==crate::EventKind::Pickup).count();
+            pickup_count+=pickups;
+            let expected_first=if rival || !guarding {landing.max(1)} else {(ticks.saturating_sub(30) as u64).max(landing).max(1)};
+            if !second {assert_eq!(pickups,usize::from(step as u64==expected_first && expected_first<life as u64));}
+            for id in 0..=usize::from(rival) {
+                let actual=w.snake(id).unwrap();assert!(actual.alive);
+                let expected=(actual.effect_kind,actual.effect_ticks);
+                for f in [&exact,&cached,&dynamic] {
+                    let e=f.effects.at(id,step);
+                    assert_eq!((e.kind,e.ticks),expected,"guard={guarding} ticks={ticks} landing={landing} life={life} rival={rival} second={second} target={guard_target} kind={kind:?} step={step} id={id}");
+                }
+                assert_eq!(c.ai.opportunities.has_pickup(id),w.frame_events().any(|e|e.kind==crate::EventKind::Pickup && e.snake_id==id as u32),"opportunity step={step} id={id}");
+            }
+        }
+        if second {assert_eq!(pickup_count,if guard_target==78 {1} else {2});}
+    }}
+}
+
+#[test]
+fn capsule_contact_uses_shared_guard_release_for_every_reached_path() {
+    for ticks in [0,30,31,100] {for guarding in [false,true] {for landing in [0,2] {
+        let mut w=contact_fixture(ContactTarget::Capsule(crate::effects::EffectKind::Surge),true,0,Point{x:400.0,y:0.0});
+        w.snakes[0].effect_ticks=ticks;w.faces[0].guarding=guarding;
+        w.items[0].pickable_from_tick=w.tick()+landing;
+        let mut ai=AiController::new();ai.prepare(&w);
+        let f=ai.food[MAX_FOOD].unwrap();let s=w.snake(0).unwrap();
+        let contact=target::Contact::new(&w,s,f);
+        for step in [1,2,71] {
+            let effect=forecast::Effect::observed(&w,s).after(step-1);
+            let expected=w.items[0].pickup_eligible(w.tick()+step as u64,step-1,true,guarding,effect.ticks);
+            assert_eq!(contact.reached(0.0,step),expected);
+            assert_eq!(contact.reached_with(0.0,effect,step),expected);
+        }
+        assert_eq!(contact.ahead(&w,s.segments[0].current,s.angle,0.0,f.position),w.items[0].pickup_eligible(w.tick()+1,0,true,guarding,ticks));
+        assert!(!contact.collected());
+    }}}
+}
+
+#[test]
+fn cutoff_forecast_uses_current_guard_instead_of_previous_observation() {
+    let mut w=arena(true);w.config.rules=crate::RuleSet::V2;w.config.self_collisions=false;
+    line(&mut w,0,Point{x:400.0,y:400.0},0.0,72);
+    line(&mut w,1,Point{x:450.0,y:470.0},-std::f64::consts::FRAC_PI_2,6);
+    w.snakes[0].effect_kind=2;w.snakes[0].effect_ticks=120;
+    w.items.push(crate::Item {id:77,kind:crate::effects::EffectKind::Surge,
+        position:Point{x:400.0,y:400.0},radius:30.0,life_ticks:750,..Default::default()});
+    let mut ai=AiController::new();ai.prepare(&w);
+    let mut state=State {prey:2,prey_generation:w.snake(1).unwrap().generation,hunt_until:180,
+        target:77|target::ITEM_BIT,guarding:true,..State::default()};
+    let signature=|a:[Attack;2]|a.map(|a|(a.valid,a.error.to_bits(),a.approach.to_bits(),a.turn_at));
+    ai.initial_effects.set_guard(0,false,77);
+    let entering=signature(ai.cutoffs(&w,w.snake(0).unwrap(),state));
+    assert!(entering.iter().any(|a|a.0),"exercise cutoff integration");
+    ai.initial_effects.set_guard(0,true,77);
+    assert_eq!(signature(ai.cutoffs(&w,w.snake(0).unwrap(),state)),entering);
+    state.guarding=false;
+    let leaving=signature(ai.cutoffs(&w,w.snake(0).unwrap(),state));
+    assert_ne!(leaving,entering,"pickup must change cutoff movement");
+    ai.initial_effects.set_guard(0,false,77);
+    assert_eq!(signature(ai.cutoffs(&w,w.snake(0).unwrap(),state)),leaving);
+}
+
+#[test]
+fn reply_forecast_uses_current_guard_instead_of_previous_observation() {
+    let mut w=arena(true);w.config.rules=crate::RuleSet::V2;w.config.self_collisions=false;
+    line(&mut w,0,Point{x:400.0,y:300.0},0.0,120);
+    line(&mut w,1,Point{x:400.0,y:300.0},0.0,24);
+    w.snakes[0].effect_kind=3;w.snakes[0].effect_ticks=120;
+    w.items.push(crate::Item {id:77,kind:crate::effects::EffectKind::Magnet,
+        position:Point{x:400.0,y:300.0},radius:12.0,life_ticks:750,..Default::default()});
+    let mut ai=AiController::new();ai.prepare(&w);
+    let mut c=Candidate {body_len:120,..Candidate::default()};c.path.fill(Point{x:400.0,y:300.0});
+    for guarding in [false,true] {for previous in [false,true] {
+        ai.states[0]=State {target:77|target::ITEM_BIT,guarding,..Default::default()};
+        ai.initial_effects.set_guard(0,previous,77);
+        assert_eq!(ai.reply_blocked(&w,w.snake(0).unwrap(),&c,w.snake(1).unwrap(),0.0,0,0.0,&[0.0;73]),!guarding);
+    }}
 }

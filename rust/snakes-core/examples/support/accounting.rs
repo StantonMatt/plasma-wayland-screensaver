@@ -4,17 +4,19 @@ use snakes_core::{ai::AiController, controller::{Controller, Steering}, Collisio
 use super::diagnostics::ScoreController;
 
 #[derive(Clone, Copy, Default)]
-pub struct Tactics { pub generation: u32, pub hunting: bool, pub staged: bool, pub coil: bool }
+pub struct Tactics { pub generation: u32, pub hunting: bool, pub staged: bool, pub coil: bool, pub target: u64, pub prey: Option<usize> }
 impl Tactics {
     pub fn observe(ai: &AiController, s: SnakeView<'_>) -> Self {
-        tactics_from_debug(s.generation,ai.debug(s.id as usize).unwrap().generation,
-            ai.competition_debug(s.id as usize).unwrap())
+        let mut result=tactics_from_debug(s.generation,ai.debug(s.id as usize).unwrap().generation,
+            ai.competition_debug(s.id as usize).unwrap());
+        if result.generation==s.generation {result.target=ai.selected_target(s.id as usize).unwrap();}
+        result
     }
 }
 fn tactics_from_debug(generation:u32,controller_generation:u32,d:snakes_core::ai::CompetitionDebug)->Tactics {
     if controller_generation!=generation {return Tactics::default();}
     Tactics {generation,hunting:d.prey.is_some(),staged:d.prey.is_some() && d.attack_stage!=0,
-        coil:d.prey.is_some() && d.coil_radius>0.0}
+        coil:d.prey.is_some() && d.coil_radius>0.0,target:0,prey:d.prey}
 }
 // Sample after each actual control call, before movement or deaths. Dead slots
 // that respawn during mechanics receive no control call and no tactical label.
@@ -24,6 +26,7 @@ impl<C> Observed<C> {
     pub fn begin(&mut self) { self.tactics.fill(Tactics::default()); }
 }
 impl<C: ScoreController> Controller for Observed<C> {
+    fn face_intent(&self,id:u32)->snakes_core::controller::FaceIntent {self.inner.face_intent(id)}
     fn intent_flags(&self, id: u32) -> Option<u32> { self.inner.intent_flags(id) }
     fn steer(&mut self, w: &World, s: SnakeView<'_>) -> Steering {
         let result = self.inner.steer(w, s);
@@ -143,7 +146,7 @@ mod tests {
         let mut e=CollisionEvent {victim:0,generation:2,reason:DeathReason::Body,owner_mask:2,..Default::default()};
         e.owner_generations[1]=2;
         let mut labels=[Tactics::default();MAX_SNAKES];
-        labels[0]=Tactics {generation:1,hunting:true,staged:true,coil:false};labels[1]=labels[0];
+        labels[0]=Tactics {generation:1,hunting:true,staged:true,coil:false,target:0,prey:None};labels[1]=labels[0];
         let mut totals=CombatTotals::default();totals.record(&e,&labels);
         assert_eq!(totals.deaths[1],1);assert_eq!(totals.opponent_kills,1);
         assert_eq!((totals.attack_deaths,totals.hunting_kills,totals.staged_deaths,totals.staged_kills),(0,0,0,0));
@@ -188,5 +191,23 @@ mod tests {
         let mut e=CollisionEvent {victim:0,generation:1,reason:DeathReason::Body,owner_mask:2,..Default::default()};e.owner_generations[1]=1;
         let mut totals=CombatTotals::default();totals.record(&e,&labels);
         assert_eq!((totals.attack_deaths,totals.hunting_kills),(0,0));
+    }
+}
+
+#[cfg(test)]
+mod face_forwarding_tests {
+    use super::*;
+    #[test]
+    fn observation_wrapper_preserves_production_face_intent() {
+        struct Policy;
+        impl ScoreController for Policy {fn ai(&self)->Option<&AiController> {None}}
+        impl Controller for Policy {
+            fn steer(&mut self,_:&World,s:SnakeView<'_>)->Steering {Steering{desired_angle:s.angle,rush:0.0}}
+            fn face_intent(&self,_:u32)->snakes_core::controller::FaceIntent {
+                snakes_core::controller::FaceIntent{target_id:77,prey:2,has_target:true,..Default::default()}
+            }
+        }
+        let observed=Observed::new(Policy);let face=observed.face_intent(0);
+        assert_eq!(face.target_id,77);assert_eq!(face.prey,2);assert!(face.has_target);
     }
 }
