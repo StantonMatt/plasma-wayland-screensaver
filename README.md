@@ -69,8 +69,10 @@ opens the latest GitHub release instead.
   scavenge and escape. They race for capsules, boost or give up, cut off the
   leader, guard the next capsule and hold short grudges. A one-second landing
   signal and contest arcs show the race. Crackling arcs, an orbiting magnet
-  ring and a translucent hologram show each effect. Turn power-ups off with
-  the Settings checkbox;
+  ring and a translucent hologram show each effect. Prism seeds show a
+  three-second ripening timer; snakes circle them and race to pounce when ripe.
+  The winner gulps a rainbow meal, with a bulge travelling down its body.
+  Turn power-ups off with the Settings checkbox;
   glossy, shaded, glowing bodies with pointed tails,
   chevrons, saddle bands and glowing spine lights on the biggest snakes;
   spade-shaped heads with nine moods, expressive faces, rare emote bubbles,
@@ -239,7 +241,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.11.0`, publishes the verified
+matching the CMake project version, such as `v0.12.0`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 
