@@ -1,3 +1,18 @@
+plasma-visual-screensaver (0.11.0-1) resolute; urgency=medium
+
+  * Make Slithering Snakes race for power-up capsules: compare arrival times,
+    commit, boost or give up, cut off the leader, guard capsules while their
+    current effect wears off, and hold a short grudge against the winner.
+  * Announce capsules one second before they land. Show the racers with
+    contest arcs, and give snakes faces with nine moods and rare emote bubbles.
+  * Fix the NVIDIA egl-wayland2 memory leak by draining its swapchain queue
+    while retaining explicit sync on supported versions. Keep disabling
+    explicit sync as the fallback for unknown versions.
+  * On the reference desktop, reduce CPU use from 22.8% to 9.8% of one core
+    with flat memory and better frame pacing.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Sun, 04 Oct 2026 03:00:24 -0300
+
 plasma-visual-screensaver (0.10.0-1) resolute; urgency=medium
 
   * Add glowing hexagon power-ups to Slithering Snakes, with one effect at

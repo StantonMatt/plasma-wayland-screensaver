@@ -66,12 +66,16 @@ opens the latest GitHub release instead.
   time: Surge gives free, back-to-back boosts and a faster snake for chained
   attacks, Magnet pulls in food from three times as far, and Phase lets snakes
   slip through rivals' bodies until it wears off. Snakes seek them out to hunt,
-  scavenge and escape. Crackling arcs, an orbiting magnet ring and a translucent
-  hologram show each effect. Turn power-ups off with the Settings checkbox;
+  scavenge and escape. They race for capsules, boost or give up, cut off the
+  leader, guard the next capsule and hold short grudges. A one-second landing
+  signal and contest arcs show the race. Crackling arcs, an orbiting magnet
+  ring and a translucent hologram show each effect. Turn power-ups off with
+  the Settings checkbox;
   glossy, shaded, glowing bodies with pointed tails,
   chevrons, saddle bands and glowing spine lights on the biggest snakes;
-  spade-shaped heads with eyes that follow movement, blinking and tongue
-  flicks; a gold crown for the leader, boost bow waves and contrails, sparks
+  spade-shaped heads with nine moods, expressive faces, rare emote bubbles,
+  eyes that follow movement, blinking and tongue flicks; a gold crown for the
+  leader, boost bow waves and contrails, sparks
   on kills, bodies that dissolve into shards, and new food sprites; visibly
   magnetic food, collision-safe spawning, exact head-path body following,
   outward self-tail escapes, swept neck/body collision detection that follows
@@ -235,7 +239,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.10.0`, publishes the verified
+matching the CMake project version, such as `v0.11.0`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 
@@ -398,8 +402,8 @@ session:
   egl-wayland2 release-event leak by draining its swapchain queue while retaining
   explicit sync on source-verified 1.0.1, 1.0.2 and main (1.0.3). Other/unknown
   versions or uncertain loader resolution fall back to `__NV_DISABLE_EXPLICIT_SYNC=1`.
-  On three RTX 4090 outputs, drain measured 0.0015 MiB/min and 9.8% of one core,
-  versus 0.0020 MiB/min and 22.8% with explicit sync disabled; p99 intervals also improved.
+  On the reference desktop with three RTX 4090 outputs, CPU use dropped from
+  22.8% to 9.8% of one core with flat memory and better frame pacing.
   `PVS_EGL_LEAK_FIX=drain|noexplicit|off` selects the policy in a fresh process.
   Drain must log `PVS EGL drain: active wl_surface=N` for each rendering surface.
   Look for `PVS NVIDIA EGL Wayland workaround:` in startup logs. Other EGL

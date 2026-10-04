@@ -343,7 +343,8 @@ ApplicationWindow {
                         Layout.columnSpan: 3
                         text: qsTr("World events")
                         checked: window.screensaverConfig.snakeWorldEvents
-                        visible: visual.currentValue === "snakes"
+                        // Hidden until the first world events ship.
+                        visible: false
                     }
 
                     Label {
