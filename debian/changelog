@@ -3,6 +3,7 @@ plasma-visual-screensaver (0.13.0-1ppa1~resolute1) resolute; urgency=medium
   * Add Venom capsules. Holders hunt rivals and bite their bodies to sever
     their tails. Severed tails thrash, then shatter into food.
   * Show an acid spine, fangs and a strike pose on Venom holders.
+  * Make the snake AI about 11% faster with unchanged behaviour.
 
  -- Matthew Stanton <stantonmatthewj@gmail.com>  Sun, 04 Oct 2026 08:00:30 -0300
 
