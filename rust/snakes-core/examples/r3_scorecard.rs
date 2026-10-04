@@ -7,7 +7,7 @@ use std::time::Instant;
 #[path = "support/diagnostics.rs"] mod diagnostics;
 #[allow(dead_code)]
 #[path = "support/accounting.rs"] mod accounting;
-use accounting::{CombatTotals, Observed};
+use accounting::{CombatTotals, Observed, EFFECT_KIND_COUNT};
 
 fn main() {
     let minutes: usize = std::env::args().nth(1).unwrap_or_else(|| "8".into()).parse().unwrap();
@@ -21,7 +21,7 @@ fn main() {
     let mut total_pickups = 0;
     let mut total_used = 0;
     let mut total_chained = 0;
-    let mut effect_pickups = [0usize; 4]; let mut effect_used = [0usize; 4];
+    let mut effect_pickups = [0usize; EFFECT_KIND_COUNT]; let mut effect_used = [0usize; EFFECT_KIND_COUNT];
     let mut means = 0.0;
     let mut cases = 0;
     for seed in [73, 20260814, 991] { for intelligence in [100.0, 50.0] { for deadly_walls in [true, false] {
@@ -38,9 +38,9 @@ fn main() {
         // [finalists, safe, viable, selected, reply_sum, viable_rejected,
         //  viable_zero_reply, viable_with_reply]. Diagnostic runs are separate
         // from paired performance runs; enabling replay computes extra controls.
-        let mut attacks = [[0usize; 8]; 4];
-        let mut rejected_replies = [[0usize; 7]; 4];
-        let mut rejected_gap = [0.0; 4];
+        let mut attacks = [[0usize; 8]; EFFECT_KIND_COUNT];
+        let mut rejected_replies = [[0usize; 7]; EFFECT_KIND_COUNT];
+        let mut rejected_gap = [0.0; EFFECT_KIND_COUNT];
         let mut combat = CombatTotals::default();
         let mut times = Vec::with_capacity(minutes * 1800);
         let mut before = [(0u32, 0u8, 0u16, 0u8); MAX_SNAKES];
@@ -48,9 +48,10 @@ fn main() {
         let mut episode_used = [false; MAX_SNAKES];
         let mut food_ids = [0u64; snakes_core::MAX_FOOD];
         let mut magnet_before = [false; MAX_SNAKES];
-        let mut kind_pickups = [0usize;4]; let mut kind_used = [0usize;4];
+        let mut kind_pickups = [0usize;EFFECT_KIND_COUNT]; let mut kind_used = [0usize;EFFECT_KIND_COUNT];
         let mut staged_bursts = [0usize; MAX_SNAKES];
         let mut pickups = 0;
+        let mut all_pickups = 0;
         let mut used_pickups = 0;
         let mut chained_pickups = 0;
         let mut attack_ticks = 0;
@@ -76,7 +77,7 @@ fn main() {
                     // dead/respawning slots retain their last decision record.
                     if ai.tactics[s.id as usize].generation != before[s.id as usize].0
                         || d.generation != before[s.id as usize].0 || d.reused_plan { continue; }
-                    let effect=(before[s.id as usize].1 as usize).min(3);
+                    let effect=before[s.id as usize].1 as usize;
                     let row = &mut attacks[effect];
                     for k in [7, 8] {
                         let c = d.candidates[k];
@@ -115,10 +116,18 @@ fn main() {
                 };
                 if intended {kind_used[s.effect_kind as usize]+=1;episode_used[id]=true;}
             }
-            for e in w.frame_events().filter(|e|e.kind==EventKind::Pickup) {
-                let kind=e.other_snake_id as usize;
-                if kind<4 {kind_pickups[kind]+=1;episode_used[e.snake_id as usize]=false;}
-            }
+            // Preserve event order: a newly picked Venom may bite this tick.
+            for e in w.frame_events() {match e.kind {
+                EventKind::Pickup=>{
+                    let kind=e.other_snake_id as usize;
+                    kind_pickups[kind]+=1;all_pickups+=1;episode_used[e.snake_id as usize]=false;
+                },
+                EventKind::Sever=>{
+                    let id=e.other_snake_id as usize;
+                    if !episode_used[id] {kind_used[snakes_core::effects::EffectKind::Venom as usize]+=1;episode_used[id]=true;}
+                },
+                _=>{},
+            }}
             for event in w.collision_events() {
                 combat.record(event, &ai.tactics);
                 if event.reason == snakes_core::DeathReason::SelfHit {
@@ -149,6 +158,7 @@ fn main() {
                 staged_bursts[e.snake_id as usize] = 0;
             }
         }
+        assert_eq!(kind_pickups.iter().sum::<usize>(),all_pickups);
         if diagnostic {
             println!("attack_diagnostics seed={seed} iq={intelligence} walls={deadly_walls} by_effect={attacks:?}");
             println!("rejected_attack_diagnostics seed={seed} iq={intelligence} walls={deadly_walls} reply_histogram={rejected_replies:?} positive_reply_score_gap_sum={rejected_gap:?}");
@@ -156,7 +166,7 @@ fn main() {
         if let Some(d) = deaths { d.report(); }
         println!("combat_diagnostics seed={seed} iq={intelligence} walls={deadly_walls} hunting_kills={} staged_kills={} hunting_deaths={} staged_deaths={} ambiguous={}",
             combat.hunting_kills, combat.staged_kills, combat.attack_deaths, combat.staged_deaths, combat.ambiguous_kills);
-        for k in 1..4 {effect_pickups[k]+=kind_pickups[k];effect_used[k]+=kind_used[k];}
+        for k in 1..EFFECT_KIND_COUNT {effect_pickups[k]+=kind_pickups[k];effect_used[k]+=kind_used[k];}
         println!("effect_metrics seed={seed} iq={intelligence} walls={deadly_walls} pickups={kind_pickups:?} used={kind_used:?}");
         if ai.inner.profile()[4]>0 {println!("ai_profile_ns {:?}",ai.inner.profile());println!("ai_forecast_profile_ns {:?}",ai.inner.forecast_profile());}
         let mean = times.iter().sum::<f64>() / times.len() as f64;

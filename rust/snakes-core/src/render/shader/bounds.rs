@@ -32,7 +32,7 @@ const fn value(name: &str) -> f64 {
     panic!("missing shader bounds constant");
 }
 
-pub(super) const BODY: f64 = value("BOUNDS_BODY");
+pub(in crate::render) const BODY: f64 = value("BOUNDS_BODY");
 pub(super) const HEAD_BACK: f64 = value("BOUNDS_HEAD_BACK");
 pub(super) const HEAD_BOOST_BACK: f64 = value("BOUNDS_HEAD_BOOST_BACK");
 pub(super) const HEAD_FRONT: f64 = value("BOUNDS_HEAD_FRONT");

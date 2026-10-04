@@ -43,6 +43,7 @@ float coverage(float d,float aa) { return 1.0-smoothstep(-aa,aa,d); }
 float mask(float d) {
     float aa=max(fwidth(d),0.008);
     int kind=int(packed.x+0.5);
+    if(kind==23 || kind==24) kind=1;
     // Body support is compacted at its actual ribbon edge. Keep its original
     // pixel AA; the sprite ceilings retain pixel AA at normal rendered sizes.
     if(kind==0) return coverage(d,aa);
@@ -109,6 +110,8 @@ float hexagon(vec2 p,float r) {
 }
 void main() {
     int kind=int(packed.x+0.5), tier=int(packed.y+0.5)&3, flags=int(packed.z+0.5);
+    bool venomHead=kind==23 || kind==24, strikeHead=kind==24;
+    if(venomHead) kind=1;
     bool boosting=(flags&1)!=0, hunting=(flags&4)!=0, trapped=(flags&8)!=0, leader=(flags&64)!=0;
     int mood=kind==1?(flags>>1)&15:0;
     if(kind==1) {hunting=mood==2;trapped=mood==6;}
@@ -282,6 +285,15 @@ void main() {
                 arc=max(arc,stroke);
             }
             over+=mix(itemAccent(1),white,0.4)*arc*0.85;
+        } else if(!corpse && effectKind==4) {
+            // Acid spine: an opaque 0.15w stripe (about 2.5 px at 1080p) with a soft halo;
+            // venom pulses flow toward the fangs (~1 Hz, +-20% on the stripe only; still in Calm).
+            vec3 acid=itemAccent(4);
+            float aR=max(fwidth(acrossR),0.008);
+            float spine=coverage(abs(acrossR)-0.15*w,aR)*body;
+            float flow=ub.motionScale==1.0?0.8+0.2*sin(coord.y*0.9-t*6.0):0.9;
+            tube=mix(tube,acid*flow,spine*0.9);
+            over+=acid*falloff(abs(acrossR)/(0.6*w))*0.22*body;
         } else if(!corpse && effectKind==3) {
             activeFade=0.45+0.06*sin(t*9.0);
             float dash=step(0.55,fract(coord.y*SEG/1.1-t*2.0));
@@ -426,6 +438,32 @@ void main() {
             rgb=mix(rgb,(mono||ub.paletteMode==1.0)?vec3(0.06):vec3(0.08,0.016,0.04),m*0.95);
             rgb=mix(rgb,(mono||ub.paletteMode==1.0)?vec3(0.55):vec3(0.75,0.27,0.36),in_*0.9);alpha=max(alpha,m);
         }
+        if(venomHead) {
+            vec3 acid=itemAccent(4);
+            rgb=mix(rgb,acid,body*0.5);
+            // Acid aura (0.45 head units) so a holder reads at 1080p hatchling size.
+            glow+=acid*falloff(max(sd,0.0)/0.45)*0.45*smoothstep(-0.7,0.0,p.x);
+            // Strike: the jaw gapes past the snout (a notch in the silhouette) with venom inside.
+            vec2 mc=strikeHead?vec2(1.18,0.0):vec2(1.10,0.0);
+            vec2 mr=strikeHead?vec2(0.40,0.40):vec2(0.30,0.06);
+            float mouth=mask(ellipse(p-mc,mr));
+            vec3 maw=strikeHead?mix(vec3(0.02,0.035,0.01),acid*0.5,falloff(length((p-mc)/mr))):vec3(0.025);
+            rgb=mix(rgb,maw,mouth);alpha=max(alpha,mouth);
+            // Filled, rounded fangs (prototype triangles) that clear the snout by about
+            // 3 px at rest and 6 px when striking at 1080p hatchling size.
+            vec2 q=vec2(p.x,abs(p.y));
+            vec2 tip=strikeHead?vec2(1.92,0.42):vec2(1.66,0.30);
+            float fd=strikeHead?sdTriangle(q,vec2(1.00,0.28),vec2(1.08,0.54),tip)-0.07
+                               :sdTriangle(q,vec2(0.98,0.18),vec2(1.02,0.44),tip)-0.06;
+            float fang=mask(fd);
+            rgb=mix(rgb,mix(acid,white,0.75),fang);alpha=max(alpha,fang);
+            // Two venom beads bud from the fang tips and drift forward (prototype), 0.9 Hz.
+            for(int k=0;k<2;k++) {
+                float qd=moving?fract(t*0.9+seed*0.37+float(k)*0.5):0.5;
+                vec2 bead=vec2(tip.x+0.05+0.25*qd,(k==0?1.0:-1.0)*(tip.y+0.04));
+                over+=acid*falloff(length(p-bead)/0.30)*(1.0-qd);
+            }
+        }
         float tp=(hunting?1.4:3.0)+hash(seed+4.0)*(hunting?4.6:5.0);
         float phase=mod(ub.animationTime+hash(seed+5.0)*tp,tp);float tongueDuration=0.34*ub.motionScale;
         float extension=phase<tongueDuration?sin(phase/tongueDuration*3.141593):0.0;
@@ -458,6 +496,10 @@ void main() {
             glow+=mix(c,white,0.55)*b1*0.6+c*b2*0.3;
         }
         fragColor=composite(rgb,alpha,glow,over,(flags&32)!=0?0.45+0.06*sin(t*9.0):1.0);return;
+    }
+    if(kind==25) {
+        // Venom stump / severed-end glow: prototype radial glow, additive.
+        fragColor=vec4(itemAccent(4)*falloff(length(coord))*base.a*ub.opacity,0);return;
     }
     if(kind==5 || kind==10) {
         float streak=max(0.0,1.0-abs(coord.x));

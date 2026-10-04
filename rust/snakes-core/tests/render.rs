@@ -699,6 +699,35 @@ fn multi_arena_bodies_keep_every_edge_and_tail_under_viewport_scaling() {
 }
 
 #[test]
+fn fallback_stump_and_head_decorations_survive_split_sections_without_allocations() {
+    for (width,height,dx,dy) in [(100.0,200.0,7.0,0.0),(200.0,100.0,0.0,7.0),
+        (100.0,100.0,7.0,7.0),(100.0,200.0,-7.0,0.0),(500.0,200.0,7.0,0.0)] {
+        for (sx,sy) in [(1.0,1.0),(2.0,0.5),(0.5,2.0)] {
+            let mut i=info();i.world_width=width;i.world_height=height;
+            let mut p=params();p.deadly_walls=0;p.interpolation=1.0;p.scale_x=sx;p.scale_y=sy;
+            p.viewport_width=width*sx;p.viewport_height=height*sy;
+            let s=SnakeRecord {radius:6.0,segment_count:40,stump_ticks:48,flags:flags::LEADER,..snake()};
+            let b:Vec<_>=(0..40).map(|j| {
+                let x=(50.0+dx*j as f64).rem_euclid(width) as f32;
+                let y=(50.0+dy*j as f64).rem_euclid(height) as f32;
+                SegmentRecord {x,y,previous_x:x,previous_y:y}
+            }).collect();
+            let mut out=vec![RenderVertex::default();20000];let mut r=RenderHandle::new();
+            COUNT.with(|c|c.set(Some(0)));
+            let n=r.build(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+            assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+            let marker:Vec<_>=out[..n].iter().filter(|v|v.color.alpha==220).collect();
+            assert_eq!(marker.len(),24,"one eight-sided stump at {width}x{height}, delta={dx},{dy}, scale={sx},{sy}");
+            let tail=b.last().unwrap();
+            assert!(marker.iter().any(|v|(v.x as f64-tail.x as f64*sx).abs()<0.001 && (v.y as f64-tail.y as f64*sy).abs()<0.001));
+            // Eyes and crown remain head-only; section splitting must not duplicate them.
+            assert_eq!(out[..n].iter().filter(|v|v.color==RenderColor {red:255,green:255,blue:255,alpha:255}).count(),48);
+            assert_eq!(out[..n].iter().filter(|v|v.color==RenderColor {red:255,green:216,blue:74,alpha:255}).count(),21);
+        }
+    }
+}
+
+#[test]
 fn oversized_primitives_match_complete_tiling_in_small_scaled_arenas() {
     for (sx,sy) in [(1.0,1.0),(2.0,0.5)] {
         let mut i=info();i.world_width=10.0;i.world_height=10.0;
@@ -2135,4 +2164,183 @@ fn reduced_motion_corpse_and_contrail_lifetimes_advance_after_freeze() {
     i.tick=711;i.simulation_time=23.7;
     let n=r.build_shader(&i,&[s],&moved,&[],&[],&pal,&p,&mut out).vertex_count;
     assert!(out[..n].iter().all(|v|v.params[0]!=10 && v.params[0]!=9));
+}
+
+#[test]
+fn venom_titan_orphan_is_bounded_allocation_free_and_ages_in_calm() {
+    use snakes_core::ffi::ShaderRenderVertex as ShaderVertex;
+    for calm in [false,true] {
+        let mut r=RenderHandle::new();r.reduced_motion=calm;
+        let mut f=info();f.world_width=16000.0;f.world_height=4000.0;
+        let mut p=params();p.viewport_width=16000.0;p.viewport_height=4000.0;p.interpolation=1.0;
+        let mut s=snake();s.segment_count=1600;s.radius=6.0;
+        let body:Vec<_>=(0..1600).map(|i|SegmentRecord {x:11500.0-i as f32*7.08,y:1000.0,previous_x:11500.0-i as f32*7.08,previous_y:1000.0}).collect();
+        let mut output=vec![ShaderVertex::default();12000];
+        r.build_shader(&f,&[s],&body,&[],&[],&palette(),&p,&mut output);
+        f.tick+=1;f.simulation_time+=1.0/30.0;p.presentation_time=f.simulation_time;
+        // No live stump sprite: every kind-25 vertex belongs to this orphan.
+        s.segment_count=1248;s.stump_ticks=0;
+        let event=EventRecord {tick:f.tick,kind:1,snake_id:0,other_snake_id:1,generation:1,other_generation:1,
+            cut_index:1248,duration_ticks:33,release_tick:f.tick+33,..Default::default()};
+        COUNT.with(|c|c.set(Some(0)));
+        let fresh=r.build_shader(&f,&[s],&body,&[],&[event],&palette(),&p,&mut output);
+        let count=COUNT.with(|c|c.replace(None)).unwrap();assert_eq!(count,0);
+        let orphan=output[..fresh.vertex_count].iter().filter(|v|v.params[2]&128!=0 || v.params[0]==25).count();
+        assert!(orphan>0 && orphan<=1200);
+        assert_eq!(output[..fresh.vertex_count].iter().filter(|v|v.params[0]==25).count(),6);
+        let first=output[..fresh.vertex_count].iter().position(|v|v.params[2]&128!=0).unwrap();
+        let edge=&output[first..first+6];
+        let width=snakes_core::shape::taper(1248.0/1599.0);
+        assert!((edge[0].across as f64-width).abs()<=1.0/255.0);
+        let extrusion=((edge[0].x-edge[1].x) as f64).hypot((edge[0].y-edge[1].y) as f64)/2.0;
+        assert!((extrusion-s.radius*2.5*edge[0].across as f64).abs()<0.001);
+        assert_eq!(edge[0].params[1],3); // shortened titan's pattern tier
+        assert_eq!(edge[0].along,351.0); // source segments, not 100-edge LOD indices
+        assert_eq!(edge[2].along,348.0);
+        if calm {
+            let sever_time=f.simulation_time;let sever_tick=f.tick;
+            f.tick=sever_tick+32;f.simulation_time=sever_time+32.0/30.0;
+            let held=r.build_shader(&f,&[s],&body,&[],&[event],&palette(),&p,&mut output);
+            let edge=output[..held.vertex_count].iter().find(|v|v.params[2]&128!=0).unwrap();
+            assert_eq!(edge.params[3],255,"Calm holds until the sim's shard release at 33 ticks");
+            f.tick=sever_tick+34;f.simulation_time=sever_time+34.0/30.0;
+            let dissolving=r.build_shader(&f,&[s],&body,&[],&[event],&palette(),&p,&mut output);
+            let edge=output[..dissolving.vertex_count].iter().find(|v|v.params[2]&128!=0).unwrap();
+            assert!(edge.params[3]<255,"Calm dissolves after the sim's shard release");
+            f.tick=sever_tick;f.simulation_time=sever_time;
+        }
+        // Stale events cannot restart orphan life; the frozen shader clock is
+        // deliberately held at its pre-sever value for the Calm path.
+        f.tick+=60;f.simulation_time+=2.0;if !calm {p.presentation_time=f.simulation_time;}
+        let expired=r.build_shader(&f,&[s],&body,&[],&[event],&palette(),&p,&mut output);
+        assert!(output[..expired.vertex_count].iter().all(|v|v.params[2]&128==0));
+    }
+}
+
+#[test]
+fn venom_two_titan_orphans_reserve_both_cut_glows_inside_vertex_cap() {
+    let mut r=RenderHandle::new();let mut f=info();f.world_width=16000.0;f.world_height=4000.0;
+    let mut p=params();p.viewport_width=16000.0;p.viewport_height=4000.0;p.interpolation=1.0;
+    let mut records:[SnakeRecord;2]=std::array::from_fn(|id|SnakeRecord {id:id as u32,
+        segment_offset:(id*1600) as u32,segment_count:1600,radius:6.0,..snake()});
+    let body:Vec<_>=(0..3200).map(|i|SegmentRecord {x:11500.0-(i%1600) as f32*7.08,y:1000.0+(i/1600) as f32*1000.0,
+        previous_x:11500.0-(i%1600) as f32*7.08,previous_y:1000.0+(i/1600) as f32*1000.0}).collect();
+    let mut output=vec![ShaderRenderVertex::default();24000];
+    r.build_shader(&f,&records,&body,&[],&[],&palette(),&p,&mut output);
+    f.tick+=1;f.simulation_time+=1.0/30.0;p.presentation_time=f.simulation_time;
+    for s in &mut records {s.segment_count=1248;}
+    let events:[EventRecord;2]=std::array::from_fn(|id|EventRecord {tick:f.tick,kind:1,snake_id:id as u32,
+        other_snake_id:2,generation:1,cut_index:1248,duration_ticks:33,..Default::default()});
+    COUNT.with(|c|c.set(Some(0)));
+    let n=r.build_shader(&f,&records,&body,&[],&events,&palette(),&p,&mut output).vertex_count;
+    assert_eq!(COUNT.with(|c|c.replace(None)).unwrap(),0);
+    assert_eq!(output[..n].iter().filter(|v|v.params[0]==25).count(),12);
+    assert_eq!(output[..n].iter().filter(|v|v.params[2]&128!=0 || v.params[0]==25).count(),1200);
+}
+
+#[test]
+fn venom_classic_orphan_keeps_original_full_taper_width() {
+    let mut r=RenderHandle::new();r.reduced_motion=true;
+    let mut f=info();let mut p=params();p.interpolation=1.0;
+    let mut s=snake();s.segment_count=80;s.radius=6.0;
+    let body:Vec<_>=(0..80).map(|i|SegmentRecord {x:1200.0-i as f32*7.08,y:500.0,
+        previous_x:1200.0-i as f32*7.08,previous_y:500.0}).collect();
+    let mut output=vec![RenderVertex::default();12000];
+    r.build(&f,&[s],&body,&[],&[],&palette(),&p,&mut output);
+    f.tick+=1;f.simulation_time+=1.0/30.0;p.presentation_time=f.simulation_time;
+    let event=EventRecord {tick:f.tick,kind:1,snake_id:0,other_snake_id:1,generation:1,
+        cut_index:62,duration_ticks:33,..Default::default()};
+    COUNT.with(|c|c.set(Some(0)));
+    // With no live bodies/items, the retained orphan is emitted first, ahead of impact sprites.
+    let n=r.build(&f,&[],&[],&[],&[event],&palette(),&p,&mut output).vertex_count;
+    assert_eq!(COUNT.with(|c|c.replace(None)).unwrap(),0);
+    assert!(n>=17*6);
+    let edge=&output[..6];
+    let extrusion=((edge[0].x-edge[1].x) as f64).hypot((edge[0].y-edge[1].y) as f64)/2.0;
+    assert!((extrusion-s.radius*snakes_core::shape::taper(62.0/79.0)).abs()<=s.radius/255.0);
+}
+
+#[test]
+fn venom_compact_sever_history_retries_and_two_orphan_cap() {
+    let mut r=RenderHandle::new();let mut f=info();let mut p=params();p.interpolation=1.0;
+    let records:[SnakeRecord;3]=std::array::from_fn(|id|SnakeRecord {id:id as u32,generation:1,alive:1,radius:8.0,
+        segment_offset:(id*80) as u32,segment_count:80,..Default::default()});
+    let body:Vec<_>=(0..240).map(|i|SegmentRecord {x:1200.0-(i%80) as f32*9.44,y:300.0+(i/80) as f32*200.0,
+        previous_x:1200.0-(i%80) as f32*9.44,previous_y:300.0+(i/80) as f32*200.0}).collect();
+    let mut output=vec![ShaderRenderVertex::default();6000];
+    r.build_shader(&f,&records,&body,&[],&[],&palette(),&p,&mut output);
+    let compact:[SnakeRecord;3]=std::array::from_fn(|id|SnakeRecord {segment_offset:id as u32,segment_count:1,..records[id]});
+    let tails:[SegmentRecord;3]=std::array::from_fn(|id|body[id*80+79]);
+    let events:[EventRecord;3]=std::array::from_fn(|id|EventRecord {tick:601,kind:1,snake_id:id as u32,other_snake_id:3,
+        generation:1,cut_index:62,duration_ticks:33,..Default::default()});
+    f.tick=601;f.simulation_time=601.0/30.0;p.presentation_time=f.simulation_time;
+    let mut history=p;history.scale_x=0.0;history.scale_y=0.0;
+    COUNT.with(|c|c.set(Some(0)));
+    r.build_shader(&f,&compact,&tails,&[],&events,&palette(),&history,&mut []);
+    let first=r.build_shader(&f,&[],&[],&[],&events,&palette(),&p,&mut output).vertex_count;
+    let second=r.build_shader(&f,&[],&[],&[],&events,&palette(),&p,&mut output).vertex_count;
+    assert_eq!(COUNT.with(|c|c.replace(None)).unwrap(),0);
+    assert_eq!(first,second);
+    assert_eq!(output[..first].iter().filter(|v|v.params[0]==0).count(),2*17*6);
+}
+
+#[test]
+fn happy_blep_lasts_twenty_seven_ticks_and_does_not_create_a_heart() {
+    let mut r=RenderHandle::new();let mut out=[ShaderRenderVertex::default();256];
+    let mut s=snake();s.face_flags=FACE_OBSERVED;s.mood=5;s.mood_intensity=255;
+    for kind in [1,23,24] {
+        s.effect_kind=if kind==1 {0} else {4};
+        s.effect_ticks=if kind==1 {0} else {240};
+        s.flags=if kind==24 {flags::STRIKE} else {0};
+        for age in [0,16,17,26,27,44] {
+            s.happy_ticks=45-age;
+            let n=r.build_shader(&info(),&[s],&body(),&[],&[],&palette(),&params(),&mut out).vertex_count;
+            let head=out[..n].iter().find(|v|v.params[0]==kind).unwrap();
+            let jaw=(head.params[3]>>6)|((head.params[2]&128)>>5);
+            assert_eq!((head.params[2]>>1)&15,5);
+            assert_eq!(jaw,if age<27 {7} else {0},"kind {kind}, blep age {age}");
+            assert!(out[..n].iter().all(|v|v.params[0]!=16),"Happy alone emits no bubble");
+        }
+    }
+}
+
+#[test]
+fn venom_terminal_cut_retains_one_point_and_cut_glow_without_allocations() {
+    for shader in [false,true] {
+        let mut r=RenderHandle::new();r.reduced_motion=true;let mut f=info();let mut p=params();p.interpolation=1.0;
+        let s=SnakeRecord {segment_count:80,radius:6.0,..snake()};
+        let body:Vec<_>=(0..80).map(|j|SegmentRecord {x:1200.0-j as f32*7.08,y:500.0,
+            previous_x:1200.0-j as f32*7.08,previous_y:500.0}).collect();
+        let mut vertices=vec![RenderVertex::default();12000];let mut sprites=vec![ShaderRenderVertex::default();12000];
+        if shader {r.build_shader(&f,&[s],&body,&[],&[],&palette(),&p,&mut sprites);}
+        else {r.build(&f,&[s],&body,&[],&[],&palette(),&p,&mut vertices);}
+        f.tick+=1;f.simulation_time+=1.0/30.0;
+        let event=EventRecord {tick:f.tick,kind:1,snake_id:0,generation:1,cut_index:79,duration_ticks:33,..Default::default()};
+        COUNT.with(|c|c.set(Some(0)));
+        if shader {
+            let n=r.build_shader(&f,&[],&[],&[],&[event],&palette(),&p,&mut sprites).vertex_count;
+            assert!(sprites[..n].iter().any(|v|v.params[2]&128!=0));
+            assert_eq!(sprites[..n].iter().filter(|v|v.params[0]==25).count(),6);
+        } else {
+            let n=r.build(&f,&[],&[],&[],&[event],&palette(),&p,&mut vertices).vertex_count;
+            assert!(vertices[..n].iter().any(|v|v.color.alpha==220));
+        }
+        assert_eq!(COUNT.with(|c|c.replace(None)).unwrap(),0);
+    }
+}
+#[test]
+fn fallback_corpse_never_keeps_a_bright_bite_stump() {
+    let mut r=RenderHandle::new();let mut f=info();let mut p=params();p.interpolation=1.0;
+    let s=SnakeRecord {stump_ticks:48,..snake()};let mut out=[RenderVertex::default();4096];
+    let alive=r.build(&f,&[s],&body(),&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert!(out[..alive].iter().any(|v|v.color.alpha==220));
+    let corpse=SnakeRecord {alive:0,flags:flags::CORPSE,..s};
+    f.tick+=1;f.simulation_time+=1.0/30.0;p.presentation_time=f.simulation_time;
+    let fresh=r.build(&f,&[corpse],&body(),&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert!(out[..fresh].iter().all(|v|v.color.alpha!=220));
+    f.tick+=15;f.simulation_time+=0.5;p.presentation_time=f.simulation_time;
+    COUNT.with(|c|c.set(Some(0)));
+    let fading=r.build(&f,&[corpse],&body(),&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert_eq!(COUNT.with(|c|c.replace(None)).unwrap(),0);
+    assert!(out[..fading].iter().all(|v|v.color.alpha!=220));
 }

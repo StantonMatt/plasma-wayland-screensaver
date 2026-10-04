@@ -162,7 +162,7 @@ fn zero_allocations_with_all_r3_effects_simultaneously_active() {
         density:100.0,trails:100.0,intelligence:100.0,self_collisions:true,
         deadly_walls:false,seed:73,..Config::default()}).unwrap();
     let mut ai=ai::AiController::new();
-    let mut observed=[false;4];let mut simultaneous=false;
+    let mut observed=[false;5];let mut simultaneous=false;
     COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
     for tick in 0..2400 {
         if tick%360==0 {
@@ -190,7 +190,7 @@ fn zero_allocations_with_all_r3_effects_simultaneously_active() {
     w.step_n(&mut ai,60);
     ENABLED.with(|e|e.set(false));
     assert_eq!(COUNT.with(Cell::get),0);
-    assert!(observed[1..].iter().all(|&seen|seen));
+    assert!(observed[1..4].iter().all(|&seen|seen));
     assert!(simultaneous,"all three effects must coexist during measured ticks");
     assert!(w.snakes().all(|s|s.effect_ticks==0));
 }
@@ -216,4 +216,31 @@ fn zero_allocations_prism_schedule_feast_bulges_and_ai() {
     }
     ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
     assert!(saw_seed && saw_feast && saw_two_gulps,"scheduler/Feast/two-slot paths must execute");
+}
+
+#[test]
+fn zero_allocations_sever_delay_and_orphan_release() {
+    let mut w=world::venom::tests::fixture(1600,1248);
+    let before=w.detached_points.as_ptr();
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    world::venom::tests::exercise(&mut w);
+    ENABLED.with(|e|e.set(false));
+    assert_eq!(COUNT.with(Cell::get),0);assert_eq!(before,w.detached_points.as_ptr());
+    assert_eq!(w.snakes[1].len,1248);assert!(w.food.iter().any(|f|f.kind==FoodKind::Shard));
+}
+
+#[test]
+fn zero_allocations_venom_hunting_strike_and_escape() {
+    let mut w=world::venom::tests::hunt_fixture();let mut ai=ai::AiController::new();
+    let mut bites=0;let mut boosts=0;let mut exit_until=0;let mut survived_exit=false;
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    for _ in 0..240 {
+        w.step(&mut ai);
+        let bite=w.frame_events().filter(|e|e.kind==EventKind::Sever && e.other_snake_id==0).count();
+        boosts+=usize::from(w.snakes[0].boost_ticks>0);
+        bites+=bite;if bite>0 {exit_until=w.tick()+12;}
+        if exit_until>0 && w.tick()==exit_until {survived_exit=w.snakes[0].alive;}
+    }
+    ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
+    assert_eq!(bites,1);assert!(boosts>0);assert!(survived_exit);
 }

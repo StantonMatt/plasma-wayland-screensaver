@@ -8,7 +8,7 @@ Foundation uses the staged sources of an explicit untouched foundation worktree.
 import argparse
 import os
 from pathlib import Path
-import re
+from support.spawn_fixture import enabled_kinds, singleton_items
 import shutil
 import subprocess
 
@@ -19,6 +19,7 @@ parser.add_argument('--foundation-tree', type=Path)
 parser.add_argument('--minutes', type=int, default=8)
 parser.add_argument('--cpu', type=int)
 parser.add_argument('--repeats', type=int, default=1)
+parser.add_argument('--case', help='One seed,IQ,deadly_walls case, e.g. 73,100,true')
 args = parser.parse_args()
 source = Path(__file__).resolve().parents[1]
 args.output.mkdir(parents=True, exist_ok=True)
@@ -41,19 +42,17 @@ for mode in args.modes:
         if mode not in ['surge', 'magnet', 'phase']:
             raise SystemExit(f'Unknown mode {mode}')
         hooks = crate / 'src/world/effects/mod.rs'
-        hooks.write_text(re.sub(r'pub const ENABLED_KINDS: &\[EffectKind\] = &\[[^;]+;',
-            f'pub const ENABLED_KINDS: &[EffectKind] = &[EffectKind::{mode.title()}];', hooks.read_text()))
+        hooks.write_text(enabled_kinds(hooks.read_text(), mode.title()))
         items = crate / 'src/world/items.rs'
-        text = items.read_text()
-        text = text.replace('filter(|&&k|k!=self.last_item_kind)', 'filter(|&&k|effects::ENABLED_KINDS.len()==1 || k!=self.last_item_kind)')
-        text = text.replace('if k==self.last_item_kind {continue;}', 'if effects::ENABLED_KINDS.len()>1 && k==self.last_item_kind {continue;}')
-        items.write_text(text)
+        items.write_text(singleton_items(items.read_text()))
     subprocess.run(['/usr/bin/cargo', 'build', '--release', '--frozen', '--offline', '--manifest-path',
                     str(crate / 'Cargo.toml'), '--example', 'r3_scorecard'], env=env, check=True, timeout=600)
     binaries[mode] = crate / 'target/release/examples/r3_scorecard'
 for repeat in range(args.repeats):
     for mode, binary in binaries.items():
         command = [str(binary), str(args.minutes)]
+        if args.case:
+            command += [f"--case={args.case}"]
         if args.cpu is not None:
             command = ['taskset', '-c', str(args.cpu)] + command
         log = args.output / f'{mode}-{repeat}.txt'

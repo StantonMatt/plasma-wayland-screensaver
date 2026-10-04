@@ -4,6 +4,7 @@
 mod geometry;
 mod faces;
 mod prism;
+mod venom;
 mod shader;
 pub(crate) mod items;
 pub use shader::ShaderVertex;
@@ -152,6 +153,7 @@ struct Corpse {
     active: bool
 }
 pub struct Renderer {
+    venom:venom::History,
     points: Vec<P>,
     mapped: Vec<P>,
     normals: Vec<P>,
@@ -199,6 +201,7 @@ impl Renderer {
             }
         }
         Self {
+            venom:venom::History::new(),
             points: vec![P::default();MAX_SEGMENTS],
             mapped: vec![P::default();MAX_SEGMENTS],
             normals: vec![P::default();MAX_SEGMENTS],
@@ -232,6 +235,7 @@ impl Renderer {
         }
     }
     pub fn reset(&mut self) {
+        self.venom.reset();
         self.trails.fill(Trail::default());
         self.corpses.fill(Corpse::default());
         self.last_frame = None;
@@ -313,11 +317,12 @@ impl Renderer {
         } else {
             palette[i as usize%palette.len()]
         };
+        let circles=self.circles;
         let mut sink = Sink {
             output,
             count: 0,
             view,
-            circles: &self.circles
+            circles: &circles
         };
         for f in food {
             if !food_valid(f) { continue; }
@@ -465,7 +470,8 @@ impl Renderer {
             let radius = s.radius*scale;
             let eye_r = (radius*0.31).max(1.7);
             // Pixel minimums on eyes/crown strokes must survive small scales.
-            let mut margin = radius*1.4;
+            // Strike fangs reach 1.52r from the head, including their side offset.
+            let mut margin = radius*if s.alive!=0 && !corpse && s.effect_kind==4 && s.effect_ticks>0 {1.6} else {1.4};
             // Above 2.4px the existing margin encloses every pixel minimum:
             // eyes: .665r+1.7 <= 1.4r; crown stroke: 1.105r+.65 <= 1.4r;
             // gem: .36r+.8 <= 1.4r. Avoid extra bounds work at normal sizes.
@@ -584,19 +590,31 @@ impl Renderer {
                                 if end==n-1 { sink.disc(mapped[end], radius*0.96, c.alpha(245).fade(fade), 12); }
                             }
                             if split && layer!=2 { continue; }
+                            if active_kind==4 {
+                                for edge in start..end {sink.segment(mapped[edge],mapped[edge+1],(radius*0.08).max(0.5),items::accent(4,palette).alpha(180));}
+                            }
                             let first_mark=((start+1)/6)*6+5;
                             for i in (first_mark..=end).step_by(6) {
                                 sink.disc(mapped[i], radius*0.34, Color::new(255, 255, 255, 46).fade(fade), 6);
                             }
+                            if !corpse && s.stump_ticks>0 && end==n-1 {sink.disc(mapped[end],radius*0.5,items::accent(4,palette).alpha(220),8);}
                             if start!=0 { continue; }
                             let head = mapped[0];
-                            sink.disc(head, radius*1.08, c.alpha(255).fade(fade), 12);
+                            sink.disc(head, radius*1.08, if active_kind==4 {items::accent(4,palette).alpha(255)} else {c.alpha(255).fade(fade)}, 12);
                             let mut forward = P::new(s.angle.cos()*sx, s.angle.sin()*sy);
                             let len = forward.length();
                             if len>0.001 {
                                 forward = forward/len;
                             }
                             let side = P::new(-forward.y, forward.x);
+                            if active_kind==4 {
+                                let strike=s.flags&flags::STRIKE!=0;
+                                if strike {sink.disc(head+forward*(radius*0.85),radius*0.42,Color::new(8,15,10,255),8);}
+                                for sign in [-1.0,1.0] {
+                                    let root=head+forward*(radius*0.8)+side*(radius*0.35*sign);
+                                    sink.triangle(root-side*(radius*0.12),root+side*(radius*0.12),root+forward*(radius*if strike {0.72} else {0.35}),Color::new(240,255,220,255));
+                                }
+                            }
                             for direction in [-1.0, 1.0] {
                                 let eye = head+forward*(radius*0.48)+side*(radius*0.46*direction);
                                 let observed=faces::has_mood(s);
@@ -633,6 +651,7 @@ impl Renderer {
                 }
             }
         }
+        self.classic_orphans(info,p,palette,&mut sink);
         self.classic_items(info,p,palette,&mut sink);
         let mut effect_budget=EffectBudget::default();
         self.classic_effects(info,p,palette,&mut sink,&mut effect_budget);

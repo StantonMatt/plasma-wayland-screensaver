@@ -241,7 +241,7 @@ double snakes_core_item_radius(const snakes_core_world *world);
  * consume it; step(world,n) retains only the last tick. Overflow evicts oldest.
  * Failure changes no output. For pickup/spawn/item expiry/effect expiry,
  * other_snake_id is the effect kind; snake_id is UINT32_MAX for field items.
- * Emote: snake_id owner, other_snake_id glyph. Sever: victim/biter and cut_index.
+ * Emote: snake_id owner, other_snake_id glyph. Sever: snake_id/generation victim, other_snake_id/other_generation biter; cut_index is first removed, duration_ticks=33, value is nutrition, release_tick=tick+33.
  * Flip/Feast: actor. WorldEvent: snake_id UINT32_MAX, other_snake_id event kind,
  * duration_ticks window; value 1 start / 0 end. Vortex uses item kind 8 (not
  * effect kind 7); age/life/charge, captured_value and owner identity are reserved. */

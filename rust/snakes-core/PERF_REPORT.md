@@ -187,3 +187,12 @@ Mature geometry is 1.003x baseline; chaos/matched mature is 1.047x at 8736
 vertices. Standard mean tick delta is +0.01215 ms and reference delta is
 -0.00205 ms; allocation checks stay at zero. Desktop capture, process CPU and
 frame-pacing gates remain unverified.
+
+## S3 (0.13.0) Venom release slice
+
+See [S3_VENOM_REPORT.md](S3_VENOM_REPORT.md) for severing, shared mechanics/AI
+bite eligibility, bounded orphan rendering, allocation tests, capture commands
+and paired performance measurements against 0.12.0. ABI remains 3. Standard
+and reference pooled mean tick deltas are +0.018492 ms and +0.004474 ms (two
+alternating pairs; the standard pair spread is documented). Real shader
+captures and desktop process CPU/cadence require external validation.

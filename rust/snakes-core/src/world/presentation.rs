@@ -29,6 +29,7 @@ impl Default for WorldEventState {
 #[derive(Clone,Copy,Debug)]
 pub struct FaceState {
     pub mood:Mood,pub intensity:u8,pub age:u16,pub target_id:u64,pub target_ticks:u16,
+    pub strike:bool,
     pub prey:u32,pub guarding:bool,pub has_target:bool,pub look:Point,pub pupil:Point,
     pub happy_ticks:u16,pub angry_ticks:u16,pub scared_ticks:u16,pub idle_ticks:u16,
     pub dizzy_ticks:u16,pub frozen_ticks:u16,pub thaw_immunity_ticks:u16,
@@ -39,7 +40,7 @@ pub struct FaceState {
 }
 impl Default for FaceState {
     fn default()->Self {Self {mood:Mood::Calm,intensity:255,age:0,target_id:0,target_ticks:0,
-        prey:u32::MAX,guarding:false,has_target:false,look:Point::default(),pupil:Point::default(),
+        strike:false,prey:u32::MAX,guarding:false,has_target:false,look:Point::default(),pupil:Point::default(),
         happy_ticks:0,angry_ticks:0,scared_ticks:0,idle_ticks:0,dizzy_ticks:0,frozen_ticks:0,
         thaw_immunity_ticks:0,bite_immunity_ticks:0,stump_ticks:0,breath_ticks:0,flip_grace_ticks:0,
         flip_tick:0,jaw_ticks:0,bulges:[Bulge::default();2],grudge_id:u32::MAX,grudge_generation:0,
@@ -135,6 +136,8 @@ impl World {
                 && ((self.faces[other].prey==id as u32 && s.intent_flags & flags::HUNTING!=0)
                     || (s.effect_kind==effects::EffectKind::Venom as u8 && self.faces[other].prey==id as u32))
                 && self.distance_squared(head,self.segments[other*MAX_SEGMENTS].current)<(14.0*r).powi(2));
+            // strike_ready uses the previous pose for its 5r/6r hysteresis.
+            self.faces[id].strike=self.strike_ready(id);
             let flags=self.snake_flags(id);
             let angle=self.snakes[id].angle;let generation=self.snakes[id].generation;
             let f=&mut self.faces[id];

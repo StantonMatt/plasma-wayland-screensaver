@@ -98,14 +98,15 @@ impl Renderer {
         for age_index in 0..self.effects.len() {
             let e=self.effects[(self.effect_head+self.effects.len()-1-age_index)%self.effects.len()];
             if !e.active || !matches!(e.kind,6|12|13) || budget.full() {continue;}
-            let age=(event_time(info,p,self.reduced_motion)-e.time)/0.5;
+            let duration=0.5*if self.reduced_motion && e.color&0x80000000!=0 {0.6} else {1.0};
+            let age=(event_time(info,p,self.reduced_motion)-e.time)/duration;
             if !(0.0..1.0).contains(&age) {continue;}
             if e.kind==6 {
                 // Preserve the classic death flash geometry, but share history
                 // order and the visible-copy cap with the other transients.
                 let radius=(8.0+age*24.0)*scale;
-                let c=palette.get(if palette.is_empty() {0} else {e.color as usize%palette.len()})
-                    .copied().unwrap_or(Color::new(0,255,255,255));
+                let c=if e.color&0x80000000!=0 {accent(e.color as u8,palette)} else {palette.get(if palette.is_empty() {0} else {e.color as usize%palette.len()})
+                    .copied().unwrap_or(Color::new(0,255,255,255))};
                 let (xs,ys)=copies(e.p,e.p,P::new(radius/p.scale_x,radius/p.scale_y),arena,p.deadly_walls!=0);
                 for x in xs.first..=xs.last {for y in ys.first..=ys.last {
                     if budget.full() {continue;}

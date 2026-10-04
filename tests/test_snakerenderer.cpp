@@ -1393,6 +1393,54 @@ private:
         return frame;
     }
 
+    static SnakeFrame venomFrame()
+    {
+        SnakeFrame frame;
+        frame.info = {600,20,1920,1080,0,1,0,{},{}};
+        frame.itemRadius = 8.1 * 2.1; // Real default 1080p simulation proportions.
+        const auto add = [&](uint32_t id, uint32_t len, double r, double hx, double hy, double angle) {
+            snakes_core_snake snake{};
+            snake.id=id; snake.generation=1; snake.alive=1; snake.radius=r;
+            snake.angle=angle; snake.desired_angle=angle; snake.color_index=id;
+            snake.segment_offset=frame.segments.size(); snake.segment_count=len;
+            snake.target_item=255; snake.mood_intensity=255; snake.face_flags=2;
+            for (uint32_t j=0;j<len;++j) {
+                const double distance=j*r*1.18, wave=0.8*r*std::sin(j*0.14);
+                const float x=hx-std::cos(angle)*distance-std::sin(angle)*wave;
+                const float y=hy-std::sin(angle)*distance+std::cos(angle)*wave;
+                frame.segments.push_back({x,y,x,y});
+            }
+            frame.snakes.push_back(snake);
+        };
+        add(0,120,10.1,1690,470,0);
+        add(1,24,8.1,575,520,-std::acos(-1.0)/2);
+        frame.snakes[1].effect_kind=4; frame.snakes[1].effect_ticks=200;
+        frame.snakes[1].flags=SNAKES_CORE_FLAG_STRIKE|SNAKES_CORE_HUNTING;
+        frame.snakes[1].mood=SNAKES_CORE_MOOD_HUNTING;
+        add(2,22,8.1,600,220,0);
+        frame.snakes[2].effect_kind=4; frame.snakes[2].effect_ticks=200;
+        snakes_core_item item{};
+        item.id=1;item.kind=4;item.x=260;item.y=220;item.radius=frame.itemRadius;
+        item.age_ticks=90;item.life_ticks=690;item.leader_snake_id=UINT32_MAX;
+        item.contender_ids[0]=item.contender_ids[1]=UINT32_MAX;item.guard_snake_id=UINT32_MAX;
+        frame.items.push_back(item);
+        return frame;
+    }
+    static void severVenomFrame(SnakeFrame &frame)
+    {
+        frame.info.tick=601;frame.info.simulation_time=601.0/30;
+        auto &victim=frame.snakes[0];
+        victim.segment_count=94;victim.stump_ticks=48;victim.bite_immunity_ticks=60;
+        victim.mood=SNAKES_CORE_MOOD_ANGRY;
+        frame.info.bubble_count=1;frame.info.bubbles[0]={0,1,0,SNAKES_CORE_GLYPH_ANGER,0};
+        snakes_core_event event{};
+        event.tick=601;event.kind=SNAKES_CORE_EVENT_SEVER;event.snake_id=0;event.other_snake_id=1;
+        event.generation=event.other_generation=1;event.cut_index=94;event.duration_ticks=33;
+        event.release_tick=634;event.value=26;event.color_index=0;
+        event.x=frame.segments[94].x;event.y=frame.segments[94].y;
+        frame.events.push_back(event);
+    }
+
     static SnakeFrame s1ChaosFrame(bool features)
     {
         // The approved spec's ~8k mature estimate. The older stress fixture
@@ -1422,6 +1470,23 @@ private:
             item.contender_etas[0] = 1; item.contender_etas[1] = 1.1; item.leader_snake_id = 2*j;
             frame.items.push_back(item);
         }
+        return frame;
+    }
+
+    static SnakeFrame s3ChaosFrame()
+    {
+        auto frame=s1ChaosFrame(true);
+        // Future S6/S7 payloads exercise the reserved record capacity. Their
+        // specialized streak/vortex shaders remain inactive until those slices.
+        for(uint32_t j=0;j<24;++j) {
+            snakes_core_food meteor{};meteor.id=1000+j;meteor.kind=SNAKES_CORE_FOOD_METEOR;
+            meteor.x=500+100*(j%12);meteor.y=900+80*(j/12);meteor.size=5;
+            meteor.life_fraction=255;meteor.motion_ticks=20;meteor.motion_origin_x=meteor.x;
+            meteor.motion_origin_y=meteor.y-50;frame.food.push_back(meteor);
+        }
+        snakes_core_item vortex{};vortex.id=4;vortex.kind=SNAKES_CORE_ITEM_VORTEX;
+        vortex.x=2700;vortex.y=1000;vortex.radius=22*8.1;vortex.life_ticks=150;
+        frame.items.push_back(vortex);
         return frame;
     }
 
@@ -1466,6 +1531,48 @@ private Q_SLOTS:
         }
         QCOMPARE(bubbles,18); QCOMPARE(arcs,36); QVERIFY(g->vertexCount() <= 9600);
         qInfo() << "S1 chaos vertices" << g->vertexCount();
+        delete node;
+    }
+
+    void venomFixtureAndChaosBudget()
+    {
+        SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest=true; renderer.setSize({1920,1080});
+        auto frame=venomFrame();renderer.syncFrame(frame,palette,1,true);
+        auto *node=renderer.updatePaintNode(nullptr,nullptr);
+        severVenomFrame(frame);renderer.syncFrame(frame,palette,1,true);
+        node=renderer.updatePaintNode(node,nullptr);
+        const auto *g=static_cast<QSGGeometryNode *>(node)->geometry();
+        const auto *vertices=static_cast<const snakes_core_shader_vertex *>(g->vertexData());
+        int orphans=0,strike=0;
+        for(int i=0;i<g->vertexCount();++i) {orphans+=(vertices[i].params[2]&128)!=0;strike+=vertices[i].params[0]==24;}
+        QVERIFY(orphans>0);QCOMPARE(strike,6);QVERIFY(orphans<=1200);
+        delete node;
+        renderer.setSize({3440,1440});frame=s3ChaosFrame();
+        renderer.syncFrame(frame,palette,1,true);node=renderer.updatePaintNode(nullptr,nullptr);
+        frame.info.tick=601;frame.info.simulation_time=601.0/30;
+        frame.snakes[10].segment_count=71;frame.snakes[10].stump_ticks=48;
+        snakes_core_event sever{};sever.tick=601;sever.kind=SNAKES_CORE_EVENT_SEVER;
+        sever.snake_id=10;sever.other_snake_id=11;sever.generation=frame.snakes[10].generation;
+        sever.cut_index=71;sever.duration_ticks=33;frame.events.push_back(sever);
+        renderer.syncFrame(frame,palette,1,true);node=renderer.updatePaintNode(node,nullptr);
+        g=static_cast<QSGGeometryNode *>(node)->geometry();
+        qInfo()<<"S3 chaos vertices"<<g->vertexCount();QVERIFY(g->vertexCount()<=9600);
+        delete node;
+    }
+    void benchmarkS3ChaosGeometry()
+    {
+        SnakeRenderer renderer;renderer.m_shaderGeometryForTest=true;renderer.setSize({3440,1440});
+        auto frame=s3ChaosFrame();renderer.syncFrame(frame,palette,1,true);
+        QSGNode *node=renderer.updatePaintNode(nullptr,nullptr);
+        frame.info.tick=601;frame.info.simulation_time=601.0/30;
+        frame.snakes[10].segment_count=71;frame.snakes[10].stump_ticks=48;
+        snakes_core_event sever{};sever.tick=601;sever.kind=SNAKES_CORE_EVENT_SEVER;
+        sever.snake_id=10;sever.other_snake_id=11;sever.generation=frame.snakes[10].generation;
+        sever.cut_index=71;sever.duration_ticks=33;frame.events.push_back(sever);
+        renderer.syncFrame(frame,palette,1,true);node=renderer.updatePaintNode(node,nullptr);
+        qInfo()<<"S3 chaos vertices"<<static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount();
+        QBENCHMARK {renderer.presentFrame(frame.info.simulation_time,1);node=renderer.updatePaintNode(node,nullptr);}
         delete node;
     }
 
@@ -1540,13 +1647,16 @@ private Q_SLOTS:
         QTest::addColumn<bool>("faces");
         QTest::addColumn<bool>("monoPalette");
         QTest::addColumn<bool>("prism");
-        QTest::newRow("shader") << false << false << false << false << false;
-        QTest::newRow("driver-rejection-fallback") << true << false << false << false << false;
-        QTest::newRow("powerups") << false << true << false << false << false;
-        QTest::newRow("faces") << false << false << true << false << false;
-        QTest::newRow("faces-mono") << false << false << true << true << false;
-        QTest::newRow("prism") << false << false << false << false << true;
-        QTest::newRow("prism-mono") << false << false << false << true << true;
+        QTest::addColumn<bool>("venom");
+        QTest::newRow("shader") << false << false << false << false << false << false;
+        QTest::newRow("driver-rejection-fallback") << true << false << false << false << false << false;
+        QTest::newRow("powerups") << false << true << false << false << false << false;
+        QTest::newRow("faces") << false << false << true << false << false << false;
+        QTest::newRow("faces-mono") << false << false << true << true << false << false;
+        QTest::newRow("prism") << false << false << false << false << true << false;
+        QTest::newRow("prism-mono") << false << false << false << true << true << false;
+        QTest::newRow("venom") << false << false << false << false << false << true;
+        QTest::newRow("venom-mono") << false << false << false << true << false << true;
     }
 
     void captureShaderFixture()
@@ -1556,11 +1666,12 @@ private Q_SLOTS:
         QFETCH(bool, faces);
         QFETCH(bool, monoPalette);
         QFETCH(bool, prism);
+        QFETCH(bool, venom);
         const auto colors = SnakeSimulation::colors(monoPalette ? QStringLiteral("mono") : QStringLiteral("ocean"));
         const auto path = qEnvironmentVariable("SNAKES_CAPTURE_PATH");
         if (path.isEmpty()) QSKIP("Set SNAKES_CAPTURE_PATH to capture the RHI fixture");
         QQuickWindow window;
-        window.resize(1280, 720);
+        window.resize(venom ? 1920 : 1280, venom ? 1080 : 720);
         window.setColor(Qt::black);
         // The borrowed snapshot outlives the item and every render-thread sync.
         SnakeFrame frame;
@@ -1584,15 +1695,15 @@ private Q_SLOTS:
                                                      vertex, fragmentShader());
             };
         }
-        renderer.setSize(QSizeF(1280, 720));
-        frame = prism ? prismFrame() : faces ? facesFrame(false) : powerups ? powerupsFrame() : anatomyFrame();
+        renderer.setSize(venom ? QSizeF(1920,1080) : QSizeF(1280, 720));
+        frame = venom ? venomFrame() : prism ? prismFrame() : faces ? facesFrame(false) : powerups ? powerupsFrame() : anatomyFrame();
         if (faces) {
             adultFrame = facesFrame(true);
             adultRenderer.setSize({1280,720});
             adultRenderer.syncFrame(adultFrame,colors,1,true);
         }
         // Capture the R8 atlas and capsule contours through a real RHI path.
-        for (uint8_t kind = 1; !powerups && !faces && !prism && kind <= 3; ++kind) {
+        for (uint8_t kind = 1; !powerups && !faces && !prism && !venom && kind <= 3; ++kind) {
             snakes_core_item item{};
             item.id = kind; item.kind = kind;
             item.x = 180 + (kind - 1) * 400; item.y = 650;
@@ -1628,11 +1739,26 @@ private Q_SLOTS:
             ++renderer.m_pendingHistoryCount;
         }
         renderer.syncFrame(frame, colors, 1, true);
-        if (prism && qEnvironmentVariableIsSet("REAL_CALM")) renderer.setShaderTimeFrozen(true);
+        if ((prism || venom) && qEnvironmentVariableIsSet("REAL_CALM")) renderer.setShaderTimeFrozen(true);
         window.show();
         QVERIFY(QTest::qWaitForWindowExposed(&window));
         QVERIFY(window.rendererInterface()->graphicsApi() != QSGRendererInterface::Software);
         QVERIFY(SnakeMaterial::shadersAvailable());
+        if (venom) {
+            QVERIFY(!window.grabWindow().isNull()); // Retain the intact trail before Sever.
+            severVenomFrame(frame);
+            renderer.syncFrame(frame,colors,1,true);
+            const int age=qEnvironmentVariableIntValue("VENOM_AGE");
+            if (age>0) {
+                QVERIFY(!window.grabWindow().isNull()); // Process the Sever event.
+                frame.events.clear();
+                frame.info.tick=601+age; frame.info.simulation_time=(601.0+age)/30;
+                auto &victim=frame.snakes[0];
+                victim.stump_ticks=age<48?48-age:0; victim.bite_immunity_ticks=age<60?60-age:0;
+                if (age<44) frame.info.bubbles[0].age_ticks=age; else frame.info.bubble_count=0;
+                renderer.syncFrame(frame,colors,1,true);
+            }
+        }
         const QImage image = window.grabWindow();
         QVERIFY(!image.isNull());
         QCOMPARE(renderer.m_shaderFailed, rejectPipeline);

@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Exact event accounting shared by the benchmark observers.
+/// Byte-indexed effect telemetry includes disabled kinds, so enabling one
+/// cannot truncate pickup counts or fold its diagnostics into another effect.
+pub const EFFECT_KIND_COUNT:usize=snakes_core::effects::EffectKind::Whirlpool as usize+1;
 use snakes_core::{ai::AiController, controller::{Controller, Steering}, CollisionEvent, DeathReason, SnakeView, World, MAX_SNAKES};
 use super::diagnostics::ScoreController;
 

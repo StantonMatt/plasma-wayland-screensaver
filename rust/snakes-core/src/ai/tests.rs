@@ -1466,7 +1466,7 @@ fn items_use_base_values_and_persist_as_high_bit_targets() {
     line(&mut w,0,Point{x:300.0,y:300.0},0.0,24);
     food(&mut w,Point{x:450.0,y:300.0});
     for (i,kind) in crate::effects::ENABLED_KINDS.iter().copied().enumerate() {
-        assert_eq!(kind.base_value(),[6.0,4.0,3.0][i]);
+        assert_eq!(kind.base_value(),[6.0,4.0,3.0,5.0][i]);
         w.items.push(crate::Item{id:i as u64+1,kind,position:Point{x:470.0+i as f64*20.0,y:300.0},
             life_ticks:750,radius:12.0,..Default::default()});
     }

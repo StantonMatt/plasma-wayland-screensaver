@@ -1371,3 +1371,38 @@ delays for pooled multi-seed medians. `--prism-motion-trace` prints the first
 prize's live heads, goals, orbit state and safe forecast endpoints. Observer
 work and its allocations remain outside timed ticks. See
 [R12_PRISM_REPORT.md](../../R12_PRISM_REPORT.md) for sample counts and gates.
+
+## S3 Venom
+
+`venom.rs` refreshes a holder's hunt immediately and on each held tick. Eight
+severable body samples per rival compete by cut value, rival size, turn-aware
+arrival before expiry, approach clearance and target retention. A bounded
+256-record query of the existing body grid also finds nearby titan segments
+between those samples. Useful Venom capsules value these reachable body points.
+The old minimum rival-size and fixed search-distance gates no longer discard
+smaller or distant but reachable cuts.
+
+The primary strike, another rear-body point and the nearest feasible strike
+compete under the ordinary wall/head/self/deposited-neck rollouts. A checked
+burst can close the gap when its tail payment is smaller than the intended cut.
+Confronted holders flank the body; defenders still show their head and tighten
+coils. Certified bites, including incidental cuts, earn utility below safety
+and available space, with earlier bites preferred. Every hunt is exempt from
+anti-circling recovery. Target identity is slot plus generation; alternative
+candidate commitment carries the whole strike plan, and charge loss clears
+stale steering before ordinary strategy resumes.
+
+Mechanics and every body query share `world::venom::bite_eligible`. Candidate
+forecasts hold bounded cut, immunity and consumed-charge state; margin-only
+contacts never spend a charge. Removed static trail points stop blocking later
+steps; retained stumps use their shortened taper and release clock, while newly
+deposited necks remain lethal. The three exit ticks after a bite are swept
+individually. Goal-tracking strikes continue straight after charge consumption,
+so later straight exit sweeps need no own-curvature padding; rival envelopes
+and the ordinary body reserve remain. Mechanics and forecasts select the
+lowest eligible contacted index on the victim, preventing spatial bucket order
+from leaving an already-touched point as a fresh stump. The ordinary
+path specializes away bite work and uses a bitmask to skip Venom effect lookup.
+Venom bypasses the ordinary body cache because its cut/charge state is path-local.
+Defenders walk the observed holder mask from preparation; ordinary ticks do
+not build every rival view merely to reject its effect kind.

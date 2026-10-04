@@ -181,3 +181,56 @@ gulp as ordinary combat presentation.
 The only checked-in golden mechanics trace is Classic and remains unchanged.
 V2 startup/spawn RNG changes deliberately; no existing V2 golden trace was
 regenerated or silently relabelled. See the S2 performance report for checks.
+
+## S3 (0.13.0): Venom, ABI still 3
+
+Venom joins Surge/Magnet/Phase; their weights 25/30/20/15 are normalized over
+these four enabled kinds (equivalent to section 5's 20/24/16/12). Previous-kind
+exclusion remains in effect. Power-ups off clears capsules and held Venom;
+already detached nutrition still releases. Classic takes no additional draws.
+
+The shared `world::venom::bite_eligible` rule accepts only rival indices >3 and
+strictly past half length, with active Venom, no Phase and no bite immunity.
+Movement and feeding precede capsule pickups; wall/head decisions precede
+body bites. A successful bite consumes Venom, retains indices [0,cut), and
+invalidates removed entries in the tick's existing body buckets. The victim
+receives 60 immunity ticks, 48 stump ticks, 78 anger ticks and a 150-tick grudge.
+The biter receives 45 Happy ticks with the usual 27-tick blep; only prism meals
+emit Heart bubbles, while the bitten victim emits Anger. STRIKE enters within
+five own radii of an eligible rear segment and holds through six radii. Losing
+Venom or an eligible rear segment clears the pose immediately.
+
+Sever's `snake_id/generation` identify the victim; `other_snake_id/other_generation`
+identify the biter. `cut_index` is the first removed segment, `duration_ticks`
+is 33, `value` is detached segment nutrition, and `release_tick = tick + 33`.
+These event durations never depend on the victim's later length. One reserved
+800-point nutrition buffer per victim survives death/respawn and scaling until
+release. It is separate from edible/vacuumable food. Free shard food receives
+exact detached nutrition distributed over the available particles; ordinary
+food-cap and protected-prize/claim eviction rules apply.
+
+Renderer history reserves full prior trails plus two 800-point orphan buffers.
+Compact Qt tail history cannot overwrite the full trails. Orphans preserve
+original taper, unwrap at seams and sample a precomputed sine table; each is
+limited to 100 edges (200 visible edges including seam copies globally).
+Cut-glow sprites share that 1200-vertex orphan budget. Calm suppresses wriggle
+and holds the tail through tick 33 to match food release, then shortens dissolve.
+Shader kinds 23/24 reuse the ordinary head geometry/packing for venom/strike,
+leaving mood/pupil/jaw bits intact; bites use the existing kind-6 impact shape.
+Stump light combines the existing acid wave-origin bits with kind-25 glow
+sprites; Sever runs an acid wave down the biter. No C layout changes.
+
+AI rear-quarter selection measures the 40r search from the bite point rather
+than the remote head, so long giants remain reachable. Holders approach along
+the rear trail and orbit when confronted within 8r. Defenders face the threat,
+with ordinary length-certified head-on safety; coils tighten. Candidate bites
+consume the forecast charge and remove detached static geometry; immunity and
+Phase use the same rule as mechanics. Front-half, wall, head, self and deposited
+neck hazards retain their normal safety checks. Standoffs are intentional turns
+and are exempt from anti-circling recovery. Target slot and generation reset
+standoff state. Forecasts remain conservative about rival motion and marginal
+contacts; only a physical contact consumes the predicted charge.
+
+The S3 chaos fixture carries the reserved 24 Meteor records and fourth-slot
+Vortex item alongside live S3 features. Specialized meteor streaks and vortex
+rendering remain deferred to S6/S7; that record must stay inert in S3.
