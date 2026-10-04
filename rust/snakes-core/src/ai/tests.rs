@@ -1935,6 +1935,11 @@ fn pending_overlap_pursuit_collects_every_target_type_after_movement() {
         ContactTarget::Food(crate::FoodKind::Pellet,false),ContactTarget::Food(crate::FoodKind::Prism,false),
         ContactTarget::Capsule(crate::effects::EffectKind::Surge)] {for magnet in [false,true] {
         let mut w=contact_fixture(case,magnet,2,Point{x:400.0,y:0.0});
+        // Keep Magnet active in the guard-release window: a long-lived
+        // effect deliberately guards a valuable capsule instead of taking it.
+        if magnet && matches!(case,ContactTarget::Capsule(..)) {
+            w.snakes[2].effect_ticks=crate::Item::GUARD_RELEASE_TICKS;
+        }
         let reach=if matches!(case,ContactTarget::Capsule(..)) {19.8} else if magnet {56.0} else {20.0};
         move_contact_target(&mut w,case,Point{x:400.0,y:reach});
         let mut ai=AiController::new();ai.prepare(&w);
@@ -1945,6 +1950,7 @@ fn pending_overlap_pursuit_collects_every_target_type_after_movement() {
             track_goal:true,last_angle:s.angle,desired:s.angle,turn_until:u64::MAX,
             last_strategy:w.tick(),best_distance:f64::MAX,..State::default()};
         w.step(&mut ai);
+        assert!(!ai.states[2].guarding,"collection fixture must not guard");
         let captured=match case {ContactTarget::Capsule(..)=>w.items().all(|i|i.id!=77),
             ContactTarget::Food(..)=>w.foods().all(|f|f.id!=77 || f.vacuum_owner==2)};
         assert!(captured,"{case:?} magnet={magnet}");
