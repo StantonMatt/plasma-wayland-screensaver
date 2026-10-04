@@ -147,7 +147,7 @@ fn zero_allocations_items_pickups_replacement_expiry_and_settings_off() {
             w.items.clear();
             let s=w.snake(0).unwrap();
             w.items.push(Item {id:tick as u64+1,kind:effects::ENABLED_KINDS[tick/30],position:s.segments[0].current,
-                age_ticks:0,life_ticks:750,radius:w.config.base_radius()*2.1});
+                age_ticks:0,life_ticks:750,radius:w.config.base_radius()*2.1,..Item::default()});
         }
         w.step(&mut ai);
     }
