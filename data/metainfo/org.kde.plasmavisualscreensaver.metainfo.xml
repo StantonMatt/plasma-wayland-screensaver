@@ -20,6 +20,13 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.11.0" date="2026-10-04">
+      <description>
+        <p>Makes Slithering Snakes race for power-up capsules: they compare arrival times, commit, boost or give up, cut off the leader, guard capsules while their current effect wears off, and hold a short grudge against the winner. Capsules announce their landing one second in advance, and contest arcs show who is racing for them.</p>
+        <p>Gives snakes faces with nine moods and rare emote bubbles.</p>
+        <p>Fixes the NVIDIA egl-wayland2 memory leak by draining its swapchain queue while retaining explicit sync on supported versions. Unknown versions keep the fallback that disables explicit sync. On the reference desktop, CPU use drops from 22.8% to 9.8% of one core with flat memory and better frame pacing.</p>
+      </description>
+    </release>
     <release version="0.10.0" date="2026-10-03">
       <description>
         <p>Adds glowing hexagon power-ups to Slithering Snakes, with one effect at a time: Surge gives free, back-to-back boosts and a faster snake for chained attacks; Magnet pulls in food from three times as far; Phase lets snakes slip through rivals' bodies until it wears off. Turn power-ups off in Settings.</p>
