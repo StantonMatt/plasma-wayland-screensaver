@@ -10,6 +10,7 @@
 #include <QVulkanInstance>
 #include <QThread>
 #include <QScopeGuard>
+#include <QSurfaceFormat>
 #include <atomic>
 #include <vector>
 
@@ -17,6 +18,18 @@ class GraphicsBackendWindowTest final : public QObject
 {
     Q_OBJECT
 private Q_SLOTS:
+    void defaultOpenGL()
+    {
+        if (!qEnvironmentVariableIsSet("PVS_TEST_DEFAULT_OPENGL")) QSKIP("Requires default OpenGL test environment");
+        QCOMPARE(QQuickWindow::graphicsApi(), QSGRendererInterface::OpenGL);
+        QCOMPARE(qEnvironmentVariable("QSG_RENDER_LOOP"), QStringLiteral("basic"));
+        QCOMPARE(QSurfaceFormat::defaultFormat().swapInterval(), 1);
+        // No rendering/context is needed to check the startup configuration.
+        QQuickWindow window;
+        window.create();
+        QVERIFY(!window.vulkanInstance());
+        QCOMPARE(window.requestedFormat().swapInterval(), 1);
+    }
     void windows()
     {
         const bool requireVulkan = qEnvironmentVariableIsSet("PVS_TEST_VULKAN");

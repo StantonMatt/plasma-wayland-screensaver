@@ -39,7 +39,9 @@ Api GraphicsSelection::select(const Inputs &inputs, bool vulkanAvailable)
     // initialize a Vulkan loader there, even for the PVS escape hatch.
     if (headless) return Api::OpenGL;
     if (inputs.requestedApi == QStringLiteral("vulkan")) return vulkanAvailable ? Api::Vulkan : Api::OpenGL;
-    return inputs.platform.startsWith(QStringLiteral("wayland")) && vulkanAvailable ? Api::Vulkan : Api::OpenGL;
+    // Vulkan is experimental: presentation can stall on NVIDIA layer-shell
+    // overlays even after a successful probe. Use it only on explicit request.
+    return Api::OpenGL;
 }
 
 struct GraphicsBackend::Private : QObject {

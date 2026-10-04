@@ -29,7 +29,7 @@ qt_add_shaders(SnakeMaterial snakes_shaders
     PREFIX "/snakes"
     FILES shaders/snake.vert shaders/snake.frag)
 
-add_library(GraphicsBackend STATIC graphicsbackend.cpp graphicsbackend.h)
+add_library(GraphicsBackend STATIC graphicsbackend.cpp graphicsbackend.h eglworkaround.cpp eglworkaround.h)
 set_target_properties(GraphicsBackend PROPERTIES AUTOMOC OFF)
 target_link_libraries(GraphicsBackend PUBLIC Qt6::Quick)
 

@@ -1,4 +1,9 @@
 # ABI records must explicitly initialize fields added by future ABI revisions.
+add_executable(test-eglworkaround test_eglworkaround.cpp)
+target_include_directories(test-eglworkaround PRIVATE ../src)
+target_link_libraries(test-eglworkaround PRIVATE GraphicsBackend Qt6::Test)
+add_test(NAME egl-workaround COMMAND test-eglworkaround)
+
 add_executable(test-graphicsbackend test_graphicsbackend.cpp)
 target_include_directories(test-graphicsbackend PRIVATE ../src)
 target_link_libraries(test-graphicsbackend PRIVATE GraphicsBackend Qt6::Test)
@@ -11,6 +16,14 @@ target_link_libraries(test-graphicsbackend-window PRIVATE GraphicsBackend Qt6::T
 add_test(NAME graphics-backend-window COMMAND test-graphicsbackend-window)
 set_tests_properties(graphics-backend-window PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+
+# Verify the default without a GPU context or rendering. Preserve the desktop's
+# basic OpenGL loop and default swap interval; Vulkan startup changes both.
+add_test(NAME graphics-backend-default-opengl
+    COMMAND ${CMAKE_COMMAND} -E env --unset=QT_QUICK_BACKEND --unset=QSG_RHI_BACKEND
+        --unset=PVS_GRAPHICS_API --unset=PVS_TEST_VULKAN
+        QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic PVS_TEST_DEFAULT_OPENGL=1
+        $<TARGET_FILE:test-graphicsbackend-window> defaultOpenGL)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     set_source_files_properties(test_snakerenderer.cpp test_snakesimulation.cpp test_snakesqml.cpp

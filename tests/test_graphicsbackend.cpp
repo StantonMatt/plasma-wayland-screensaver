@@ -22,8 +22,8 @@ private Q_SLOTS:
             QTest::newRow(name) << QString::fromLatin1(platform) << QString::fromLatin1(quick)
                 << QString::fromLatin1(rhi) << QString::fromLatin1(pvs) << available << int(api);
         };
-        row("wayland", "wayland", "", "", "", true, Api::Vulkan);
-        row("wayland-egl", "wayland-egl", "", "", "", true, Api::Vulkan);
+        row("wayland", "wayland", "", "", "", true, Api::OpenGL);
+        row("wayland-egl", "wayland-egl", "", "", "", true, Api::OpenGL);
         row("unavailable", "wayland", "", "", "", false, Api::OpenGL);
         row("offscreen", "offscreen", "", "", "", true, Api::OpenGL);
         row("minimal", "minimal", "", "", "", true, Api::OpenGL);
@@ -42,6 +42,7 @@ private Q_SLOTS:
         row("rhi-unknown", "wayland", "", "custom", "", true, Api::QtOverride);
         row("pvs-opengl", "wayland", "", "", "opengl", true, Api::OpenGL);
         row("pvs-vulkan", "wayland", "", "", "vulkan", true, Api::Vulkan);
+        row("pvs-vulkan-wayland-egl", "wayland-egl", "", "", "vulkan", true, Api::Vulkan);
         row("pvs-fallback", "wayland", "", "", "vulkan", false, Api::OpenGL);
         row("pvs-offscreen", "offscreen", "", "", "vulkan", true, Api::OpenGL);
         row("pvs-minimal", "minimal", "", "", "vulkan", true, Api::OpenGL);

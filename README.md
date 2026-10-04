@@ -394,17 +394,26 @@ session:
 ## Troubleshooting
 
 - **Graphics problems or growing memory on NVIDIA Wayland:** startup logs show
-  `PVS graphics backend: vulkan` when Vulkan presentation is available, otherwise
-  OpenGL. To use OpenGL, start a fresh process with `--graphics-api opengl` or
-  `PVS_GRAPHICS_API=opengl`; Qt's `QSG_RHI_BACKEND` and `QT_QUICK_BACKEND`
-  overrides take precedence. Vulkan needs `libvulkan1` and a working driver
+  `PVS graphics backend: opengl` by default. The app works around the
+  egl-wayland2 1.0.1 release-event leak by selecting installed legacy
+  egl-wayland, or disabling explicit sync when only egl-wayland2 is available.
+  Look for `PVS NVIDIA EGL Wayland workaround:` in startup logs. Other EGL
+  platforms and user-set EGL/explicit-sync overrides are preserved. Start a
+  fresh process with `PVS_KEEP_EGL_WAYLAND2=1` or `--keep-egl-wayland2` to opt out.
+  Vulkan is experimental:
+  it is known to stall without presenting frames on NVIDIA with layer-shell
+  overlays across multiple monitors. To opt in, start a fresh process with
+  `--graphics-api vulkan`, `PVS_GRAPHICS_API=vulkan` or `QSG_RHI_BACKEND=vulkan`;
+  Qt's `QSG_RHI_BACKEND` and `QT_QUICK_BACKEND` overrides take precedence.
+  Vulkan needs `libvulkan1` and a working driver
   (Mesa: `mesa-vulkan-drivers`; NVIDIA: its matching Vulkan ICD). See
   [memory investigation and desktop verification](docs/snakes-gpu-memory.md).
   Vulkan uses the threaded render loop and swap interval zero to avoid
   per-output FIFO/Wayland callback waits blocking the GUI thread; the
   presentation clock still limits updates. A driver without MAILBOX or
   IMMEDIATE presentation support falls back to OpenGL. The Vulkan path
-  overrides `QSG_RENDER_LOOP`; OpenGL keeps Qt's existing loop selection.
+  overrides `QSG_RENDER_LOOP`; OpenGL keeps its existing basic render loop
+  on Wayland and unchanged pacing, honoring `QSG_RENDER_LOOP` overrides.
 - **Preview immediately disappears:** a real input/resume event arrived as the
   overlay appeared. Stop touching input devices and retry. KIdleTime deliberately
   treats the first activity as dismissal.

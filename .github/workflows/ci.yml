@@ -47,7 +47,7 @@ jobs:
           loop_args=()
           if [ "${{ matrix.graphics-api }}" = vulkan ]; then
             # Reproduce the inherited GUI-thread loop seen on the real desktop.
-            # Vulkan startup must replace it with its safe threaded loop.
+            # Explicit experimental Vulkan startup must replace it with its threaded loop.
             loop_args+=(--render-loop basic)
           fi
           ./scripts/frame-timing.sh \

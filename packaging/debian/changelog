@@ -6,9 +6,12 @@ plasma-visual-screensaver (0.10.0-1) resolute; urgency=medium
     rivals' bodies. Turn power-ups off in Settings.
   * Snakes seek power-ups to hunt, scavenge and escape. Show each effect with
     crackling arcs, an orbiting magnet ring or a translucent hologram.
-  * Prefer Vulkan to stop steady memory growth on NVIDIA GPUs under Plasma
-    Wayland. OpenGL remains available with PVS_GRAPHICS_API=opengl or
-    --graphics-api opengl.
+  * Keep OpenGL as the default. Add experimental Vulkan opt-in with
+    PVS_GRAPHICS_API=vulkan or --graphics-api vulkan. Vulkan can stall on
+    NVIDIA layer-shell overlays.
+  * Fix steady memory growth on NVIDIA under Plasma Wayland by working around
+    egl-wayland2's queued release events: prefer legacy egl-wayland, otherwise
+    disable explicit sync. Respect user overrides; add --keep-egl-wayland2.
 
  -- Matthew Stanton <stantonmatthewj@gmail.com>  Sat, 03 Oct 2026 18:56:27 -0300
 
