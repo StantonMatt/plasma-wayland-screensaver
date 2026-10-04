@@ -98,7 +98,7 @@ impl Renderer {
         for age_index in 0..self.effects.len() {
             let e=self.effects[(self.effect_head+self.effects.len()-1-age_index)%self.effects.len()];
             if !e.active || !matches!(e.kind,6|12|13) || budget.full() {continue;}
-            let age=(p.presentation_time-e.time)/0.5;
+            let age=(event_time(info,p,self.reduced_motion)-e.time)/0.5;
             if !(0.0..1.0).contains(&age) {continue;}
             if e.kind==6 {
                 // Preserve the classic death flash geometry, but share history

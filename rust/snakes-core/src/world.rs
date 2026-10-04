@@ -4,6 +4,7 @@ mod broad_phase;
 pub mod effects;
 mod items;
 mod presentation;
+mod prism;
 pub use presentation::{Mood, Glyph, FaceState, Bubble, Bulge, WorldEventState, MAX_BUBBLES, MAX_CONTENDERS};
 pub(crate) mod taper;
 pub use items::{Item, MAX_ITEMS, MAX_CAPSULES};
@@ -280,7 +281,7 @@ impl From<&Food> for FoodView {
             trail_index: f.trail_index,
             feast_length: f.feast_len,
             kind: f.kind,
-            life_fraction: if f.original_life > 0.0 {
+            life_fraction: if f.kind==FoodKind::PrismSeed { ((90-f.motion_ticks.min(90)) as f64*255.0/90.0).round() as u8 } else if f.original_life > 0.0 {
                 (255.0 * (if f.life < 0.0 { f.original_life } else { f.life }) / f.original_life).clamp(0.0, 255.0).round() as u8
             } else { 255 }
         }
@@ -301,6 +302,7 @@ pub struct World {
     pub(crate) food: Vec<Food>,
     pub(crate) items: Vec<Item>,
     item_timer: u16,
+    prism_timer: u16,
     next_item: u64,
     last_item_kind: effects::EffectKind,
     trails: Vec<TrailPoint>,
@@ -349,6 +351,7 @@ impl World {
             food: Vec::with_capacity(MAX_FOOD),
             items: Vec::with_capacity(MAX_ITEMS),
             item_timer: 0,
+            prism_timer: 0,
             next_item: 1,
             last_item_kind: effects::EffectKind::None,
             trails: Vec::new(),
@@ -496,6 +499,7 @@ impl World {
         self.next_item = 1;
         self.last_item_kind = effects::EffectKind::None;
         self.item_timer = 0;
+        self.prism_timer = 0;
         self.leader = None;
         self.event_start = 0;
         self.event_count = 0;
@@ -511,7 +515,7 @@ impl World {
         for _ in 0..self.config.food_count() {
             self.add_ambient_food();
         }
-        if self.items_enabled() { self.reset_item_timer(); }
+        if self.items_enabled() { self.reset_item_timer(); self.reset_prism_timer(); }
     }
     /// Density-count or seed changes restart the world (as QML initialization
     /// does). Other controls preserve live state; geometry rescales positions.
@@ -534,7 +538,7 @@ impl World {
         let old = self.config;
         self.config = config;
         if !self.items_enabled() { self.clear_items_and_effects(); }
-        else if !old.power_ups { self.reset_item_timer(); }
+        else if !old.power_ups { self.reset_item_timer(); self.reset_prism_timer(); }
         self.scale_geometry(old.width, old.height);
         for item in &mut self.items { item.radius=config.base_radius()*2.1; }
         self.prepare_storage();
@@ -902,7 +906,7 @@ impl World {
         self.event_count = 0;
         self.time+=seconds;
         self.update_food(seconds);
-        if self.items_enabled() { self.advance_items_and_effects(); }
+        if self.items_enabled() { self.advance_items_and_effects(); self.advance_prism(); }
         if self.config.rules==RuleSet::V2 {self.advance_presentation();}
         self.growth_slots = self.config.maximum_world_segments().saturating_sub(self.stats().total_segments as usize);
         let mut inputs = [Steering::default();
@@ -1034,7 +1038,7 @@ impl World {
             s.boost_paid += 1;
             Self::update_radius(s);
             // Keep every spent segment represented, even when the food cap is full.
-            if self.food.len() >= self.config.maximum_food() { self.food.remove(0); }
+            if self.food.len() >= self.config.maximum_food() { let oldest=self.food.iter().position(|f|!matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed)).unwrap_or(0);self.food.remove(oldest); }
             self.add_food(Food { p, value: 0.5, color, life: 8.0, kind: FoodKind::Pellet, ..Food::default() });
         }
     }
@@ -1079,7 +1083,7 @@ impl World {
         for i in (0..self.food.len()).rev() {
             let f = &mut self.food[i];
             f.attraction = 0.0;
-            if f.life>0.0 {
+            if f.life>0.0 && !(self.config.rules==RuleSet::V2 && f.kind==FoodKind::Prism && f.ripe_tick!=0) {
                 f.life-=seconds;
                 if f.life<=0.0 {
                     self.food.remove(i);
@@ -1124,6 +1128,11 @@ impl World {
         if self.config.rules==RuleSet::V2 && f.kind==FoodKind::Prism {
             self.faces[owner].happy_ticks=45;
             self.emit_bubble(owner,Glyph::Heart);
+            let duration=self.gulp(owner);
+            self.push_event(FrameEvent {tick:self.tick+1,position:f.p,snake_id:owner as u32,
+                other_snake_id:u32::MAX,color_index:self.snakes[owner].color,kind:EventKind::Feast,
+                generation:self.snakes[owner].generation,duration_ticks:duration,value:5.0,..FrameEvent::default()});
+            self.resolve_denial(Item {id:f.id | (1<<63),position:f.p,..Item::default()},owner);
         }
         self.food.remove(i);
     }
@@ -1145,6 +1154,7 @@ impl World {
         }
         for i in (0..self.food.len()).rev() {
             let mut f = self.food[i];
+            if V2 && !f.pickup_eligible(self.tick+1) {continue;}
             let mut eater = None;
             let mut closest = f64::MAX;
             if f.owner>=0 && (f.owner as usize)<self.snakes.len() {
@@ -1278,9 +1288,11 @@ impl World {
                         self.collisions[right].owner_mask |= 1 << left;
                     }
                     else if diff<0 {
+                        if self.config.rules==RuleSet::V2 && self.snakes[left].dying==DeathReason::None {self.gulp(right);}
                         self.snakes[left].dying = DeathReason::Head;
                         self.collisions[left].owner_mask |= 1 << right;
                     } else {
+                        if self.config.rules==RuleSet::V2 && self.snakes[right].dying==DeathReason::None {self.gulp(left);}
                         self.snakes[right].dying = DeathReason::Head;
                         self.collisions[right].owner_mask |= 1 << left;
                     }
@@ -1433,7 +1445,7 @@ impl World {
                     break;
                 }
                 let f = self.food[i];
-                if f.owner>=0 || (pass==0 && f.feast>0) {
+                if f.owner>=0 || (pass==0 && f.feast>0) || (self.config.rules==RuleSet::V2 && matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed)) {
                     continue;
                 }
                 self.food.remove(i);

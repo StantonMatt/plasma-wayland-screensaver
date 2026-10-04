@@ -39,6 +39,10 @@ impl Contact {
     #[cfg(test)]
     #[inline]
     pub(super) fn new(w: &World, s: SnakeView<'_>, f: impl Into<TargetFood>) -> Self {
+        let mut f:TargetFood=f.into();
+        if f.kind==crate::FoodKind::PrismSeed {
+            if let Some(raw)=w.food.iter().find(|raw|raw.id==f.id) {f.motion_ticks=raw.ripe_tick.saturating_sub(w.tick()).min(u16::MAX as u64) as u16;}
+        }
         Self::forecast(s,f,super::forecast::Track::observed(w,s))
     }
     pub(super) fn forecast(s:SnakeView<'_>,f:impl Into<TargetFood>,track:super::forecast::Track)->Self {
@@ -46,7 +50,7 @@ impl Contact {
         let item = f.id & ITEM_BIT != 0;
         let ordinary = s.radius * if item { 1.3 } else { 3.0 } + f.size;
         let magnet = if !item {s.radius * effects::modifiers(effects::EffectKind::Magnet as u8,1).food_reach + f.size} else {ordinary};
-        Self { ordinary, magnet, effects:track,item,alive:s.alive,guarding:s.face.guarding,ready_step:if item {f.motion_ticks as usize} else {0},
+        Self { ordinary, magnet, effects:track,item,alive:s.alive,guarding:s.face.guarding,ready_step:if item || f.kind==crate::FoodKind::PrismSeed {f.motion_ticks as usize} else {0},
             claimed: !item && f.vacuum_owner == s.id as i32,
             available: item || f.vacuum_owner < 0 || f.vacuum_owner == s.id as i32 }
     }
@@ -60,7 +64,7 @@ impl Contact {
         if effect.is(effects::EffectKind::Magnet) {self.magnet} else {self.ordinary}
     }
     pub(super) fn reached_with(self,distance_squared:f64,effect:super::forecast::Effect,step:usize)->bool {
-        step>=self.ready_step && self.available
+        crate::Item::endpoint_eligible(step as u64,self.ready_step as u64,0,usize::MAX,self.alive) && self.available
             && (!self.item || crate::Item::pickup_allowed(self.alive,self.guarding,effect.ticks))
             && (self.claimed || distance_squared<=self.reach_with(effect).powi(2))
     }

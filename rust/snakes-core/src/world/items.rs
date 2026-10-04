@@ -37,6 +37,10 @@ impl Item {
     pub(crate) fn pickup_allowed(alive:bool,guarding:bool,effect_ticks:u16)->bool {
         alive && !(guarding && effect_ticks>Self::GUARD_RELEASE_TICKS)
     }
+    #[inline]
+    pub(crate) fn endpoint_eligible(tick:u64,ready:u64,elapsed:usize,life:usize,alive:bool)->bool {
+        alive && tick>=ready && elapsed<life
+    }
     pub fn blinking(&self) -> bool { self.life_ticks <= ITEM_BLINK_TICKS }
     /// Eligibility at an endpoint, before contact/lowest-ID arbitration.
     /// `elapsed` counts timer decrements since the post-decrement observation
@@ -44,7 +48,7 @@ impl Item {
     /// current effect, including any earlier pickup in the same item pass.
     #[inline]
     pub(crate) fn pickup_eligible(&self, tick:u64, elapsed:usize, alive:bool, guarding:bool, effect_ticks:u16)->bool {
-        tick>=self.pickable_from_tick && elapsed<(self.life_ticks as usize)
+        Self::endpoint_eligible(tick,self.pickable_from_tick,elapsed,self.life_ticks as usize,alive)
             && Self::pickup_allowed(alive,guarding,effect_ticks)
     }
 }
@@ -60,6 +64,9 @@ impl World {
     }
     pub(super) fn clear_items_and_effects(&mut self) {
         self.items.clear();
+        self.food.retain(|f| !matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed));
+        self.prism_timer=0;
+        for face in &mut self.faces {face.bulges=[Bulge::default();2];}
         self.item_timer = 0;
         self.event_count = 0; // No stale pickup/effect event after disabling.
         for id in 0..self.snakes.len() {
@@ -96,15 +103,45 @@ impl World {
             self.reset_item_timer();
         }
     }
-    pub(super) fn spawn_item(&mut self) {
+    pub(super) fn item_spawn_location(&mut self) -> Option<Point> {
+        self.prize_spawn_location(false)
+    }
+    pub(super) fn prize_spawn_location(&mut self,prism:bool) -> Option<Point> {
         let r=self.config.base_radius();
         let margin=if self.config.deadly_walls {10.0*r} else {0.0};
         // Tiny deadly arenas may have no valid candidate; retry next timer.
-        if self.config.width<margin*2.0 || self.config.height<margin*2.0 { return; }
-        let mut best=None;let mut clearance=-1.0_f64;
+        if self.config.width<margin*2.0 || self.config.height<margin*2.0 { return None; }
+        let mut best=None;let mut clearance=f64::NEG_INFINITY;
+        let available=self.snakes.iter().enumerate().filter(|(id,s)|s.alive && self.faces[*id].target_id==0).count();
+        let free_heads=prism && available>0;
+        let live=self.snakes.iter().enumerate().filter(|(id,s)|s.alive && (!free_heads || self.faces[*id].target_id==0)).count();
         for _ in 0..12 {
-            let p=Point {x:margin+self.rng.random()*(self.config.width-margin*2.0),
-                y:margin+self.rng.random()*(self.config.height-margin*2.0)};
+            // Both modes consume exactly twelve XY pairs. Capsules retain
+            // their historical uniform, maximum-clearance placement. A seed
+            // needs an early arrival within its three-second announcement.
+            let x=self.rng.random();let y=self.rng.random();
+            let mut p=Point {x:margin+x*(self.config.width-margin*2.0),
+                y:margin+y*(self.config.height-margin*2.0)};
+            if prism && live>0 {
+                let (id,s)=self.snakes.iter().enumerate().filter(|(id,s)|s.alive && (!free_heads || self.faces[*id].target_id==0))
+                    .nth(((x*live as f64) as usize).min(live-1)).unwrap();
+                let (speed,turn)=self.motion_limits(id,0.0).unwrap();
+                let orbit=(5.5*s.radius).max(1.35*speed/turn.max(0.01)).max(speed*0.7)
+                    .max((s.len as f64*s.radius*1.18).min(speed*3.0)/std::f64::consts::TAU*1.1);
+                let head=self.segments[id*MAX_SEGMENTS].current;
+                // Announce a point on the first reachable arc just after
+                // ripening. This avoids an unripe first pass and a second lap
+                // through our own trail. Prefer heads free of capsule duties.
+                let phase=speed*(3.1+0.4*y)/orbit;
+                let forward=orbit*phase.sin();
+                let side=orbit*(1.0-phase.cos())*if y<0.5 {-1.0} else {1.0};
+                p=self.canonical_point(Point {x:head.x+s.angle.cos()*forward-s.angle.sin()*side,
+                    y:head.y+s.angle.sin()*forward+s.angle.cos()*side});
+                if self.config.deadly_walls {
+                    p.x=p.x.clamp(margin,self.config.width-margin);
+                    p.y=p.y.clamp(margin,self.config.height-margin);
+                }
+            }
             // Existing items and spawn candidates are stationary. Body
             // clearance below exhaustively scans every continuous body edge;
             // there is no spatial reject that could omit a moving occupant.
@@ -120,9 +157,32 @@ impl World {
                 }
                 distance=distance.min(nearest.sqrt()-s.radius);
             }
-            if best.is_none() || distance>clearance {best=Some(p);clearance=distance;}
+            let score=if prism {
+                // Reject occupied seeds, then favor two physically reachable
+                // heads. No body/safety rules or pickup eligibility change.
+                if distance<6.0*r {continue;}
+                let mut etas=[f64::INFINITY;2];
+                for (id,s) in self.snakes.iter().enumerate().filter(|(_,s)|s.alive) {
+                    let (speed,turn)=self.motion_limits(id,0.0).unwrap();
+                    let d=self.displacement(self.segments[id*MAX_SEGMENTS].current,p);
+                    let length=(d.x*d.x+d.y*d.y).sqrt();
+                    let bearing=normalize_angle(d.y.atan2(d.x)-s.angle).abs();
+                    let radius=speed/turn.max(0.01);
+                    let eta=(length-3.0*s.radius-0.62*r).max(0.0)/speed.max(1.0)
+                        +bearing/turn.max(0.01)*0.6
+                        +if bearing>1.2 && length<2.0*radius {(bearing-1.2)/turn.max(0.01)} else {0.0};
+                    if eta<etas[0] {etas[1]=etas[0];etas[0]=eta;}
+                    else if eta<etas[1] {etas[1]=eta;}
+                }
+                -40.0*etas[1].min(30.0)-20.0*etas[0].min(30.0)+distance.min(4.0*r)*0.05
+            } else {distance};
+            if best.is_none() || score>clearance {best=Some(p);clearance=score;}
         }
-        let Some(position)=best else {return;};
+        best
+    }
+    pub(super) fn spawn_item(&mut self) {
+        let r=self.config.base_radius();
+        let Some(position)=self.item_spawn_location() else {return;};
         let total: u32=effects::ENABLED_KINDS.iter().filter(|&&k|k!=self.last_item_kind).map(|k|k.weight()).sum();
         if total==0 {return;}
         let mut roll=(self.rng.random()*total as f64) as u32;

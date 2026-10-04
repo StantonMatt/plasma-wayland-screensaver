@@ -420,7 +420,7 @@ pub unsafe extern "C" fn snakes_core_export_frame(handle: *const WorldHandle, sn
                 flags: s.flags, effect_ticks: s.effect_ticks,
                 effect_kind: s.effect_kind, boost_ticks: s.boost_ticks,
                 mood:s.face.mood as u8,mood_intensity:s.face.intensity,mood_age_ticks:s.face.age,
-                target_item:w.items().position(|item|item.id==s.face.target_id).map_or(255,|i|i as u8),face_flags:(if s.face.guarding {1} else {0}) | if w.config().rules==crate::RuleSet::V2 {FACE_OBSERVED} else {0},jaw_ticks:s.face.jaw_ticks,
+                target_item:w.items().position(|item|item.id==s.face.target_id).map_or(255,|i|i as u8),face_flags:(if s.face.guarding {1} else {0}) | if s.face.target_id & (1<<63)!=0 {4} else {0} | if w.config().rules==crate::RuleSet::V2 {FACE_OBSERVED} else {0},jaw_ticks:s.face.jaw_ticks,
                 look_x:s.face.look.x as f32,look_y:s.face.look.y as f32,pupil_x:s.face.pupil.x as f32,pupil_y:s.face.pupil.y as f32,
                 frozen_ticks:s.face.frozen_ticks,dizzy_ticks:s.face.dizzy_ticks,bite_immunity_ticks:s.face.bite_immunity_ticks,
                 stump_ticks:s.face.stump_ticks,thaw_immunity_ticks:s.face.thaw_immunity_ticks,breath_ticks:s.face.breath_ticks,
@@ -455,7 +455,7 @@ pub unsafe extern "C" fn snakes_core_export_frame(handle: *const WorldHandle, sn
                 color_index: f.color_index,
                 kind: f.kind as u8, life_fraction: f.life_fraction, reserved: 0,
                 ripe_tick:payload.ripe_tick,motion_origin_x:payload.motion_origin.x as f32,motion_origin_y:payload.motion_origin.y as f32,
-                motion_ticks:f.motion_ticks,captured_by:payload.captured_by,food_flags:0
+                motion_ticks:f.motion_ticks,captured_by:payload.captured_by,food_flags:prism_race_flags(w,payload)
             });
         }
     }
@@ -898,4 +898,36 @@ pub unsafe extern "C" fn snakes_core_render_set_items(renderer: *mut RenderHandl
 pub unsafe extern "C" fn snakes_core_item_radius(handle: *const WorldHandle) -> f64 {
     if !valid(handle) {return 0.0;}
     unsafe { &*handle }.world.config().base_radius()*2.1
+}
+
+/// Reserved food flags: nearest IDs+1 in two nibbles; bit 8 second leads,
+/// bit 9 ETAs within 18%. The export scan is heads-only and allocation-free.
+fn prism_race_flags(w:&World,f:&crate::world::Food)->u32 {
+    if w.config().rules!=crate::RuleSet::V2 || !matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed) || f.owner>=0 {return 0;}
+    let mut ids=[0u32;2];let mut distances=[f64::INFINITY;2];let mut etas=[f64::INFINITY;2];
+    for s in w.snakes().filter(|s|s.alive && s.face.target_id==f.id | (1<<63)) {
+        let d=w.displacement(s.segments[0].current,f.p);let distance=(d.x*d.x+d.y*d.y).sqrt();
+        let (speed,turn)=w.motion_limits(s.id as usize,0.0).unwrap();
+        let eta=distance/speed+crate::normalize_angle(d.y.atan2(d.x)-s.angle).abs()/turn;
+        if let Some(i)=(0..2).find(|&i|distance<distances[i]) {
+            if i==0 {ids[1]=ids[0];distances[1]=distances[0];etas[1]=etas[0];}
+            ids[i]=s.id+1;distances[i]=distance;etas[i]=eta;
+        }
+    }
+    ids[0] | (ids[1]<<4) | if etas[1]<etas[0] {256} else {0}
+        | if etas[1].is_finite() && etas[0].max(etas[1])<=etas[0].min(etas[1])*1.18 {512} else {0}
+}
+
+#[cfg(test)]
+mod prism_tests {
+    use super::*;
+    #[test]
+    fn prism_race_export_uses_nearest_committed_heads_and_exact_eta() {
+        let mut w=World::diagnostic_arena(crate::Config {rules:crate::RuleSet::V2,density:0.0,..crate::Config::default()},
+            &[(crate::Point{x:400.0,y:300.0},0.0,24,0.9),(crate::Point{x:400.0,y:330.0},0.0,24,0.9)],&[]).unwrap();
+        let f=crate::world::Food {id:88,kind:crate::FoodKind::PrismSeed,p:crate::Point{x:500.0,y:300.0},owner:-1,..Default::default()};
+        assert_eq!(prism_race_flags(&w,&f),0);
+        w.faces[0].target_id=88 | (1<<63);w.faces[1].target_id=88 | (1<<63);
+        let flags=prism_race_flags(&w,&f);assert_eq!(flags&15,1);assert_eq!((flags>>4)&15,2);assert_eq!(flags&256,0);
+    }
 }

@@ -55,7 +55,7 @@ struct State {
     generation: u32,
     target: u64,
     race_losing_ticks:u8,
-    guarding:bool,guard_radius:f64,
+    guarding:bool,guard_radius:f64,vulturing:bool,vulture_until:u64,vulture_center:Point,
     target_index: usize, // frame-local hint, checked against target identity
     rejected: u64,
     reject_until: u64,
@@ -106,7 +106,8 @@ impl State {
     /// Recovery commitments/rejections belong to motion or their explicit ID.
     fn set_target(&mut self,target:u64) {
         if self.target!=target {
-            self.race_losing_ticks=0;self.guarding=false;self.guard_radius=0.0;
+            if self.vulturing {self.turn_accum=0.0;self.waypoint=None;}
+            self.race_losing_ticks=0;self.guarding=false;self.vulturing=false;self.vulture_until=0;self.guard_radius=0.0;
         }
         self.target=target;
     }
@@ -329,6 +330,7 @@ pub struct AiController {
     opportunities: forecast::Timeline,
     look_deltas:[Point;MAX_SNAKES],
     capsule_etas:[[f64;MAX_SNAKES];crate::MAX_ITEMS],
+    prism:Option<(usize,target::TargetFood)>,
     food: [Option<target::TargetFood>; MAX_FOOD + crate::MAX_ITEMS],
     tick: u64,
     geometry: u64,
@@ -348,7 +350,7 @@ impl Default for AiController {fn default() -> Self {Self::new()}}
 impl AiController {
     pub fn new() -> Self {
         Self {spatial:Spatial::new(),candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],rival_necks:[[0;STEPS+1];MAX_SNAKES],neck_owner:MAX_SNAKES,neck_horizons:[0;MAX_SNAKES],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,profile:[0;5],forecast_profile:[0;5], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],
-            rivals:[Rival::default();MAX_SNAKES],opportunity_rivals:Box::new([Rival::default();MAX_SNAKES]),opportunity_mask:0,rival_limits:[[(0.0,0.0);STEPS+1];MAX_SNAKES], simulation_rivals:Some(Box::new([Rival::default();MAX_SNAKES])),item_forecast:forecast::Items::default(),initial_effects:forecast::Timeline::default(),effects:forecast::Timeline::default(),opportunities:forecast::Timeline::default(),look_deltas:[Point::default();MAX_SNAKES],capsule_etas:[[f64::INFINITY;MAX_SNAKES];crate::MAX_ITEMS],food:[None;MAX_FOOD + crate::MAX_ITEMS],
+            rivals:[Rival::default();MAX_SNAKES],opportunity_rivals:Box::new([Rival::default();MAX_SNAKES]),opportunity_mask:0,rival_limits:[[(0.0,0.0);STEPS+1];MAX_SNAKES], simulation_rivals:Some(Box::new([Rival::default();MAX_SNAKES])),item_forecast:forecast::Items::default(),initial_effects:forecast::Timeline::default(),effects:forecast::Timeline::default(),opportunities:forecast::Timeline::default(),look_deltas:[Point::default();MAX_SNAKES],capsule_etas:[[f64::INFINITY;MAX_SNAKES];crate::MAX_ITEMS],prism:None,food:[None;MAX_FOOD + crate::MAX_ITEMS],
             tick:u64::MAX,geometry:0,seed:0,rng:0x9e3779b97f4a7c15,urgent_used:0,max_radius:0.0,max_forecast_speed:0.0,phase_sweeps:[0;3],planning_speed:[0.0;MAX_SNAKES],motion:[Motion::default();MAX_SNAKES],boosted_motion:[Motion::default();MAX_SNAKES],observed_angles:[0.0;MAX_SNAKES],observed_generations:[0;MAX_SNAKES]}
     }
     pub fn enable_profile(&mut self) {self.profile_enabled=true;}
@@ -360,6 +362,7 @@ impl AiController {
     pub fn decision(&self, id:usize) -> DecisionDiagnostic { self.decisions[id] }
     pub fn debug(&self,id:usize) -> Option<DebugInfo> {self.states.get(id).map(|s|s.debug)}
     /// Actual retained objective, as distinct from the diagnostic shortlist.
+    pub fn vulturing(&self,id:usize)->bool {self.states.get(id).is_some_and(|s|s.vulturing)}
     pub fn selected_target(&self,id:usize) -> Option<u64> {self.states.get(id).map(|s|s.target)}
     pub fn competition_debug(&self,id:usize)->Option<CompetitionDebug> {
         self.states.get(id).map(|s|CompetitionDebug {prey:s.prey.checked_sub(1),coil_radius:s.coil_radius,rush:s.rush,attack_side:if s.attack.valid {s.attack.side} else {0},attack_stage:if !s.attack.valid {0} else if self.tick<s.attack.turn_at {1} else {2}})
@@ -380,8 +383,17 @@ impl AiController {
         if self.cache_epoch==0 {self.body_cache.fill(BodyCache::default());self.cache_epoch=1;}
         self.tick=w.tick(); self.geometry=w.geometry_generation(); self.urgent_used=0;
         self.spatial.rebuild(w);
-        self.food.fill(None);
-        for (i,f) in w.foods().enumerate() {self.food[i]=Some(f.into());}
+        self.food.fill(None);self.prism=None;
+        for (i,f) in w.foods().enumerate() {
+            let mut target:target::TargetFood=f.into();
+            // Like capsule landing, the hot readiness clock is an absolute
+            // endpoint delta. This also handles steering from completed frames.
+            if f.kind==crate::FoodKind::PrismSeed {
+                target.motion_ticks=w.food[i].ripe_tick.saturating_sub(w.tick()).min(u16::MAX as u64) as u16;
+            }
+            if w.config().rules==crate::RuleSet::V2 && matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed) {target.value=90.0/(1.0+target.motion_ticks as f64*STEP_SECONDS*0.35);self.prism=Some((i,target));}
+            self.food[i]=Some(target);
+        }
         // Fixed extra target slots. High-bit IDs distinguish items from food;
         // they reuse target persistence, routing, race and contest handling.
         for (i,item) in w.items().enumerate() {
@@ -645,16 +657,21 @@ impl AiController {
         let advantage=s.segments.len()>=rival_len+6
             && self.opportunities.contact(id,rival_id,phase::step(eta.max(rival_eta)));
         let capsule=f.id & target::ITEM_BIT!=0;
+        let prism=matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed);
         let competition=if capsule {
             let own=self.capsule_etas[state_item_slot(self,f)][id];
             let guard=self.guard_worth(w,s,f) && s.effect_ticks>90 && w.distance_squared(s.segments[0].current,f.position)<(15.0*s.radius).powi(2);
             if f.id!=state.target && !guard && !(own<0.9*rival_eta || (own<1.25*rival_eta && s.segments.len()>=16 && w.boost_ready(id))) {0.0}
             else if rival_eta<own*1.2 {if advantage {1.4} else {1.1}} else {1.0}
+        } else if prism {
+            // Ripening synchronizes arrivals: trailing heads can wait and
+            // pounce too. Ordinary-food loser penalties scattered this field.
+            if rival_eta<eta*1.25 {if advantage {1.35} else {1.1}} else {1.0}
         } else if rival_eta<eta*0.8 {if advantage {0.85} else {0.2}}
             else if rival_eta<eta*1.2 {if advantage {1.35} else {0.65}} else {1.0};
-        let sticky=if f.id==state.target {if capsule {1.8} else {1.28}} else {1.0};
+        let sticky=if f.id==state.target {if capsule || prism {1.8} else {1.28}} else {1.0};
         // ETA already pays for turning; capsules merit deliberate reversals.
-        let forward=if capsule {0.8+0.2*bearing.cos()} else {(0.15+0.85*((bearing.cos()+1.0)*0.5).powi(3)).max(0.05)};
+        let forward=if capsule || prism {0.8+0.2*bearing.cos()} else {(0.15+0.85*((bearing.cos()+1.0)*0.5).powi(3)).max(0.05)};
         value*competition*sticky*forward/(eta+0.7)
     }
     fn shortlist(shortlist:&mut [(f64,usize);5],score:f64,fi:usize) {
@@ -722,6 +739,17 @@ impl AiController {
             }
             if ring>=4 && shortlist[4].0>0.0 {break;}
         }
+        if let Some((fi,f))=self.prism.filter(|(_,f)|f.vacuum_owner<0 && !(f.id==state.rejected && w.tick()<state.reject_until)) {
+            // Exact prize discovery shares ordinary food's endpoint gate:
+            // ripe fruit already in vacuum reach needs no steering pursuit.
+            let contact=target::Contact::forecast(s,f,self.opportunities.track(s.id as usize)).with_guard(state.guarding);
+            if !contact.collected() && !contact.reached(w.distance_squared(straight,f.position),1) {
+                let eta=self.target_arrival(w,s,f);
+                let d=w.displacement(head,f.position);let bearing=normalize_angle(d.y.atan2(d.x)-s.angle).abs();
+                let score=self.target_score(w,s,state,f,eta,bearing,f.value);
+                if !shortlist.iter().any(|(score,i)|*score>0.0 && *i==fi) {Self::shortlist(&mut shortlist,score,fi);}
+            }
+        }
         // Items are at most three, so an exact scan is cheaper than another
         // spatial index and never consumes the 64-food discovery budget.
         for (index,item) in w.items().enumerate() {
@@ -760,7 +788,7 @@ impl AiController {
         }
         let tactical_goal=state.goal;
         let old=state.target;
-        if shortlist[0].0>0.0 && self.food[shortlist[0].1].unwrap().id & target::ITEM_BIT!=0 {
+        if shortlist[0].0>0.0 && (self.food[shortlist[0].1].unwrap().id & target::ITEM_BIT!=0 || matches!(self.food[shortlist[0].1].unwrap().kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed)) {
             if old!=self.food[shortlist[0].1].unwrap().id {state.prey=0;state.clear_attacks(s.angle);state.clear_coil(s.angle);}
             state.harvest_until=0;
         }
@@ -782,15 +810,21 @@ impl AiController {
         if old!=state.target {state.best_distance=f64::MAX;state.last_progress=w.tick();}
         state.debug.flags&=!8;
         if revise_tactics {self.tactics(w,s,state,intelligence);}
-        else if (state.prey!=0 && state.target & target::ITEM_BIT==0) || w.tick()<state.dodge_until {
+        else if (state.prey!=0 && state.target & target::ITEM_BIT==0 && !self.target_food(*state).is_some_and(|f|matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed))) || w.tick()<state.dodge_until {
             state.goal=tactical_goal;state.set_target(0);
             if state.prey!=0 {state.debug.flags|=8;}
         }
-        self.guard_capsule(w,s,state);
+        self.guard_capsule(w,s,state);self.vulture_seed(w,s,state);
         state.waypoint=None;
         let mut tests=0;
-        let route_goal=self.target_food(*state).filter(|_|!state.guarding).map_or(state.goal,|f|target::Contact::forecast(s,f,self.opportunities.track(s.id as usize)).with_guard(state.guarding).approach(w,head,f.position,crate::effects::forecast_step(self.target_arrival(w,s,f))));
-        if self.body_blocked(w,s,head,route_goal,0.0,0.0,&mut tests).0 {
+        let route_goal=self.target_food(*state).filter(|_|!state.guarding && !state.vulturing).map_or(state.goal,|f|target::Contact::forecast(s,f,self.opportunities.track(s.id as usize)).with_guard(state.guarding).approach(w,head,f.position,crate::effects::forecast_step(self.target_arrival(w,s,f))));
+        // A nearby race is evaluated against moving bodies by the ordinary
+        // rollouts. Static route rejection scattered contenders for five
+        // seconds even when a departing tail made capture safely reachable.
+        let nearby_prize=w.config().rules==crate::RuleSet::V2 && self.target_food(*state).is_some_and(|f|
+            matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed)
+            && self.target_arrival(w,s,f)<=4.0);
+        if !nearby_prize && self.body_blocked(w,s,head,route_goal,0.0,0.0,&mut tests).0 {
             state.waypoint=self.spatial.waypoint(head,route_goal,self.mask(w,id));
             if state.waypoint.is_none() && state.debug.flags&8==0 {
                 // Do not commit to the nutritional maximum behind a body
@@ -809,7 +843,7 @@ impl AiController {
                         if w.config().rules==crate::RuleSet::V2 {state.best_distance=f64::MAX;state.last_progress=w.tick();}
                     }
                     state.set_target(f.id);state.target_index=fi;state.goal=f.position;
-                    self.guard_capsule(w,s,state);
+                    self.guard_capsule(w,s,state);self.vulture_seed(w,s,state);
                 }
                 else {
                     state.rejected=state.target;state.reject_until=w.tick()+90;state.set_target(0);
@@ -826,14 +860,14 @@ impl AiController {
         state.last_strategy=w.tick();
     }
     fn trajectory_goal(w:&World,state:State,head:Point)->Point {
-        if state.guarding || state.coil_radius>0.0 {
-            let center=if state.guarding {state.goal} else {state.coil_center};
-            let orbit_radius=if state.guarding {state.guard_radius} else {state.coil_radius};
+        if state.guarding || state.vulturing || state.coil_radius>0.0 {
+            let center=if state.guarding || state.vulturing {state.goal} else {state.coil_center};
+            let orbit_radius=if state.guarding || state.vulturing {state.guard_radius} else {state.coil_radius};
             let d=w.displacement(center,head);
             let radius=(d.x*d.x+d.y*d.y).sqrt().max(1.0);
             let tangent=d.y.atan2(d.x)+state.coil_sign*std::f64::consts::FRAC_PI_2;
-            let contraction=if !state.guarding && state.coil_progress>0.9 {state.coil_pitch/std::f64::consts::TAU} else {0.0};
-            let correction=((radius-orbit_radius)/30.0).atan().clamp(-0.35,0.35);
+            let contraction=if !state.guarding && !state.vulturing && state.coil_progress>0.9 {state.coil_pitch/std::f64::consts::TAU} else {0.0};
+            let correction=((radius-orbit_radius)/if state.vulturing {orbit_radius.max(30.0)} else {30.0}).atan().clamp(-0.35,0.35);
             let angle=tangent+state.coil_sign*((contraction/radius).atan()+correction);
             w.canonical_point(Point{x:head.x+angle.cos()*80.0,y:head.y+angle.sin()*80.0})
         } else {state.waypoint.unwrap_or(state.goal)}
@@ -848,7 +882,7 @@ impl AiController {
             // A pursuit is not itself permission to spend tail. Only a checked
             // cutoff, a valuable contested target or a differential escape is.
             if surge::pursuit_burst(w,s,state) {return 0.6;}
-            if state.prey==0 && state.coil_radius==0.0 && self.food_race(w,s,state) {return 0.6;}
+            if state.coil_radius==0.0 && (state.prey==0 || self.target_food(state).is_some_and(|f|f.kind==crate::FoodKind::Prism)) && self.food_race(w,s,state) {return 0.6;}
             return 0.0;
         }
         let d=w.displacement(s.segments[0].current,state.goal);
@@ -860,6 +894,9 @@ impl AiController {
     fn food_race(&self,w:&World,s:SnakeView<'_>,state:State)->bool {
         if !w.boost_ready(s.id as usize) || state.target==0 || state.waypoint.is_some() {return false;}
         let Some(f)=self.target_food(state).filter(|f|f.vacuum_owner<0) else {return false;};
+        if state.vulturing {return false;}
+        if f.kind==crate::FoodKind::PrismSeed
+            && self.target_arrival(w,s,f)/1.6+0.15<f.motion_ticks as f64*STEP_SECONDS {return false;}
         let worth=f.value.max(self.spatial.cluster_weight(self.spatial.key(f.position)));
         if worth<3.0 {return false;}
         let d=w.displacement(s.segments[0].current,f.position);
@@ -872,6 +909,12 @@ impl AiController {
             if state.guarding || s.segments.len()<16 || angle>=0.45 || w.distance_squared(s.segments[0].current,f.position)>=(18.0*s.radius).powi(2) {return false;}
             let etas=&self.capsule_etas[state_item_slot(self,f)];let own_eta=etas[s.id as usize];
             return etas.iter().enumerate().any(|(id,&eta)|id!=s.id as usize && eta>=own_eta*0.75 && eta<=own_eta*1.25);
+        }
+        if matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed) {
+            let eta=self.target_arrival(w,s,f);
+            return self.rivals.iter().enumerate().any(|(id,r)|id!=s.id as usize && r.alive && {
+                let rival=self.target_arrival(w,w.snake(id).unwrap(),f);rival>=eta*0.75 && rival<=eta*1.25
+            });
         }
         self.rivals.iter().enumerate().any(|(id,r)|id!=s.id as usize && r.alive
             && (target::Contact::forecast(w.snake(id).unwrap(),f,self.opportunities.track(id)).distance(w.distance_squared(r.path[0],f.position).sqrt(),1)-distance).abs()<=distance*0.25)
@@ -937,6 +980,7 @@ impl AiController {
         self.validate_attack(w,s,state);
         let mut own=*self.opportunity_rival(id);
         let capsule=state.target & target::ITEM_BIT!=0;
+        let prize=self.target_food(*state).is_some_and(|f|matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed));
         let aggression=s.traits.aggression*(0.65+0.35*intelligence);
         let advantage=surge::advantage(w,s,if w.config().rules==crate::RuleSet::V2 {4+2+s.segments.len()/100} else {8});
         let interest=if w.config().rules==crate::RuleSet::V2 {0.2} else {0.32};
@@ -981,7 +1025,10 @@ impl AiController {
             state.set_target(0);state.prey=0;state.clear_coil(s.angle);state.track_goal=false;state.clear_attacks(s.angle);state.waypoint=None;state.dodge_until=w.tick()+18;
             return;
         }
-        if capsule {
+        if prize && self.target_food(*state).is_some_and(|f|f.kind==crate::FoodKind::Prism) {
+            state.prey=0;state.clear_attacks(s.angle);state.track_goal=true;return;
+        }
+        if capsule || prize {
             // Bigger contenders can lay a checked cutoff across an approaching
             // rival. The ordinary capsule route remains a competing candidate;
             // smaller contenders retain the direct dart and checked race burst.
@@ -1002,6 +1049,7 @@ impl AiController {
                 let r=self.opportunity_rival(other);
                 if !r.alive || other==id || self.opportunities.phased(other,1) {continue;}
                 let personal=self.grudge_prey(w,s,other);
+                let seed_ambush=self.prism.is_some_and(|(_,f)|f.kind==crate::FoodKind::PrismSeed && w.distance_squared(r.path[0],f.position)<(12.0*r.radius).powi(2));
                 if !personal && (own.len<r.len+advantage || aggression<=interest) {continue;}
                 let distance=w.distance_squared(head,r.path[0]).sqrt();
                 if distance>if surge::active(w,s) {850.0} else {620.0} {continue;}
@@ -1015,7 +1063,7 @@ impl AiController {
                 let facing=w.displacement(head,r.path[36]);
                 let alignment=normalize_angle(facing.y.atan2(facing.x)-s.angle).cos();
                 let motive=if personal {aggression.max(interest+0.1)} else {aggression};
-                let v=motive*(r.len as f64).sqrt()*(1.3+alignment)/(eta+1.0)*if personal {1.4} else {1.0};
+                let v=motive*(r.len as f64).sqrt()*(1.3+alignment)/(eta+1.0)*if personal {1.4} else if seed_ambush {2.0} else {1.0};
                 if v>value {value=v;state.prey=other+1;}
             }
             // Paid boosts already pass their own value and readiness gates;
@@ -1286,6 +1334,13 @@ impl AiController {
                 rotation=(turn*STEP_SECONDS).sin_cos();
             }
             if tracks_goal {
+                // The wait and its pounce are one forecasted maneuver. An
+                // endless hypothetical orbit falsely rejected safe short
+                // waits because it would eventually close across our body.
+                if trajectory_state.vulturing && w.tick()+j.saturating_sub(1) as u64>=trajectory_state.vulture_until {
+                    trajectory_state.vulturing=false;
+                    if let Some((position,_))=target {trajectory_state.goal=position;}
+                }
                 Self::advance_spiral(w,&mut trajectory_state,c.path[j-1]);
                 if state.coil_radius>0.0 && (trajectory_state.coil_radius<=0.0 || speed*Self::spiral_curvature(trajectory_state.coil_radius,trajectory_state.coil_pitch)>turn) {break;}
             }
@@ -1475,6 +1530,12 @@ impl AiController {
         let alignment=if aligned {1.0} else {normalize_angle(heading.y.atan2(heading.x)-c.angle).cos()};
         c.score=(old-new)*0.9+alignment*12.0+c.clearance.clamp(-10.0,50.0)*0.22
             -diff.abs()*4.0+diff*s.traits.turn_bias*3.0-hysteresis-normalize_angle(c.desired-state.desired).abs()*2.0;
+        // A checked ripe capture must outweigh ordinary steering continuity;
+        // otherwise a vulture keeps its old tangent after the countdown ends.
+        // Viability and area still rank ahead of every utility score.
+        if w.config().rules==crate::RuleSet::V2 && captured && self.target_food(state).is_some_and(|f|matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed)) {
+            c.score+=600.0;
+        }
         if state.prey!=0 {
             let prey=self.opportunity_rival(state.prey-1);
             let mut intercept=f64::MAX;let mut cutoff=f64::MAX;
@@ -1534,7 +1595,7 @@ fn state_item_slot(ai:&AiController,f:target::TargetFood)->usize {
 impl Controller for AiController {
     fn face_intent(&self,id:u32)->crate::controller::FaceIntent {
         let s=self.states[id as usize];
-        crate::controller::FaceIntent {target_id:if s.target & target::ITEM_BIT!=0 {s.target & !target::ITEM_BIT} else {0},
+        crate::controller::FaceIntent {target_id:if s.target & target::ITEM_BIT!=0 {s.target & !target::ITEM_BIT} else if self.target_food(s).is_some_and(|f|matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed)) {s.target | target::ITEM_BIT} else {0},
             prey:s.prey.checked_sub(1).map_or(u32::MAX,|i|i as u32),guarding:s.guarding,has_target:s.target!=0 || s.prey!=0,
             look:self.look_deltas[id as usize]}
     }
@@ -1576,15 +1637,18 @@ impl Controller for AiController {
             state.clear_coil(s.angle);
             state.goal=w.canonical_point(Point{x:s.segments[0].current.x+s.angle.cos()*300.0,y:s.segments[0].current.y+s.angle.sin()*300.0});
         }
+        let planned_pounce=self.prism.is_some_and(|(index,f)|f.kind==crate::FoodKind::Prism
+            && f.id==state.target && f.vacuum_owner<0
+            && w.tick()<=w.food[index].ripe_tick.saturating_add(120));
         let turned=normalize_angle(s.angle-state.last_angle);
         state.last_angle=s.angle;
         // Guard turns are intentional just like coils. Do not carry their
         // accumulated rotation into the direct approach when the guard ends.
-        if state.guarding {state.turn_accum=0.0;}
+        if state.guarding || state.vulturing || planned_pounce {state.turn_accum=0.0;}
         else if turned.abs()<0.015 {state.turn_accum*=0.90;}
         else if turned*state.turn_accum<0.0 {state.turn_accum=turned;}
         else {state.turn_accum+=turned;}
-        if state.turn_accum.abs()>2.8 && w.tick()>=state.orbit_until && state.coil_radius==0.0 && !state.guarding {
+        if state.turn_accum.abs()>2.8 && w.tick()>=state.orbit_until && state.coil_radius==0.0 && !state.guarding && !state.vulturing && !planned_pounce {
             state.rejected=state.target;state.reject_until=w.tick()+150;state.set_target(0);state.waypoint=None;
             state.orbit_until=w.tick()+36;state.escape_until=0;state.turn_accum=0.0;state.prey=0;state.clear_attacks(s.angle);
             state.desired=s.angle;state.turn_until=u64::MAX;state.track_goal=false;state.commit_until=w.tick()+12;
@@ -1598,10 +1662,11 @@ impl Controller for AiController {
                 let contact=target::Contact::forecast(s,f,self.opportunities.track(s.id as usize));
                 let d=contact.distance(distance.sqrt(),1);
                 if d+8.0<state.best_distance {state.best_distance=d;state.last_progress=w.tick();}
-                if !state.guarding && w.tick().saturating_sub(state.last_progress)>75 {
+                let progress_budget=if w.config().rules==crate::RuleSet::V2 && f.kind==crate::FoodKind::Prism {120} else {75};
+                if !state.guarding && !state.vulturing && !planned_pounce && w.tick().saturating_sub(state.last_progress)>progress_budget {
                     state.rejected=state.target;state.reject_until=w.tick()+150;state.set_target(0);
                 }
-                if !state.guarding && state.track_goal && (contact.collected() || contact.with_guard(state.guarding).ahead(w,s.segments[0].current,s.angle,w.motion_limits(id,Self::boost_request(w,s,state.rush)).unwrap().0*STEP_SECONDS,f.position)) {
+                if !state.guarding && !state.vulturing && state.track_goal && (contact.collected() || contact.with_guard(state.guarding).ahead(w,s.segments[0].current,s.angle,w.motion_limits(id,Self::boost_request(w,s,state.rush)).unwrap().0*STEP_SECONDS,f.position)) {
                     state.set_target(0);state.track_goal=false;state.desired=s.angle;state.turn_until=u64::MAX;
                 }
                 if state.waypoint.is_some_and(|p|w.distance_squared(s.segments[0].current,p)<self.spatial.dx.powi(2)*0.5) {state.waypoint=None;}
@@ -1698,7 +1763,10 @@ impl Controller for AiController {
                     candidates[kind].replies=blocked;
                     // An observed Surge makes this already-checked response
                     // free; spend its short window on combat opportunities.
-                    let response_value=if surge::active(w,s) && candidates[kind].attack.free_boost {325.0} else {150.0};
+                    let seed_cutoff=self.prism.is_some_and(|(_,f)|f.kind==crate::FoodKind::PrismSeed
+                        && w.distance_squared(self.rivals[state.prey-1].path[0],f.position)<(12.0*self.rivals[state.prey-1].radius).powi(2));
+                    let response_value=if surge::active(w,s) && candidates[kind].attack.free_boost {325.0}
+                        else if seed_cutoff {250.0} else {150.0};
                     candidates[kind].score+=blocked as f64*response_value*s.traits.aggression-candidates[kind].attack.error*0.7;
                 }
             }

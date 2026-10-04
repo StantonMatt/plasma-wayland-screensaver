@@ -224,8 +224,8 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
         node->setFlag(QSGNode::OwnsMaterial);
         m_geometryCapacity = 0;
     }
-    // Freeze all presentation-time animation at the same boundary for both
-    // geometry formats, including transient ages and discrete head animation.
+    // Freeze procedural animation at the same boundary for both geometry formats.
+    // Rust advances event lifetimes from simulation time while this clock is frozen.
     snakes_core_render_set_reduced_motion(node->renderer.get(), uint32_t(m_shaderTimeFrozen));
     snakes_core_render_set_clock_rect(node->renderer.get(), m_clockRect.x(), m_clockRect.y(),
                                      qMax(0.0, m_clockRect.width()), qMax(0.0, m_clockRect.height()));

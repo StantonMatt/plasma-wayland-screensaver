@@ -143,7 +143,10 @@ Ranking is fun to watch per unit of cost and risk. Ticks are the 30 Hz simulatio
 
 - **Spawn.** One at a time, every 1200-1800 ticks (40-60 s), using the item spawn-location rule.
 - **Seed** (new food kind PrismSeed). Not edible and not an obstacle. Ripens over 90 ticks (3 s), then becomes Prism (value 5, life 900 ticks).
+- **Seed look.** A white pearl grows inside a spectral timer ring, with a white fuse spark at its leading edge and a cool haze. The prism family is displayed at 1.6x its simulation size; eat reach stays unchanged. Mono uses silver, and Pastel softens the spectrum.
+- **Ripe look.** An iridescent pearl sits inside a circular spectral halo and eight alternating dispersion rays. Ripening adds one expanding ring over 1 s and a small orb overshoot. The halo drains over the final 5 s, then the prize fades for 1 s without blinking. Halo hue turns at 0.12 rev/s, rays at 0.25 rad/s, and glow twinkle stays at ±15% and 0.35 Hz.
 - **Feast.** Eating a Prism emits a Feast event: the eater gets Happy, a Heart bubble, a rainbow wave and a gulp bulge, and Denied is resolved as in 3.2.
+- **Rainbow wake.** A luminous comet follows the bulge: a 2-segment front, 5 full-strength segments toward the head, then an exponential wake cut at 20 segments. One continuous spectrum spans 11 segments, drifting at 0.3 cycles/s; albedo blends toward the hue while light lifts pale snakes. The wake fades over 0.5 s after reaching the tail.
 - **Gulp bulge.** Also triggered by a head-on win (the winner "swallowed" the loser). Rendered as width x (1 + 0.35 e^(-z^2)), z = (i - c)/2.1. The centre c travels head to tail in max(1 s, length/26 s), capped at 3.6 s. At most 2 bulges per snake.
 - **Principle exception.** The bulge is visual only and up to +35% wide. Like breathing, it is a stated exception to "what you see is what kills you": it is transient and inside the body's own glow.
 
@@ -159,10 +162,11 @@ Ranking is fun to watch per unit of cost and risk. Ticks are the 30 Hz simulatio
 | Element | Vertices | Fragment | CPU / sim |
 |---|---|---|---|
 | Seed with ripening ring | 0 extra (food sprite kind 8; ripeness in the existing life byte) | progress-arc SDF | one timer |
-| Rainbow wave | 0 | 0 (vertex colour) | hue from a 6-entry table for at most about 16 vertices under the wave |
+| Ripe prism | 0 extra (same 6-vertex kind-8 quad; ripe age in byte 3) | pearl, halo, rays and one ripening ring | one age byte |
+| Rainbow wave | 0 | existing wave light, using the vertex colour | one 6-entry hue-table lerp for about 22 segments per Feast |
 | Bulge | 0 | 0 (the quad widens with the vertex width) | one multiply-add for about 13 vertices per bulge |
 
-**Reduced motion.** The ring still fills (it is information). No orbiting dot, no hue drift in the rainbow; the bulge plays 40% faster.
+**Reduced motion.** The seed ring still fills and its fuse spark stays (they are information). Halo hue, rays and rainbow hue drift are frozen; rays sit at a 0.2 rad offset. The ripening ring lasts 0.6 s with no orb overshoot. The bulge and wake play 40% faster, with a 0.3 s tail fade.
 
 **Risk.** Low.
 

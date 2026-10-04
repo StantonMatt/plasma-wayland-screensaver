@@ -68,10 +68,14 @@ impl World {
         let forced=matches!(glyph,Glyph::Anger|Glyph::Heart);
         if !forced && self.faces[id].bubble_cooldown>0 {return;}
         let own=self.bubbles().iter().position(|b|b.snake_id==id as u32);
-        // Forced emotions replace the owner's bubble. A full global cap still
-        // drops an emission for a different snake; never evict another character.
+        // Forced emotions replace the owner's bubble, or the oldest global
+        // bubble at capacity (prototype rule). Heart/Denied stay visible while
+        // the one-owner and three-bubble limits remain intact.
         let slot=if let Some(i)=own {if !forced {return;} i}
-            else {if self.bubble_count==MAX_BUBBLES {return;} let i=self.bubble_count;self.bubble_count+=1;i};
+            else if self.bubble_count==MAX_BUBBLES {
+                if !forced {return;}
+                self.bubbles().iter().enumerate().max_by_key(|(_,b)|b.age_ticks).unwrap().0
+            } else {let i=self.bubble_count;self.bubble_count+=1;i};
         self.bubbles[slot]=Bubble {snake_id:id as u32,generation:self.snakes[id].generation,
             glyph:glyph as u8,..Bubble::default()};
         self.faces[id].bubble_cooldown=150;
@@ -82,8 +86,8 @@ impl World {
         let old=self.faces[id];
         let target=intent.target_id;
         if old.target_id!=target {
-            if old.target_id!=0 && old.target_ticks>=30 && self.items.iter().any(|i|i.id==old.target_id) {self.emit_bubble(id,Glyph::Question);}
-            else if target!=0 {self.emit_bubble(id,Glyph::Alert);}
+            if old.target_id!=0 && old.target_ticks>=30 && (self.items.iter().any(|i|i.id==old.target_id) || self.food.iter().any(|f|f.id | (1<<63)==old.target_id)) {self.emit_bubble(id,Glyph::Question);}
+            else if target!=0 && (self.items.iter().any(|i|i.id==target) || self.food.iter().any(|f|f.id | (1<<63)==target)) {self.emit_bubble(id,Glyph::Alert);}
         }
         let desired=self.snakes[id].desired;
         let f=&mut self.faces[id];
@@ -202,7 +206,10 @@ mod tests {
         assert_eq!(w.bubbles()[0].age_ticks,10,"ordinary emission obeys cooldown");
         w.emit_bubble(0,Glyph::Anger);assert_eq!(w.bubbles()[0].glyph,Glyph::Anger as u8);
         assert_eq!(w.bubbles()[0].age_ticks,0);
+        w.bubbles[2].age_ticks=12;
         w.emit_bubble(3,Glyph::Heart);assert_eq!(w.bubbles().len(),3,"forced replacement cannot exceed cap");
+        assert!(w.bubbles().iter().any(|b|b.snake_id==3 && b.glyph==Glyph::Heart as u8));
+        assert!(!w.bubbles().iter().any(|b|b.snake_id==2),"oldest global bubble is evicted");
         w.snakes[1].generation+=1;w.advance_presentation();
         assert_eq!(w.bubbles().len(),2,"old life bubbles disappear");
         for _ in 0..44 {w.advance_presentation();}assert!(w.bubbles().is_empty());

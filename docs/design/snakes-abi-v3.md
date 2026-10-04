@@ -117,3 +117,67 @@ exported directly from the world record, keeping the copied AI FoodView at most
 contains only contact/valuation fields. A nonzero-payload FFI test covers this
 separation. All production changes use
 fixed arrays or existing reserved vectors.
+
+## S2 (0.12.0): reserved fields in use, ABI still 3
+
+Prisms follow **Power-ups** and are V2-only. Classic takes no new RNG draws.
+The V2 scheduler draws one integer timer in 1200–1800 ticks at initialization
+and re-enable. At expiry, if the slot is free and food has room, it uses twelve
+XY candidate pairs for reachable Prism placement, then the existing food phase
+draw on success, then draws the next timer. Skipped or impossible spawns draw
+only the next timer (plus candidate pairs if placement was attempted). Capsules
+retain their uniform maximum-body-clearance placement.
+Prism candidates prefer live heads with no capsule commitment, falling back to
+all live heads. Each candidate projects onto a head's approach-side circle at
+3.1–3.5 seconds of travel, with orbit radius enlarged for physical turning limits
+and body length. Candidates require six base radii of continuous-body clearance,
+20 base radii from capsules, and the existing ten-base-radius deadly-wall margin;
+the score favors the earliest two turn-aware arrivals. Tiny deadly arenas with
+no wall-safe area return before candidate draws. No second prize appears while
+a seed, ripe fruit or vacuum-claimed fruit exists.
+
+Prisms export through the **food** array, not the item array: PrismSeed=4
+ripens for 90 ticks (three seconds at 30 Hz), then becomes Prism=3. Both retain
+the same food ID and absolute `ripe_tick = spawn tick + 90`. Seed `motion_ticks`
+is the remaining countdown, and `life_fraction` is **progress**:
+`round((90 - min(motion_ticks, 90)) * 255 / 90)`. The first ripe endpoint sets
+`motion_ticks` to zero and starts exactly 900 ticks of active life; ripe
+`life_fraction` becomes the usual remaining-life fraction (255 down to 0). A
+vacuum claim locks that lifetime. Nutrition is 5 and exported `size` is
+`0.62 * base_radius`; `phase` uses the ordinary food phase draw. Reserved meteor
+origin and vortex capture fields remain zero for these prizes.
+
+The 24-byte shader vertex packs both food kinds as sprite kind 8 in `params[0]`;
+`params[1]` is the phase normalized modulo 2π and scaled to 0–255;
+`params[2]` is `life_fraction`. `params[3] = 255` identifies a seed; ripe fruit uses 0–254 for its interpolated
+age since `ripe_tick`, reaching 254 after 30 ticks (18 with reduced motion).
+A fixture with `ripe_tick = 0` exports ripe age 254. Sprite, food and item kinds
+use separate namespaces. The 12-byte fallback draws the seed/progress ring and
+ripe fruit directly from the same food records.
+
+Neither a seed nor its announcement blocks movement or permits a vacuum claim.
+All target forecasts and the mechanics use the shared endpoint eligibility
+primitive. Prism targets retain food IDs internally; face intent namespaces
+those IDs with bit 63, keeping them distinct from capsule IDs.
+
+`face_flags &4` means committed to the one live prism prize. `food_flags`
+packs its two spatially nearest committed heads: IDs+1 in bits 0–3 and 4–7
+(zero means absent), bit 8 means the second head leads, bit 9 means their
+turn-aware ETAs are within 18%. The export computes ETAs with actual motion
+limits; no record size, signature, sentinel or fingerprint changes.
+
+Feast=10 carries the eater's generation and gulp duration. It gives Happy for
+45 ticks, forces a Heart bubble within the existing cap, and resolves
+one nearest committed denial within 13 radii. Forced Heart/Anger replaces its
+owner's bubble or evicts the oldest global bubble when all three slots are full,
+matching the prototype; ordinary emissions still drop when full. Each gulp
+records start tick, duration `round(30 * clamp(length/26, 1, 3.6))`, origin 0 and strength .35.
+Head-on wins also gulp; ties and body kills do not. Two slots replace the oldest
+active gulp when full. Widening is visual, never collision geometry; overlapping
+gulps use the larger envelope and remain at most +35%. Disabling Power-ups
+removes prizes and clears presentation gulps; subsequent V2 head-on wins still
+gulp as ordinary combat presentation.
+
+The only checked-in golden mechanics trace is Classic and remains unchanged.
+V2 startup/spawn RNG changes deliberately; no existing V2 golden trace was
+regenerated or silently relabelled. See the S2 performance report for checks.

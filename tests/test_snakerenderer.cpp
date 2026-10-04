@@ -1036,6 +1036,61 @@ private Q_SLOTS:
         delete node;
     }
 
+    void reducedMotionFeastAfterFreeze_data()
+    {
+        QTest::addColumn<bool>("shader");
+        QTest::newRow("classic") << false;
+        QTest::newRow("shader") << true;
+    }
+
+    void reducedMotionFeastAfterFreeze()
+    {
+        QFETCH(bool, shader);
+        SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest = shader;
+        renderer.setSize({3440,1440});
+        auto frame = makeFrame(48,1,0);
+        frame.snakes[0].flags = 0;
+        renderer.syncFrame(frame,palette,0.5,true);
+        renderer.setShaderTimeFrozen(true);
+        auto *node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr,nullptr));
+        const auto plain = geometryBytes(node);
+        const auto frozenTime = renderer.m_frozenShaderTime;
+        frame.info.tick = 705; frame.info.simulation_time = 23.5;
+        frame.snakes[0].bulges[0] = {690,55,0,0.35f};
+        snakes_core_event feast{};
+        feast.tick = 690; feast.snake_id = 0; feast.generation = 1;
+        feast.kind = SNAKES_CORE_EVENT_FEAST; feast.duration_ticks = 55;
+        frame.events.push_back(feast);
+        renderer.syncFrame(frame,palette,0.5,true);
+        renderer.presentFrame(23.5,0.5);
+        renderer.updatePaintNode(node,nullptr);
+        QCOMPARE(geometryBytes(node).size(),plain.size());
+        QVERIFY(geometryBytes(node) != plain);
+        // Check colour independently of the gulp's wider geometry.
+        bool rainbow = false;
+        if (shader) {
+            const auto *v = static_cast<const snakes_core_shader_vertex *>(node->geometry()->vertexData());
+            for (int j=0; j<node->geometry()->vertexCount(); ++j)
+                rainbow |= v[j].params[0] == 0 && v[j].params[3] >= 150;
+            const auto *material = static_cast<const SnakeMaterial *>(node->material());
+            QCOMPARE(material->time,float(frozenTime));
+            QCOMPARE(material->animationTime,float(frozenTime));
+            QCOMPARE(material->motionScale,0.6f);
+        } else {
+            const auto *v = node->geometry()->vertexDataAsColoredPoint2D();
+            for (int j=0; j<node->geometry()->vertexCount(); ++j)
+                rainbow |= v[j].r > palette[0].red() && v[j].g < palette[0].green();
+        }
+        QVERIFY(rainbow);
+        frame.events.clear(); frame.info.tick = 735; frame.info.simulation_time = 24.5;
+        renderer.syncFrame(frame,palette,0.5,true);
+        renderer.presentFrame(24.5,0.5);
+        renderer.updatePaintNode(node,nullptr);
+        QCOMPARE(geometryBytes(node),plain);
+        delete node;
+    }
+
     void reducedMotionFlagReachesBothFormats_data()
     {
         QTest::addColumn<bool>("shader");
@@ -1247,12 +1302,109 @@ private:
         return frame;
     }
 
+    // True 1080p proportions: base radius 8.1 px, prize 0.62*base, capsule 2.1*base.
+    // REAL_SHIFT offsets gulp/ripe ages; REAL_LIFE tests expiry; REAL_BOOST mixes wave light.
+    static SnakeFrame prismFrame()
+    {
+        constexpr double base = 8.1;
+        const qint64 tickShift = qEnvironmentVariableIntValue("REAL_SHIFT");
+        const auto shiftedTick = [tickShift](qint64 tick) { return uint64_t(qMax(qint64(0), tick + tickShift)); };
+        SnakeFrame frame;
+        frame.info = {600, 20, 1280, 720, 0, 1, 0, {}, {}};
+        frame.itemRadius = 2.1 * base;
+        frame.snakes.reserve(6); // addSnake references remain valid while the fixture is assembled.
+        auto addSnake = [&](uint32_t id, uint32_t color, double r, uint32_t len, double hx, double hy,
+                            double heading, double amp, double wave) -> snakes_core_snake & {
+            snakes_core_snake s{};
+            s.id = id; s.generation = 1; s.alive = 1; s.color_index = color; s.radius = r;
+            s.angle = heading; s.desired_angle = heading; s.target_item = 255;
+            s.grudge_snake_id = UINT32_MAX;
+            s.segment_offset = frame.segments.size(); s.segment_count = len;
+            const double dx = -std::cos(heading), dy = -std::sin(heading);
+            const double nx = -dy, ny = dx;
+            for (uint32_t j = 0; j < len; ++j) {
+                const double along = j * 1.18 * r;
+                const double side = amp * r * std::sin(j * wave);
+                const float px = hx + dx * along + nx * side;
+                const float py = hy + dy * along + ny * side;
+                frame.segments.push_back({px, py, px, py});
+            }
+            frame.snakes.push_back(s);
+            return frame.snakes.back();
+        };
+        auto addFood = [&](uint64_t id, double x, double y, double size, uint32_t color, uint8_t kind, uint8_t life,
+                           uint16_t motion) {
+            snakes_core_food f{};
+            f.id = id; f.x = x; f.y = y; f.size = size; f.color_index = color; f.kind = kind;
+            f.life_fraction = life; f.motion_ticks = motion; f.phase = float(id);
+            f.ripe_tick = kind == SNAKES_CORE_FOOD_PRISM_SEED ? 600 + motion : kind == SNAKES_CORE_FOOD_PRISM ? 560 : 0;
+            frame.food.push_back(f);
+        };
+        auto feast = [&](uint32_t id, uint64_t tick, uint16_t duration) {
+            snakes_core_event e{};
+            e.tick = tick; e.snake_id = id; e.generation = 1;
+            e.kind = SNAKES_CORE_EVENT_FEAST; e.duration_ticks = duration;
+            frame.events.push_back(e);
+        };
+        const double prize = 0.62 * base;
+        // Contested ripe prism first: prism race arcs use the first seed/fruit.
+        addFood(1, 640, 300, prize, 1, SNAKES_CORE_FOOD_PRISM, 250, 0);
+        auto &a = addSnake(0, 2, base, 20, 640 - 8 * base, 300 + 2 * base, -0.15, 0.6, 0.35);
+        a.face_flags = 4; a.target_item = 255; a.mood = SNAKES_CORE_MOOD_CALM; a.mood_intensity = 255;
+        auto &b = addSnake(1, 4, base * 1.05, 26, 640 + 11 * base, 300 - 3 * base, std::acos(-1.0) + 0.2, 0.7, 0.3);
+        b.face_flags = 4; b.target_item = 255; b.mood = SNAKES_CORE_MOOD_CALM; b.mood_intensity = 255;
+        // Row 1: seeds 0/33/67/100 %, a lone ripe prism, a capsule and ordinary food.
+        const double seedX[4] = {110, 240, 370, 500};
+        const uint8_t seedLife[4] = {0, 85, 170, 255};
+        const uint16_t seedMotion[4] = {90, 60, 30, 1};
+        for (int k = 0; k < 4; ++k) addFood(2 + k, seedX[k], 95, prize, 1, SNAKES_CORE_FOOD_PRISM_SEED, seedLife[k], seedMotion[k]);
+        addFood(6, 650, 95, prize, 1, SNAKES_CORE_FOOD_PRISM,
+                qEnvironmentVariableIsSet("REAL_LIFE") ? uint8_t(qBound(0, qEnvironmentVariableIntValue("REAL_LIFE"), 255)) : 250, 0);
+        frame.food.back().ripe_tick = shiftedTick(600);
+        snakes_core_item item{};
+        item.id = 1; item.kind = 1; item.x = 800; item.y = 95;
+        item.age_ticks = 75; item.life_ticks = 705; item.leader_snake_id = UINT32_MAX;
+        item.contender_ids[0] = item.contender_ids[1] = UINT32_MAX;
+        item.contender_etas[0] = item.contender_etas[1] = INFINITY;
+        item.guard_snake_id = UINT32_MAX; item.radius = frame.itemRadius;
+        frame.items.push_back(item);
+        for (int k = 0; k < 6; ++k) {
+            const double value = k < 3 ? 0.5 : 1.4;
+            addFood(10 + k, 920 + k * 24, 95, base * (0.23 + value * 0.13), uint32_t(k), SNAKES_CORE_FOOD_SPARK, 255, 0);
+        }
+        auto &calm = addSnake(2, 0, base, 16, 1150, 95, 0, 0.5, 0.4);
+        calm.mood_intensity = 255;
+        // Gulps: hatchling early, adult mid, violet late.
+        auto &h = addSnake(3, 2, base, 20, 420, 575, 0.05, 0.9, 0.32);
+        h.mood = SNAKES_CORE_MOOD_HAPPY; h.mood_intensity = 255; h.happy_ticks = 30;
+        h.bulges[0] = {shiftedTick(590), 30, 0, 0.35f};
+        feast(3, shiftedTick(590), 30);
+        auto &adult = addSnake(4, 0, base * 1.2, 80, 1180, 470, 0.0, 1.4, 0.11);
+        adult.mood = SNAKES_CORE_MOOD_HAPPY; adult.mood_intensity = 255; adult.happy_ticks = 30;
+        adult.bulges[0] = {shiftedTick(570), 92, 0, 0.35f};
+        if (qEnvironmentVariableIsSet("REAL_BOOST")) { adult.flags |= SNAKES_CORE_BOOSTING; h.flags |= SNAKES_CORE_BOOSTING; }
+        feast(4, shiftedTick(570), 92);
+        auto &v = addSnake(5, 3, base * 1.1, 48, 1180, 640, 0.0, 1.2, 0.16);
+        v.mood = SNAKES_CORE_MOOD_HAPPY; v.mood_intensity = 255; v.happy_ticks = 30;
+        v.bulges[0] = {shiftedTick(562), 55, 0, 0.35f};
+        feast(5, shiftedTick(562), 55);
+        frame.info.bubble_count = 1;
+        frame.info.bubbles[0] = {4, 1, 15, SNAKES_CORE_GLYPH_HEART, 0};
+        return frame;
+    }
+
     static SnakeFrame s1ChaosFrame(bool features)
     {
         // The approved spec's ~8k mature estimate. The older stress fixture
         // (14*120 segments + 400 food) already exceeds the 9.6k chaos ceiling.
         auto frame = makeFrame(90, 14, 300);
         if (!features) return frame;
+        frame.snakes[2].bulges[0] = {585,104,0,0.35f};
+        frame.snakes[3].bulges[0] = {575,104,0,0.35f};
+        snakes_core_event feast{};
+        feast.tick=585; feast.snake_id=2; feast.generation=1;
+        feast.kind=SNAKES_CORE_EVENT_FEAST; feast.duration_ticks=104;
+        frame.events.push_back(feast);
         frame.info.bubble_count = 3;
         for (uint32_t j = 0; j < 3; ++j)
             frame.info.bubbles[j] = {j, 1, 12, uint8_t(j), 0};
@@ -1387,11 +1539,14 @@ private Q_SLOTS:
         QTest::addColumn<bool>("powerups");
         QTest::addColumn<bool>("faces");
         QTest::addColumn<bool>("monoPalette");
-        QTest::newRow("shader") << false << false << false << false;
-        QTest::newRow("driver-rejection-fallback") << true << false << false << false;
-        QTest::newRow("powerups") << false << true << false << false;
-        QTest::newRow("faces") << false << false << true << false;
-        QTest::newRow("faces-mono") << false << false << true << true;
+        QTest::addColumn<bool>("prism");
+        QTest::newRow("shader") << false << false << false << false << false;
+        QTest::newRow("driver-rejection-fallback") << true << false << false << false << false;
+        QTest::newRow("powerups") << false << true << false << false << false;
+        QTest::newRow("faces") << false << false << true << false << false;
+        QTest::newRow("faces-mono") << false << false << true << true << false;
+        QTest::newRow("prism") << false << false << false << false << true;
+        QTest::newRow("prism-mono") << false << false << false << true << true;
     }
 
     void captureShaderFixture()
@@ -1400,6 +1555,7 @@ private Q_SLOTS:
         QFETCH(bool, powerups);
         QFETCH(bool, faces);
         QFETCH(bool, monoPalette);
+        QFETCH(bool, prism);
         const auto colors = SnakeSimulation::colors(monoPalette ? QStringLiteral("mono") : QStringLiteral("ocean"));
         const auto path = qEnvironmentVariable("SNAKES_CAPTURE_PATH");
         if (path.isEmpty()) QSKIP("Set SNAKES_CAPTURE_PATH to capture the RHI fixture");
@@ -1429,14 +1585,14 @@ private Q_SLOTS:
             };
         }
         renderer.setSize(QSizeF(1280, 720));
-        frame = faces ? facesFrame(false) : powerups ? powerupsFrame() : anatomyFrame();
+        frame = prism ? prismFrame() : faces ? facesFrame(false) : powerups ? powerupsFrame() : anatomyFrame();
         if (faces) {
             adultFrame = facesFrame(true);
             adultRenderer.setSize({1280,720});
             adultRenderer.syncFrame(adultFrame,colors,1,true);
         }
         // Capture the R8 atlas and capsule contours through a real RHI path.
-        for (uint8_t kind = 1; !powerups && !faces && kind <= 3; ++kind) {
+        for (uint8_t kind = 1; !powerups && !faces && !prism && kind <= 3; ++kind) {
             snakes_core_item item{};
             item.id = kind; item.kind = kind;
             item.x = 180 + (kind - 1) * 400; item.y = 650;
@@ -1472,6 +1628,7 @@ private Q_SLOTS:
             ++renderer.m_pendingHistoryCount;
         }
         renderer.syncFrame(frame, colors, 1, true);
+        if (prism && qEnvironmentVariableIsSet("REAL_CALM")) renderer.setShaderTimeFrozen(true);
         window.show();
         QVERIFY(QTest::qWaitForWindowExposed(&window));
         QVERIFY(window.rendererInterface()->graphicsApi() != QSGRendererInterface::Software);
