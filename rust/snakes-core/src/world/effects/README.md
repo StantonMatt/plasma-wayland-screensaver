@@ -57,3 +57,9 @@ burst price is latched before projection, effect expiry does not charge an
 ongoing free burst, and boost/cooldown/Frost ordering follows `advance_boost`.
 All effect-aware AI queries use this convention, including future food bonuses
 and both parties' Phase contact lethality.
+
+S3 adds Venom to `ENABLED_KINDS` with duration 240. Its neutral movement/feed
+modifiers deliberately use the default hook: bite dispatch belongs to the body
+collision pass (`world/venom.rs`), after endpoint pickups, never to unchecked
+final AI steering. Immunity/stump state lives in the cold face array, keeping
+copied motion Snake records unchanged. Sever food is delayed in reserved storage.

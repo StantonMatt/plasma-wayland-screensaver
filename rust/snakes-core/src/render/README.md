@@ -242,8 +242,10 @@ Body along coordinates count from the tail. The four params bytes mean:
 | Continuous contrail | 10 | reserved | reserved | reserved |
 | Impact / succession / boost ring | 6 / 7 / 9 | event seed | reserved | normalized effect age |
 | Prism / PrismSeed (S2) | 8 | phase | ripe life / seed progress | 255 seed; 0..254 ripe age over 1 s (0.6 s in Calm) |
+| Acid glow (S3, colour alpha = strength) | 25 | 0 | 0 | 0 |
 
-Kinds 11–31 reserve item and power-up sprites. No atlas is needed until R3.
+Kinds 11–31 were reserved for item and power-up sprites in R2; subsequent
+allocations are documented below. No atlas is needed until R3.
 All allocations occur when the render handle or retained QSG buffer is created
 or grown. Taper multipliers and shader alpha bytes are cached per snake length, using the exact shared
 `shape::taper` profile. Normals are prepared once per snake, with bounded f64
@@ -686,3 +688,36 @@ life byte (0..255), `REAL_CALM=1` freezes the presentation clock, and
 `REAL_BOOST=1` overlays boost waves. No `REAL_FIXTURE` switch is needed.
 The S2 chaos fixture adds two active gulps and a Feast wave
 without extra vertices. Hardware capture/pacing still requires a live GPU session.
+
+## S3 Venom
+
+`venom.rs` reserves full prior-frame trails and two 800-point orphan slots at
+construction. Compact tail history can deliver Sever without replacing those
+trails; generation, reset and geometry changes invalidate stale copies. The
+cut's original taper is retained. Orphan shader edges use the live-body contract:
+extrusion `r*BODY*width`, across UV `width`, and taper in colour alpha. The pattern
+tier follows the victim's post-cut length; `along` counts original source segments
+so resampling cannot stretch chevrons. A 60% white snap fades over 1/8 s, then the
+piece uses its palette colour and the ordinary corpse boost during dissolve.
+A 256-entry sine table drives lateral wriggle with amplitude
+`r*sqrt(1-p)*(0.4+0.6*j/(len-1))`. A 100-edge-per-orphan LOD plus a global
+200-primitive budget bounds added shader vertices to 1200; cut-end glow copies
+are reserved from that same budget before emitting edges, then drawn over them.
+Calm suppresses wriggle but holds the piece for the full sim-provided duration
+(33 ticks), matching shard release, then dissolves over 0.6*0.55 s.
+Both shader and 12-byte fallback paths draw the
+orphan, stump, acid spine and strike. Mono/Pastel use existing accent transforms.
+The fallback orphan half-width remains `r*width`, without the shader envelope.
+
+Shader kinds 23 and 24 reuse the ordinary head quad for Venom and STRIKE without
+repacking mood/pupil fields. Bite impact reuses kind 6 and the eight-effect cap.
+Sprite kind 25 `ACID_GLOW` uses payload `[25,0,0,0]`, UVs in +/-1 and colour
+alpha as its strength. It adds a palette-aware radial acid glow at the orphan's
+cut end (2.4r, strength 0.6 fading through the hold) and the live stump (2.2r,
+strength 0.5 fading over 48 ticks); seam copies follow the normal sprite bounds.
+Sever also starts an acid wave on the biter, reusing the existing two wave slots
+and body vertices just like the white kill wave.
+Capture rows `venom` and `venom-mono` use a 1920x1080 arena, default r=8.1 and
+capsule radius 2.1r, and replay an intact trail before showing the cut.
+`VENOM_AGE=<ticks>` advances the capture after Sever (for example 20 for wriggle,
+34 for dissolve); `REAL_CALM=1` freezes the procedural clock while age advances.

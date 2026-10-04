@@ -62,7 +62,7 @@ Ranking is fun to watch per unit of cost and risk. Ticks are the 30 Hz simulatio
 | 1 | Frozen | FROZEN flag | icy iris, squinting lid, shiver ±0.05 head units at 11 Hz, frosty breath puff ahead of the snout |
 | 2 | Dizzy | 30 ticks after a Flip | spiral eyes, slowly turning |
 | 3 | Trapped | existing TRAPPED | pinprick pupils with jitter (shipped) |
-| 4 | Happy | 45 ticks after a kill, pickup or feast | closed smiling crescents; tongue held out ("blep") for the first 27 ticks |
+| 4 | Happy | 45 ticks after a kill, pickup, feast or successful sever | closed smiling crescents; tongue held out ("blep") for the first 27 ticks |
 | 5 | Angry | 78 ticks when denied an item or bitten | slanted lid cutting deeper toward the snout, red-orange iris, thin slit, faint red eye glow |
 | 6 | Scared | a HUNTING rival whose prey is me, or a Venom holder targeting me, within 14 r; or 36 ticks after a longer snake kills within 12 r of me | wide white eyes, tiny round pupils with jitter, a sweat drop beside the head |
 | 7 | Hunting | existing HUNTING | hairline slit, hot iris (shipped) |
@@ -179,10 +179,10 @@ Ranking is fun to watch per unit of cost and risk. Ticks are the 30 Hz simulatio
 **Rules** (spec rules kept; additions marked):
 
 - Lasts 240 ticks or one bite. A head contact with a rival segment whose index is above half its length (and above 3) cuts the rival there. A front-half contact uses the normal rules, so the biter dies.
-- **New: strike pose.** The sim sets STRIKE while the holder is within 5 r of a valid bite point. The jaw opens and the fangs lengthen.
-- **New: stump.** The victim's new tail tip glows acid for 48 ticks. The victim gets Angry, an Anger bubble and a grudge on the biter.
+- **New: strike pose.** The sim sets STRIKE when the holder reaches a valid bite point within 5 r, and holds it until the distance exceeds 6 r. Losing Venom or an eligible victim clears it immediately. The jaw opens and the fangs lengthen.
+- **New: stump.** The victim's new tail tip has a 2.2r acid glow, strength 0.5 fading over 48 ticks. The victim gets Angry, an Anger bubble and a grudge on the biter.
 - **New: bite immunity.** A bitten snake cannot be bitten again for 60 ticks, which prevents chain bites that look like glitches.
-- **New: orphan tail (renderer only).** On the Sever event, the renderer copies the cut piece from its last frame into a preallocated orphan buffer (cap 2 orphans) and wriggles it for 33 ticks. The wriggle is a lateral `0.75r (1-p) sin(0.75 i - 17 t)` from a table, growing toward the tip. The piece then dissolves like a corpse. The essence shards come from the sim as before, released when the wriggle ends, so the sim keeps them back for 33 ticks.
+- **New: orphan tail (renderer only).** On the Sever event, the renderer copies the cut piece from its last frame into a preallocated orphan buffer (cap 2 orphans) and wriggles it for 33 ticks. The wriggle is a lateral `1.0r sqrt(1-p) (0.4+0.6 i/n) sin(0.75 i - 17 t)` from a table, where `p` is hold progress and `n` is the final source index. The whole piece thrashes and keeps twitching until shatter. Its cut end has a 2.4r acid glow, strength `0.6 (1-p)`, reserved inside the 1200-vertex orphan budget. A 60% white snap fades over 1/8 s; the piece retains its original taper, the shortened victim's pattern tier and source-segment pattern spacing, then dissolves like a corpse. The essence shards come from the sim as before, released when the wriggle ends, so the sim keeps them back for 33 ticks. An acid wave runs down the biter using the existing wave slots.
 
 **AI.**
 
@@ -194,12 +194,13 @@ Ranking is fun to watch per unit of cost and risk. Ticks are the 30 Hz simulatio
 
 | Element | Vertices | Fragment | CPU / sim |
 |---|---|---|---|
-| Acid head tint, fangs, drool beads, strike jaw | 0 (head quad) | about 12 ALU in the head branch | STRIKE flag |
-| Acid spine | 0 | body branch on effect 4: one line SDF | 0 |
-| Orphan tail | 6 per edge, for 1.1 s; at most about 1.2k vertices for a titan's half | body shader with the CORPSE flag | a copy of at most MAX_SEGMENTS/2 points, no allocation; about 1 µs |
+| Acid head tint, fangs, drool beads, strike jaw | 0 (head quad) | filled rounded fangs, jaw notch and aura; about +40 ALU on Venom heads | STRIKE flag |
+| Acid spine | 0 | opaque 0.15w stripe, 0.6w halo and slow pulse on effect 4 | 0 |
+| Orphan tail and cut glow | 6 per edge or glow copy, for 1.1 s plus dissolve; at most 1.2k vertices across both orphans | body shader with the CORPSE flag; kind-25 radial falloff | a copy of at most MAX_SEGMENTS/2 points, no allocation |
+| Stump glow | 6 per seam copy | kind-25 radial falloff | existing countdown |
 | Bite impact | 1 effect quad (existing kind 6, venom colour) | existing | branch in the existing body-hit path |
 
-**Reduced motion.** No wriggle (the tail dissolves in place), no drool animation.
+**Reduced motion.** No wriggle or drool animation; spine pulse is static. The orphan holds in place for the full 33 simulation ticks so shatter matches shard release, then dissolves over 0.6 x 0.55 s.
 
 **Risk.** Medium: severing changes a length mid-tick, and the orphan buffer must stay allocation-free. This was already planned for R4.
 
@@ -360,7 +361,7 @@ One `SnakeMaterial`, one draw call, 6 vertices per primitive. The new ideas use 
 
 | Resource | Today | After all slices |
 |---|---|---|
-| Sprite kinds (`packed.x`) | 0-15 used, 16-31 reserved | +16 bubble, 17 contest arc, 18 nova, 19 vortex, 20 Starfall zone, 21 star food, 22 meteor streak; 23-31 still free |
+| Sprite kinds (`packed.x`) | 0-15 used, 16-31 reserved | +16 bubble, 17 contest arc, 18 nova, 19 vortex, 20 Starfall zone, 21 star food, 22 meteor streak, 23 Venom head, 24 strike head, +25 acid glow; 26-31 still free |
 | Body effect field (3 bits) | 1-5 Surge, Magnet, Phase, Venom, Frost | +6 Flip, 7 Whirlpool: **now full**. A ninth item needs a repack (for example, moving the effect into the free high bits of `packed.w` on body vertices) |
 | Body `packed.y` bit 7 | free | FROZEN |
 | Head flags bits 1-4 (values 2, 4, 8, 16) | bits 2 and 3 are hunting/trapped; bits 1 and 4 are wave-origin bits, unused on heads | a 4-bit mood enum (hunting and trapped become mood values); body vertices keep their hunting/trapped glow bits |

@@ -35,6 +35,20 @@ impl World {
         w.growth_slots=config.maximum_world_segments().saturating_sub(w.stats().total_segments as usize);
         Ok(w)
     }
+    /// Sample the physical head trail by arc distance, without the safety
+    /// grid's conservative release deadline. Binary search uses retained storage.
+    pub(crate) fn forecast_trail_point(&self,id:usize,behind:f64)->Point {
+        let s=self.snakes[id];let newest=self.trail_point(id,s.trail_len-1);
+        let target=newest.distance-behind;
+        let mut lo=0;let mut hi=s.trail_len-1;
+        while hi-lo>1 {
+            let mid=(lo+hi)/2;
+            if self.trail_point(id,mid).distance>target {hi=mid;} else {lo=mid;}
+        }
+        let a=self.trail_point(id,lo);let b=self.trail_point(id,hi);
+        let t=((target-a.distance)/(b.distance-a.distance).max(0.0001)).clamp(0.0,1.0);
+        self.canonical_point(Point{x:a.p.x+(b.p.x-a.p.x)*t,y:a.p.y+(b.p.y-a.p.y)*t})
+    }
     /// Independent diagnostic snapshot. Allocates only when explicitly called;
     /// simulation and controller ticks never invoke it.
     pub fn diagnostic_snapshot(&self) -> Self {
@@ -46,6 +60,7 @@ impl World {
         copy.items.clone_from(&self.items);
         copy.item_timer = self.item_timer;
         copy.prism_timer = self.prism_timer;
+        copy.detached=self.detached;copy.detached_points.clone_from(&self.detached_points);
         copy.next_item = self.next_item;
         copy.last_item_kind = self.last_item_kind;
         copy.trails.clone_from(&self.trails);

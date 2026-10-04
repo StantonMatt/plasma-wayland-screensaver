@@ -10,6 +10,7 @@ mod phase;
 mod target;
 mod race;
 mod forecast;
+mod venom;
 use attack::Attack;
 use crate::{Point, SnakeView, World, MAX_FOOD, MAX_SEGMENTS, MAX_SNAKES, STEP_SECONDS};
 use crate::controller::{Controller, Steering};
@@ -49,7 +50,11 @@ pub struct DebugInfo {
 }
 /// Rust observer only; the stable C debug layout is unchanged.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct CompetitionDebug {pub prey:Option<usize>,pub coil_radius:f64,pub rush:f64,pub attack_side:i8,pub attack_stage:u8}
+pub struct CompetitionDebug {pub prey:Option<usize>,pub coil_radius:f64,pub rush:f64,pub attack_side:i8,pub attack_stage:u8,pub track_goal:bool,pub venom_standoff:bool,pub venom_target:Option<usize>}
+#[derive(Clone, Copy, Default)]
+struct VenomPlan {goal:Point,target:usize,generation:u32,index:usize,standoff:bool}
+#[derive(Clone, Copy, Default)]
+struct VenomHunt {best:Option<VenomPlan>,nearest:Option<VenomPlan>}
 #[derive(Clone, Copy, Default)]
 struct State {
     generation: u32,
@@ -74,6 +79,7 @@ struct State {
     commit_until: u64,
     prey: usize, // slot + 1; zero means forage
     prey_generation: u32,
+    venom_target:usize,venom_generation:u32,venom_index:usize,venom_standoff:bool,venom_alternative:Option<VenomPlan>,
     hunt_until: u64,
     coil_center: Point,
     coil_radius: f64,
@@ -130,6 +136,11 @@ impl State {
             // attack candidates retain every dependency of their rollout.
             state.prey=0;state.clear_coil(s.angle);state.clear_attacks(s.angle);
             state.set_target(0);state.waypoint=None;
+        }
+        if let Some(plan)=c.venom_goal {
+            if state.venom_target!=plan.target || state.venom_generation!=plan.generation {state.turn_accum=0.0;state.commit_until=0;}
+            state.goal=plan.goal;state.venom_index=plan.index;state.venom_target=plan.target;state.venom_generation=plan.generation;
+            state.prey=plan.target;state.prey_generation=plan.generation;state.venom_standoff=plan.standoff;
         }
         state.attack=c.attack;
         state.track_goal=c.tracks_goal;
@@ -195,6 +206,7 @@ struct Candidate {
     path: [Point; STEPS+1],
     steps: usize,
     score: f64,
+    venom_goal:Option<VenomPlan>,
     clearance: f64,
     capped: bool,
     area: usize,
@@ -208,7 +220,7 @@ impl Default for Rival {
     fn default()->Self {Self {alive:false,radius:0.0,len:0,speed:0.0,turn:0.0,growth_delay:0.0,release_rate:0.0,angle:0.0,observed_turn:0.0,forecast_angle:0.0,direction:Point::default(),dynamic:false,path:[Point::default();STEPS+1],envelope:[0.0;STEPS+1],distance:[0.0;STEPS+1],escape:[Point::default();3]}}
 }
 impl Default for Candidate {
-    fn default()->Self {Self {body_len:0,effects:forecast::Snapshot::default(),kind:2,checked:false,tracks_goal:false,desired:0.0,turn_until:u64::MAX,exit_angle:0.0,angle:0.0,path:[Point::default();STEPS+1],steps:0,score:0.0,clearance:0.0,capped:false,area:0,uncertain:false,attack:Attack::default(),replies:0,rush:0.0}}
+    fn default()->Self {Self {body_len:0,effects:forecast::Snapshot::default(),kind:2,checked:false,tracks_goal:false,desired:0.0,turn_until:u64::MAX,exit_angle:0.0,angle:0.0,path:[Point::default();STEPS+1],steps:0,score:0.0,venom_goal:None,clearance:0.0,capped:false,area:0,uncertain:false,attack:Attack::default(),replies:0,rush:0.0}}
 }
 
 /// Cached single-burst schedules; all steady-state storage belongs to the controller.
@@ -305,6 +317,8 @@ pub struct DecisionDiagnostic {
 }
 #[derive(Clone)]
 pub struct AiController {
+    #[cfg(test)]
+    venom_searches:std::cell::Cell<usize>,
     spatial: Spatial,
     body_cache: [BodyCache;256],
     candidates: Option<Box<[Candidate;CANDIDATES]>>,
@@ -350,7 +364,9 @@ impl Default for AiController {fn default() -> Self {Self::new()}}
 impl AiController {
     pub fn new() -> Self {
         Self {spatial:Spatial::new(),candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],rival_necks:[[0;STEPS+1];MAX_SNAKES],neck_owner:MAX_SNAKES,neck_horizons:[0;MAX_SNAKES],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,profile:[0;5],forecast_profile:[0;5], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],
-            rivals:[Rival::default();MAX_SNAKES],opportunity_rivals:Box::new([Rival::default();MAX_SNAKES]),opportunity_mask:0,rival_limits:[[(0.0,0.0);STEPS+1];MAX_SNAKES], simulation_rivals:Some(Box::new([Rival::default();MAX_SNAKES])),item_forecast:forecast::Items::default(),initial_effects:forecast::Timeline::default(),effects:forecast::Timeline::default(),opportunities:forecast::Timeline::default(),look_deltas:[Point::default();MAX_SNAKES],capsule_etas:[[f64::INFINITY;MAX_SNAKES];crate::MAX_ITEMS],prism:None,food:[None;MAX_FOOD + crate::MAX_ITEMS],
+            rivals:[Rival::default();MAX_SNAKES],
+            #[cfg(test)]
+            venom_searches:std::cell::Cell::new(0),opportunity_rivals:Box::new([Rival::default();MAX_SNAKES]),opportunity_mask:0,rival_limits:[[(0.0,0.0);STEPS+1];MAX_SNAKES], simulation_rivals:Some(Box::new([Rival::default();MAX_SNAKES])),item_forecast:forecast::Items::default(),initial_effects:forecast::Timeline::default(),effects:forecast::Timeline::default(),opportunities:forecast::Timeline::default(),look_deltas:[Point::default();MAX_SNAKES],capsule_etas:[[f64::INFINITY;MAX_SNAKES];crate::MAX_ITEMS],prism:None,food:[None;MAX_FOOD + crate::MAX_ITEMS],
             tick:u64::MAX,geometry:0,seed:0,rng:0x9e3779b97f4a7c15,urgent_used:0,max_radius:0.0,max_forecast_speed:0.0,phase_sweeps:[0;3],planning_speed:[0.0;MAX_SNAKES],motion:[Motion::default();MAX_SNAKES],boosted_motion:[Motion::default();MAX_SNAKES],observed_angles:[0.0;MAX_SNAKES],observed_generations:[0;MAX_SNAKES]}
     }
     pub fn enable_profile(&mut self) {self.profile_enabled=true;}
@@ -365,7 +381,7 @@ impl AiController {
     pub fn vulturing(&self,id:usize)->bool {self.states.get(id).is_some_and(|s|s.vulturing)}
     pub fn selected_target(&self,id:usize) -> Option<u64> {self.states.get(id).map(|s|s.target)}
     pub fn competition_debug(&self,id:usize)->Option<CompetitionDebug> {
-        self.states.get(id).map(|s|CompetitionDebug {prey:s.prey.checked_sub(1),coil_radius:s.coil_radius,rush:s.rush,attack_side:if s.attack.valid {s.attack.side} else {0},attack_stage:if !s.attack.valid {0} else if self.tick<s.attack.turn_at {1} else {2}})
+        self.states.get(id).map(|s|CompetitionDebug {prey:s.prey.checked_sub(1),coil_radius:s.coil_radius,rush:s.rush,attack_side:if s.attack.valid {s.attack.side} else {0},attack_stage:if !s.attack.valid {0} else if self.tick<s.attack.turn_at {1} else {2},track_goal:s.track_goal,venom_standoff:s.venom_standoff,venom_target:s.venom_target.checked_sub(1)})
     }
     fn random(&mut self) -> f64 {
         self.rng ^= self.rng << 13; self.rng ^= self.rng >> 7; self.rng ^= self.rng << 17;
@@ -682,7 +698,11 @@ impl AiController {
             }
         }
     }
+    #[cfg(test)]
     fn strategy(&mut self,w:&World,s:SnakeView<'_>,state:&mut State,intelligence:f64) {
+        self.strategy_with_venom(w,s,state,intelligence,&mut None);
+    }
+    fn strategy_with_venom(&mut self,w:&World,s:SnakeView<'_>,state:&mut State,intelligence:f64,venom:&mut Option<VenomHunt>) {
         let id=s.id as usize; let head=s.segments[0].current;
         let revise_tactics=w.tick()>=state.next_response;
         state.attack_options=[Attack::default();2];
@@ -815,6 +835,7 @@ impl AiController {
             if state.prey!=0 {state.debug.flags|=8;}
         }
         self.guard_capsule(w,s,state);self.vulture_seed(w,s,state);
+        self.venom_tactics_cached(w,s,state,venom);
         state.waypoint=None;
         let mut tests=0;
         let route_goal=self.target_food(*state).filter(|_|!state.guarding && !state.vulturing).map_or(state.goal,|f|target::Contact::forecast(s,f,self.opportunities.track(s.id as usize)).with_guard(state.guarding).approach(w,head,f.position,crate::effects::forecast_step(self.target_arrival(w,s,f))));
@@ -844,6 +865,7 @@ impl AiController {
                     }
                     state.set_target(f.id);state.target_index=fi;state.goal=f.position;
                     self.guard_capsule(w,s,state);self.vulture_seed(w,s,state);
+                    self.venom_tactics_cached(w,s,state,venom);
                 }
                 else {
                     state.rejected=state.target;state.reject_until=w.tick()+90;state.set_target(0);
@@ -852,7 +874,7 @@ impl AiController {
             }
         }
         if revise_tactics {
-            state.attack_options=self.cutoffs(w,s,*state);
+            if state.venom_target==0 && !state.venom_standoff {state.attack_options=self.cutoffs(w,s,*state);}
             // Consume a response only after tactics and its candidate generation
             // actually run. Quota waits and recovery early returns keep it due.
             state.next_response=w.tick()+State::response_interval(s);
@@ -881,6 +903,14 @@ impl AiController {
         if w.config().rules==crate::RuleSet::V2 {
             // A pursuit is not itself permission to spend tail. Only a checked
             // cutoff, a valuable contested target or a differential escape is.
+            if state.venom_target!=0 && !state.venom_standoff && w.boost_ready(s.id as usize)
+                && w.snake(state.venom_target-1).is_some_and(|r|r.segments.len().saturating_sub(state.venom_index)>w.boost_segment_cost(s.id as usize).unwrap_or(0)) {
+                let d=w.displacement(s.segments[0].current,state.goal);
+                let distance=(d.x*d.x+d.y*d.y).sqrt();
+                if distance>3.0*s.radius && normalize_angle(d.y.atan2(d.x)-s.angle).abs()<0.45 {
+                    return 0.6;
+                }
+            }
             if surge::pursuit_burst(w,s,state) {return 0.6;}
             if state.coil_radius==0.0 && (state.prey==0 || self.target_food(state).is_some_and(|f|f.kind==crate::FoodKind::Prism)) && self.food_race(w,s,state) {return 0.6;}
             return 0.0;
@@ -1115,6 +1145,25 @@ impl AiController {
         self.body_blocked_phase(w,s,a,b,time,padding,tests,self.effects.phased(s.id as usize,phase::step(time)),&self.effects)
     }
     fn body_blocked_phase(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline) -> (bool,f64,bool) {
+        let mut bite=None;
+        if effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) {
+            self.body_query::<true>(w,s,a,b,time,padding,tests,phased,effects,&mut bite,phase::step(time).saturating_sub(1),None)
+        } else {self.body_query::<false>(w,s,a,b,time,padding,tests,phased,effects,&mut bite,phase::step(time).saturating_sub(1),None)}
+    }
+    #[cfg(test)]
+    fn body_blocked_effects<const BITES:bool>(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&mut forecast::Timeline)->(bool,f64,bool) {
+        self.body_blocked_effects_from::<BITES>(w,s,a,b,time,padding,tests,phased,effects,phase::step(time).saturating_sub(1),None)
+    }
+    fn body_blocked_effects_from<const BITES:bool>(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&mut forecast::Timeline,start:usize,physical_rivals:Option<&[Rival;MAX_SNAKES]>)->(bool,f64,bool) {
+        let mut bite=None;
+        let result=self.body_query::<BITES>(w,s,a,b,time,padding,tests,phased,effects,&mut bite,start,physical_rivals);
+        if !result.0 {if let Some((other,cut))=bite {
+            let step=phase::step(time);
+            effects.sever_cut[other]=cut;effects.bite_step[other]=step;effects.consumed_at[s.id as usize]=step;
+        }}
+        result
+    }
+    fn body_query<const BITES:bool>(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline,bite_result:&mut Option<(usize,usize)>,start:usize,physical_rivals:Option<&[Rival;MAX_SNAKES]>)->(bool,f64,bool) {
         let phase_step=phase::step(time);
         if phased {return (false,200.0,false);}
         let key=self.spatial.key(w.canonical_point(a));
@@ -1137,6 +1186,7 @@ impl AiController {
         let y1=((a.y+ab.y.max(0.0)+reach)/self.spatial.dy).floor() as isize-root_y;
         let neck_advance=self.planning_speed[s.id as usize]*time/(s.radius*1.18);
         let mut clearance=200.0_f64;
+        let mut bite=None;
         let length2=ab.x*ab.x+ab.y*ab.y;
         let (xs,ys)=self.spatial.spans(key,x0,x1,y0,y1);
         for y in ys {for x in xs.clone() {
@@ -1152,12 +1202,22 @@ impl AiController {
                 if !same && effects.phased(other,phase_step) {continue;}
                 if same && (!w.config().self_collisions || j as f64+neck_advance<10.0) {continue;}
                 let r=&self.rivals[other];
+                if BITES && effects.sever_cut[other]>0 && j>=effects.sever_cut[other] {continue;}
+                if BITES && bite.is_some_and(|(victim,cut)|victim==other && j>=cut) {continue;}
                 // 65% of current speed allows for growth, slowing and curved
                 // tails. Current growth adds a finite release delay.
-                let release=(r.len-j) as f64*r.release_rate+r.growth_delay;
+                let sever=if BITES {effects.sever_cut[other]} else {0};
+                let release=if sever>0 {
+                    effects.bite_step[other] as f64*STEP_SECONDS+(sever-j) as f64*r.release_rate+r.growth_delay
+                } else {(r.len-j) as f64*r.release_rate+r.growth_delay};
                 if time>release+0.15 {continue;}
                 let p=w.snake(other).unwrap().segments[j].current;
-                let body=if w.config().rules==crate::RuleSet::V2 {
+                let body=if sever>0 && effects.bite_step[other]<phase_step {
+                    // The retained endpoint is a tapered tail now, not the
+                    // original full-width mid-body. Keeping its old width
+                    // rejected safe strikes against a phantom large stump.
+                    crate::world::taper::body_radius(r.radius,j as f64,sever)
+                } else if w.config().rules==crate::RuleSet::V2 {
                     // Advancing an old neck sample may widen it; retain the
                     // maximum width until it has passed the full-width band.
                     if (j as f64)<0.07*r.len.saturating_sub(1).max(1) as f64 {
@@ -1166,12 +1226,12 @@ impl AiController {
                         crate::world::taper::span_radius(r.radius,j as f64/scale,(j as f64+advance)/scale)
                     } else {r.radius*self.spatial.widths[encoded]}
                 } else {r.radius};
-                let threshold=crate::world::taper::contact_radius(w.config().rules,s.radius,body,same);
+                let physical_contact=crate::world::taper::contact_radius(w.config().rules,s.radius,body,same);
                 // Half a tick's motion and a small radius reserve protect the
                 // first swept tick against segments that shift along corners.
                 let margin=if time<=STEP_SECONDS+1e-9 {if same && w.config().rules==crate::RuleSet::V2 {0.75+1.25*body/r.radius} else {0.75}} else {1.5+(r.speed*STEP_SECONDS*0.35).min(r.radius*0.25)+padding};
                 let scale=if same {1.0} else {effects.reach_scale(other,phase_step)};
-                let threshold=threshold*scale;
+                let threshold=physical_contact*scale;
                 let margin=margin*scale;
                 let ap=w.displacement(a,p);
                 let reserve=spatial::query_radius(threshold,margin,1.0,if first {self.spatial.max_motion} else {0.0});
@@ -1186,9 +1246,26 @@ impl AiController {
                     d=w.segments_distance_squared(a,b,p,future);
                 }
                 clearance=clearance.min(d.sqrt()-threshold);
-                if d<spatial::query_radius(threshold,margin,1.0,0.0).powi(2) {return (true,clearance,false);}
+                if d<spatial::query_radius(threshold,margin,1.0,0.0).powi(2) {
+                    let effect=effects.at(s.id as usize,phase_step);
+                    let immunity=if effects.bite_step[other]>0 {60usize.saturating_sub(phase_step-effects.bite_step[other]) as u16}
+                        else {w.faces[other].bite_immunity_ticks.saturating_sub(phase_step.saturating_sub(1) as u16)};
+                    let len=if effects.sever_cut[other]>0 {effects.sever_cut[other]} else {r.len};
+                    // One charge can detach only one victim's rear body. Keep
+                    // finding its deepest contact, but all other bodies stay lethal.
+                    if BITES && bite.is_none_or(|(victim,_)|victim==other)
+                        && crate::world::venom::bite_eligible(w.config().rules,effect.kind,effect.ticks,s.id as usize,other,j,len,immunity,effects.phased(other,phase_step)) {
+                        // Surge widens avoidance, never the mechanics bite disk.
+                        let cut=if first { (d<physical_contact*physical_contact).then_some(j) }
+                            else {self.venom_physical_bite(w,s,other,j,a,b,start.min(phase_step-1),phase_step,effects,physical_rivals.map_or(r,|scratch|Self::forecast_rival(scratch,&self.rivals,other)))};
+                        if let Some(index)=cut {if bite.is_none_or(|(victim,cut)|victim==other && index<cut) {bite=Some((other,index));}}
+                        continue;
+                    }
+                    return (true,clearance,false);
+                }
             }
         }}
+        *bite_result=bite;
         (false,clearance,false)
     }
     #[cfg(test)]
@@ -1196,6 +1273,9 @@ impl AiController {
         {let effects=self.effects;self.cached_body_blocked_phase(w,s,a,b,time,padding,tests,effects.phased(s.id as usize,phase::step(time)),&effects)}
     }
     fn cached_body_blocked_phase(&mut self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline)->(bool,f64,bool) {
+        if effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) {
+            return self.body_blocked_phase(w,s,a,b,time,padding,tests,phased,effects);
+        }
         let hash=a.x.to_bits().wrapping_mul(0x9e3779b97f4a7c15)^a.y.to_bits().rotate_left(23)
             ^b.x.to_bits().rotate_left(41)^b.y.to_bits().rotate_left(11)^time.to_bits().rotate_left(7);
         let key=(hash^(hash>>32)) as usize&255;
@@ -1224,10 +1304,27 @@ impl AiController {
         c.effects.mask(w,id,c.steps.max(1))
     }
     fn candidate_rush(w:&World,s:SnakeView<'_>,state:State,kind:usize,attack:Attack)->f64 {
-        if kind==11 {0.0} else if kind==12 {Self::boost_request(w,s,0.6)}
+        if kind==11 {0.0} else if kind==12 {
+            if state.venom_target!=0 && w.snake(state.venom_target-1).is_none_or(|r|
+                r.segments.len().saturating_sub(state.venom_index)<=w.boost_segment_cost(s.id as usize).unwrap_or(0)) {0.0}
+            else {Self::boost_request(w,s,0.6)}
+        }
             else {Self::boost_request(w,s,if attack.valid {attack.control(w.tick()).1} else if w.config().rules==crate::RuleSet::Classic || kind==0 || kind==1 || state.escape_boost {state.rush} else {0.0})}
     }
-    fn rollout_into(&mut self,w:&World,s:SnakeView<'_>,state:State,kind:usize,horizon:usize,c:&mut Candidate) {
+    fn rollout_into(&mut self,w:&World,s:SnakeView<'_>,mut state:State,kind:usize,horizon:usize,c:&mut Candidate) {
+        let alternate=state.venom_target!=0 && (kind==7 || kind==8 || kind==12);
+        if alternate {
+            if (kind==8 || kind==12) && state.venom_alternative.is_some() {
+                let plan=state.venom_alternative.unwrap();
+                state.goal=plan.goal;state.venom_target=plan.target;state.venom_generation=plan.generation;
+                state.venom_index=plan.index;state.venom_standoff=plan.standoff;
+                state.prey=plan.target;state.prey_generation=plan.generation;
+            } else if let Some(r)=w.snake(state.venom_target-1) {
+                let index=(r.segments.len()*70/100).max(4).min(r.segments.len()-1);
+                state.goal=Self::venom_strike_goal(w,s,r,index,state.venom_standoff);state.venom_index=index;
+            }
+            state.waypoint=None;state.track_goal=true;
+        }
         let mut rivals=self.simulation_rivals.take().unwrap();
         for rival in rivals.iter_mut() {rival.dynamic=false;}
         let proposed=match kind {1=>state.attack,7|8=>state.attack_options[kind-7],_=>Attack::default()};
@@ -1237,6 +1334,8 @@ impl AiController {
             || (proposed.valid && proposed.control(w.tick()).1>=0.5);
         if self.item_forecast.reachable(s.id as usize,horizon,boosted) {self.rollout_simulation::<true>(w,s,state,kind,horizon,c,&mut rivals);}
         else {self.rollout_simulation::<false>(w,s,state,kind,horizon,c,&mut rivals);}
+        c.venom_goal=if alternate {Some(VenomPlan {goal:state.goal,target:state.venom_target,
+            generation:state.venom_generation,index:state.venom_index,standoff:state.venom_standoff})} else {None};
         self.simulation_rivals=Some(rivals);
     }
     /// All forecasts with a proposed control use its current guard intent.
@@ -1260,7 +1359,7 @@ impl AiController {
         let maximum_speed=(if w.config().rules==crate::RuleSet::V2 {motion.max_speed} else if attack.valid {w.motion_limits(s.id as usize,attack.burst).unwrap().0} else {speed})*pickup_speed_scale;
         let crossing_limits=if attack.valid {w.motion_limits(s.id as usize,attack.crossing_rush).unwrap()} else {(speed,turn)};
         self.planning_speed[s.id as usize]=speed;
-        let tracks_goal=!attack.valid && (((kind==0 || kind==11) && (state.coil_radius>0.0 || state.track_goal)) || ((kind==1 || kind==12) && state.track_goal));
+        let tracks_goal=!attack.valid && (((kind==0 || kind==11) && (state.coil_radius>0.0 || state.track_goal)) || ((kind==1 || kind==12 || (state.venom_target!=0 && (kind==7 || kind==8))) && state.track_goal));
         // Reset metadata only. Every path/distance entry that can be read is
         // overwritten by this rollout; clearing the unused horizon for every
         // candidate used to stream hundreds of KB of zeros per snake/tick.
@@ -1347,7 +1446,7 @@ impl AiController {
             let desired=if attack.valid {attack_control.0} else if tracks_goal {
                 let goal=Self::trajectory_goal(w,trajectory_state,c.path[j-1]);
                 let d=w.displacement(c.path[j-1],goal);
-                if reached || (state.prey!=0 && defeated&(1<<(state.prey-1))!=0) {c.angle} else {d.y.atan2(d.x)}
+                if reached || (state.venom_target!=0 && forecast.effects.consumed_at[s.id as usize]>0) || (state.prey!=0 && defeated&(1<<(state.prey-1))!=0) {c.angle} else {d.y.atan2(d.x)}
             } else if w.tick()+j as u64>c.turn_until {c.exit_angle} else {fixed};
             if j==1 {c.desired=normalize_angle(desired);}
             let delta=normalize_angle(desired-c.angle);
@@ -1409,20 +1508,28 @@ impl AiController {
             // The published first step is always checked separately.
             // Finish the old stage before changing speed/turn. Every consumer
             // uses this same interval, including head and deposited-self sweeps.
-            let sweep=approaching_phase || (ITEMS && forecast.effects.movement_event(j)) || rival_phase_changed || surge_changed || phase_changed || j==1 || j%4==0 || j==horizon || (attack.valid && w.tick()+j as u64==attack.turn_at)
+            let bite_exit=forecast.effects.consumed_at[s.id as usize];
+            let sweep=(bite_exit>0 && j<=bite_exit+3) || (forecast.effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) && forecast.effects.at(s.id as usize,j).is(crate::effects::EffectKind::Venom)) || approaching_phase || (ITEMS && forecast.effects.movement_event(j)) || rival_phase_changed || surge_changed || phase_changed || j==1 || j%4==0 || j==horizon || (attack.valid && w.tick()+j as u64==attack.turn_at)
                 || (w.config().rules==crate::RuleSet::V2 && (if ITEMS {forecast.motion(w,s.id as usize,rush,&motion,j+1)} else {motion.at(j)})!=(speed,turn))
                 || forecast.effects.phase_bits(j+1)!=previous_bits || forecast.effects.surge_bits(j+1)!=previous_surge
                 || self.phase_sweeps[j/64]&(1u64<<(j%64))!=0;
             let from_index=if phase_changed || rival_phase_changed {j-1} else {checked};
             let span=(j-from_index) as f64*STEP_SECONDS;
-            let padding=speed*turn*span*span/8.0;
+            // Tracking strikes continue straight after spending their charge.
+            // Applying a maximum-turn sagitta to that known straight exit made
+            // a fast holder's harmless stump look almost a head-radius wider.
+            // Rival envelopes and the ordinary body reserve remain in force.
+            let straight_exit=state.venom_target!=0 && tracks_goal && bite_exit>0 && from_index>=bite_exit;
+            let padding=if straight_exit {0.0} else {speed*turn*span*span/8.0};
             // An old neck sample becomes corporeal after actual head travel,
             // including burst/effect expiry; future maximum speed is unrelated.
             self.planning_speed[s.id as usize]=self.rollout_distance[j]/t;
             if sweep {
                 let from=c.path[from_index];
                 checked=j;
-                let (hit,clearance,capped)=self.cached_body_blocked_phase(w,s,from,p,t,padding,&mut tests,phased,&forecast.effects);
+                let (hit,clearance,capped)=if forecast.effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) {
+                    self.body_blocked_effects_from::<true>(w,s,from,p,t,padding,&mut tests,phased,&mut forecast.effects,from_index,Some(rivals))
+                } else {self.cached_body_blocked_phase(w,s,from,p,t,padding,&mut tests,phased,&forecast.effects)};
                 c.clearance=c.clearance.min(clearance); c.capped|=capped;
                 if hit {break;}
             }
@@ -1536,7 +1643,16 @@ impl AiController {
         if w.config().rules==crate::RuleSet::V2 && captured && self.target_food(state).is_some_and(|f|matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed)) {
             c.score+=600.0;
         }
-        if state.prey!=0 {
+        if state.venom_target!=0 || s.effect_kind==crate::effects::EffectKind::Venom as u8 {
+            // Reward every certified bite, including a profitable opportunity
+            // encountered on the approach. Earlier strikes reduce the chance
+            // that a defender turns, the trail moves away or Venom expires.
+            // Safety horizon and escape area still rank before this utility.
+            for (victim,&cut) in forecast.effects.sever_cut.iter().enumerate() {
+                if cut>0 {c.score+=800.0+(self.rivals[victim].len-cut) as f64*2.0
+                    +horizon.saturating_sub(forecast.effects.bite_step[victim]) as f64*12.0;}
+            }
+        } else if state.prey!=0 {
             let prey=self.opportunity_rival(state.prey-1);
             let mut intercept=f64::MAX;let mut cutoff=f64::MAX;
             for j in (4..=c.steps).step_by(4) {
@@ -1618,6 +1734,8 @@ impl Controller for AiController {
                 goal:w.canonical_point(Point{x:s.segments[0].current.x+s.angle.cos()*350.0,y:s.segments[0].current.y+s.angle.sin()*350.0}),
                 best_distance:f64::MAX,debug:DebugInfo {generation:s.generation,..DebugInfo::default()},..State::default()};
         }
+        let mut venom=None;
+        if state.venom_target!=0 && (s.effect_kind!=4 || s.effect_ticks==0) {self.venom_tactics_cached(w,s,&mut state,&mut venom);}
         // Forecast selection is performed in every rollout and has its own
         // cadence. Tactical revision waits for an actual strategy slot.
         state.revise_opponents=w.tick()>=state.next_forecast;
@@ -1644,11 +1762,11 @@ impl Controller for AiController {
         state.last_angle=s.angle;
         // Guard turns are intentional just like coils. Do not carry their
         // accumulated rotation into the direct approach when the guard ends.
-        if state.guarding || state.vulturing || planned_pounce {state.turn_accum=0.0;}
+        if state.guarding || state.vulturing || state.venom_target!=0 || state.venom_standoff || planned_pounce {state.turn_accum=0.0;}
         else if turned.abs()<0.015 {state.turn_accum*=0.90;}
         else if turned*state.turn_accum<0.0 {state.turn_accum=turned;}
         else {state.turn_accum+=turned;}
-        if state.turn_accum.abs()>2.8 && w.tick()>=state.orbit_until && state.coil_radius==0.0 && !state.guarding && !state.vulturing && !planned_pounce {
+        if state.turn_accum.abs()>2.8 && w.tick()>=state.orbit_until && state.coil_radius==0.0 && !state.guarding && !state.vulturing && state.venom_target==0 && !state.venom_standoff && !planned_pounce {
             state.rejected=state.target;state.reject_until=w.tick()+150;state.set_target(0);state.waypoint=None;
             state.orbit_until=w.tick()+36;state.escape_until=0;state.turn_accum=0.0;state.prey=0;state.clear_attacks(s.angle);
             state.desired=s.angle;state.turn_until=u64::MAX;state.track_goal=false;state.commit_until=w.tick()+12;
@@ -1684,7 +1802,10 @@ impl Controller for AiController {
         if w.config().rules==crate::RuleSet::V2 {self.advance_race(w,s,&mut state);}
         let scheduled=(id+w.snake_count()-(w.tick() as usize*STRATEGY_QUOTA)%w.snake_count())%w.snake_count()<STRATEGY_QUOTA;
         let mut strategic=scheduled;
-        if strategic {self.strategy(w,s,&mut state,intelligence);}
+        if strategic {self.strategy_with_venom(w,s,&mut state,intelligence,&mut venom);}
+        // Acquisition, expiry and moving bite points cannot wait for a food
+        // strategy slot. Holder work is bounded and absent on ordinary ticks.
+        if s.effect_kind==4 || state.venom_target!=0 {self.venom_tactics_cached(w,s,&mut state,&mut venom);}
         state.rush=self.rush_for(w,s,state);
         self.planning_speed[id]=w.motion_limits(id,state.rush).unwrap().0;
         // Equal safety coverage at every IQ. Wall-turn viability separately
@@ -1705,7 +1826,7 @@ impl Controller for AiController {
         self.rollout_into(w,s,state,1,horizon,&mut candidates[1]);
         if !strategic && (candidates[1].steps<horizon || (state.target==0 && state.prey==0 && w.tick().saturating_sub(state.last_strategy)>6)) && self.urgent_used<URGENT_QUOTA {
             self.urgent_used+=1;strategic=true;
-            self.strategy(w,s,&mut state,intelligence);
+            self.strategy_with_venom(w,s,&mut state,intelligence,&mut venom);
             state.rush=self.rush_for(w,s,state);
             self.planning_speed[id]=w.motion_limits(id,state.rush).unwrap().0;
             self.rollout_into(w,s,state,1,horizon,&mut candidates[1]);
@@ -1730,7 +1851,7 @@ impl Controller for AiController {
                 if kind==1 {continue;}
                 if (kind==9 || kind==10) && !extended {candidates[kind]=candidates[2];area_alias[kind]=Some(2);continue;}
                 if kind==11 && (w.config().rules==crate::RuleSet::Classic || state.rush==0.0) {candidates[kind]=candidates[0];area_alias[kind]=Some(0);continue;}
-                if kind==12 && (w.config().rules!=crate::RuleSet::V2 || !w.boost_ready(id) || candidates[1].steps>=18) {candidates[kind]=candidates[2];area_alias[kind]=Some(2);continue;}
+                if kind==12 && (w.config().rules!=crate::RuleSet::V2 || !w.boost_ready(id) || (state.venom_target==0 && candidates[1].steps>=18)) {candidates[kind]=candidates[2];area_alias[kind]=Some(2);continue;}
                 if kind==2 && candidates[1].checked && !candidates[1].attack.valid && !state.track_goal && state.turn_until==u64::MAX && normalize_angle(state.desired-s.angle).abs()<1e-12
                     && candidates[1].rush==Self::candidate_rush(w,s,state,kind,Attack::default()) {
                     candidates[kind]=candidates[1];area_alias[kind]=Some(1);
@@ -1749,7 +1870,7 @@ impl Controller for AiController {
                     if trial.rush>0.0 && trial.steps>candidates[12].steps {candidates[12]=trial;area_alias[12]=None;}
                 }
                 if candidates[12].steps!=horizon {candidates[12]=candidates[2];area_alias[12]=Some(2);}
-            } else {candidates[12]=candidates[2];area_alias[12]=Some(2);}
+            } else if state.venom_target==0 {candidates[12]=candidates[2];area_alias[12]=Some(2);}
         }
         // A reused decision selects only slot 1. Leave other scratch slots
         // untouched instead of copying its full path into ten unused slots.

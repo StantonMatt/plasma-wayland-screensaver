@@ -30,6 +30,8 @@ pub(super) struct Wave { pub(super) time: f64, pub(super) active: bool, pub(supe
 fn wave_flags(origin:u8)->u8 { ((origin&1)<<1)|((origin&6)<<3) }
 
 pub(super) const PRISM_VISUAL:f64=1.6;
+/// Soft additive Venom-accent glow (stump and orphan cut end); uv in +-1.
+pub(super) const ACID_GLOW:u8=25;
 pub(super) struct SpriteSink<'a> { pub(super) out: &'a mut [ShaderVertex], pub(super) count: usize, pub(super) view: P }
 impl SpriteSink<'_> {
     #[inline]
@@ -86,7 +88,7 @@ impl SpriteSink<'_> {
             [[-extent,-extent],[extent,-extent],[-extent,extent],[extent,extent]],c,params);
     }
     #[inline(always)]
-    fn body_edge(&mut self,a:P,b:P,an:P,bn:P,width:f64,across:[f64;2],tapers:[u8;2],along:[f64;2],c:Color,params:[u8;4],end_wave:u8,end_origin:Option<u8>) {
+    pub(super) fn body_edge(&mut self,a:P,b:P,an:P,bn:P,width:f64,across:[f64;2],tapers:[u8;2],along:[f64;2],c:Color,params:[u8;4],end_wave:u8,end_origin:Option<u8>) {
         if !visible(a.x.min(b.x)-width,a.y.min(b.y)-width,(b.x-a.x).abs()+width*2.0,(b.y-a.y).abs()+width*2.0,self.view) { return; }
         self.ribbon_edge([a+an,a-an,b+bn,b-bn],across,tapers,along,c,params,end_wave,end_origin);
     }
@@ -265,6 +267,7 @@ impl Renderer {
     pub(super) fn shader_history(&mut self, info:&FrameInfo, snakes:&[SnakeRecord], segments:&[SegmentRecord], events:&[EventRecord]) {
         if self.last_frame.is_some_and(|(tick,g)|info.tick<tick || g!=info.geometry_generation) { self.reset(); }
         if self.last_frame==Some((info.tick,info.geometry_generation)) { return; }
+        self.venom.observe(info,snakes,segments,events,self.event_tick);
         for s in snakes {
             let id=s.id as usize;
             if !snake_valid(s) { continue; }
@@ -282,15 +285,15 @@ impl Renderer {
             if e.tick>info.tick || self.event_tick.is_some_and(|t|e.tick<=t)
                 || !coordinate32(e.x) || !coordinate32(e.y) { continue; }
             let time=info.simulation_time-(info.tick-e.tick) as f64*crate::STEP_SECONDS;
-            let radius=snakes.iter().find(|s|s.id==e.snake_id).map_or(8.0,|s|s.radius);
+            let radius=snakes.iter().find(|s|s.id==if e.kind==1 {e.other_snake_id} else {e.snake_id}).map_or(8.0,|s|s.radius);
             if e.kind==crate::EventKind::Feast as u8 && (e.snake_id as usize)<MAX_SNAKES {
                 if snakes.iter().any(|s|s.id==e.snake_id && s.generation==e.generation && s.alive!=0) {
                     let waves=&mut self.waves[e.snake_id as usize];waves[1]=waves[0];waves[0]=Wave {time,active:true,kind:8,duration_ticks:e.duration_ticks};
                 }
             }
-            if e.kind==0 || e.kind==4 {
+            if e.kind==0 || e.kind==1 || e.kind==4 {
                 self.effect(Effect { p:P::new(e.x as f64,e.y as f64),time,radius,
-                    color:e.color_index,kind:if e.kind==0 { 6 } else { 7 },active:true,
+                    color:if e.kind==1 {0x80000004} else {e.color_index},kind:if e.kind==0 || e.kind==1 { 6 } else { 7 },active:true,
                     snake_id:e.snake_id,generation:0,seed:(e.tick as u8).wrapping_add((e.snake_id as u8).wrapping_mul(13)) });
             }
             if matches!(e.kind,2|6|7) {
@@ -305,6 +308,11 @@ impl Renderer {
             if e.kind==0 && (e.other_snake_id as usize)<MAX_SNAKES {
                 let waves=&mut self.waves[e.other_snake_id as usize];
                 waves[1]=waves[0];waves[0]=Wave { time,active:true,kind:0,..Wave::default() };
+            }
+            // Sever payoff (prototype): an acid wave runs down the biter, like a kill's white wave.
+            if e.kind==1 && (e.other_snake_id as usize)<MAX_SNAKES {
+                let waves=&mut self.waves[e.other_snake_id as usize];
+                waves[1]=waves[0];waves[0]=Wave { time,active:true,kind:4,..Wave::default() };
             }
         }
         for s in snakes {
@@ -444,7 +452,7 @@ impl Renderer {
                 if center<(n as f64+3.5) { waves[wave_count]=(center,0.5,7);wave_count+=1; }
             }
             let common_origin=waves[0].2;
-            let mixed=(wave_count==2 && waves[1].2!=common_origin) || (rainbow && wave_count>0);
+            let mixed=s.stump_ticks>0 || (wave_count==2 && waves[1].2!=common_origin) || (rainbow && wave_count>0);
             let body_flags=(flags & !50)|if mixed || rainbow {0} else {wave_flags(common_origin)};
             self.brightness[..n].fill(0);
             if mixed {self.wave_origins[..n].fill(0);}
@@ -458,6 +466,12 @@ impl Renderer {
                         // Newest wins ties, independently of the active effect.
                         if light>self.brightness[j] {self.brightness[j]=light;self.wave_origins[j]=origin;}
                     } else {self.brightness[j]=self.brightness[j].max(light);}
+                }
+            }
+            if s.stump_ticks>0 && !corpse {
+                for j in n.saturating_sub(3)..n {
+                    self.brightness[j]=((s.stump_ticks.min(48) as f64/48.0)*220.0) as u8;
+                    self.wave_origins[j]=wave_flags(4);
                 }
             }
             if rainbow {
@@ -533,6 +547,15 @@ impl Renderer {
 
             }
             }
+            if s.stump_ticks>0 && !corpse && self.valid[n-1] {
+                // Prototype stump: a 2.2r acid glow on the new tail tip, alpha 0.5 fading over 48 ticks.
+                let a=(s.stump_ticks.min(48) as f64/48.0*0.5*255.0).round() as u8;
+                let extent=r*2.2;let tip=points[n-1];
+                let (xs,ys)=copies(tip,tip,P::new(extent/sx,extent/sy),arena,walls);
+                for x in xs.first..=xs.last { for y in ys.first..=ys.last {
+                    sink.sprite(mapped[n-1]+P::new(x as f64*xs.extent*sx,y as f64*ys.extent*sy),extent,Color::new(255,255,255,a),[ACID_GLOW,0,0,0]);
+                }}
+            }
             if corpse { continue; }
             let angle=if moving(s) {
                 self.shader_previous_angles[id]+head_angle_delta(s.angle-self.shader_previous_angles[id])*p.interpolation
@@ -561,7 +584,7 @@ impl Renderer {
             let look=quantize(s.pupil_x,0.18)|(quantize(s.pupil_y,0.35)<<3)|((jaw&3)<<6);
             let flare=self.waves[id].iter().any(|w|w.active && (0.0..0.5*motion_scale).contains(&(event_time(info,p,self.reduced_motion)-w.time)));
             let head_flags=(flags & 65) | (mood<<1) | ((jaw&4)<<5) | if active_kind==3 {flags::PHASED as u8} else {0};
-            let params=[1,tier|(intensity<<2)|if white_crown {64} else {0}|if flare {128} else {0},head_flags,look];
+            let params=[if active_kind==4 {if s.flags&flags::STRIKE!=0 {24} else {23}} else {1},tier|(intensity<<2)|if white_crown {64} else {0}|if flare {128} else {0},head_flags,look];
             let margin=P::new(hr*(HEAD_FRONT*HEAD_FRONT+half_width*half_width).sqrt()/sx,hr*(HEAD_FRONT*HEAD_FRONT+half_width*half_width).sqrt()/sy);let (xs,ys)=copies(head,head,margin,arena,walls);
             for x in xs.first..=xs.last { for y in ys.first..=ys.last {
                 let shift=P::new(x as f64*xs.extent*sx,y as f64*ys.extent*sy);
@@ -591,6 +614,7 @@ impl Renderer {
             self.shader_prism_races(info,p,palette,snakes,segments,food,&mut sink);
         } else {self.shader_races(info,p,palette,snakes,segments,&mut sink);}
         self.shader_bubbles(info,p,palette,snakes,segments,&mut sink);
+        self.shader_orphans(info,p,palette,&mut sink);
         let mut effect_budget=EffectBudget::default();
         for age_index in 0..self.effects.len() {
             let e=self.effects[(self.effect_head+self.effects.len()-1-age_index)%self.effects.len()];
@@ -601,7 +625,7 @@ impl Renderer {
             for x in xs.first..=xs.last { for y in ys.first..=ys.last {
                 if effect_budget.full() {continue;}
                 let before=sink.count;
-                sink.effect_sprite(map(e.p+P::new(x as f64*xs.extent,y as f64*ys.extent)),r,extent,if e.kind>=12 {items::accent(e.color as u8,palette)} else {color(e.color)},[e.kind,if e.kind==7 && white_crown { e.seed|64 } else if e.kind==7 { e.seed&!64 } else { e.seed },0,(age/duration*255.0).round() as u8]);
+                sink.effect_sprite(map(e.p+P::new(x as f64*xs.extent,y as f64*ys.extent)),r,extent,if e.kind>=12 || e.color&0x80000000!=0 {items::accent(e.color as u8,palette)} else {color(e.color)},[e.kind,if e.kind==7 && white_crown { e.seed|64 } else if e.kind==7 { e.seed&!64 } else { e.seed },0,(age/duration*255.0).round() as u8]);
                 effect_budget.emitted(before,sink.count);
             }}
         }

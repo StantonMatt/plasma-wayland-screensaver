@@ -141,6 +141,18 @@ impl super::AiController {
         let id=s.id as usize;
         let density=self.spatial.cluster_weight(self.spatial.key(item.position)).min(12.0);
         let mut useful=0.0_f64;
+        if item.kind==EffectKind::Venom {
+            for r in w.snakes().filter(|r|r.alive && r.id!=s.id && r.segments.len()>7
+                && r.face.bite_immunity_ticks==0 && r.flags&crate::flags::PHASED==0) {
+                let len=r.segments.len();
+                for q in [55,70,85] {
+                    let index=(len*q/100).max(len/2+1).max(4).min(len-1);
+                    let distance=w.distance_squared(item.position,r.segments[index].current).sqrt();
+                    let travel=distance/self.motion[id].at(0).0;
+                    if travel<5.0 {useful=useful.max(((len-index) as f64/(1.0+travel)).min(100.0));}
+                }
+            }
+        }
         for (other,r) in self.rivals.iter().enumerate() {
             if other==id || !r.alive {continue;}
             let near=w.distance_squared(item.position,r.path[0])<(s.radius*55.0).powi(2);
@@ -158,7 +170,8 @@ impl super::AiController {
         // Preserve a useful current effect until its window is nearly over.
         let held=super::forecast::Effect::observed(w,s);
         let replacement=if held.ticks as f64*crate::STEP_SECONDS>eta+1.0 {0.45} else {1.0};
-        (110.0+useful+effects::ai_bonus(item.kind,w,s,item.position))*urgency*replacement
+        let base=if item.kind==EffectKind::Venom && useful==0.0 {25.0} else {110.0};
+        (base+useful+effects::ai_bonus(item.kind,w,s,item.position))*urgency*replacement
     }
 }
 

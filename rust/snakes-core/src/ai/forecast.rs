@@ -64,19 +64,24 @@ pub(super) struct Timeline {
     count:usize,
     pickup_mask:u16,
     movement_mask:u16,
+    venom_possible:u16,
     guards:u16,
     guard_targets:[u64;MAX_SNAKES],
+    pub sever_cut:[usize;MAX_SNAKES],
+    pub bite_step:[usize;MAX_SNAKES],
+    pub consumed_at:[usize;MAX_SNAKES],
     phase:[u16;STEPS+1],
     surge:[u16;STEPS+1],
 }
 impl Default for Timeline {
-    fn default()->Self {Self {initial:[Effect::default();MAX_SNAKES],pickups:[Pickup::default();crate::MAX_ITEMS],count:0,pickup_mask:0,movement_mask:0,guards:0,guard_targets:[0;MAX_SNAKES],phase:[0;STEPS+1],surge:[0;STEPS+1]}}
+    fn default()->Self {Self {initial:[Effect::default();MAX_SNAKES],pickups:[Pickup::default();crate::MAX_ITEMS],count:0,pickup_mask:0,movement_mask:0,venom_possible:0,guards:0,guard_targets:[0;MAX_SNAKES],sever_cut:[0;MAX_SNAKES],bite_step:[0;MAX_SNAKES],consumed_at:[0;MAX_SNAKES],phase:[0;STEPS+1],surge:[0;STEPS+1]}}
 }
 impl Timeline {
     pub fn new(w:&World)->Self {
         let mut result=Self::default();
         for s in w.snakes().filter(|s|s.alive) {
             let id=s.id as usize;let e=Effect::observed(w,s);result.initial[id]=e;
+            if e.is(EffectKind::Venom) {result.venom_possible|=1<<id;}
             result.set_guard(id,s.face.guarding,s.face.target_id);
             let masks=if e.is(EffectKind::Phase) {&mut result.phase}
                 else if e.is(EffectKind::Surge) {&mut result.surge} else {continue;};
@@ -125,7 +130,11 @@ impl Timeline {
         }
         result
     }
+    #[inline]
+    pub fn venom_bits(&self)->u16 {self.venom_possible}
+    #[inline]
     pub fn may_have(&self,id:usize,kind:EffectKind)->bool {
+        if kind==EffectKind::Venom {return self.venom_possible&(1<<id)!=0;}
         self.initial[id].is(kind) || self.pickups[..self.count].iter().any(|p|p.id as usize==id && p.effect.is(kind))
     }
     pub fn movement_bits(&self)->u16 {self.movement_mask}
@@ -147,8 +156,11 @@ impl Timeline {
     pub fn at(&self,id:usize,step:usize)->Effect {
         let step=step.max(1);
         for pickup in self.pickups[..self.count].iter().rev() {
-            if pickup.id as usize==id && (pickup.step as usize)<=step {return pickup.effect.after(step-pickup.step as usize);}
+            if pickup.id as usize==id && (pickup.step as usize)<=step {
+                if self.consumed_at[id]>=pickup.step as usize && self.consumed_at[id]<=step {return Effect::default();}
+                return pickup.effect.after(step-pickup.step as usize);}
         }
+        if self.consumed_at[id]>0 && self.consumed_at[id]<=step {return Effect::default();}
         self.initial[id].after(step-1)
     }
     /// Effect used for movement/feed, before this step's endpoint pickups.
@@ -200,6 +212,7 @@ impl Timeline {
             if self.guard_targets[other]==item.id {self.guards&=!(1<<other);}
         }
         let kind=item.kind;
+        if kind==EffectKind::Venom {self.venom_possible|=1<<id;}
         let effect=Effect {kind:kind as u8,ticks:kind.duration()};
         self.pickups[self.count]=Pickup {id:id as u8,effect,step:step as u16};self.count+=1;self.pickup_mask|=1<<id;
         let initial=self.initial[id];

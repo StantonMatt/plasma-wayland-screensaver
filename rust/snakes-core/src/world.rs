@@ -5,6 +5,7 @@ pub mod effects;
 mod items;
 mod presentation;
 mod prism;
+pub(crate) mod venom;
 pub use presentation::{Mood, Glyph, FaceState, Bubble, Bulge, WorldEventState, MAX_BUBBLES, MAX_CONTENDERS};
 pub(crate) mod taper;
 pub use items::{Item, MAX_ITEMS, MAX_CAPSULES};
@@ -303,6 +304,8 @@ pub struct World {
     pub(crate) items: Vec<Item>,
     item_timer: u16,
     prism_timer: u16,
+    pub(crate) detached:[venom::DetachedTail;MAX_SNAKES],
+    pub(crate) detached_points:Vec<Point>,
     next_item: u64,
     last_item_kind: effects::EffectKind,
     trails: Vec<TrailPoint>,
@@ -352,6 +355,8 @@ impl World {
             items: Vec::with_capacity(MAX_ITEMS),
             item_timer: 0,
             prism_timer: 0,
+            detached:[venom::DetachedTail::default();MAX_SNAKES],
+            detached_points:vec![Point::default();MAX_SNAKES*(MAX_SEGMENTS/2)],
             next_item: 1,
             last_item_kind: effects::EffectKind::None,
             trails: Vec::new(),
@@ -500,6 +505,7 @@ impl World {
         self.last_item_kind = effects::EffectKind::None;
         self.item_timer = 0;
         self.prism_timer = 0;
+        self.detached.fill(venom::DetachedTail::default());
         self.leader = None;
         self.event_start = 0;
         self.event_count = 0;
@@ -566,6 +572,7 @@ impl World {
         if sx==1.0 && sy==1.0 {
             return;
         }
+        for p in &mut self.detached_points {p.x*=sx;p.y*=sy;}
         for i in 0..self.snakes.len() {
             for j in 0..self.snakes[i].len {
                 let seg = &mut self.segments[i*MAX_SEGMENTS+j];
@@ -906,6 +913,7 @@ impl World {
         self.event_count = 0;
         self.time+=seconds;
         self.update_food(seconds);
+        if self.config.rules==RuleSet::V2 {self.release_detached();}
         if self.items_enabled() { self.advance_items_and_effects(); self.advance_prism(); }
         if self.config.rules==RuleSet::V2 {self.advance_presentation();}
         self.growth_slots = self.config.maximum_world_segments().saturating_sub(self.stats().total_segments as usize);
@@ -983,7 +991,7 @@ impl World {
     fn snake_flags(&self, id: usize) -> u32 {
         let s = &self.snakes[id];
         if !s.alive { return if s.corpse_ticks > 0 { flags::CORPSE } else { 0 }; }
-        s.intent_flags | effects::modifiers(s.effect_kind,s.effect_ticks).flags | if s.boost_ticks > 0 { flags::BOOSTING } else { 0 }
+        s.intent_flags | if self.faces[id].strike && s.effect_kind==4 && s.effect_ticks>0 {flags::STRIKE} else {0} | effects::modifiers(s.effect_kind,s.effect_ticks).flags | if s.boost_ticks > 0 { flags::BOOSTING } else { 0 }
             | if s.cooldown_ticks > 0 { flags::COOLDOWN } else { 0 }
             | if s.effect_kind == 5 && s.effect_ticks > 0 { flags::FROZEN } else { 0 }
             | if self.leader == Some(id) { flags::LEADER } else { 0 }
@@ -1258,6 +1266,9 @@ impl World {
     }
     fn mark_collisions_for_rules<const V2: bool>(&mut self) {
         let g = self.config.geometry();
+        // Severing updates presentation immediately, but this sweep uses the
+        // dimensions with which every body moved. Detached indices alone vanish.
+        let dimensions: [(usize, f64); MAX_SNAKES] = std::array::from_fn(|i| self.snakes.get(i).map_or((0,0.0),|s| (s.len,s.radius)));
         self.collisions.fill(CollisionEvent::default());
         for (i, s) in self.snakes.iter_mut().enumerate() {
             s.dying = DeathReason::None;
@@ -1337,13 +1348,13 @@ impl World {
             // Full body width bounds every taper tier. Classic uses its
             // historical loop; V2 widens only when this tick's bound needs it.
             let search = if V2 {
-                Self::sweep_search_radius((s.radius + maximum_body_radius) * 0.78,
+                Self::sweep_search_radius((dimensions[i].1 + maximum_body_radius) * 0.78,
                     g.distance2(head.previous, head.current).sqrt() + maximum_body_sweep)
             } else { 0.0 };
             if V2 && search > neighboring_reach {
-                self.mark_body_collision::<V2, true>(i, g, search);
+                self.mark_body_collision::<V2, true>(i, g, search, &dimensions);
             } else {
-                self.mark_body_collision::<V2, false>(i, g, search);
+                self.mark_body_collision::<V2, false>(i, g, search, &dimensions);
             }
         }
         for (i, s) in self.snakes.iter().enumerate() {
@@ -1368,7 +1379,7 @@ impl World {
     // Constant loop bounds keep the common neighboring-cell path unrolled.
     // Both paths share the exact same collision order and narrow phase.
     #[inline(always)]
-    fn mark_body_collision<const V2: bool, const WIDE: bool>(&mut self, i: usize, g: Geometry, search: f64) {
+    fn mark_body_collision<const V2: bool, const WIDE: bool>(&mut self, i: usize, g: Geometry, search: f64, dimensions: &[(usize, f64); MAX_SNAKES]) {
         let s = self.snakes[i];
         let head = self.segments[i * MAX_SEGMENTS];
         let (hx, hy) = self.cell_for_rules::<V2>(head.current);
@@ -1406,11 +1417,19 @@ impl World {
                         continue;
                     }
                     let body = self.snakes[other];
+                    if V2 && j>=body.len {continue;} // Buckets may predate a sever this tick.
                     let radius = if V2 {
-                        taper::body_radius(body.radius, j as f64, body.len)
+                        taper::body_radius(dimensions[other].1, j as f64, dimensions[other].0)
                     } else { body.radius };
-                    let reach = taper::contact_radius(self.config.rules, s.radius, radius, same);
+                    let reach = taper::contact_radius(self.config.rules, if V2 {dimensions[i].1} else {s.radius}, radius, same);
                     if Self::swept_hit(g, head, self.segments[encoded], reach) {
+                        if V2 && venom::bite_eligible(self.config.rules,self.snakes[i].effect_kind,self.snakes[i].effect_ticks,i,other,j,body.len,
+                            self.faces[other].bite_immunity_ticks,effects::modifiers(body.effect_kind,body.effect_ticks).intangible) {
+                            self.sever_tail(i,other,j,dimensions[i].1);
+                            // Only detached geometry is harmless. Keep checking
+                            // retained bodies and self contacts with the spent charge.
+                            continue;
+                        }
                         self.snakes[i].dying = if same {
                             DeathReason::SelfHit
                         } else {

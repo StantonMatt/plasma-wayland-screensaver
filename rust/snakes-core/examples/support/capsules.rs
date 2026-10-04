@@ -5,7 +5,8 @@
 //! Magnet extra-reach attribution compares post-movement heads to the original
 //! stationary Spark position, before the first pull moves the food inward.
 use snakes_core::{EventKind, FoodKind, Point, World, MAX_FOOD, MAX_SNAKES, STEP_SECONDS};
-use super::accounting::Tactics;
+use super::accounting::{Tactics,EFFECT_KIND_COUNT};
+use snakes_core::effects::EffectKind;
 struct Capsule {
     id:u64, kind:u8, position:Point, spawned:u64, eta:f64,
     targeted:u16, max_contest:usize, contest_ticks:u64, outcome:Option<Option<u32>>, elapsed:f64,
@@ -20,7 +21,7 @@ struct FoodProbe {id:u64,position:Point,size:f64,unclaimed:bool,scavenging:bool,
 pub struct Capsules {
     records:Vec<Capsule>, episodes:[Episode;MAX_SNAKES],
     previous_food_goal:[bool;MAX_SNAKES], magnet_extended:u64,
-    pickups:[u64;4], used:[u64;4], surge_staged:u64, staged:[bool;MAX_SNAKES], surge_chained:u64, bursts:[u8;MAX_SNAKES], old_boosts:[u8;MAX_SNAKES], clear_phase:u64, phase_expiries:u64,
+    pickups:[u64;EFFECT_KIND_COUNT], used:[u64;EFFECT_KIND_COUNT], surge_staged:u64, staged:[bool;MAX_SNAKES], surge_chained:u64, bursts:[u8;MAX_SNAKES], old_boosts:[u8;MAX_SNAKES], clear_phase:u64, phase_expiries:u64,
     foods:Vec<FoodProbe>, snakes:[SpawnSnake;MAX_SNAKES], old_effects:[(u8,u16);MAX_SNAKES],
 }
 impl Capsules {
@@ -125,31 +126,35 @@ impl Capsules {
                 }
             }
         }
-        for event in w.frame_events() {
-            if matches!(event.kind,EventKind::Pickup|EventKind::ItemExpiry) {
-                // Frame events carry positions/kinds, not item IDs. Resolve
-                // only against live records; item placement keeps them apart.
-                if let Some(r)=self.records.iter_mut().find(|r|r.outcome.is_none() && r.kind==event.other_snake_id as u8 && r.position==event.position) {
-                    r.outcome=Some(if event.kind==EventKind::Pickup {Some(event.snake_id)} else {None});
-                    r.elapsed=(w.tick()-r.spawned) as f64*STEP_SECONDS;
-                }
-            }
-            if event.kind==EventKind::Pickup && event.other_snake_id<=3 {
-                let id=event.snake_id as usize;let kind=event.other_snake_id as u8;
-                self.pickups[kind as usize]+=1;
-                self.episodes[id]=Episode {generation:w.snake(id).unwrap().generation,kind,..Episode::default()};
-                self.staged[id]=false;self.bursts[id]=0;
-            }
-            if event.kind==EventKind::EffectExpiry && event.other_snake_id==3 {
-                self.phase_expiries+=1;
-                self.clear_phase+=u64::from(w.snake(event.snake_id as usize).is_some_and(|s|s.alive));
-            }
-        }
+        for event in w.frame_events() {self.observe_event(w,event);}
         for s in w.snakes().filter(|s|s.alive && s.effect_kind==3 && s.effect_ticks>0) {
             if super::phase_contact::otherwise_lethal(w,s) {self.use_episode(s.id as usize,3,s.generation);}
         }
         for (id,t) in tactics.iter().enumerate() {
             self.previous_food_goal[id]=t.target!=0 && t.target & (1<<63)==0;
+        }
+    }
+    fn observe_event(&mut self,w:&World,event:&snakes_core::FrameEvent) {
+        if matches!(event.kind,EventKind::Pickup|EventKind::ItemExpiry) {
+            // Frame events carry positions/kinds, not item IDs. Resolve
+            // only against live records; item placement keeps them apart.
+            if let Some(r)=self.records.iter_mut().find(|r|r.outcome.is_none() && r.kind==event.other_snake_id as u8 && r.position==event.position) {
+                r.outcome=Some(if event.kind==EventKind::Pickup {Some(event.snake_id)} else {None});
+                r.elapsed=(w.tick()-r.spawned) as f64*STEP_SECONDS;
+            }
+        }
+        if event.kind==EventKind::Pickup {
+            let id=event.snake_id as usize;let kind=event.other_snake_id as u8;
+            self.pickups[kind as usize]+=1;
+            self.episodes[id]=Episode {generation:w.snake(id).unwrap().generation,kind,..Episode::default()};
+            self.staged[id]=false;self.bursts[id]=0;
+        }
+        if event.kind==EventKind::EffectExpiry && event.other_snake_id==3 {
+            self.phase_expiries+=1;
+            self.clear_phase+=u64::from(w.snake(event.snake_id as usize).is_some_and(|s|s.alive));
+        }
+        if event.kind==EventKind::Sever {
+            self.use_episode(event.other_snake_id as usize,EffectKind::Venom as u8,event.other_generation);
         }
     }
     pub fn report(&self,label:&str,cfg:snakes_core::Config,trace:bool) {
@@ -162,7 +167,7 @@ impl Capsules {
         let mut times:Vec<_>=self.records.iter().filter(|r|matches!(r.outcome,Some(Some(_)))).map(|r|r.elapsed).collect();
         times.sort_unstable_by(f64::total_cmp);
         let median=if times.is_empty() {f64::NAN} else {(times[(times.len()-1)/2]+times[times.len()/2])*0.5};
-        println!("capsules controller={label} seed={} iq={} walls={} spawned={} picked={picked} expired={expired} pending={pending} targeted={targeted} contested={contested} median_s={median:.3} surge_pickups={} surge_used={} magnet_pickups={} magnet_used={} phase_pickups={} phase_used={} phase_expiries={} phase_clear={} surge_staged={} surge_chained={} magnet_extended={}",cfg.seed,cfg.intelligence,if cfg.deadly_walls {"deadly"} else {"wrap"},self.records.len(),self.pickups[1],self.used[1],self.pickups[2],self.used[2],self.pickups[3],self.used[3],self.phase_expiries,self.clear_phase,self.surge_staged,self.surge_chained,self.magnet_extended);
+        println!("capsules controller={label} seed={} iq={} walls={} spawned={} picked={picked} expired={expired} pending={pending} targeted={targeted} contested={contested} median_s={median:.3} surge_pickups={} surge_used={} magnet_pickups={} magnet_used={} phase_pickups={} phase_used={} phase_expiries={} phase_clear={} venom_pickups={} venom_used={} surge_staged={} surge_chained={} magnet_extended={}",cfg.seed,cfg.intelligence,if cfg.deadly_walls {"deadly"} else {"wrap"},self.records.len(),self.pickups[1],self.used[1],self.pickups[2],self.used[2],self.pickups[3],self.used[3],self.phase_expiries,self.clear_phase,self.pickups[EffectKind::Venom as usize],self.used[EffectKind::Venom as usize],self.surge_staged,self.surge_chained,self.magnet_extended);
         if trace {
             for r in &self.records {
                 println!("capsule id={} kind={} spawn_tick={} nearest_eta_s={:.3} targeted={} targeters={} max_contest={} contest_ticks={} outcome={} pickup_s={:.3}",r.id,r.kind,r.spawned,r.eta,r.targeted!=0,r.targeted.count_ones(),r.max_contest,r.contest_ticks,match r.outcome {Some(Some(id))=>format!("snake:{id}"),Some(None)=>"expired".into(),None=>"pending".into()},if matches!(r.outcome,Some(Some(_))) {r.elapsed} else {f64::NAN});
@@ -185,6 +190,39 @@ mod tests {
         let mut tactics=[Tactics::default();MAX_SNAKES];
         tactics[0]=Tactics {generation,target:77,..Default::default()};
         (w,c,tactics)
+    }
+    #[test]
+    fn every_effect_kind_resolves_and_counts_pickups_including_venom() {
+        let (w,mut c,_)=observer();
+        for raw in 1..EFFECT_KIND_COUNT {
+            let kind=EffectKind::from_byte(raw as u8);
+            assert_eq!(kind as usize,raw);
+            let position=Point{x:raw as f64,y:100.0};
+            c.records.push(Capsule {id:raw as u64,kind:kind as u8,position,spawned:w.tick(),eta:0.0,
+                targeted:0,max_contest:0,contest_ticks:0,outcome:None,elapsed:0.0});
+            c.observe_event(&w,&snakes_core::FrameEvent {kind:EventKind::Pickup,other_snake_id:kind as u32,
+                position,snake_id:0,..Default::default()});
+            assert_eq!(c.pickups[raw],1);
+            assert_eq!(c.records.last().unwrap().outcome,Some(Some(0)));
+            assert_eq!(c.episodes[0].kind,kind as u8);
+        }
+        for &kind in snakes_core::effects::ENABLED_KINDS {assert!((kind as usize)<EFFECT_KIND_COUNT);}
+        c.report("test",w.config(),false); // Includes the resolved-total invariant.
+    }
+    #[test]
+    fn venom_use_is_attributed_once_to_the_biter_episode_and_generation() {
+        let (w,mut c,_)=observer();let generation=w.snake(0).unwrap().generation;
+        let pickup=snakes_core::FrameEvent {kind:EventKind::Pickup,other_snake_id:EffectKind::Venom as u32,
+            snake_id:0,..Default::default()};
+        c.observe_event(&w,&pickup);
+        let mut sever=snakes_core::FrameEvent {kind:EventKind::Sever,snake_id:1,other_snake_id:0,
+            other_generation:generation+1,..Default::default()};
+        c.observe_event(&w,&sever);assert_eq!(c.used[EffectKind::Venom as usize],0);
+        sever.other_generation=generation;
+        c.observe_event(&w,&sever);c.observe_event(&w,&sever);
+        assert_eq!(c.used[EffectKind::Venom as usize],1);
+        c.observe_event(&w,&pickup);c.observe_event(&w,&sever);
+        assert_eq!(c.used[EffectKind::Venom as usize],2);
     }
     #[test]
     fn magnet_counts_same_tick_consumed_spark_as_extended_and_used() {
