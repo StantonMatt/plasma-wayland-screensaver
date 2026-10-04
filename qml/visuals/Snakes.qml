@@ -21,5 +21,6 @@ Item {
         scaleToViewport: root.context && root.context.monitorBehavior === "synchronized"
         developerMode: root.context && root.context.developerMode === true
         shaderTimeFrozen: root.reducedMotion
+        clockRect: root.context ? root.context.clockRect : Qt.rect(0, 0, 0, 0)
     }
 }

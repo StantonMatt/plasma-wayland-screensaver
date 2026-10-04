@@ -63,7 +63,7 @@ mod tests {
         for expression in [
             "falloff(abs(acrossR)/(2.4*w))", "1.2+7.0*progress*(0.6+hash(seed+float(k)*2.0)*0.6)",
             "2.2*(1.0-age)", "line(effectCoord,direction*start,direction*end,0.012)",
-            "1.95-0.70*y*y", "0.286+2.352*y-1.238*y*y", "falloff(length(eye)/1.15)",
+            "1.95-0.70*y*y", "0.286+2.352*y-1.238*y*y", "falloff(length(eye)/eyeRadius)",
             "1.30+1.32*extension", "abs(q.x)/0.85+abs(q.y)/1.6",
             "vec2 R=vec2(1.9,0.6)", "1.4*px",
             "dot(p-a,d)/max(dot(d,d),0.000001)",
@@ -126,6 +126,19 @@ mod tests {
         assert!(SHADER.contains("smoothstep(6.0,BOUNDS_RING,length(coord))"));
 
         assert!(HEAD_FRONT >= 1.30 + 1.32 + 0.045 + head_aa); // tongue capsule + AA
+        // Frozen head-local shiver: its glow radius is shortened by .05.
+        assert!(HEAD_SIDE >= 0.56 + 1.1 + 0.05);
+        // Sweat's tear uses a tighter AA ceiling and stays in the head quad.
+        assert!(HEAD_SIDE >= 1.37 + 2.0*(0.025 + 0.12) + 0.08);
+        assert!(HEAD_FRONT >= 1.65 + 0.55*0.9 + 0.28 + 0.40*0.9); // growing frost puff
+        assert!(HEAD_FRONT >= 1.08 + 0.34 + 0.02 + head_aa); // yawn
+        assert!(CAPSULE >= 2.8 + 0.45 + 0.04 + aa); // outside crosshair ticks
+        assert!(SHADER.contains("clamp(fwidth(dropDistance),0.008,0.08)"));
+        // Contest halo: max half-stroke 2.2*1.15px, support 3*half+2.
+        // Rust always reserves >=12px beyond the 1.62-radius ring.
+        assert!(12.0 >= 3.0*(1.0+1.2)*1.15+2.0);
+        assert!(SHADER.contains("dr/((3.0*halfStroke+2.0)*px)"));
+        assert!(include_str!("../faces.rs").contains("(radius*3.4).max(radius*1.62+12.0)"));
         assert!(HEAD_SIDE >= 0.56 + 1.15); // both eye glows, incl. flare
         assert!(HEAD_BACK >= 1.0); // explicit neck fade
         assert!(HEAD_BACK >= 0.60 + 0.035 + head_aa); // crown outline

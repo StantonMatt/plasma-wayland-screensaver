@@ -26,6 +26,7 @@ class Configuration final : public QObject
     Q_PROPERTY(int snakeIntelligence READ snakeIntelligence WRITE setSnakeIntelligence NOTIFY changed)
     Q_PROPERTY(bool snakeSelfCollisions READ snakeSelfCollisions WRITE setSnakeSelfCollisions NOTIFY changed)
     Q_PROPERTY(bool snakePowerUps READ snakePowerUps WRITE setSnakePowerUps NOTIFY changed)
+    Q_PROPERTY(bool snakeWorldEvents READ snakeWorldEvents WRITE setSnakeWorldEvents NOTIFY changed)
     Q_PROPERTY(bool snakeDeadlyWalls READ snakeDeadlyWalls WRITE setSnakeDeadlyWalls NOTIFY changed)
     Q_PROPERTY(bool showClock READ showClock WRITE setShowClock NOTIFY changed)
     Q_PROPERTY(QString clockMovement READ clockMovement WRITE setClockMovement NOTIFY changed)
@@ -55,6 +56,7 @@ public:
     bool snakeSelfCollisions() const;
     bool snakeDeadlyWalls() const;
     bool snakePowerUps() const;
+    bool snakeWorldEvents() const;
     bool showClock() const;
     QString clockMovement() const;
     QString clockSpeed() const;
@@ -79,6 +81,7 @@ public:
     void setSnakeSelfCollisions(bool value);
     void setSnakeDeadlyWalls(bool value);
     void setSnakePowerUps(bool value);
+    void setSnakeWorldEvents(bool value);
     void setShowClock(bool value);
     void setClockMovement(const QString &value);
     void setClockSpeed(const QString &value);
@@ -121,6 +124,7 @@ private:
     bool m_snakeSelfCollisions = false;
     bool m_snakeDeadlyWalls = true;
     bool m_snakePowerUps = true;
+    bool m_snakeWorldEvents = true;
     bool m_showClock = true;
     QString m_clockMovement = QStringLiteral("bounce");
     QString m_clockSpeed = QStringLiteral("normal");

@@ -41,6 +41,7 @@ Item {
     required property var presentationClock
 
     property double clockMotionNowMs: animationEpochMs
+    readonly property rect clockRect: showClock ? Qt.rect(clockBox.x, clockBox.y, clockBox.width, clockBox.height) : Qt.rect(0, 0, 0, 0)
     property real sharedClockX: 0
     property real sharedClockY: 0
 

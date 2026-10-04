@@ -64,17 +64,20 @@ pub(super) struct Timeline {
     count:usize,
     pickup_mask:u16,
     movement_mask:u16,
+    guards:u16,
+    guard_targets:[u64;MAX_SNAKES],
     phase:[u16;STEPS+1],
     surge:[u16;STEPS+1],
 }
 impl Default for Timeline {
-    fn default()->Self {Self {initial:[Effect::default();MAX_SNAKES],pickups:[Pickup::default();crate::MAX_ITEMS],count:0,pickup_mask:0,movement_mask:0,phase:[0;STEPS+1],surge:[0;STEPS+1]}}
+    fn default()->Self {Self {initial:[Effect::default();MAX_SNAKES],pickups:[Pickup::default();crate::MAX_ITEMS],count:0,pickup_mask:0,movement_mask:0,guards:0,guard_targets:[0;MAX_SNAKES],phase:[0;STEPS+1],surge:[0;STEPS+1]}}
 }
 impl Timeline {
     pub fn new(w:&World)->Self {
         let mut result=Self::default();
         for s in w.snakes().filter(|s|s.alive) {
             let id=s.id as usize;let e=Effect::observed(w,s);result.initial[id]=e;
+            result.set_guard(id,s.face.guarding,s.face.target_id);
             let masks=if e.is(EffectKind::Phase) {&mut result.phase}
                 else if e.is(EffectKind::Surge) {&mut result.surge} else {continue;};
             for mask in &mut masks[1..=e.ticks.min(STEPS as u16) as usize] {*mask|=1<<id;}
@@ -87,9 +90,12 @@ impl Timeline {
     pub fn opportunities(w:&World,initial:Self,motions:&[Motion;MAX_SNAKES],boosted:&[Motion;MAX_SNAKES])->Self {
         let mut result=initial;
         if w.config().rules!=crate::RuleSet::V2 || !w.config().power_ups {return result;}
-        for item in w.items().filter(|item|item.life_ticks>=1) {
+        for item in w.items() {
+            if !item.pickup_eligible(w.tick()+1,0,true,false,0) {continue;}
             for s in w.snakes().filter(|s|s.alive) {
-                let id=s.id as usize;let head=s.segments[0].current;
+                let id=s.id as usize;
+                if !result.pickup_eligible(item,w.tick(),1,id,s.alive) {continue;}
+                let head=s.segments[0].current;
                 let mut possible=false;let mut certain=true;
                 for motion in [&motions[id],&boosted[id]] {
                     let (speed,turn)=motion.at(0);let travel=speed*STEP_SECONDS;
@@ -101,7 +107,7 @@ impl Timeline {
                     certain&=distance+error<=reach;
                 }
                 if possible {
-                    if certain {result.pickup(id,item.kind,1);}
+                    if certain {result.pickup(id,*item,1);}
                     // A lower live ID that might win prevents certainty for
                     // every later ID, even if that later endpoint is inside.
                     break;
@@ -175,7 +181,25 @@ impl Timeline {
         result
     }
     pub fn max_reach_scale(&self,step:usize)->f64 {if self.surge_bits(step)!=0 {1.6} else {1.0}}
-    fn pickup(&mut self,id:usize,kind:EffectKind,step:usize) {
+    pub fn set_guard(&mut self,id:usize,guarding:bool,target:u64) {
+        if guarding {self.guards|=1<<id;} else {self.guards&=!(1<<id);}
+        self.guard_targets[id]=target;
+    }
+    #[inline]
+    fn pickup_eligible(&self,item:&crate::Item,tick:u64,step:usize,id:usize,alive:bool)->bool {
+        let guarding=self.guards&(1<<id)!=0;
+        item.pickup_eligible(tick+step as u64,step-1,alive,guarding,
+            if guarding {self.at(id,step).ticks} else {0})
+    }
+    fn pickup(&mut self,id:usize,item:crate::Item,step:usize) {
+        // Mechanics clears every guard committed to a capsule when it is
+        // consumed, before considering the next capsule in item order.
+        let mut guards=self.guards;
+        while guards!=0 {
+            let other=guards.trailing_zeros() as usize;guards&=guards-1;
+            if self.guard_targets[other]==item.id {self.guards&=!(1<<other);}
+        }
+        let kind=item.kind;
         let effect=Effect {kind:kind as u8,ticks:kind.duration()};
         self.pickups[self.count]=Pickup {id:id as u8,effect,step:step as u16};self.count+=1;self.pickup_mask|=1<<id;
         let initial=self.initial[id];
@@ -254,7 +278,10 @@ impl Items {
                 if self.reach[0][i][id] as usize>STEPS {continue;}
                 let surge=effects.surge_pickup_before(id,STEPS+1);
                 let pickup_radius=surge.map(|step|w.ai_forecast_radius(id,0.0,step,Some(step)));
-                for step in 1..=STEPS.min(item.life_ticks as usize) {
+                // Cache endpoint contact only: award-time eligibility depends
+                // on earlier pickups in each candidate's own item pass.
+                for step in 1..=STEPS {
+                    if !item.pickup_eligible(w.tick()+step as u64,step-1,true,false,0) {continue;}
                     let radius=if surge.is_some_and(|s|s<step) {pickup_radius.unwrap()} else {motions[id].radii[(step-1).min(24)]};
                     let reach=1.3*radius+item.radius;
                     let distance=w.distance_squared(r.path[step],item.position);
@@ -337,7 +364,13 @@ impl Forecast {
             let i=pending.trailing_zeros() as usize;pending&=pending-1;
             let item=self.items[i];
             if step>item.life_ticks as usize {self.pending&=!(1<<i);continue;}
-            let owners=self.alive & self.owners[i];
+            if !item.pickup_eligible(w.tick()+step as u64,step-1,true,false,0) {continue;}
+            let mut owners=self.alive & self.owners[i];
+            let mut guards=owners & self.effects.guards;
+            while guards!=0 {
+                let id=guards.trailing_zeros() as usize;guards&=guards-1;
+                if !self.effects.pickup_eligible(&item,w.tick(),step,id,true) {owners&=!(1<<id);}
+            }
             let mut hits=items.hits[step][i] & owners & !changed;
             if reserve>0.0 && items.near[step][i] & owners & !changed!=0 {self.sweep_needed=true;}
             let mut dynamic=owners & changed;
@@ -355,7 +388,7 @@ impl Forecast {
                 self.movement_changed|=(1<<expected)&items.movement_mask;
             }
             if winner!=MAX_SNAKES {
-                self.effects.pickup(winner,item.kind,step);
+                self.effects.pickup(winner,item,step);
                 self.pickup_steps[i]=step as u16;self.pickup_owners[i]=winner as u8;
                 if winner!=expected || step!=expected_step {
                     let affected=(1<<winner) | if expected<MAX_SNAKES {1<<expected} else {0};
@@ -414,14 +447,16 @@ impl Forecast {
             let i=pending.trailing_zeros() as usize;pending&=pending-1;
             let item=self.items[i];
             if step>item.life_ticks as usize {self.pending&=!(1<<i);continue;}
+            if !item.pickup_eligible(w.tick()+step as u64,step-1,true,false,0) {continue;}
             let mut alive=self.alive & self.owners[i];
             while alive!=0 {
                 let id=alive.trailing_zeros() as usize;alive&=alive-1;
+                if !self.effects.pickup_eligible(&item,w.tick(),step,id,true) {continue;}
                 let reach=1.3*self.radii[id]+item.radius;
                 let distance=w.distance_squared(positions(id),item.position);
                 if item.kind==EffectKind::Phase && reserve>0.0 && distance<=(reach+reserve).powi(2) {self.sweep_needed=true;}
                 if distance>reach*reach {continue;}
-                self.effects.pickup(id,item.kind,step);self.pickup_steps[i]=step as u16;self.pickup_owners[i]=id as u8;self.pending&=!(1<<i);break;
+                self.effects.pickup(id,item,step);self.pickup_steps[i]=step as u16;self.pickup_owners[i]=id as u8;self.pending&=!(1<<i);break;
             }
         }
     }

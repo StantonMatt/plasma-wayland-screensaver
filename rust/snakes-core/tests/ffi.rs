@@ -4,7 +4,7 @@ use snakes_core::{ Config, World };
 use snakes_core::ffi::*;
 #[test] fn ffi_round_trip_and_validation() {
     unsafe {
-        assert_eq!(snakes_core_abi_version(), 2);
+        assert_eq!(snakes_core_abi_version(), 3);
         let config = CoreConfig::from(Config {
             seed: 73,
             ..Config::default()
@@ -37,6 +37,7 @@ use snakes_core::ffi::*;
         assert_eq!(info.tick, 0);
         assert_eq!(info.world_width, 1280.0);
         assert_eq!(snakes[0].generation, 1);
+        assert!(snakes.iter().all(|s|s.face_flags & FACE_OBSERVED==0),"Classic retains legacy expressions");
         for (i, s) in expected.snakes().enumerate() {
             assert_eq!(snakes[i].segment_count as usize, s.segments.len());
             assert_eq!(snakes[i].radius, s.radius);
@@ -55,7 +56,7 @@ use snakes_core::ffi::*;
             id: 0,
             generation: 1,
             desired_angle: 1.5,
-            rush: 0.2
+            rush: 0.2, actions:0,reserved:0
         };
         assert_eq!(snakes_core_set_steering(handle, &input, 1), OK);
         let invalid = SteeringInput {
@@ -99,8 +100,8 @@ use snakes_core::ffi::*;
 }
 #[test] fn ffi_layout_sizes_and_offsets() {
     assert_eq!(std::mem::size_of::<CoreConfig>(), 80);
-    assert_eq!(std::mem::size_of::<SnakeRecord>(), 56);
-    assert_eq!(std::mem::size_of::<FoodRecord>(), 48);
+    assert_eq!(std::mem::size_of::<SnakeRecord>(), 152);
+    assert_eq!(std::mem::size_of::<FoodRecord>(), 72);
     assert_eq!(std::mem::offset_of!(FoodRecord, color_index), 36);
 }
 
@@ -126,7 +127,7 @@ fn output_records_accept_uninitialized_storage() {
         assert!(segments.iter().all(|s| s.assume_init().x.is_finite()));
         assert!(food.iter().all(|f| f.assume_init().id != 0));
         // Script straight movement until a wall strike produces an event.
-        let input = SteeringInput { id: 0, generation: 0, desired_angle: 0.0, rush: 0.0 };
+        let input = SteeringInput { id: 0, generation: 0, desired_angle: 0.0, rush: 0.0, actions:0,reserved:0 };
         assert_eq!(snakes_core_set_steering(handle, &input, 1), OK);
         let mut sizes = FrameSizes::default();
         for _ in 0..1000 {
@@ -176,5 +177,28 @@ fn items_export_round_trip_failure_atomicity_and_disable() {
         assert_eq!(snakes_core_reconfigure(handle,&CoreConfig::from(Config{power_ups:false,..cfg})),OK);
         assert_eq!(snakes_core_get_frame_sizes(handle,&mut sizes),OK);assert_eq!(sizes.items,0);
         snakes_core_destroy(handle);
+    }
+}
+
+#[test]
+fn v3_defaults_reserved_effect_state_and_world_event_setting_round_trip() {
+    unsafe {
+        let cfg=Config{rules:snakes_core::RuleSet::V2,world_events:false,power_ups:false,..Config::default()};
+        let core=CoreConfig::from(cfg);assert_eq!(core.reserved,POWER_UPS_OFF|WORLD_EVENTS_OFF);
+        let mut h=ptr::null_mut();assert_eq!(snakes_core_create(&core,&mut h),OK);
+        let mut sizes=FrameSizes::default();assert_eq!(snakes_core_get_frame_sizes(h,&mut sizes),OK);
+        let mut snakes=vec![SnakeRecord::default();sizes.snakes as usize];
+        let mut segments=vec![SegmentRecord::default();sizes.segments as usize];
+        let mut food=vec![FoodRecord::default();sizes.food as usize];let mut info=FrameInfo::default();
+        assert_eq!(snakes_core_export_frame(h,snakes.as_mut_ptr(),snakes.len(),segments.as_mut_ptr(),segments.len(),food.as_mut_ptr(),food.len(),&mut info),OK);
+        assert_eq!(info.ambient,1.0);assert_eq!(info.world_event.ambient,1.0);assert_eq!(info.bubble_count,0);
+        assert!(snakes.iter().all(|s|s.mood==0 && s.face_flags & FACE_OBSERVED!=0),"V2 Calm is authoritative, including before the first tick");
+        assert!(snakes.iter().all(|s|s.target_item==255 && s.grudge_snake_id==u32::MAX && s.bulges.iter().all(|b|b.duration_ticks==0)));
+        let bad=CoreConfig{reserved:1,..core};assert_eq!(snakes_core_reconfigure(h,&bad),INVALID_ARGUMENT);
+        let input=SteeringInput{id:0,actions:2,..SteeringInput::default()};
+        assert_eq!(snakes_core_set_steering(h,&input,1),INVALID_ARGUMENT);
+        let input=SteeringInput{id:0,actions:1,..SteeringInput::default()};
+        assert_eq!(snakes_core_set_steering(h,&input,1),OK);
+        snakes_core_destroy(h);
     }
 }

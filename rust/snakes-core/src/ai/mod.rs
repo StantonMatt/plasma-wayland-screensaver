@@ -8,6 +8,7 @@ mod surge;
 mod magnet;
 mod phase;
 mod target;
+mod race;
 mod forecast;
 use attack::Attack;
 use crate::{Point, SnakeView, World, MAX_FOOD, MAX_SEGMENTS, MAX_SNAKES, STEP_SECONDS};
@@ -53,6 +54,8 @@ pub struct CompetitionDebug {pub prey:Option<usize>,pub coil_radius:f64,pub rush
 struct State {
     generation: u32,
     target: u64,
+    race_losing_ticks:u8,
+    guarding:bool,guard_radius:f64,
     target_index: usize, // frame-local hint, checked against target identity
     rejected: u64,
     reject_until: u64,
@@ -99,6 +102,15 @@ struct State {
     debug: DebugInfo,
 }
 impl State {
+    /// Race observations and guard hysteresis belong to one target identity.
+    /// Recovery commitments/rejections belong to motion or their explicit ID.
+    fn set_target(&mut self,target:u64) {
+        if self.target!=target {
+            self.race_losing_ticks=0;self.guarding=false;self.guard_radius=0.0;
+        }
+        self.target=target;
+    }
+
     /// Install the controls carried by the rollout after bookkeeping that can
     /// clear old tactics. Never reconstruct a maneuver from its scratch slot.
     fn commit_candidate(state:&mut State,c:&Candidate,best:usize,w:&World,s:SnakeView<'_>,turn:f64,need:usize) {
@@ -116,7 +128,7 @@ impl State {
             // Enter it only for a validated nontracking fallback; tracking and
             // attack candidates retain every dependency of their rollout.
             state.prey=0;state.clear_coil(s.angle);state.clear_attacks(s.angle);
-            state.target=0;state.waypoint=None;
+            state.set_target(0);state.waypoint=None;
         }
         state.attack=c.attack;
         state.track_goal=c.tracks_goal;
@@ -124,12 +136,13 @@ impl State {
         state.exit_angle=c.exit_angle;
         state.rush=c.rush;
         state.desired=c.desired;
+        if state.target==0 {state.guarding=false;}
     }
     fn clear_coil(&mut self,angle:f64) {
         if self.coil_radius!=0.0 || self.coil_initial_radius>0.0 {
             self.desired=angle;self.exit_angle=angle;self.turn_until=u64::MAX;
             self.track_goal=false;self.commit_until=0;self.rush=0.0;
-            self.target=0;self.waypoint=None;
+            self.set_target(0);self.waypoint=None;
         }
         self.coil_radius=0.0;
         self.coil_initial_radius=0.0;
@@ -314,7 +327,9 @@ pub struct AiController {
     initial_effects: forecast::Timeline,
     effects: forecast::Timeline,
     opportunities: forecast::Timeline,
-    food: [Option<crate::FoodView>; MAX_FOOD + crate::MAX_ITEMS],
+    look_deltas:[Point;MAX_SNAKES],
+    capsule_etas:[[f64;MAX_SNAKES];crate::MAX_ITEMS],
+    food: [Option<target::TargetFood>; MAX_FOOD + crate::MAX_ITEMS],
     tick: u64,
     geometry: u64,
     seed: i32,
@@ -333,7 +348,7 @@ impl Default for AiController {fn default() -> Self {Self::new()}}
 impl AiController {
     pub fn new() -> Self {
         Self {spatial:Spatial::new(),candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],rival_necks:[[0;STEPS+1];MAX_SNAKES],neck_owner:MAX_SNAKES,neck_horizons:[0;MAX_SNAKES],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,profile:[0;5],forecast_profile:[0;5], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],
-            rivals:[Rival::default();MAX_SNAKES],opportunity_rivals:Box::new([Rival::default();MAX_SNAKES]),opportunity_mask:0,rival_limits:[[(0.0,0.0);STEPS+1];MAX_SNAKES], simulation_rivals:Some(Box::new([Rival::default();MAX_SNAKES])),item_forecast:forecast::Items::default(),initial_effects:forecast::Timeline::default(),effects:forecast::Timeline::default(),opportunities:forecast::Timeline::default(),food:[None;MAX_FOOD + crate::MAX_ITEMS],
+            rivals:[Rival::default();MAX_SNAKES],opportunity_rivals:Box::new([Rival::default();MAX_SNAKES]),opportunity_mask:0,rival_limits:[[(0.0,0.0);STEPS+1];MAX_SNAKES], simulation_rivals:Some(Box::new([Rival::default();MAX_SNAKES])),item_forecast:forecast::Items::default(),initial_effects:forecast::Timeline::default(),effects:forecast::Timeline::default(),opportunities:forecast::Timeline::default(),look_deltas:[Point::default();MAX_SNAKES],capsule_etas:[[f64::INFINITY;MAX_SNAKES];crate::MAX_ITEMS],food:[None;MAX_FOOD + crate::MAX_ITEMS],
             tick:u64::MAX,geometry:0,seed:0,rng:0x9e3779b97f4a7c15,urgent_used:0,max_radius:0.0,max_forecast_speed:0.0,phase_sweeps:[0;3],planning_speed:[0.0;MAX_SNAKES],motion:[Motion::default();MAX_SNAKES],boosted_motion:[Motion::default();MAX_SNAKES],observed_angles:[0.0;MAX_SNAKES],observed_generations:[0;MAX_SNAKES]}
     }
     pub fn enable_profile(&mut self) {self.profile_enabled=true;}
@@ -344,6 +359,8 @@ impl AiController {
     pub fn disable_observers(&mut self) {self.diagnostic_enabled=false;self.profile_enabled=false;}
     pub fn decision(&self, id:usize) -> DecisionDiagnostic { self.decisions[id] }
     pub fn debug(&self,id:usize) -> Option<DebugInfo> {self.states.get(id).map(|s|s.debug)}
+    /// Actual retained objective, as distinct from the diagnostic shortlist.
+    pub fn selected_target(&self,id:usize) -> Option<u64> {self.states.get(id).map(|s|s.target)}
     pub fn competition_debug(&self,id:usize)->Option<CompetitionDebug> {
         self.states.get(id).map(|s|CompetitionDebug {prey:s.prey.checked_sub(1),coil_radius:s.coil_radius,rush:s.rush,attack_side:if s.attack.valid {s.attack.side} else {0},attack_stage:if !s.attack.valid {0} else if self.tick<s.attack.turn_at {1} else {2}})
     }
@@ -364,14 +381,13 @@ impl AiController {
         self.tick=w.tick(); self.geometry=w.geometry_generation(); self.urgent_used=0;
         self.spatial.rebuild(w);
         self.food.fill(None);
-        for (i,f) in w.foods().enumerate() {self.food[i]=Some(f);}
+        for (i,f) in w.foods().enumerate() {self.food[i]=Some(f.into());}
         // Fixed extra target slots. High-bit IDs distinguish items from food;
         // they reuse target persistence, routing, race and contest handling.
         for (i,item) in w.items().enumerate() {
-            self.food[MAX_FOOD+i]=Some(crate::FoodView {id:item.id | target::ITEM_BIT,position:item.position,
-                value:item.kind.base_value(),color_index:0,size:item.radius,life:item.life_ticks as f64*STEP_SECONDS,
-                phase:0.0,attraction:0.0,attraction_target:item.position,vacuum_owner:-1,
-                feast_id:0,trail_index:0,feast_length:0,kind:crate::FoodKind::Spark,life_fraction:255});
+            self.food[MAX_FOOD+i]=Some(target::TargetFood {id:item.id | target::ITEM_BIT,position:item.position,
+                value:item.kind.base_value(),size:item.radius,vacuum_owner:-1,feast_id:0,kind:crate::FoodKind::Spark,
+                motion_ticks:item.pickable_from_tick.saturating_sub(w.tick()).min(u16::MAX as u64) as u16});
         }
         self.initial_effects=forecast::Timeline::new(w);
         self.neck_owner=MAX_SNAKES;self.opportunity_mask=0;
@@ -403,6 +419,7 @@ impl AiController {
             self.observed_generations[id]=s.generation;self.observed_angles[id]=s.angle;
             r.observed_turn=observed_turn;
         }
+        self.prepare_races(w);
         let forecast_clock=self.profile_enabled.then(std::time::Instant::now);
         self.opportunities=forecast::Timeline::opportunities(w,self.initial_effects,&self.motion,&self.boosted_motion);
         self.item_forecast=forecast::Items::prepare(w,&self.motion,&self.boosted_motion);
@@ -602,33 +619,42 @@ impl AiController {
         // capture reach. Capsules and claimed food use the same typed helper.
         contact.map_or(eta,|c|c.distance(distance,crate::effects::forecast_step(eta))/r.speed.max(1.0)+turning)
     }
-    fn target_slot(&self,state:State)->Option<(usize,crate::FoodView)> {
+    fn target_slot(&self,state:State)->Option<(usize,target::TargetFood)> {
         if state.target==0 {return None;}
         self.food.get(state.target_index).copied().flatten().filter(|f|f.id==state.target).map(|f|(state.target_index,f))
             .or_else(||self.food.iter().enumerate().filter_map(|(fi,f)|f.map(|f|(fi,f))).find(|(_,f)|f.id==state.target))
     }
-    fn target_food(&self,state:State)->Option<crate::FoodView> {
+    fn target_food(&self,state:State)->Option<target::TargetFood> {
         self.target_slot(state).map(|(_,f)|f)
     }
-    fn target_arrival(&self,w:&World,s:SnakeView<'_>,f:crate::FoodView)->f64 {
+    fn target_arrival(&self,w:&World,s:SnakeView<'_>,f:impl Into<target::TargetFood>)->f64 {
+        let f=f.into();
         self.arrival_to(w,&self.rivals[s.id as usize],f.position,Some(target::Contact::forecast(s,f,self.opportunities.track(s.id as usize))))
     }
     /// Food and capsules share race, persistence and heading valuation.
-    fn target_score(&self,w:&World,s:SnakeView<'_>,state:&State,f:crate::FoodView,
+    fn target_score(&self,w:&World,s:SnakeView<'_>,state:&State,f:impl Into<target::TargetFood>,
         eta:f64,bearing:f64,value:f64)->f64 {
+        let f=f.into();
         let id=s.id as usize;
         let mut rival_eta=f64::MAX;let mut rival_len=0;let mut rival_id=id;
         for (other,r) in self.rivals.iter().enumerate() {
             if other==id || !r.alive {continue;}
-            let e=self.target_arrival(w,w.snake(other).unwrap(),f);
+            let e=if f.id & target::ITEM_BIT!=0 {self.capsule_etas[state_item_slot(self,f)][other]} else {self.target_arrival(w,w.snake(other).unwrap(),f)};
             if e<rival_eta {rival_eta=e;rival_len=r.len;rival_id=other;}
         }
         let advantage=s.segments.len()>=rival_len+6
             && self.opportunities.contact(id,rival_id,phase::step(eta.max(rival_eta)));
-        let competition=if rival_eta<eta*0.8 {if advantage {0.85} else {0.2}}
+        let capsule=f.id & target::ITEM_BIT!=0;
+        let competition=if capsule {
+            let own=self.capsule_etas[state_item_slot(self,f)][id];
+            let guard=self.guard_worth(w,s,f) && s.effect_ticks>90 && w.distance_squared(s.segments[0].current,f.position)<(15.0*s.radius).powi(2);
+            if f.id!=state.target && !guard && !(own<0.9*rival_eta || (own<1.25*rival_eta && s.segments.len()>=16 && w.boost_ready(id))) {0.0}
+            else if rival_eta<own*1.2 {if advantage {1.4} else {1.1}} else {1.0}
+        } else if rival_eta<eta*0.8 {if advantage {0.85} else {0.2}}
             else if rival_eta<eta*1.2 {if advantage {1.35} else {0.65}} else {1.0};
-        let sticky=if f.id==state.target {1.28} else {1.0};
-        let forward=(0.15+0.85*((bearing.cos()+1.0)*0.5).powi(3)).max(0.05);
+        let sticky=if f.id==state.target {if capsule {1.8} else {1.28}} else {1.0};
+        // ETA already pays for turning; capsules merit deliberate reversals.
+        let forward=if capsule {0.8+0.2*bearing.cos()} else {(0.15+0.85*((bearing.cos()+1.0)*0.5).powi(3)).max(0.05)};
         value*competition*sticky*forward/(eta+0.7)
     }
     fn shortlist(shortlist:&mut [(f64,usize);5],score:f64,fi:usize) {
@@ -644,17 +670,19 @@ impl AiController {
         let revise_tactics=w.tick()>=state.next_response;
         state.attack_options=[Attack::default();2];
         if w.tick()<state.escape_until {
+            state.guarding=false;
             state.clear_attacks(s.angle);
             state.debug.flags&=!8;
             state.goal=s.segments.last().unwrap().current;
-            state.target=0;state.waypoint=None;
+            state.set_target(0);state.waypoint=None;
             state.debug.target_count=0;state.debug.target_food_ids=[0;5];
             state.last_strategy=w.tick();return;
         }
         if w.tick()<state.orbit_until {
+            state.guarding=false;
             state.clear_attacks(s.angle);
             state.debug.flags&=!8;
-            state.target=0;state.waypoint=None;
+            state.set_target(0);state.waypoint=None;
             state.debug.target_count=0;state.debug.target_food_ids=[0;5];
             state.last_strategy=w.tick();return;
         }
@@ -678,14 +706,15 @@ impl AiController {
                         let d=w.displacement(head,f.position); let distance=(d.x*d.x+d.y*d.y).sqrt();
                         // Once vacuumed, food follows us; pursuing it would
                         // produce endless loops around the turning circle.
-                        let contact=target::Contact::forecast(s,f,self.opportunities.track(s.id as usize));
+                        let contact=target::Contact::forecast(s,f,self.opportunities.track(s.id as usize)).with_guard(state.guarding);
                         if contact.collected() || contact.reached(w.distance_squared(straight,f.position),1) {continue;}
                         let eta=self.target_arrival(w,s,f);
                         let bearing=normalize_angle(d.y.atan2(d.x)-s.angle).abs();
                         if distance>contact.reach(1) && bearing>1.5 && contact.distance(distance,1)<self.rivals[id].speed/self.rivals[id].turn.max(0.01)*1.8 {continue;}
                         let cluster=self.spatial.cluster_weight(key);
-                        let value=f.value+cluster.min(8.0)*0.18+if f.feast_id>0 {0.4} else {0.0}
-                            +magnet::food_bonus_effect(f,self.opportunities.before(id,crate::effects::forecast_step(eta)));
+                        let effect=self.opportunities.before(id,crate::effects::forecast_step(eta));
+                        let value=f.value+cluster.min(8.0)*if effect.is(crate::effects::EffectKind::Magnet) {0.6} else {0.18}+if f.feast_id>0 {0.4} else {0.0}
+                            +magnet::food_bonus_effect(f,effect);
                         let score=self.target_score(w,s,state,f,eta,bearing,value);
                         Self::shortlist(&mut shortlist,score,fi);
                         if inspected>=64 {break 'rings;}
@@ -698,14 +727,13 @@ impl AiController {
         for (index,item) in w.items().enumerate() {
             let fi=MAX_FOOD+index;let f=self.food[fi].unwrap();
             if f.id==state.rejected && w.tick()<state.reject_until {continue;}
-            let d=w.displacement(head,item.position);let distance=(d.x*d.x+d.y*d.y).sqrt();
-            let contact=target::Contact::forecast(s,f,self.opportunities.track(s.id as usize));
+            let d=w.displacement(head,item.position);
+            let contact=target::Contact::forecast(s,f,self.opportunities.track(s.id as usize)).with_guard(state.guarding);
             if contact.collected() || contact.reached(w.distance_squared(straight,f.position),1) {continue;}
             let eta=self.target_arrival(w,s,f);
             if eta>item.life_ticks as f64*STEP_SECONDS {continue;}
             let bearing=normalize_angle(d.y.atan2(d.x)-s.angle).abs();
-            if distance>contact.reach(1) && bearing>1.5 && contact.distance(distance,1)<self.rivals[id].speed/self.rivals[id].turn.max(0.01)*1.8 {continue;}
-            let value=f.value+crate::effects::ai_bonus(item.kind,w,s,item.position);
+            let value=self.capsule_value(w,s,item,eta);
             let score=self.target_score(w,s,state,f,eta,bearing,value);
             Self::shortlist(&mut shortlist,score,fi);
         }
@@ -732,7 +760,11 @@ impl AiController {
         }
         let tactical_goal=state.goal;
         let old=state.target;
-        state.target=if shortlist[0].0>0.0 {self.food[shortlist[0].1].unwrap().id} else {0};
+        if shortlist[0].0>0.0 && self.food[shortlist[0].1].unwrap().id & target::ITEM_BIT!=0 {
+            if old!=self.food[shortlist[0].1].unwrap().id {state.prey=0;state.clear_attacks(s.angle);state.clear_coil(s.angle);}
+            state.harvest_until=0;
+        }
+        state.set_target(if shortlist[0].0>0.0 {self.food[shortlist[0].1].unwrap().id} else {0});
         if state.target!=0 {
             state.target_index=shortlist[0].1;
             state.goal=self.food[state.target_index].unwrap().position;
@@ -750,13 +782,14 @@ impl AiController {
         if old!=state.target {state.best_distance=f64::MAX;state.last_progress=w.tick();}
         state.debug.flags&=!8;
         if revise_tactics {self.tactics(w,s,state,intelligence);}
-        else if state.prey!=0 || w.tick()<state.dodge_until {
-            state.goal=tactical_goal;state.target=0;
+        else if (state.prey!=0 && state.target & target::ITEM_BIT==0) || w.tick()<state.dodge_until {
+            state.goal=tactical_goal;state.set_target(0);
             if state.prey!=0 {state.debug.flags|=8;}
         }
+        self.guard_capsule(w,s,state);
         state.waypoint=None;
         let mut tests=0;
-        let route_goal=self.target_food(*state).map_or(state.goal,|f|target::Contact::forecast(s,f,self.opportunities.track(s.id as usize)).approach(w,head,f.position,crate::effects::forecast_step(self.target_arrival(w,s,f))));
+        let route_goal=self.target_food(*state).filter(|_|!state.guarding).map_or(state.goal,|f|target::Contact::forecast(s,f,self.opportunities.track(s.id as usize)).with_guard(state.guarding).approach(w,head,f.position,crate::effects::forecast_step(self.target_arrival(w,s,f))));
         if self.body_blocked(w,s,head,route_goal,0.0,0.0,&mut tests).0 {
             state.waypoint=self.spatial.waypoint(head,route_goal,self.mask(w,id));
             if state.waypoint.is_none() && state.debug.flags&8==0 {
@@ -766,12 +799,20 @@ impl AiController {
                 for (score,fi) in shortlist.into_iter().skip(1) {
                     if score<=0.0 {continue;}
                     let f=self.food[fi].unwrap();let mut tests=0;
-                    let approach=target::Contact::forecast(s,f,self.opportunities.track(s.id as usize)).approach(w,head,f.position,crate::effects::forecast_step(self.target_arrival(w,s,f)));
+                    let approach=target::Contact::forecast(s,f,self.opportunities.track(s.id as usize)).with_guard(state.guarding).approach(w,head,f.position,crate::effects::forecast_step(self.target_arrival(w,s,f)));
                     if !self.body_blocked(w,s,head,approach,0.0,0.0,&mut tests).0 {alternative=Some((fi,f));break;}
                 }
-                if let Some((fi,f))=alternative {state.target=f.id;state.target_index=fi;state.goal=f.position;}
+                if let Some((fi,f))=alternative {
+                    if state.target!=f.id {
+                        if f.id & target::ITEM_BIT!=0 {state.prey=0;state.clear_attacks(s.angle);state.clear_coil(s.angle);state.harvest_until=0;}
+                        // Classic's historical fallback/progress policy is unchanged.
+                        if w.config().rules==crate::RuleSet::V2 {state.best_distance=f64::MAX;state.last_progress=w.tick();}
+                    }
+                    state.set_target(f.id);state.target_index=fi;state.goal=f.position;
+                    self.guard_capsule(w,s,state);
+                }
                 else {
-                    state.rejected=state.target;state.reject_until=w.tick()+90;state.target=0;
+                    state.rejected=state.target;state.reject_until=w.tick()+90;state.set_target(0);
                     state.goal=w.canonical_point(Point{x:head.x+s.angle.cos()*300.0,y:head.y+s.angle.sin()*300.0});
                 }
             }
@@ -785,12 +826,14 @@ impl AiController {
         state.last_strategy=w.tick();
     }
     fn trajectory_goal(w:&World,state:State,head:Point)->Point {
-        if state.coil_radius>0.0 {
-            let d=w.displacement(state.coil_center,head);
+        if state.guarding || state.coil_radius>0.0 {
+            let center=if state.guarding {state.goal} else {state.coil_center};
+            let orbit_radius=if state.guarding {state.guard_radius} else {state.coil_radius};
+            let d=w.displacement(center,head);
             let radius=(d.x*d.x+d.y*d.y).sqrt().max(1.0);
             let tangent=d.y.atan2(d.x)+state.coil_sign*std::f64::consts::FRAC_PI_2;
-            let contraction=if state.coil_progress>0.9 {state.coil_pitch/std::f64::consts::TAU} else {0.0};
-            let correction=((radius-state.coil_radius)/30.0).atan().clamp(-0.35,0.35);
+            let contraction=if !state.guarding && state.coil_progress>0.9 {state.coil_pitch/std::f64::consts::TAU} else {0.0};
+            let correction=((radius-orbit_radius)/30.0).atan().clamp(-0.35,0.35);
             let angle=tangent+state.coil_sign*((contraction/radius).atan()+correction);
             w.canonical_point(Point{x:head.x+angle.cos()*80.0,y:head.y+angle.sin()*80.0})
         } else {state.waypoint.unwrap_or(state.goal)}
@@ -804,6 +847,7 @@ impl AiController {
         if w.config().rules==crate::RuleSet::V2 {
             // A pursuit is not itself permission to spend tail. Only a checked
             // cutoff, a valuable contested target or a differential escape is.
+            if surge::pursuit_burst(w,s,state) {return 0.6;}
             if state.prey==0 && state.coil_radius==0.0 && self.food_race(w,s,state) {return 0.6;}
             return 0.0;
         }
@@ -824,6 +868,11 @@ impl AiController {
         let angle=normalize_angle(d.y.atan2(d.x)-s.angle).abs();
         let distance=target::Contact::forecast(s,f,self.opportunities.track(s.id as usize)).distance(distance,1);
         if distance<speed/turn*(1.0-angle.cos()) || distance==0.0 || angle>0.6 {return false;}
+        if f.id & target::ITEM_BIT!=0 {
+            if state.guarding || s.segments.len()<16 || angle>=0.45 || w.distance_squared(s.segments[0].current,f.position)>=(18.0*s.radius).powi(2) {return false;}
+            let etas=&self.capsule_etas[state_item_slot(self,f)];let own_eta=etas[s.id as usize];
+            return etas.iter().enumerate().any(|(id,&eta)|id!=s.id as usize && eta>=own_eta*0.75 && eta<=own_eta*1.25);
+        }
         self.rivals.iter().enumerate().any(|(id,r)|id!=s.id as usize && r.alive
             && (target::Contact::forecast(w.snake(id).unwrap(),f,self.opportunities.track(id)).distance(w.distance_squared(r.path[0],f.position).sqrt(),1)-distance).abs()<=distance*0.25)
     }
@@ -887,6 +936,7 @@ impl AiController {
         let id=s.id as usize;let head=s.segments[0].current;
         self.validate_attack(w,s,state);
         let mut own=*self.opportunity_rival(id);
+        let capsule=state.target & target::ITEM_BIT!=0;
         let aggression=s.traits.aggression*(0.65+0.35*intelligence);
         let advantage=surge::advantage(w,s,if w.config().rules==crate::RuleSet::V2 {4+2+s.segments.len()/100} else {8});
         let interest=if w.config().rules==crate::RuleSet::V2 {0.2} else {0.32};
@@ -904,13 +954,13 @@ impl AiController {
             // A validated attack already accounts for its scheduled payments.
             // The full new-burst budget applies only to ordinary hunts; charging
             // it again after a payment would abandon a still-winning crossing.
-            if !victim.alive || self.opportunities.phased(victim.id as usize,1) || victim.generation!=state.prey_generation || (!state.attack.valid && own.len<victim.segments.len()+advantage)
+            if !victim.alive || self.opportunities.phased(victim.id as usize,1) || victim.generation!=state.prey_generation || (!state.attack.valid && own.len<victim.segments.len()+advantage && !self.grudge_prey(w,s,prey))
                 || w.tick()>state.hunt_until || w.distance_squared(head,victim.segments[0].current)>650.0*650.0 {
                 state.prey=0;state.clear_coil(s.angle);state.track_goal=false;state.clear_attacks(s.angle);
             }
         }
         if state.prey==0 && w.tick()<state.harvest_until {
-            state.goal=state.coil_center;state.target=0;state.debug.flags|=8;return;
+            state.goal=state.coil_center;state.set_target(0);state.debug.flags|=8;return;
         }
         // Early speed/gap escape. Aim along an open lateral route rather than
         // reversing toward the hunter's neck; exact safety chooses the gap.
@@ -928,16 +978,33 @@ impl AiController {
             // Retain forward travel to exploit the smaller snake's speed.
             state.goal=w.canonical_point(Point{x:head.x+away.x/distance*240.0+s.angle.cos()*160.0,
                 y:head.y+away.y/distance*240.0+s.angle.sin()*160.0});
-            state.target=0;state.prey=0;state.clear_coil(s.angle);state.track_goal=false;state.clear_attacks(s.angle);state.waypoint=None;state.dodge_until=w.tick()+18;
+            state.set_target(0);state.prey=0;state.clear_coil(s.angle);state.track_goal=false;state.clear_attacks(s.angle);state.waypoint=None;state.dodge_until=w.tick()+18;
             return;
         }
-        if state.prey==0 && aggression>interest {
+        if capsule {
+            // Bigger contenders can lay a checked cutoff across an approaching
+            // rival. The ordinary capsule route remains a competing candidate;
+            // smaller contenders retain the direct dart and checked race burst.
+            let contender=self.capsule_contender(w,s,*state);
+            if contender!=state.prey.checked_sub(1) {
+                state.prey=0;state.clear_attacks(s.angle);
+            }
+            if let Some(other)=contender {
+                state.prey=other+1;state.prey_generation=w.snake(other).unwrap().generation;
+                state.hunt_until=w.tick()+90;
+            }
+            return;
+        }
+        if state.prey==0 && s.face.grudge_ticks==0 && forecast::Effect::observed(w,s).is(crate::effects::EffectKind::Magnet) {return;}
+        if state.prey==0 && (aggression>interest || s.face.grudge_ticks>0) {
             let mut value=0.0;
             for other in 0..MAX_SNAKES {
                 let r=self.opportunity_rival(other);
-                if !r.alive || other==id || own.len<r.len+advantage || self.opportunities.phased(other,1) {continue;}
+                if !r.alive || other==id || self.opportunities.phased(other,1) {continue;}
+                let personal=self.grudge_prey(w,s,other);
+                if !personal && (own.len<r.len+advantage || aggression<=interest) {continue;}
                 let distance=w.distance_squared(head,r.path[0]).sqrt();
-                if distance>620.0 {continue;}
+                if distance>if surge::active(w,s) {850.0} else {620.0} {continue;}
                 // Very long snakes cannot catch a fast rival in open space.
                 // Hunt only if it is already crossing our reachable route;
                 // otherwise preserve the cheap food plan until a real cutoff
@@ -947,7 +1014,8 @@ impl AiController {
                 let eta=self.arrival(w,&own,r.path[36]);
                 let facing=w.displacement(head,r.path[36]);
                 let alignment=normalize_angle(facing.y.atan2(facing.x)-s.angle).cos();
-                let v=aggression*(r.len as f64).sqrt()*(1.3+alignment)/(eta+1.0);
+                let motive=if personal {aggression.max(interest+0.1)} else {aggression};
+                let v=motive*(r.len as f64).sqrt()*(1.3+alignment)/(eta+1.0)*if personal {1.4} else {1.0};
                 if v>value {value=v;state.prey=other+1;}
             }
             // Paid boosts already pass their own value and readiness gates;
@@ -955,7 +1023,7 @@ impl AiController {
             if value<if w.config().rules==crate::RuleSet::V2 {0.75} else {1.0} {state.prey=0;}
             if state.prey!=0 {
                 state.prey_generation=w.snake(state.prey-1).unwrap().generation;
-                state.hunt_until=w.tick()+180;
+                state.hunt_until=w.tick()+if s.face.grudge_ticks>0 && s.face.grudge_id as usize==state.prey-1 {s.face.grudge_ticks as u64} else {180};
                 state.coil_sign=if s.traits.turn_bias<0.0 {-1.0} else {1.0};
             }
         }
@@ -990,7 +1058,7 @@ impl AiController {
             }
             state.coil_center=r.path[0];
         }
-        state.target=0;state.debug.flags|=8;
+        state.set_target(0);state.debug.flags|=8;
     }
     /// Static trail occupancy with conservative tail release. Interior body
     /// locations stay occupied until the tail arrives; current growth adds a
@@ -1123,6 +1191,13 @@ impl AiController {
         else {self.rollout_simulation::<false>(w,s,state,kind,horizon,c,&mut rivals);}
         self.simulation_rivals=Some(rivals);
     }
+    /// All forecasts with a proposed control use its current guard intent.
+    /// World presentation can still carry the preceding tick's observation.
+    fn intent_forecast<const ITEMS:bool>(&self,w:&World,s:SnakeView<'_>,state:State,horizon:usize,boosted:u16)->forecast::Forecast {
+        let mut result=if ITEMS {forecast::Forecast::cached(w,self.initial_effects,&self.item_forecast,horizon,boosted)} else {forecast::Forecast::empty(self.effects)};
+        result.effects.set_guard(s.id as usize,state.guarding,state.target & !target::ITEM_BIT);
+        result
+    }
     fn rollout_simulation<const ITEMS:bool>(&mut self,w:&World,s:SnakeView<'_>,state:State,kind:usize,horizon:usize,c:&mut Candidate,rivals:&mut [Rival;MAX_SNAKES]) {
         let forecast_clock=self.profile_enabled.then(std::time::Instant::now);
         let proposed=if kind==1 {state.attack} else if kind==7 || kind==8 {state.attack_options[kind-7]} else {Attack::default()};
@@ -1130,7 +1205,7 @@ impl AiController {
         let rush=Self::candidate_rush(w,s,state,kind,attack);
         let motion=if rush>0.0 {self.boosted_motion[s.id as usize]} else {self.motion[s.id as usize]};
         let (mut speed,mut turn)=if w.config().rules==crate::RuleSet::V2 {motion.at(0)} else {w.motion_limits(s.id as usize,rush).unwrap()};
-        let mut forecast=if ITEMS {forecast::Forecast::cached(w,self.initial_effects,&self.item_forecast,horizon,if rush>0.0 {1<<s.id} else {0})} else {forecast::Forecast::empty(self.effects)};
+        let mut forecast=self.intent_forecast::<ITEMS>(w,s,state,horizon,if rush>0.0 {1<<s.id} else {0});
         let pickup_speed_scale=if ITEMS && forecast.reachable_surge(s.id as usize) {
             crate::effects::modifiers(crate::effects::EffectKind::Surge as u8,1).speed
         } else {1.0};
@@ -1151,7 +1226,7 @@ impl AiController {
         c.capped=false;c.area=0;c.uncertain=false;c.attack=attack;c.replies=0;c.rush=rush;
         c.path[0]=s.segments[0].current;
         let goal=state.waypoint.unwrap_or(state.goal);
-        let target=self.target_food(state).map(|f|(f.position,target::Contact::forecast(s,f,self.opportunities.track(s.id as usize))));
+        let target=self.target_food(state).filter(|_|!state.guarding).map(|f|(f.position,target::Contact::forecast(s,f,self.opportunities.track(s.id as usize))));
         let goal_contact=if state.waypoint.is_none() {target.map(|(_,contact)|contact)} else {None};
         let d=w.displacement(c.path[0],goal);
         let fixed=match kind {0|11=>d.y.atan2(d.x),1|12=>state.desired,2=>s.angle,3=>s.angle+0.6,4=>s.angle-0.6,
@@ -1171,7 +1246,7 @@ impl AiController {
 
         let mut previous_phase=forecast.effects.phased(s.id as usize,1);let mut previous_bits=forecast.effects.phase_bits(1);let mut previous_surge=forecast.effects.surge_bits(1);let mut phase_start=0;
         let mut near=0u16;let mut defeated=0u16;
-        let mut reached=target.is_some_and(|(p,contact)|contact.collected() || (tracks_goal && contact.ahead(w,c.path[0],s.angle,speed*STEP_SECONDS,p)));
+        let mut reached=target.is_some_and(|(p,contact)|contact.collected() || (tracks_goal && contact.with_guard(state.guarding).ahead(w,c.path[0],s.angle,speed*STEP_SECONDS,p)));
         for (other,r) in self.rivals.iter().enumerate() {
             if !r.alive || other==s.id as usize {continue;}
             let ordinary=(speed+r.speed)*horizon as f64*STEP_SECONDS+(s.radius+r.radius)*3.0+20.0;
@@ -1234,7 +1309,7 @@ impl AiController {
             let p=w.canonical_point(Point {x:c.path[j-1].x+direction.x*speed*STEP_SECONDS,
                 y:c.path[j-1].y+direction.y*speed*STEP_SECONDS});
             c.path[j]=p;
-            if target.is_some_and(|(target,contact)|contact.reached_with(w.distance_squared(p,target),if ITEMS {forecast.effects.before(s.id as usize,j)} else {self.initial_effects.observed_before(s.id as usize,j)})) {reached=true;}
+            if target.is_some_and(|(target,contact)|contact.with_guard(state.guarding).reached_with(w.distance_squared(p,target),if ITEMS {forecast.effects.before(s.id as usize,j)} else {self.initial_effects.observed_before(s.id as usize,j)},j)) {reached=true;}
             let participant_clock=(ITEMS && self.profile_enabled).then(std::time::Instant::now);
             let changed_movement=ITEMS && forecast.movement_changed() & !(1<<s.id)!=0;
             if changed_movement {Self::advance_rivals(w,rivals,&self.motion,&forecast,j,1<<s.id,Some((&self.effects,&self.rivals)),None);}
@@ -1453,7 +1528,16 @@ impl AiController {
         }
     }
 }
+fn state_item_slot(ai:&AiController,f:target::TargetFood)->usize {
+    ai.food[MAX_FOOD..].iter().position(|entry|entry.is_some_and(|v|v.id==f.id)).unwrap_or(0)
+}
 impl Controller for AiController {
+    fn face_intent(&self,id:u32)->crate::controller::FaceIntent {
+        let s=self.states[id as usize];
+        crate::controller::FaceIntent {target_id:if s.target & target::ITEM_BIT!=0 {s.target & !target::ITEM_BIT} else {0},
+            prey:s.prey.checked_sub(1).map_or(u32::MAX,|i|i as u32),guarding:s.guarding,has_target:s.target!=0 || s.prey!=0,
+            look:self.look_deltas[id as usize]}
+    }
     fn intent_flags(&self, id: u32) -> Option<u32> {
         let s = self.states[id as usize];
         Some((if s.prey != 0 || s.coil_radius > 0.0 { crate::flags::HUNTING } else { 0 })
@@ -1494,11 +1578,14 @@ impl Controller for AiController {
         }
         let turned=normalize_angle(s.angle-state.last_angle);
         state.last_angle=s.angle;
-        if turned.abs()<0.015 {state.turn_accum*=0.90;}
+        // Guard turns are intentional just like coils. Do not carry their
+        // accumulated rotation into the direct approach when the guard ends.
+        if state.guarding {state.turn_accum=0.0;}
+        else if turned.abs()<0.015 {state.turn_accum*=0.90;}
         else if turned*state.turn_accum<0.0 {state.turn_accum=turned;}
         else {state.turn_accum+=turned;}
-        if state.turn_accum.abs()>2.8 && w.tick()>=state.orbit_until && state.coil_radius==0.0 {
-            state.rejected=state.target;state.reject_until=w.tick()+150;state.target=0;state.waypoint=None;
+        if state.turn_accum.abs()>2.8 && w.tick()>=state.orbit_until && state.coil_radius==0.0 && !state.guarding {
+            state.rejected=state.target;state.reject_until=w.tick()+150;state.set_target(0);state.waypoint=None;
             state.orbit_until=w.tick()+36;state.escape_until=0;state.turn_accum=0.0;state.prey=0;state.clear_attacks(s.angle);
             state.desired=s.angle;state.turn_until=u64::MAX;state.track_goal=false;state.commit_until=w.tick()+12;
             state.goal=w.canonical_point(Point{x:s.segments[0].current.x+s.angle.cos()*300.0,y:s.segments[0].current.y+s.angle.sin()*300.0});
@@ -1511,14 +1598,14 @@ impl Controller for AiController {
                 let contact=target::Contact::forecast(s,f,self.opportunities.track(s.id as usize));
                 let d=contact.distance(distance.sqrt(),1);
                 if d+8.0<state.best_distance {state.best_distance=d;state.last_progress=w.tick();}
-                if w.tick().saturating_sub(state.last_progress)>75 {
-                    state.rejected=state.target;state.reject_until=w.tick()+150;state.target=0;
+                if !state.guarding && w.tick().saturating_sub(state.last_progress)>75 {
+                    state.rejected=state.target;state.reject_until=w.tick()+150;state.set_target(0);
                 }
-                if state.track_goal && (contact.collected() || contact.ahead(w,s.segments[0].current,s.angle,w.motion_limits(id,Self::boost_request(w,s,state.rush)).unwrap().0*STEP_SECONDS,f.position)) {
-                    state.target=0;state.track_goal=false;state.desired=s.angle;state.turn_until=u64::MAX;
+                if !state.guarding && state.track_goal && (contact.collected() || contact.with_guard(state.guarding).ahead(w,s.segments[0].current,s.angle,w.motion_limits(id,Self::boost_request(w,s,state.rush)).unwrap().0*STEP_SECONDS,f.position)) {
+                    state.set_target(0);state.track_goal=false;state.desired=s.angle;state.turn_until=u64::MAX;
                 }
                 if state.waypoint.is_some_and(|p|w.distance_squared(s.segments[0].current,p)<self.spatial.dx.powi(2)*0.5) {state.waypoint=None;}
-            } else {state.target=0;state.waypoint=None;}
+            } else {state.set_target(0);state.waypoint=None;}
         }
         if w.tick()<state.escape_until {
             let need=(s.segments.len() as f64*s.radius*s.radius*8.0/(self.spatial.dx*self.spatial.dy)).ceil().max(24.0) as usize;
@@ -1529,6 +1616,7 @@ impl Controller for AiController {
                 state.goal=w.canonical_point(Point{x:s.segments[0].current.x+s.angle.cos()*300.0,y:s.segments[0].current.y+s.angle.sin()*300.0});
             } else {state.goal=s.segments.last().unwrap().current;}
         }
+        if w.config().rules==crate::RuleSet::V2 {self.advance_race(w,s,&mut state);}
         let scheduled=(id+w.snake_count()-(w.tick() as usize*STRATEGY_QUOTA)%w.snake_count())%w.snake_count()<STRATEGY_QUOTA;
         let mut strategic=scheduled;
         if strategic {self.strategy(w,s,&mut state,intelligence);}
@@ -1675,6 +1763,7 @@ impl Controller for AiController {
         if c.capped {state.debug.flags|=2;}
         if c.steps<horizon {state.debug.flags|=4;}
         if reuse_plan {state.debug.flags|=16;}
+        self.look_deltas[id]=w.displacement(s.segments[0].current,state.goal);
         self.states[id]=state;
         self.candidates=Some(candidates);
         if let Some(c)=clock {self.profile[4]+=c.elapsed().as_nanos();}

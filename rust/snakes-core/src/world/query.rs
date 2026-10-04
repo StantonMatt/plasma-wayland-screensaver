@@ -40,6 +40,7 @@ impl World {
     pub fn diagnostic_snapshot(&self) -> Self {
         let mut copy = Self::new(self.config).expect("validated configuration");
         copy.snakes.clone_from(&self.snakes);
+        copy.faces=self.faces;copy.bubbles=self.bubbles;copy.bubble_count=self.bubble_count;copy.world_event=self.world_event;
         copy.segments.clone_from(&self.segments);
         copy.food.clone_from(&self.food);
         copy.items.clone_from(&self.items);

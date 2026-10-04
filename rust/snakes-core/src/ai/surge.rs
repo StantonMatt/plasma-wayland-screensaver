@@ -20,6 +20,19 @@ pub(super) fn advantage(w: &World, s: SnakeView<'_>, ordinary: usize) -> usize {
     if active(w, s) { 4 + w.boost_segment_cost(s.id as usize).unwrap_or(0) } else { ordinary }
 }
 
+
+/// Spend a free burst closing on a real prey. The existing boosted candidate
+/// competes with unboosted controls and must pass the full physical rollout.
+/// No burst on exploration, a coil, or a sharp turn inside its turning disk.
+pub(super) fn pursuit_burst(w:&World,s:SnakeView<'_>,state:State)->bool {
+    if !active(w,s) || state.prey==0 || state.coil_radius>0.0 || !w.boost_ready(s.id as usize) {return false;}
+    let goal=state.waypoint.unwrap_or(state.goal);
+    let d=w.displacement(s.segments[0].current,goal);
+    let angle=normalize_angle(d.y.atan2(d.x)-s.angle).abs();
+    let (speed,turn)=w.motion_limits(s.id as usize,0.6).unwrap();
+    angle<0.6 && (d.x*d.x+d.y*d.y).sqrt()>speed/turn.max(0.01)*(1.0-angle.cos()).max(0.3)+s.radius*2.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,6 +51,22 @@ mod tests {
         w
     }
 
+    #[test]
+    fn surge_bursts_need_a_prey_and_a_forward_turnable_approach() {
+        let mut w=duel(true);let s=w.snake(0).unwrap();
+        let mut state=State {goal:Point{x:800.0,y:700.0},desired:s.angle,..State::default()};
+        assert!(!pursuit_burst(&w,s,state),"never burst while wandering");
+        state.prey=2;
+        assert!(pursuit_burst(&w,s,state));
+        state.goal=Point{x:800.0,y:460.0};
+        assert!(!pursuit_burst(&w,s,state),"do not overshoot a close prey goal");
+        state.goal=Point{x:850.0,y:450.0};
+        assert!(!pursuit_burst(&w,s,state),"do not burst into a sharp turn");
+        state.goal=Point{x:800.0,y:700.0};w.snakes[0].cooldown_ticks=10;
+        assert!(!pursuit_burst(&w,w.snake(0).unwrap(),state));
+        w.snakes[0].cooldown_ticks=0;w.snakes[0].effect_ticks=0;
+        assert!(!pursuit_burst(&w,w.snake(0).unwrap(),state),"paid chase stays forbidden");
+    }
     #[test]
     fn surge_planning_is_aggressive_without_changing_traits_or_classic() {
         let mut w = duel(true);

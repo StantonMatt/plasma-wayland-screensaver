@@ -25,10 +25,10 @@ class SnakeRendererTest final : public QObject
                                 bool malformed = false, float coordinateScale = 1)
     {
         SnakeFrame frame;
-        frame.info = {600, 20, 3440, 1440, 0};
+        frame.info = {600, 20, 3440, 1440, 0, 1, 0, {}, {}};
         for (int n = 0; n < snakeCount; ++n) {
             frame.snakes.push_back({uint32_t(n), 1, 1, 0, 8, 0, 0.7,
-                                   uint32_t(frame.segments.size()), uint32_t(segments), SNAKES_CORE_LEADER, 0, 0, 0});
+                                   uint32_t(frame.segments.size()), uint32_t(segments), SNAKES_CORE_LEADER, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UINT32_MAX, 0, 0, 0, 0, {}});
             for (int i = 0; i < segments; ++i) {
                 const float x = (250 - i * 4.5 + (n % 4) * 780) * coordinateScale;
                 const float y = (120 + std::sin(i * 0.08) * 18 + (n / 4) * 340) * coordinateScale;
@@ -39,7 +39,7 @@ class SnakeRendererTest final : public QObject
         for (int i = 0; i < foodCount; ++i) {
             const float x = 12 + (i % 32) * 9;
             const float y = 12 + (i / 32) * 9;
-            frame.food.push_back({uint64_t(i + 1), x, y, 4, 0, 0, x, y, 0, SNAKES_CORE_FOOD_SPARK, 0, 0});
+            frame.food.push_back({uint64_t(i + 1), x, y, 4, 0, 0, x, y, 0, SNAKES_CORE_FOOD_SPARK, 0, 0, 0, 0, 0, 0, 0, 0});
         }
         return frame;
     }
@@ -52,7 +52,7 @@ class SnakeRendererTest final : public QObject
         const uint32_t colors[] = {1, 2, 3, 4, 0};
         const uint32_t flags[] = {0, SNAKES_CORE_BOOSTING, SNAKES_CORE_HUNTING, 0, SNAKES_CORE_LEADER};
         SnakeFrame frame;
-        frame.info = {600, 20, W, H, 0};
+        frame.info = {600, 20, W, H, 0, 1, 0, {}, {}};
         for (int k = 0; k < 5; ++k) {
             const auto path = [=](double x) { return rows[k] * H + 3.6 * r * std::sin(2 * M_PI * x / (0.2 * W) + 1.3 * k); };
             const auto arc = [=](double x, double dx) {
@@ -77,7 +77,7 @@ class SnakeRendererTest final : public QObject
             const auto &a = frame.segments[offset], &b = frame.segments[offset + 1];
             const double angle = std::atan2(a.y - b.y, a.x - b.x);
             frame.snakes.push_back({uint32_t(k), 1, 1, colors[k], r, angle, angle,
-                                   offset, uint32_t(lengths[k]), flags[k], 0, 0, 0});
+                                   offset, uint32_t(lengths[k]), flags[k], 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UINT32_MAX, 0, 0, 0, 0, {}});
         }
         // A visible boost tail and its retained history, separate from the long
         // Anatomy adult whose tail position depends on the sine path.
@@ -86,7 +86,7 @@ class SnakeRendererTest final : public QObject
             const float x = 1070 - j * spacing;
             frame.segments.push_back({x, 75, x, 75});
         }
-        frame.snakes.push_back({5, 1, 1, 2, r, 0, 0, boostOffset, 24, SNAKES_CORE_BOOSTING, 0, 0, 0});
+        frame.snakes.push_back({5, 1, 1, 2, r, 0, 0, boostOffset, 24, SNAKES_CORE_BOOSTING, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UINT32_MAX, 0, 0, 0, 0, {}});
         // A tight spiral starts at 1.8r, then opens with 4r between turns.
         // Arc spacing matches the body; wider outer turns expose the inner
         // glow fold without piling multiple opaque laps on top of that wedge.
@@ -107,7 +107,7 @@ class SnakeRendererTest final : public QObject
         }
         const auto &a = frame.segments[coilOffset], &b = frame.segments[coilOffset + 1];
         const double angle = std::atan2(a.y - b.y, a.x - b.x);
-        frame.snakes.push_back({6, 1, 1, 4, r, angle, angle, coilOffset, 48, SNAKES_CORE_HUNTING, 0, 0, 0});
+        frame.snakes.push_back({6, 1, 1, 4, r, angle, angle, coilOffset, 48, SNAKES_CORE_HUNTING, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UINT32_MAX, 0, 0, 0, 0, {}});
         // World::add_food exports R*(0.23 + min(value,1.4)*0.13).
         // Representative values: spark 0.7, shard 0.85, pellet 0.5. Prism
         // spawning belongs to R4; reserve its approved 0.62R size here.
@@ -119,7 +119,7 @@ class SnakeRendererTest final : public QObject
                 const float y = H * 0.86 - r * 0.5 + (j % 2) * r * 1.6;
                 frame.food.push_back({uint64_t(frame.food.size() + 1), x, y, sizes[kind], float(j * 1.7),
                     float(group == 4 && j == 2 ? 0.8 : 0.0), x + 40, y, uint32_t((group + j) % 6),
-                    kind, uint8_t(group == 4 ? 12 : 255), 0});
+                    kind, uint8_t(group == 4 ? 12 : 255), 0, 0, 0, 0, 0, 0, 0});
             }
         }
         return frame;
@@ -127,7 +127,7 @@ class SnakeRendererTest final : public QObject
     static SnakeFrame powerupsFrame()
     {
         SnakeFrame frame;
-        frame.info = {600, 20, 1280, 720, 0};
+        frame.info = {600, 20, 1280, 720, 0, 1, 0, {}, {}};
         constexpr double r = 9, spacing = 1.18 * r;
         for (uint8_t kind = 1; kind <= 3; ++kind) {
             const double x = 215 + (kind - 1) * 425;
@@ -157,7 +157,7 @@ class SnakeRendererTest final : public QObject
             const float x = magnet.x + float(std::cos(a) * 65);
             const float y = magnet.y + float(std::sin(a) * 65);
             frame.food.push_back({uint64_t(k+1), x, y, 3, float(k), 0.85f,
-                                  magnet.x, magnet.y, uint32_t(k%6), SNAKES_CORE_FOOD_SPARK, 255, 0});
+                                  magnet.x, magnet.y, uint32_t(k%6), SNAKES_CORE_FOOD_SPARK, 255, 0, 0, 0, 0, 0, 0, 0});
         }
         // The Phase lane crosses a tangible rival, exposing its translucent body.
         const auto offset = uint32_t(frame.segments.size());
@@ -165,7 +165,7 @@ class SnakeRendererTest final : public QObject
             const float x = 1175 - j * spacing;
             frame.segments.push_back({x, 390, x, 390});
         }
-        frame.snakes.push_back({3, 1, 1, 0, r, 0, 0, offset, 22, 0, 0, 0, 0});
+        frame.snakes.push_back({3, 1, 1, 0, r, 0, 0, offset, 22, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UINT32_MAX, 0, 0, 0, 0, {}});
         return frame;
     }
     const QVector<QColor> palette{QColor("#4de6ff")};
@@ -221,7 +221,7 @@ class SnakeRendererTest final : public QObject
                 : scene == QStringLiteral("succession-ring") ? SNAKES_CORE_EVENT_SUCCESSION
                 : SNAKES_CORE_EVENT_KILL;
             frame.events.push_back({frame.info.tick, 250, 120, 0,
-                                   kind == SNAKES_CORE_EVENT_PICKUP ? 1u : 0u, 0, kind, {}});
+                                   kind == SNAKES_CORE_EVENT_PICKUP ? 1u : 0u, 0, kind, {}, 0, 0, 0, 0, 0, 0});
         }
         return frame;
     }
@@ -687,9 +687,9 @@ private Q_SLOTS:
         const float x = logical.x() * config.width / extent.width();
         const float y = logical.y() * config.height / extent.height();
         SnakeFrame frame;
-        frame.info = {0, 0, config.width, config.height, 0};
-        frame.food.push_back({1, x, y, 3, 0, 0, x, y, 0, SNAKES_CORE_FOOD_SPARK, 0, 0});
-        frame.snakes.push_back({0, 1, 1, 0, 6, 0, 0, 0, 2, 0, 0, 0, 0});
+        frame.info = {0, 0, config.width, config.height, 0, 1, 0, {}, {}};
+        frame.food.push_back({1, x, y, 3, 0, 0, x, y, 0, SNAKES_CORE_FOOD_SPARK, 0, 0, 0, 0, 0, 0, 0, 0});
+        frame.snakes.push_back({0, 1, 1, 0, 6, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UINT32_MAX, 0, 0, 0, 0, {}});
         frame.segments.push_back({x, y, x, y});
         frame.segments.push_back({x - 12, y, x - 12, y});
         renderer.syncFrame(frame, palette, 0, deadly);
@@ -803,13 +803,13 @@ private Q_SLOTS:
         frame.snakes[0].flags=SNAKES_CORE_TRAPPED;++frame.info.tick;
         QCOMPARE(render(),base);
         frame.snakes.clear();
-        frame.food.push_back({1,200,200,4,0,0,200,200,0,0,255,0});
+        frame.food.push_back({1,200,200,4,0,0,200,200,0,0,255,0, 0, 0, 0, 0, 0, 0});
         QCOMPARE(render(),63);
         frame.food[0].kind=SNAKES_CORE_FOOD_PELLET;
         QCOMPARE(render(),24);
         QVERIFY(hasColor(QColor(77,230,255,110)));
         frame.food.clear();++frame.info.tick;
-        frame.events.push_back({frame.info.tick,200,200,0,UINT32_MAX,0,SNAKES_CORE_EVENT_KILL,{0,0,0}});
+        frame.events.push_back({frame.info.tick,200,200,0,UINT32_MAX,0,SNAKES_CORE_EVENT_KILL,{0,0,0}, 0, 0, 0, 0, 0, 0});
         QCOMPARE(render(),72);
         renderer.presentFrame(20.2,0.5);node=renderer.updatePaintNode(node,nullptr);
         QCOMPARE(static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount(),72);
@@ -842,7 +842,7 @@ private Q_SLOTS:
         renderer.setSimulation(&first);
         SnakeFrame flash;
         flash.info=first.frame().info;
-        flash.events.push_back({flash.info.tick,120,120,0,UINT32_MAX,0,SNAKES_CORE_EVENT_KILL,{0,0,0}});
+        flash.events.push_back({flash.info.tick,120,120,0,UINT32_MAX,0,SNAKES_CORE_EVENT_KILL,{0,0,0}, 0, 0, 0, 0, 0, 0});
         renderer.syncFrame(flash,palette,0,true);
         auto *node=renderer.updatePaintNode(nullptr,nullptr);
         QCOMPARE(static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount(),72);
@@ -1179,19 +1179,228 @@ private Q_SLOTS:
         delete node;
     }
 
+private:
+    // Two independent snapshots let the capture show all nine moods at both
+    // sizes without violating the fourteen-snake ABI or three-bubble cap.
+    static SnakeFrame facesFrame(bool adult)
+    {
+        SnakeFrame frame;
+        frame.info = {600, 20, 1280, 720, 0, 1, 0, {}, {}};
+        const double r = adult ? 18 : 8.0;
+        for (int mood = 0; mood < 9; ++mood) {
+            snakes_core_snake snake{};
+            snake.id = mood; snake.generation = 1; snake.alive = 1;
+            snake.color_index = mood % 6; snake.radius = r;
+            snake.segment_offset = frame.segments.size(); snake.segment_count = adult ? 48 : 16;
+            snake.mood = mood; snake.mood_intensity = 255; snake.target_item = 255;
+            snake.pupil_x = 0.12; snake.pupil_y = -0.12;
+            snake.jaw_ticks = mood == SNAKES_CORE_MOOD_SLEEPY ? 20 : 0;
+            snake.happy_ticks = mood == SNAKES_CORE_MOOD_HAPPY ? 45 : 0;
+            // Compact coils leave room between the grid columns. Head points
+            // face right; every point remains finite and within this window.
+            const double x = 100 + mood * 132, y = adult ? 370 : 120;
+            for (uint32_t j = 0; j < snake.segment_count; ++j) {
+                const float px = x - std::min<double>(j * r * 0.7, 45);
+                const float py = y + (j > 5 ? 25 + 24 * std::sin((j - 5) * 0.2) : 0);
+                frame.segments.push_back({px, py, px, py});
+            }
+            frame.snakes.push_back(snake);
+        }
+        frame.info.bubble_count = adult ? 2 : 3;
+        for (uint32_t j = 0; j < frame.info.bubble_count; ++j)
+            frame.info.bubbles[j] = {j + (adult ? 3u : 0u), 1, 12, uint8_t(j + (adult ? 3 : 0)), 0};
+        if (!adult) {
+            frame.itemRadius = 18;
+            snakes_core_item landing{};
+            landing.id = 1; landing.kind = 2; landing.x = 380; landing.y = 630;
+            landing.age_ticks = 15; landing.life_ticks = 765; landing.landing_ticks = 15;
+            landing.leader_snake_id = UINT32_MAX;
+            frame.items.push_back(landing);
+            snakes_core_item race{};
+            race.id = 2; race.kind = 1; race.x = 870; race.y = 630;
+            race.age_ticks = 75; race.life_ticks = 705;
+            race.contender_count = 2; race.contender_ids[0] = 6; race.contender_ids[1] = 7;
+            race.contender_etas[0] = 1; race.contender_etas[1] = 1.1;
+            race.leader_snake_id = 6;
+            frame.items.push_back(race);
+            // Opposite close contenders at 6r and 8r: c=.912/.853.
+            snakes_core_item close = race;
+            close.id = 3; close.x = 600; close.y = 630;
+            close.contender_ids[0] = 9; close.contender_ids[1] = 10;
+            close.leader_snake_id = 9;
+            frame.items.push_back(close);
+            for (uint32_t id : {9u, 10u}) {
+                auto snake = frame.snakes[2];
+                snake.id = id; snake.radius = 8; snake.segment_count = 8;
+                snake.segment_offset = frame.segments.size();
+                snake.angle = id == 9 ? 0 : std::acos(-1.0);
+                snake.target_item = 2;
+                const float x = close.x + (id == 9 ? -6 : 8) * snake.radius;
+                const float direction = id == 9 ? -1 : 1;
+                for (uint32_t j = 0; j < snake.segment_count; ++j) {
+                    const float px = x + direction * j * snake.radius * 0.7;
+                    frame.segments.push_back({px, close.y, px, close.y});
+                }
+                frame.snakes.push_back(snake);
+            }
+        }
+        return frame;
+    }
+
+    static SnakeFrame s1ChaosFrame(bool features)
+    {
+        // The approved spec's ~8k mature estimate. The older stress fixture
+        // (14*120 segments + 400 food) already exceeds the 9.6k chaos ceiling.
+        auto frame = makeFrame(90, 14, 300);
+        if (!features) return frame;
+        frame.info.bubble_count = 3;
+        for (uint32_t j = 0; j < 3; ++j)
+            frame.info.bubbles[j] = {j, 1, 12, uint8_t(j), 0};
+        for (auto &snake : frame.snakes) {
+            snake.mood = snake.id % 9; snake.mood_intensity = 255;
+            snake.pupil_x = 0.15; snake.pupil_y = -0.25;
+            if (snake.id < 2) {snake.mood = SNAKES_CORE_MOOD_FROZEN; snake.flags |= SNAKES_CORE_FROZEN;}
+        }
+        frame.itemRadius = 16;
+        for (uint32_t j = 0; j < 3; ++j) {
+            snakes_core_item item{};
+            item.id = j + 1; item.kind = j + 1; item.x = 800 + 650*j; item.y = 600;
+            item.age_ticks = 60; item.life_ticks = 720;
+            item.contender_count = 2; item.contender_ids[0] = 2*j; item.contender_ids[1] = 2*j+1;
+            item.contender_etas[0] = 1; item.contender_etas[1] = 1.1; item.leader_snake_id = 2*j;
+            frame.items.push_back(item);
+        }
+        return frame;
+    }
+
+private Q_SLOTS:
+    void facesFixtureAndClockExclusion()
+    {
+        for (bool adult : {false, true}) {
+            SnakeRenderer renderer;
+            renderer.m_shaderGeometryForTest = true;
+            renderer.setSize({1280, 720});
+            const QRectF clock(90, 75, 310, 80);
+            renderer.setClockRect(clock);
+            auto frame = facesFrame(adult);
+            renderer.syncFrame(frame, SnakeSimulation::colors(QStringLiteral("ocean")), 1, true);
+            auto *node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr, nullptr));
+            const auto *g = node->geometry();
+            const auto *v = static_cast<const snakes_core_shader_vertex *>(g->vertexData());
+            std::array<int, 18> counts{};
+            std::array<int, 9> moods{};
+            for (int j = 0; j < g->vertexCount(); ++j) {
+                ++counts[v[j].params[0]];
+                if (v[j].params[0] == 1) ++moods[(v[j].params[2] >> 1) & 15];
+                if (v[j].params[0] == 16) {
+                    QVERIFY(v[j].x >= 0 && v[j].x <= 1280 && v[j].y >= 0 && v[j].y <= 720);
+                    QVERIFY(!clock.contains(QPointF(v[j].x, v[j].y)));
+                }
+            }
+            for (int mood = 0; mood < 9; ++mood) QCOMPARE(moods[mood], !adult && mood == 2 ? 18 : 6);
+            QCOMPARE(counts[16], adult ? 12 : 0);
+            QCOMPARE(counts[17], adult ? 0 : 24);
+            delete node;
+        }
+        SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest = true; renderer.setSize({3440,1440});
+        auto frame = s1ChaosFrame(true); renderer.syncFrame(frame, palette, 0.5, true);
+        auto *node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr, nullptr));
+        const auto *g = node->geometry();
+        const auto *v = static_cast<const snakes_core_shader_vertex *>(g->vertexData());
+        int bubbles = 0, arcs = 0;
+        for (int j = 0; j < g->vertexCount(); ++j) {
+            bubbles += v[j].params[0] == 16; arcs += v[j].params[0] == 17;
+        }
+        QCOMPARE(bubbles,18); QCOMPARE(arcs,36); QVERIFY(g->vertexCount() <= 9600);
+        qInfo() << "S1 chaos vertices" << g->vertexCount();
+        delete node;
+    }
+
+    void benchmarkS1MatureGeometry() { benchmarkS1Geometry(false); }
+    void benchmarkS1ChaosGeometry() { benchmarkS1Geometry(true); }
+private:
+    void benchmarkS1Geometry(bool chaos)
+    {
+        SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest = true; renderer.setSize({3440,1440});
+        auto frame = s1ChaosFrame(chaos); renderer.syncFrame(frame,palette,0.5,true);
+        QSGNode *node = renderer.updatePaintNode(nullptr,nullptr);
+        qInfo() << "S1" << (chaos ? "chaos" : "mature") << "vertices"
+                << static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount();
+        QBENCHMARK {
+            renderer.presentFrame(20,0.5);
+            node = renderer.updatePaintNode(node,nullptr);
+        }
+        delete node;
+    }
+
+private Q_SLOTS:
+    static int bubbleGlyphPixels(const QImage &image, const SnakeFrame &frame, uint32_t index)
+    {
+        const auto &bubble = frame.info.bubbles[index];
+        const auto &snake = frame.snakes[bubble.snake_id];
+        const auto &head = frame.segments[snake.segment_offset];
+        const double sx = double(image.width()) / frame.info.world_width;
+        const double sy = double(image.height()) / frame.info.world_height;
+        const int cx = qRound((head.x + 1.9 * snake.radius) * sx);
+        const int cy = qRound((head.y - 2.6 * snake.radius) * sy);
+        const int rx = qRound(0.5 * snake.radius * sx);
+        const int ry = qRound(0.5 * snake.radius * sy);
+        int pixels = 0;
+        for (int y = cy-ry; y <= cy+ry; ++y)
+            for (int x = cx-rx; x <= cx+rx; ++x) {
+                const auto pixel = image.pixel(x,y);
+                if (qMax(qRed(pixel),qMax(qGreen(pixel),qBlue(pixel))) >= 80) ++pixels;
+            }
+        return pixels;
+    }
+
+    void bubbleCaptureSamplingScalesWithImage_data()
+    {
+        QTest::addColumn<int>("dpr");
+        QTest::newRow("dpr1") << 1;
+        QTest::newRow("dpr2") << 2;
+    }
+
+    void bubbleCaptureSamplingScalesWithImage()
+    {
+        QFETCH(int, dpr);
+        const auto frame = facesFrame(false);
+        QImage image(1280*dpr,720*dpr,QImage::Format_RGB32);
+        image.setDevicePixelRatio(dpr);
+        image.fill(Qt::black);
+        // Paint a synthetic glyph at the known logical centre of bubble zero.
+        // The sampling helper must locate it in physical image pixels.
+        const auto &snake = frame.snakes[0];
+        const int cx = qRound((100 + 1.9 * snake.radius)*dpr);
+        const int cy = qRound((120 - 2.6 * snake.radius)*dpr);
+        for (int y = cy-1; y <= cy+1; ++y)
+            for (int x = cx-1; x <= cx+1; ++x)
+                image.setPixel(x,y,qRgb(255,255,255));
+        QCOMPARE(bubbleGlyphPixels(image,frame,0),9);
+    }
+
     void captureShaderFixture_data()
     {
         QTest::addColumn<bool>("rejectPipeline");
         QTest::addColumn<bool>("powerups");
-        QTest::newRow("shader") << false << false;
-        QTest::newRow("driver-rejection-fallback") << true << false;
-        QTest::newRow("powerups") << false << true;
+        QTest::addColumn<bool>("faces");
+        QTest::addColumn<bool>("monoPalette");
+        QTest::newRow("shader") << false << false << false << false;
+        QTest::newRow("driver-rejection-fallback") << true << false << false << false;
+        QTest::newRow("powerups") << false << true << false << false;
+        QTest::newRow("faces") << false << false << true << false;
+        QTest::newRow("faces-mono") << false << false << true << true;
     }
 
     void captureShaderFixture()
     {
         QFETCH(bool, rejectPipeline);
         QFETCH(bool, powerups);
+        QFETCH(bool, faces);
+        QFETCH(bool, monoPalette);
+        const auto colors = SnakeSimulation::colors(monoPalette ? QStringLiteral("mono") : QStringLiteral("ocean"));
         const auto path = qEnvironmentVariable("SNAKES_CAPTURE_PATH");
         if (path.isEmpty()) QSKIP("Set SNAKES_CAPTURE_PATH to capture the RHI fixture");
         QQuickWindow window;
@@ -1199,6 +1408,8 @@ private Q_SLOTS:
         window.setColor(Qt::black);
         // The borrowed snapshot outlives the item and every render-thread sync.
         SnakeFrame frame;
+        SnakeFrame adultFrame;
+        SnakeRenderer adultRenderer(window.contentItem());
         SnakeRenderer renderer(window.contentItem());
         if (rejectPipeline) {
             if (window.rendererInterface()->graphicsApi() != QSGRendererInterface::OpenGL)
@@ -1218,16 +1429,20 @@ private Q_SLOTS:
             };
         }
         renderer.setSize(QSizeF(1280, 720));
-        frame = powerups ? powerupsFrame() : anatomyFrame();
+        frame = faces ? facesFrame(false) : powerups ? powerupsFrame() : anatomyFrame();
+        if (faces) {
+            adultFrame = facesFrame(true);
+            adultRenderer.setSize({1280,720});
+            adultRenderer.syncFrame(adultFrame,colors,1,true);
+        }
         // Capture the R8 atlas and capsule contours through a real RHI path.
-        for (uint8_t kind = 1; !powerups && kind <= 3; ++kind) {
+        for (uint8_t kind = 1; !powerups && !faces && kind <= 3; ++kind) {
             snakes_core_item item{};
             item.id = kind; item.kind = kind;
             item.x = 180 + (kind - 1) * 400; item.y = 650;
             item.age_ticks = 15; item.life_ticks = 750; frame.itemRadius = 18;
             frame.items.push_back(item);
         }
-        const auto colors = SnakeSimulation::colors(QStringLiteral("ocean"));
         // Replay 14 earlier physics snapshots to expose the continuous boost
         // contrail. Every visible frame remains deterministic at t=20.
         for (int tick = 586; tick <= 600; ++tick) {
@@ -1281,6 +1496,7 @@ private Q_SLOTS:
             const double sx = double(image.width()) / frame.info.world_width;
             const double sy = double(image.height()) / frame.info.world_height;
             for (const auto &item : frame.items) {
+                if (item.landing_ticks) continue; // Incoming icon is deliberately faint.
                 const int cx = qRound(item.x * sx), cy = qRound(item.y * sy);
                 const int rx = qRound(frame.itemRadius * 0.55 * sx);
                 const int ry = qRound(frame.itemRadius * 0.55 * sy);
@@ -1294,6 +1510,16 @@ private Q_SLOTS:
                 qInfo() << "Capsule kind" << item.kind << "icon pixels" << iconPixels;
                 QVERIFY2(iconPixels >= 6, qPrintable(QStringLiteral("Capsule kind %1 has no visible atlas icon (%2 pixels)")
                                                      .arg(item.kind).arg(iconPixels)));
+            }
+        }
+        if (faces) {
+            QVERIFY(adultRenderer.m_shaderInUse);
+            for (const auto *snapshot : {&frame, &adultFrame}) {
+                for (uint32_t j = 0; j < snapshot->info.bubble_count; ++j) {
+                    const auto &bubble = snapshot->info.bubbles[j];
+                    const int glyphPixels = bubbleGlyphPixels(image,*snapshot,j);
+                    QVERIFY2(glyphPixels >= 2,qPrintable(QStringLiteral("Missing bubble glyph %1").arg(bubble.glyph)));
+                }
             }
         }
         qInfo() << "Shader fixture:" << outputPath << "RHI API" << window.rendererInterface()->graphicsApi()

@@ -4,14 +4,16 @@ use super::*;
 use super::shader::SpriteSink;
 pub(crate) fn valid_item(item: &ItemRecord) -> bool {
     coordinate32(item.x) && coordinate32(item.y)
-        && (1..=5).contains(&item.kind) && item.life_ticks<=750 && item.reserved==0
+        && (1..=5).contains(&item.kind) && item.life_ticks<=780 && item.reserved==0
         && item.reserved_byte==0
 }
 pub(super) fn accent(kind:u8,palette:&[Color])->Color {
-    let mut c=match kind {1=>Color::new(255,225,77,255),2=>Color::new(255,95,210,255),
+    let c=match kind {1=>Color::new(255,225,77,255),2=>Color::new(255,95,210,255),
         3=>Color::new(169,139,255,255),4=>Color::new(157,255,58,255),_=>Color::new(189,243,255,255)};
+    tint(c,palette)
+}
+pub(super) fn tint(mut c:Color,palette:&[Color])->Color {
     let mono=palette.first().is_some_and(|c|c.red==255 && c.green==255 && c.blue==255);
-    // The established pastel palette's first entry is #ffc8dd.
     let pastel=palette.first().is_some_and(|c|c.red==255 && c.green==200 && c.blue==221);
     let grey=c.red as f64*0.2126+c.green as f64*0.7152+c.blue as f64*0.0722;
     for v in [&mut c.red,&mut c.green,&mut c.blue] {
@@ -20,6 +22,7 @@ pub(super) fn accent(kind:u8,palette:&[Color])->Color {
     }
     c
 }
+
 impl Renderer {
     pub fn set_items(&mut self,items:&[ItemRecord],radius:f64) {
         self.item_count=items.len().min(crate::MAX_ITEMS);
@@ -33,8 +36,10 @@ impl Renderer {
             if !valid_item(item) {continue;}
             let pos=P::new(item.x as f64,item.y as f64);let extent=self.item_radius*super::shader::bounds::CAPSULE;
             let (xs,ys)=copies(pos,pos,P::new(extent*scale/p.scale_x,extent*scale/p.scale_y),arena,p.deadly_walls!=0);
-            let extra=(p.presentation_time-info.simulation_time)/crate::STEP_SECONDS;
-            let age=((item.age_ticks as f64+extra).clamp(0.0,15.0)*17.0).round() as u8;
+            let extra=if self.reduced_motion {0.0} else {((p.presentation_time-info.simulation_time)/crate::STEP_SECONDS).max(0.0)};
+            // High birth-byte range is reserved for the 30-tick incoming state.
+            let age=if item.landing_ticks>0 {128+((1.0-(item.landing_ticks as f64-extra).clamp(0.0,30.0)/30.0)*127.0).round() as u8}
+                else {((item.age_ticks as f64+extra).clamp(0.0,15.0)/15.0*127.0).round() as u8};
             let life=(item.life_ticks as f64/750.0*255.0).round() as u8;
             for x in xs.first..=xs.last {for y in ys.first..=ys.last {
                 sink.sprite(map(pos+P::new(x as f64*xs.extent,y as f64*ys.extent)),extent*scale,
@@ -57,6 +62,17 @@ impl Renderer {
             let (xs,ys)=copies(pos,pos,P::new(extent/p.scale_x,extent/p.scale_y),arena,p.deadly_walls!=0);
             for x in xs.first..=xs.last {for y in ys.first..=ys.last {
                 let center=map(pos+P::new(x as f64*xs.extent,y as f64*ys.extent));
+                if item.landing_ticks>0 {
+                    let progress=1.0-item.landing_ticks.min(30) as f64/30.0;
+                    self.classic_ring(center,r*(3.0-2.0*progress),r*0.05,c.fade(0.55),sink);
+                    for k in [0,2,4] {
+                        let a=k as f64*std::f64::consts::TAU/6.0;
+                        let b=a+std::f64::consts::TAU/6.0;
+                        sink.segment(center+P::new(a.cos(),a.sin())*r,center+P::new(b.cos(),b.sin())*r,(r*0.055).max(0.5),c.fade(0.35));
+                    }
+                    self.classic_icon(center,r*0.52,item.kind,c.fade(0.22),sink);
+                    continue;
+                }
                 sink.disc(center,r*3.0,c.alpha((20.0*fade) as u8),12);
                 sink.disc(center,r,Color::new(8,11,22,(245.0*fade) as u8),6);
                 let rotation=time*0.18;

@@ -14,7 +14,7 @@ fn spawn_timer_cap_clearance_kinds_and_determinism() {
         assert!(effects::ENABLED_KINDS.contains(&item.kind));assert_ne!(item.kind,last);
         assert!(item.position.x>=10.0*r && item.position.x<=w.config.width-10.0*r);
         assert!(item.position.y>=10.0*r && item.position.y<=w.config.height-10.0*r);
-        assert_eq!(item.life_ticks,750);
+        assert_eq!(item.life_ticks,780);
         w.reset_item_timer();copy.reset_item_timer();
     }
     w.items.clear();
@@ -59,9 +59,10 @@ fn timer_birth_blink_pickup_boundary_and_resize() {
     w.item_timer=450;
     for _ in 0..449 {w.advance_items_and_effects();}
     assert!(w.items.is_empty());w.advance_items_and_effects();assert_eq!(w.items.len(),1);
-    assert_eq!(w.items[0].age_ticks,0);assert_eq!(w.items[0].life_ticks,750);
-    for _ in 0..660 {w.advance_items_and_effects();}
+    assert_eq!(w.items[0].age_ticks,0);assert_eq!(w.items[0].life_ticks,780);
+    for _ in 0..690 {w.advance_items_and_effects();}
     assert!(w.items[0].blinking());assert_eq!(w.items[0].life_ticks,90);
+    w.tick=690; // direct counter helper does not advance the world clock
     let item=w.items[0];w.resize(1600.0,900.0).unwrap();
     assert_eq!(w.items[0].position.x,item.position.x*1.25);
     assert_eq!(w.items[0].position.y,item.position.y*1.25);
@@ -71,4 +72,14 @@ fn timer_birth_blink_pickup_boundary_and_resize() {
     let pos=w.items[0].position;let reach=1.3*6.0+w.items[0].radius;
     w.segments[0].current=Point{x:pos.x+reach+0.01,y:pos.y};w.pickup_items();assert_eq!(w.items.len(),1);
     w.segments[0].current=Point{x:pos.x+reach-0.01,y:pos.y};w.pickup_items();assert!(w.items.is_empty());
+}
+
+#[test]
+fn incoming_capsule_is_visible_for_thirty_ticks_before_pickup() {
+    let mut w=World::new(Config{rules:RuleSet::V2,..Config::default()}).unwrap();w.spawn_item();
+    let item=w.items[0];assert_eq!(item.pickable_from_tick,31);
+    let p=item.position;w.segments[0].current=p;
+    for tick in 0..30 {w.tick=tick;w.pickup_items();assert_eq!(w.items.len(),1);}
+    w.tick=30;w.pickup_items();assert!(w.items.is_empty());
+    assert_eq!(w.faces[0].happy_ticks,45);
 }

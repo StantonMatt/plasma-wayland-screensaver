@@ -40,7 +40,8 @@ snakes_core_config SnakeSimulation::configuration(const Configuration &settings,
             double(settings.animationSpeed()), double(settings.snakeIntelligence()),
             std::bit_cast<qint32>(seed), 6, uint32_t(settings.snakeSelfCollisions()),
             uint32_t(settings.snakeDeadlyWalls()), SNAKES_CORE_RULE_DEFAULT,
-            {settings.snakePowerUps() ? SNAKES_CORE_POWER_UPS_ON : SNAKES_CORE_POWER_UPS_OFF}};
+            {(settings.snakePowerUps() ? SNAKES_CORE_POWER_UPS_ON : SNAKES_CORE_POWER_UPS_OFF)
+                | (settings.snakeWorldEvents() ? 0u : SNAKES_CORE_WORLD_EVENTS_OFF)}};
 }
 
 QVector<QColor> SnakeSimulation::colors(const QString &palette)

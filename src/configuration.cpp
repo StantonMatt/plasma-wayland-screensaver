@@ -34,6 +34,7 @@ bool Configuration::ballCollisions() const { return m_ballCollisions; }
 int Configuration::snakeIntelligence() const { return m_snakeIntelligence; }
 bool Configuration::snakeSelfCollisions() const { return m_snakeSelfCollisions; }
 bool Configuration::snakePowerUps() const { return m_snakePowerUps; }
+bool Configuration::snakeWorldEvents() const { return m_snakeWorldEvents; }
 bool Configuration::snakeDeadlyWalls() const { return m_snakeDeadlyWalls; }
 bool Configuration::showClock() const { return m_showClock; }
 QString Configuration::clockMovement() const { return m_clockMovement; }
@@ -126,6 +127,7 @@ void Configuration::setSnakeIntelligence(int value)
 }
 void Configuration::setSnakeSelfCollisions(bool value) { update(m_snakeSelfCollisions, value); }
 void Configuration::setSnakePowerUps(bool value) { update(m_snakePowerUps, value); }
+void Configuration::setSnakeWorldEvents(bool value) { update(m_snakeWorldEvents, value); }
 void Configuration::setSnakeDeadlyWalls(bool value) { update(m_snakeDeadlyWalls, value); }
 void Configuration::setShowClock(bool value) { update(m_showClock, value); }
 void Configuration::setClockMovement(const QString &value)
@@ -221,6 +223,9 @@ void Configuration::apply(const QVariantMap &settings)
     if (settings.contains(QStringLiteral("snakeSelfCollisions"))) {
         setSnakeSelfCollisions(settings.value(QStringLiteral("snakeSelfCollisions")).toBool());
     }
+    if (settings.contains(QStringLiteral("snakeWorldEvents"))) {
+        setSnakeWorldEvents(settings.value(QStringLiteral("snakeWorldEvents")).toBool());
+    }
     if (settings.contains(QStringLiteral("snakePowerUps"))) {
         setSnakePowerUps(settings.value(QStringLiteral("snakePowerUps")).toBool());
     }
@@ -270,6 +275,7 @@ void Configuration::assignDefaults()
     setSnakeSelfCollisions(false);
     setSnakeDeadlyWalls(true);
     setSnakePowerUps(true);
+    setSnakeWorldEvents(true);
     setShowClock(true);
     setClockMovement(QStringLiteral("bounce"));
     setClockSpeed(QStringLiteral("normal"));
@@ -307,6 +313,7 @@ void Configuration::reload()
     setSnakeSelfCollisions(general.readEntry("SnakeSelfCollisions", false));
     setSnakeDeadlyWalls(general.readEntry("SnakeDeadlyWalls", true));
     setSnakePowerUps(general.readEntry("SnakePowerUps", true));
+    setSnakeWorldEvents(general.readEntry("SnakeWorldEvents", true));
     setShowClock(general.readEntry("ShowClock", true));
     setClockMovement(general.readEntry("ClockMovement", QStringLiteral("bounce")));
     setClockSpeed(general.readEntry("ClockSpeed", QStringLiteral("normal")));
@@ -336,6 +343,7 @@ void Configuration::save()
     general.writeEntry("SnakeSelfCollisions", m_snakeSelfCollisions);
     general.writeEntry("SnakeDeadlyWalls", m_snakeDeadlyWalls);
     general.writeEntry("SnakePowerUps", m_snakePowerUps);
+    general.writeEntry("SnakeWorldEvents", m_snakeWorldEvents);
     general.writeEntry("ShowClock", m_showClock);
     general.writeEntry("ClockMovement", m_clockMovement);
     general.writeEntry("ClockSpeed", m_clockSpeed);

@@ -214,6 +214,9 @@ private Q_SLOTS:
         settings.setSnakeDeadlyWalls(false); settings.setAnimationPalette(QStringLiteral("ember"));
         const auto config = SnakeSimulation::configuration(settings, 1, 20000, 0xffffffffU);
         QCOMPARE(config.power_ups, SNAKES_CORE_POWER_UPS_ON);
+        settings.setSnakeWorldEvents(false);
+        QCOMPARE(SnakeSimulation::configuration(settings, 1280, 720, 1).reserved, SNAKES_CORE_WORLD_EVENTS_OFF);
+        settings.setSnakeWorldEvents(true);
         settings.setSnakePowerUps(false);
         QCOMPARE(SnakeSimulation::configuration(settings, 1280, 720, 1).power_ups, SNAKES_CORE_POWER_UPS_OFF);
         QCOMPARE(config.width, 80); QCOMPARE(config.height, 16384);

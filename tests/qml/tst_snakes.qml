@@ -16,6 +16,7 @@ TestCase {
         property var snakeSimulation: snakeTestSimulation
         property string monitorBehavior: "synchronized"
         property bool developerMode: false
+        property rect clockRect: Qt.rect(100, 80, 200, 60)
         property real virtualX: -640
         property real virtualY: 0
         property real screenX: 0
@@ -55,6 +56,13 @@ TestCase {
         compare(renderer.shaderTimeFrozen, true)
         visual.reducedMotion = false
         compare(renderer.shaderTimeFrozen, false)
+    }
+    function test_clockRectTracksContext() {
+        const renderer = findChild(visual, "snakeNativeRenderer")
+        compare(renderer.clockRect, visualContext.clockRect)
+        visualContext.clockRect = Qt.rect(0, 0, 0, 0)
+        compare(renderer.clockRect.width, 0)
+        visualContext.clockRect = Qt.rect(100, 80, 200, 60)
     }
     function test_missingNativeBindingPropertyFailsToLoad() {
         let rejected = false

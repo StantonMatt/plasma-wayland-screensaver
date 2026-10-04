@@ -474,11 +474,19 @@ impl Renderer {
             let half_length=(HEAD_FRONT+back)*0.5;let offset=(HEAD_FRONT-back)*0.5;
             // UV stores head units: x forward, y across; tongue included in this quad.
             let a=forward*(hr*half_length);let b=side*(hr*half_width);let center=map(head)+forward*(hr*offset);
-            let look=(head_angle_delta(s.desired_angle-angle).clamp(-0.9,0.9)/0.9*127.0+128.0).round() as u8;
-            let hash=((s.id.wrapping_mul(73)^s.generation.wrapping_mul(151))%16) as u8;
+            // Head bits 1..4 are the ABI-v3 mood; body glow flags are untouched.
+            // Byte y keeps crown/flare and packs 4-bit intensity instead of blink hash.
+            // Byte w: 3-bit pupils per axis + low 2 jaw bits; flags bit 7 is jaw bit 2.
+            let mood=head_mood(s);
+            let intensity=(faces::head_intensity(s) as u16*15/255) as u8;
+            let quantize=|v:f32,limit:f32|(v.clamp(-limit,limit)/limit*3.0+3.0).round() as u8;
+            let jaw=if mood==5 && ((45-s.happy_ticks.min(45)) as f64)<27.0*motion_scale {7} else if mood==1 && s.jaw_ticks>0 {
+                ((std::f64::consts::PI*((39-s.jaw_ticks.min(39)) as f64/(39.0*motion_scale)).min(1.0)).sin()*7.0).round() as u8
+            } else {0};
+            let look=quantize(s.pupil_x,0.18)|(quantize(s.pupil_y,0.35)<<3)|((jaw&3)<<6);
             let flare=self.waves[id].iter().any(|w|w.active && (0.0..0.5*motion_scale).contains(&(p.presentation_time-w.time)));
-            let head_flags=(flags & !(flags::PHASED as u8)) | if active_kind==3 {flags::PHASED as u8} else {0};
-            let params=[1,tier|(hash<<2)|if white_crown { 64 } else { 0 }|if flare { 128 } else { 0 },head_flags,look];
+            let head_flags=(flags & 65) | (mood<<1) | ((jaw&4)<<5) | if active_kind==3 {flags::PHASED as u8} else {0};
+            let params=[1,tier|(intensity<<2)|if white_crown {64} else {0}|if flare {128} else {0},head_flags,look];
             let margin=P::new(hr*(HEAD_FRONT*HEAD_FRONT+half_width*half_width).sqrt()/sx,hr*(HEAD_FRONT*HEAD_FRONT+half_width*half_width).sqrt()/sy);let (xs,ys)=copies(head,head,margin,arena,walls);
             for x in xs.first..=xs.last { for y in ys.first..=ys.last {
                 let shift=P::new(x as f64*xs.extent*sx,y as f64*ys.extent*sy);
@@ -503,6 +511,8 @@ impl Renderer {
 
         }
         self.shader_items(info,p,palette,&mut sink);
+        self.shader_races(info,p,palette,snakes,segments,&mut sink);
+        self.shader_bubbles(info,p,palette,snakes,segments,&mut sink);
         let mut effect_budget=EffectBudget::default();
         for age_index in 0..self.effects.len() {
             let e=self.effects[(self.effect_head+self.effects.len()-1-age_index)%self.effects.len()];

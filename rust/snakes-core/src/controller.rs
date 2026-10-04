@@ -10,7 +10,11 @@ impl Steering {
         self.desired_angle.is_finite() && self.rush.is_finite() && (0.0..=1.0).contains(&self.rush)
     }
 }
+#[derive(Clone, Copy, Debug)]
+pub struct FaceIntent {pub target_id:u64,pub prey:u32,pub guarding:bool,pub has_target:bool,pub look:Point}
+impl Default for FaceIntent {fn default()->Self {Self {target_id:0,prey:u32::MAX,guarding:false,has_target:false,look:Point::default()}}}
 pub trait Controller {
+    fn face_intent(&self, _id:u32)->FaceIntent {FaceIntent::default()}
     fn intent_flags(&self, _id: u32) -> Option<u32> { None }
     fn steer(&mut self, world: &World, snake: SnakeView<'_>) -> Steering;
 }
