@@ -7,6 +7,7 @@
 use super::*;
 pub(super) mod bounds;
 use bounds::*;
+use crate::shape::{short_tapers,SHORT_TAPER_MAX};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -200,19 +201,28 @@ impl SpriteSink<'_> {
 // Frame/record guards bound projected components far below 1e150, even after
 // the bounded unwrap walk. Squaring is safe in f64; hypot's rescaling is unnecessary
 // here. Classic keeps its original arithmetic and fingerprints.
-fn prepare_shader(points:&[P],normals:&mut [P],valid:&mut [bool],limits:&mut [f64],widths:&[f64],envelope:f64) {
+fn prepare_shader<const CULL:bool>(points:&[P],normals:&mut [P],valid:&mut [bool],limits:&mut [f64],widths:&[f64],envelope:f64,view:P) {
     limits.copy_from_slice(widths);
     // Retain raw point validity across the three-point window; a degenerate
     // normal must not invalidate a neighbour's otherwise usable tangent.
+    let margin=envelope*1.35;
+    let planes=|p:P|->u8 {u8::from(p.x < -margin) | (u8::from(p.x > view.x+margin)<<1)
+        | (u8::from(p.y < -margin)<<2) | (u8::from(p.y > view.y+margin)<<3)};
+    let mut previous_plane=0;
+    let mut current_plane=if CULL {points.first().map_or(0,|p|planes(*p))} else {0};
     let mut previous_finite=false;
     let mut current_finite=points.first().is_some_and(|p|p.finite());
     for i in 0..points.len() {
         let next=i+1<points.len() && points[i+1].finite();
+        let next_plane=if CULL && next {planes(points[i+1])} else {current_plane};
+        let offscreen=CULL && current_plane!=0
+            && current_plane & (if i==0 {current_plane} else {previous_plane}) & next_plane != 0;
+        previous_plane=current_plane;current_plane=next_plane;
         let prev=previous_finite;
         let finite=current_finite;
         previous_finite=current_finite;current_finite=next;
         valid[i]=false;
-        if !finite { continue; }
+        if !finite || offscreen { continue; }
         let d=match (prev,next) {
             (true,true)=>points[i+1]-points[i-1],
             (false,true)=>points[i+1]-points[i],
@@ -258,6 +268,36 @@ fn head_angle_delta(angle:f64)->f64 {
     // retaining the bounded normalization for arbitrary borrowed snapshots.
     if (-std::f64::consts::PI..=std::f64::consts::PI).contains(&angle) { angle }
     else { crate::normalize_angle(angle) }
+}
+// Reject a wall-bounded snake before normal/taper/ribbon preparation only
+// when all endpoints lie beyond the same padded viewport plane. Previous and
+// current endpoints bound every interpolation phase; contrail samples have
+// their own contribution. History/effects/races still advance outside this loop.
+// The broad envelope covers the head quad, gulp, corpse drift and stump glow.
+fn snake_on_screen(s:&SnakeRecord,body:&[SegmentRecord],trail:&Trail,p:&Params,scale:f64)->bool {
+    let radius=s.radius*scale;
+    let margin=radius*(BODY*1.35+CORPSE_DRIFT).max((HEAD_FRONT+HEAD_BOOST_SIDE)*1.24);
+    let left=-margin;let right=p.viewport_width+margin;
+    let top=-margin;let bottom=p.viewport_height+margin;
+    let planes=|x:f64,y:f64|->u8 {
+        let x=x*p.scale_x+p.offset_x;let y=y*p.scale_y+p.offset_y;
+        u8::from(x<left) | (u8::from(x>right)<<1) | (u8::from(y<top)<<2) | (u8::from(y>bottom)<<3)
+    };
+    let mut outside=15;
+    for seg in body {
+        if !segment_valid(seg) {continue;}
+        outside &= planes(seg.x as f64,seg.y as f64);
+        if moving(s) {outside &= planes(seg.previous_x as f64,seg.previous_y as f64);}
+        if outside==0 {return true;}
+    }
+    if moving(s) && s.flags&flags::BOOSTING!=0 {
+        for i in 0..trail.len {
+            let point=trail.points[(trail.head+15-trail.len+i)%15];
+            if point.finite() {outside &= planes(point.x,point.y);}
+            if outside==0 {return true;}
+        }
+    }
+    outside==0
 }
 impl Renderer {
     fn effect(&mut self, effect:Effect) {
@@ -343,6 +383,10 @@ impl Renderer {
         if !frame_valid(info,p) { return Output::default(); }
         self.shader_history(info,snakes,segments,events);
         if p.scale_x==0.0 || p.scale_y==0.0 { return Output::default(); }
+        #[cfg(test)]
+        let cull=self.shader_culling;
+        #[cfg(not(test))]
+        let cull=true;
         let motion_scale=if self.reduced_motion { 0.6 } else { 1.0 };
         let view=P::new(p.viewport_width,p.viewport_height);let walls=p.deadly_walls!=0;
         let sx=p.scale_x;let sy=p.scale_y;let scale=(sx*sy).sqrt();
@@ -365,6 +409,11 @@ impl Renderer {
                     let end=pos-P::new(streak.x/sx,streak.y/sy);
                     min=P::new(min.x.min(end.x),min.y.min(end.y));max=P::new(max.x.max(end.x),max.y.max(end.y));
                 }
+            }
+            if cull && walls {
+                let margin=extent.max(sw);
+                let min=map(min);let max=map(max);
+                if !visible(min.x-margin,min.y-margin,max.x-min.x+2.0*margin,max.y-min.y+2.0*margin,view) {continue;}
             }
             let phase=f.phase as f64/std::f64::consts::TAU;
             let phase=if (0.0..1.0).contains(&phase) { phase } else { phase.rem_euclid(1.0) };
@@ -390,29 +439,52 @@ impl Renderer {
             let n=s.segment_count as usize;let id=s.id as usize;let corpse=s.flags&flags::CORPSE!=0;
             if !snake_valid(s) || (s.alive==0&&!corpse) || n<2 { continue; }
             let body=&segments[s.segment_offset as usize..s.segment_offset as usize+n];
-            let points=&mut self.points[..n];
-            if moving(s) {
-                for (point,seg) in points.iter_mut().zip(body) { *point=position(seg,true,info,p); }
-            } else {
-                for (point,seg) in points.iter_mut().zip(body) { *point=position(seg,false,info,p); }
-            }
-            if !walls { for i in 0..n {
-                let mut v=P::new(wrap(points[i].x,arena.x),wrap(points[i].y,arena.y));
-                if i>0 && points[i-1].finite() { let prev=points[i-1];v=P::new(prev.x+delta(wrap(prev.x,arena.x),v.x,arena.x,false),prev.y+delta(wrap(prev.y,arena.y),v.y,arena.y,false)); }
-                points[i]=v;
-            }}
-            let mapped=&mut self.mapped[..n];for (to,point) in mapped.iter_mut().zip(points.iter()) { *to=map(*point); }
-            let r=s.radius*scale;
-            let widths=&mut self.tapers[id*MAX_SEGMENTS..id*MAX_SEGMENTS+n];
-            let taper_bytes=&mut self.shader_taper_bytes[id*MAX_SEGMENTS..id*MAX_SEGMENTS+n];
-            if self.taper_lengths[id]!=n || self.shader_taper_lengths[id]!=n {
-                for (i,w) in widths.iter_mut().enumerate() {
-                    *w=crate::shape::taper(i as f64/(n-1) as f64);
-                    taper_bytes[i]=(*w*255.0).round() as u8;
+            // Wrapped copies and developer arrows keep their exact old walk.
+            if cull && walls && p.developer_mode==0 && !snake_on_screen(s,body,&self.trails[id],p,scale) {continue;}
+            let points=&mut self.points[..n];let mapped=&mut self.mapped[..n];
+            if walls {
+                if moving(s) {
+                    for ((point,to),seg) in points.iter_mut().zip(mapped.iter_mut()).zip(body) {
+                        *point=position(seg,true,info,p);*to=map(*point);
+                    }
+                } else {
+                    for ((point,to),seg) in points.iter_mut().zip(mapped.iter_mut()).zip(body) {
+                        *point=position(seg,false,info,p);*to=map(*point);
+                    }
                 }
-                self.taper_lengths[id]=n;self.shader_taper_lengths[id]=n;
+            } else {
+                if moving(s) {
+                    for (point,seg) in points.iter_mut().zip(body) { *point=position(seg,true,info,p); }
+                } else {
+                    for (point,seg) in points.iter_mut().zip(body) { *point=position(seg,false,info,p); }
+                }
+                for i in 0..n {
+                    let mut v=P::new(wrap(points[i].x,arena.x),wrap(points[i].y,arena.y));
+                    if i>0 && points[i-1].finite() { let prev=points[i-1];v=P::new(prev.x+delta(wrap(prev.x,arena.x),v.x,arena.x,false),prev.y+delta(wrap(prev.y,arena.y),v.y,arena.y,false)); }
+                    points[i]=v;
+                }
+                for (to,point) in mapped.iter_mut().zip(points.iter()) { *to=map(*point); }
             }
-            prepare_shader(mapped,&mut self.normals[..n],&mut self.valid[..n],&mut self.shader_limits[..n],widths,r*BODY);
+            let r=s.radius*scale;
+            let (widths,taper_bytes)=if n<=SHORT_TAPER_MAX {short_tapers(n)} else {
+                let cache_len=if n>1600 {n.div_ceil(64)*64} else {n};
+                let cache_len=cache_len.min(MAX_SEGMENTS);
+                if self.taper_lengths[id]!=cache_len || self.shader_taper_lengths[id]!=cache_len {
+                    for i in 0..cache_len {
+                        let width=crate::shape::taper(i as f64/(cache_len-1) as f64);
+                        self.tapers[id*MAX_SEGMENTS+i]=width;
+                        self.shader_taper_bytes[id*MAX_SEGMENTS+i]=(width*255.0).round() as u8;
+                    }
+                    self.taper_lengths[id]=cache_len;self.shader_taper_lengths[id]=cache_len;
+                }
+                (&self.tapers[id*MAX_SEGMENTS..id*MAX_SEGMENTS+n],
+                 &self.shader_taper_bytes[id*MAX_SEGMENTS..id*MAX_SEGMENTS+n])
+            };
+            if cull && walls && !corpse {
+                prepare_shader::<true>(mapped,&mut self.normals[..n],&mut self.valid[..n],&mut self.shader_limits[..n],widths,r*BODY,view);
+            } else {
+                prepare_shader::<false>(mapped,&mut self.normals[..n],&mut self.valid[..n],&mut self.shader_limits[..n],widths,r*BODY,view);
+            }
             let gulp_centers=if s.bulges.iter().any(|b|b.duration_ticks!=0 && b.strength>0.0) {prism::centers(s,info,p,self.reduced_motion)} else {[(-100.0,0.0);2]};
             let gulp=gulp_centers.iter().any(|c|c.1>0.0);
             if gulp {prism::widen(&mut self.normals[..n],gulp_centers);}
@@ -667,6 +739,69 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn viewport_broadphase_preserves_vertices_and_history() {
+        let mut fast=Renderer::new();let mut reference=Renderer::new();reference.shader_culling=false;
+        let mut output=vec![ShaderVertex::default();30_000];let mut expected=output.clone();
+        let palette=[Color::new(30,200,255,255)];
+        let food:Vec<_>=(0..600).map(|i|FoodRecord {id:i+1,x:(i%60) as f32*140.0-200.0,
+            y:(i/60) as f32*160.0-40.0,size:4.0,phase:i as f32*0.1,
+            attraction:if i%3==0 {0.8} else {0.0},attraction_x:3500.0,attraction_y:720.0,
+            kind:(i%5) as u8,ripe_tick:1,..Default::default()}).collect();
+        let mut body=vec![SegmentRecord::default();12*80];
+        let mut snakes:Vec<_>=(0..12).map(|id|SnakeRecord {id,generation:1,alive:1,radius:18.0,
+            segment_offset:id*80,segment_count:80,..Default::default()}).collect();
+        for tick in 1..=90 {
+            let info=FrameInfo {tick,simulation_time:tick as f64/30.0,world_width:7920.0,world_height:1440.0,
+                geometry_generation:if tick<60 {0} else {1},..Default::default()};
+            for (id,s) in snakes.iter_mut().enumerate() {
+                s.flags=if id%3==0 {flags::BOOSTING} else if id%3==1 {flags::CORPSE} else {flags::FROZEN};
+                s.alive=u32::from(s.flags&flags::CORPSE==0);s.angle=tick as f64*0.01;
+                s.stump_ticks=if id%2==0 {48} else {0};
+                s.bulges[0]=crate::world::Bulge {start_tick:tick.saturating_sub(4),duration_ticks:30,origin_segment:5,strength:0.8};
+                for j in 0..80 {
+                    let x=id as f32*660.0-j as f32*14.0+tick as f32*4.0;
+                    let y=if id%4==0 {-100.0} else {100.0+id as f32*115.0};
+                    body[id*80+j]=SegmentRecord {x,y,previous_x:x-100.0,previous_y:y-20.0};
+                }
+            }
+            // Invalid neighbours, a long crossing edge, and a moving head that
+            // is currently outside but whose previous sample is still visible.
+            body[80+3].x=f32::NAN;body[80+12].previous_y=f32::INFINITY;
+            body[240+40].x=7500.0;body[240+41].x=0.0;
+            for (width,offset) in [(3440.0,0.0),(1920.0,-3440.0),(2560.0,-5360.0)] {
+                for (sx,sy) in [(1.0,1.0),(0.25,2.0),(2.0,0.5)] {
+                    for alpha in [0.0,0.5,1.0] {
+                        let p=Params {viewport_width:width,viewport_height:1440.0,scale_x:sx,scale_y:sy,offset_x:offset,
+                            interpolation:alpha,presentation_time:info.simulation_time+alpha/30.0,deadly_walls:1,..Default::default()};
+                        let a=fast.build_shader(&info,&snakes,&body,&food,&[],&palette,&p,&mut output);
+                        let b=reference.build_shader(&info,&snakes,&body,&food,&[],&palette,&p,&mut expected);
+                        assert_eq!(a.vertex_count,b.vertex_count,"tick={tick} offset={offset} scale={sx}/{sy} alpha={alpha}");
+                        assert_eq!(&output[..a.vertex_count],&expected[..b.vertex_count]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn viewport_broadphase_keeps_visible_trails_and_interpolation() {
+        let mut s=SnakeRecord {alive:1,radius:8.0,flags:flags::BOOSTING,..Default::default()};
+        let p=Params {viewport_width:100.0,viewport_height:100.0,scale_x:1.0,scale_y:1.0,..Default::default()};
+        let mut body=[SegmentRecord {x:300.0,y:40.0,previous_x:290.0,previous_y:40.0};2];
+        let mut trail=Trail::default();
+        assert!(!snake_on_screen(&s,&body,&trail,&p,1.0));
+        trail.points[0]=P::new(50.0,50.0);trail.head=1;trail.len=1;
+        assert!(snake_on_screen(&s,&body,&trail,&p,1.0));
+        trail.len=0;body[0].previous_x=50.0;
+        assert!(snake_on_screen(&s,&body,&trail,&p,1.0));
+        s.flags=flags::FROZEN;
+        assert!(!snake_on_screen(&s,&body,&trail,&p,1.0));
+        // An edge crossing the viewport has no common separating plane.
+        body[0].x=-100.0;
+        assert!(snake_on_screen(&s,&body,&trail,&p,1.0));
+    }
+
     #[test]
     fn wave_origins_round_trip_without_changing_body_flags_or_light() {
         for origin in 0..8 {

@@ -45,6 +45,13 @@ extern "C" {
 #define SNAKES_CORE_EFFECT_FLIP 6u
 #define SNAKES_CORE_EFFECT_WHIRLPOOL 7u
 #define SNAKES_CORE_ITEM_VORTEX 8u
+/* Config word at offset 76: bits 16..22 encode aggression+1 (1..101).
+ * Zero selects default 100; 102..127 are invalid. Classic ignores aggression.
+ * All other spare bits remain zero; ABI v3 config remains 80 bytes. */
+#define SNAKES_CORE_AGGRESSION_SHIFT 16u
+#define SNAKES_CORE_AGGRESSION_MASK 0x007f0000u
+#define SNAKES_CORE_DEFAULT_AGGRESSION 100u
+#define SNAKES_CORE_SNAKE_LENGTH_LIMIT 0x20000000u
 #define SNAKES_CORE_WORLD_EVENTS_OFF 0x40000000u
 #define SNAKES_CORE_ITEM_LANDING_TICKS 30u
 #define SNAKES_CORE_PRISM_RIPEN_TICKS 90u
@@ -86,7 +93,9 @@ extern "C" {
 #define SNAKES_CORE_EVENT_ITEM_EXPIRY 6u
 #define SNAKES_CORE_EVENT_EFFECT_EXPIRY 7u
 /* Config bit 31 disables power-ups; bit 30 disables world events. Both
- * default on (word zero). All other reserved bits/fields must be zero. */
+ * default on (word zero). Bit 29 enables the V2 individual physical length
+ * limit (1.5 x arena height); it defaults off and is ignored by Classic.
+ * Bits16..22 encode aggression as documented above. All other reserved bits/fields must be zero. */
 #define SNAKES_CORE_OK 0
 #define SNAKES_CORE_INVALID_ARGUMENT 1
 #define SNAKES_CORE_BUFFER_TOO_SMALL 2
@@ -102,7 +111,7 @@ typedef struct snakes_core_config {
     int32_t seed;
     uint32_t palette_size, self_collisions, deadly_walls;
     uint32_t rule_set;
-    union { uint32_t reserved; uint32_t power_ups; }; /* 0 default/on, bit 31 off */
+    union { uint32_t reserved; uint32_t power_ups; }; /* bits31/30 off,29 length on,16..22 aggression+1; zero defaults */
 } snakes_core_config;
 typedef struct snakes_core_steering_input {
     uint32_t id, generation;

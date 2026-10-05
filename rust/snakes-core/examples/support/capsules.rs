@@ -14,13 +14,13 @@ struct Capsule {
 #[derive(Clone,Copy,Default)]
 struct Episode {generation:u32,kind:u8,used:bool,extended:bool}
 #[derive(Clone,Copy,Default)]
-struct SpawnSnake {alive:bool,head:Point,angle:f64,radius:f64,speed:f64,turn:f64}
+struct SpawnSnake {generation:u32,alive:bool,head:Point,angle:f64,radius:f64,speed:f64,turn:f64}
 #[derive(Clone,Copy)]
 struct FoodProbe {id:u64,position:Point,size:f64,unclaimed:bool,scavenging:bool,stationary:bool}
 #[derive(Default)]
 pub struct Capsules {
     records:Vec<Capsule>, episodes:[Episode;MAX_SNAKES],
-    previous_food_goal:[bool;MAX_SNAKES], magnet_extended:u64,
+    previous_food_goal:[bool;MAX_SNAKES], previous_food_generation:[u32;MAX_SNAKES], magnet_extended:u64,
     pickups:[u64;EFFECT_KIND_COUNT], used:[u64;EFFECT_KIND_COUNT], surge_staged:u64, staged:[bool;MAX_SNAKES], surge_chained:u64, bursts:[u8;MAX_SNAKES], old_boosts:[u8;MAX_SNAKES], clear_phase:u64, phase_expiries:u64,
     foods:Vec<FoodProbe>, snakes:[SpawnSnake;MAX_SNAKES], old_effects:[(u8,u16);MAX_SNAKES],
 }
@@ -32,7 +32,7 @@ impl Capsules {
             self.old_effects[id]=(snake.effect_kind,snake.effect_ticks);
             self.old_boosts[id]=snake.boost_ticks;
             let (speed,turn)=w.motion_limits(id,0.0).unwrap();
-            self.snakes[id]=SpawnSnake {alive:snake.alive,head:snake.segments.first().map_or(Point::default(),|s|s.current),angle:snake.angle,radius:snake.radius,speed,turn};
+            self.snakes[id]=SpawnSnake {generation:snake.generation,alive:snake.alive,head:snake.segments.first().map_or(Point::default(),|s|s.current),angle:snake.angle,radius:snake.radius,speed,turn};
         }
         self.foods.clear();
         for f in w.foods() {
@@ -50,6 +50,7 @@ impl Capsules {
         if self.old_effects[id].0!=2 || self.old_effects[id].1<=1 {return;}
         let Some(old)=self.food_probe(food) else {return;};
         let s=w.snake(id).unwrap();
+        if self.snakes[id].generation!=s.generation {return;}
         let distance=w.distance_squared(s.segments[0].current,old.position);
         let extended=old.unclaimed && old.stationary
             && distance>(s.radius*3.0+old.size).powi(2) && distance<=(s.radius*9.0+old.size).powi(2);
@@ -60,7 +61,7 @@ impl Capsules {
             }
         }
         let food_goal=tactics[id].generation==s.generation && tactics[id].target!=0 && tactics[id].target & (1<<63)==0;
-        if (extended && (food_goal || self.previous_food_goal[id])) || (consumed && old.scavenging) {
+        if (extended && (food_goal || (self.previous_food_generation[id]==s.generation && self.previous_food_goal[id]))) || (consumed && old.scavenging) {
             self.use_episode(id,2,s.generation);
         }
     }
@@ -103,12 +104,12 @@ impl Capsules {
         }
         // A newly claimed Spark can disappear during the very first pull.
         // Attribute it from its original position exactly as a retained claim.
-        for (food,id,_,_,_) in w.consumption_events() {
-            self.observe_magnet(w,food,id as usize,tactics,true);
+        for (food,id,generation,_,_) in w.consumption_events() {
+            if w.snake(id as usize).is_some_and(|s|s.generation==generation) {self.observe_magnet(w,food,id as usize,tactics,true);}
         }
         for s in w.snakes().filter(|s|s.alive && s.effect_ticks>0) {
             let id=s.id as usize;
-            if self.old_effects[id].0==1 && self.old_effects[id].1>1 && tactics[id].generation==s.generation {
+            if self.snakes[id].generation==s.generation && self.old_effects[id].0==1 && self.old_effects[id].1>1 && tactics[id].generation==s.generation {
                 let approaching=tactics[id].prey.is_some_and(|prey| {
                     let to_prey=w.displacement(self.snakes[id].head,self.snakes[prey].head);
                     let movement=w.displacement(self.snakes[id].head,s.segments[0].current);
@@ -131,6 +132,7 @@ impl Capsules {
             if super::phase_contact::otherwise_lethal(w,s) {self.use_episode(s.id as usize,3,s.generation);}
         }
         for (id,t) in tactics.iter().enumerate() {
+            self.previous_food_generation[id]=t.generation;
             self.previous_food_goal[id]=t.target!=0 && t.target & (1<<63)==0;
         }
     }
@@ -185,7 +187,7 @@ mod tests {
             rules:snakes_core::RuleSet::V2,..Default::default()},
             &[(Point{x:400.0,y:300.0},0.0,24,0.9)],&[]).unwrap();
         let generation=w.snake(0).unwrap().generation;
-        let mut c=Capsules::new();c.old_effects[0]=(2,100);
+        let mut c=Capsules::new();c.before(&w);c.old_effects[0]=(2,100);
         c.episodes[0]=Episode {kind:2,generation,..Default::default()};
         let mut tactics=[Tactics::default();MAX_SNAKES];
         tactics[0]=Tactics {generation,target:77,..Default::default()};
@@ -233,7 +235,7 @@ mod tests {
             c.foods.push(FoodProbe {id:77,position:Point{x:424.0,y:300.0},size:2.0,
                 unclaimed:true,stationary:true,scavenging:false});
             if !goal {tactics[0].target=0;}
-            c.previous_food_goal[0]=previous;
+            c.previous_food_goal[0]=previous;c.previous_food_generation[0]=s.generation;
             c.observe_magnet(&w,77,0,&tactics,consumed);
             c.observe_magnet(&w,77,0,&tactics,true); // An episode is counted once.
             assert_eq!(c.magnet_extended,1);
@@ -266,4 +268,16 @@ mod tests {
         c.observe_magnet(&w,1,0,&tactics,true);
         assert_eq!(c.used[2],1,"consumed scavenging food remains intended use");
     }
+    #[test]
+    fn magnet_does_not_inherit_previous_life_effects_or_food_intent() {
+        let (w,mut c,mut tactics)=observer();let generation=w.snake(0).unwrap().generation;
+        c.foods.push(FoodProbe {id:77,position:Point{x:424.0,y:300.0},size:2.0,unclaimed:true,stationary:true,scavenging:false});
+        tactics[0].target=0;c.previous_food_goal[0]=true;c.previous_food_generation[0]=generation+1;
+        c.observe_magnet(&w,77,0,&tactics,false);
+        assert_eq!(c.used[2],0);
+        c.episodes[0].extended=false;c.magnet_extended=0;c.snakes[0].generation=generation+1;
+        c.observe_magnet(&w,77,0,&tactics,false);
+        assert_eq!((c.magnet_extended,c.used[2]),(0,0));
+    }
+
 }

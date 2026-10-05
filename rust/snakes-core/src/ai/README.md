@@ -1406,3 +1406,249 @@ path specializes away bite work and uses a bitmask to skip Venom effect lookup.
 Venom bypasses the ordinary body cache because its cut/charge state is path-local.
 Defenders walk the observed holder mask from preparation; ordinary ticks do
 not build every rival view merely to reject its effect kind.
+
+
+## Real-desktop intent measurement (0.13.0 policy retained)
+
+The desktop intent investigation uses the production priority startup sequence:
+3440x1440, then 5360x1440, then 7920x1440, with density 80, trails 100,
+scale 200, speed 300, IQ 100, self collisions and deadly walls. Each seed
+(1, 73, 991) warms up for five simulated minutes and measures minutes 5–35.
+The matched released baseline has 354 deaths (107 self, 116 head), rather
+than the 323 deaths from the earlier final-layout construction experiment.
+
+`desktop-diag` adds fixed-size, Rust-only observations of objective identity,
+mode, abandonment cause, candidate selection, retained-bearing drift, and
+escape/recovery entries. It adds no policy controls or C ABI fields and
+compiles out of production. `desktop_diag` keeps allocation-heavy accounting
+and replay serialization outside the production tick. Its intent JSON contains
+raw dwell, efficiency and drift samples, attribution counts and death cohorts;
+the CSV and replay carry per-snake modes, goals and physical events.
+Deliberate food means the exact item was held for at least one second, or an
+approach closed at least 0.25 radians of bearing within its first 1.5 seconds.
+Rapid straight pickups can therefore be exact-target pickups without satisfying
+the deliberate-pickup measure. Food vacuum claims count as capture when an
+objective interval ends; expiry attribution includes unavailable food and is
+not proof of an item timer expiry. Live intervals at the measurement cutoff
+are censored. Goal-line length uses the manoeuvre goal, while pursuit distance
+and dwell belong to the underlying objective. Competitive retention excludes
+reused-plan ticks.
+
+The final production policy retains released escape, recovery, commitment and
+spawn behavior. Broader coarse-grid traversal, objective-preserving recovery,
+bounded objective continuity and more frequent contested capsules improved
+some intent metrics but failed the matched death limits. The strongest trial
+reached 96.6% immediate capsule targeting and 0.019 circles per snake-minute,
+but caused 505 deaths versus 354. Even conservative checked escape resumption
+caused 374 deaths with 109 self deaths; the allowed total increase is 5% and
+the absolute self limit is 95. Terminal tracking was not added after these
+safety failures. Length caps remain a separate measurement and user decision;
+no growth, food density, population, ABI, or user settings changed.
+
+Reproduce observations with the distribution toolchain, frozen/offline:
+
+```sh
+/home/mjstanton/.local/bin/heavy taskset -c 28,29 env RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc CARGO_BUILD_JOBS=2 /usr/bin/cargo build --release --frozen --offline --manifest-path rust/snakes-core/Cargo.toml --features desktop-diag --example desktop_diag
+/home/mjstanton/.local/bin/heavy taskset -c 28 rust/snakes-core/target/release/examples/desktop_diag startup-priority 1 30 0 /path/on/disk/run --replay
+/home/mjstanton/.local/bin/heavy taskset -c 28 rust/snakes-core/target/release/examples/perf_tick desktop 54000 1
+```
+
+Build `perf_tick` without `desktop-diag` before CPU comparisons. It warms up
+900 ticks and measures 54,000 desktop ticks, including a deterministic world
+and steering fingerprint. `desktop_diag_allocation` exercises the first AI
+decision and 54,000 production desktop ticks with zero allocations or
+reallocations; run it with the diagnostic feature both off and on. Full native
+CTest also checks Classic parity. The investigation report and early/mature
+replays are under `~/.cache/agent-scratch/plasma-wayland-screensaver/intent/`.
+The user-visible intent problem remains unresolved under the death/CPU gates;
+the rejected policies are measurement evidence, not a releasable fix.
+
+### Long-body fixtures and death lead-ups (stages A/B)
+
+`desktop_diag startup-priority SEED MINUTES 0 PREFIX` reconstructs F1's
+3440 -> 5360 -> 7920 startup at 1440 high; warm-up is 9000 ticks and all
+reported deaths/live time are after warm-up. `--limit` enables the default-off
+physical length setting. F3 uses `MINUTES=180` and reports maximum length and
+first ticks at 1000/2000/4000/6000 (zero means never reached).
+
+F2 uses `--giant N` for N=1000/2000/4000/6000, with the shared rounded spiral
+in `examples/support/long_fixtures.rs`. This installs a single pre-grown snake
+in the ordinary F1 world, skips warm-up and lets normal mechanics/AI run.
+`perf_tick giant-N TICKS SEED` measures diagnostics-off tick time, reinstalling
+the body after death or sever below N/2 outside the timer. It therefore measures
+a sustained giant workload, not unmodified survival. `giant_render N` uses
+that same geometry and a 3440x1440 viewport for the later Stage E work.
+
+The diagnostic feature exports selected safe prefix length, bounded continuation
+status, whether any checked first step survives, and next-head/rival predictions.
+The observer keeps a ten-second ring per life, writes each death plus its recent
+decisions to `PREFIX.deaths.csv`, and normalises short (<40), medium (40–99)
+and long (>=100) deaths by pre-movement live ticks. Death categories are
+observational, with this precedence:
+
+* No current decision: mechanics can respawn and kill a life without steering.
+  Count its authoritative collision separately, with no inherited forecast or
+  contest. Length cohorts use the event length and the new life's dimensions;
+  newborn deaths contribute no pre-movement exposure.
+* Changed rival: a lethal owner's next head differs by over half a tick's travel
+  (at least one pixel), or its generation differs from the prediction.
+* Prediction mismatch: the selected next step was predicted safe but collided.
+* Already unrecoverable candidates: no sampled first step survived anywhere in
+  the retained window. This does not prove every feasible control loses.
+* Lost continuation: safe first steps existed earlier, but the chosen approach
+  ultimately lost its immediate safety prefix. This is a lead-up classification,
+  not a causal proof that another long-horizon planner could save it.
+
+Earliest continuation loss is the first decision after the last certified
+continuation in that ring. If none was certified, the boundary is marked censored;
+zero loss tick means the latest decision still certified continuation. Exhausted
+area searches remain unresolved, never certified. Rival-body forecast changes,
+effect changes and geometrically feasible controls outside the candidate set are
+not fully attributed by these four empirical categories.
+
+
+## Aggression and finer space (default 100)
+
+The newer aggression brief supersedes the total-death rejection rule in the
+historical reports above. Total deaths may increase; self/wall deaths and
+non-contest prediction-mismatch/lost-continuation deaths remain gated. The
+selected level and complete matched desktop measurements are in
+`~/.cache/agent-scratch/plasma-wayland-screensaver/long/AGGRO-REPORT.md`.
+
+V2 uses C1's2.5-radius grid (256column limit) and a4.5-base-radius wall band;
+Classic retains its5-radius grid. Escape uses a bounded route toward the tail
+or a roomy reachable cell, suspending an available food identity until escape
+ends and recovery/tactical goals have finished. Resumption never overwrites an
+active recovery, hunt, guard, coil, harvest or dodge goal. These waypoints guide
+continuous rollouts, never certify corridors.
+
+`Config::aggression` (0..100) scales borrowed planner traits, contested capsule
+admission, losing-race patience, food-cluster/prize utility, ready race boosts,
+hunt radius/admission and checked cut-off utility. Neutral50 retains the old
+personality distribution;100 brings each personality toward full aggression;
+0 suppresses discretionary hunting/race bursts and offensive Venom pursuit.
+Emergency boosts, physical effect mechanics and universal collision checks
+remain active. Classic ignores the field. Live V2 changes cancel old policy
+commitments without reseeding or restarting mechanics.
+
+Higher levels require reachable intercepts rather than prolonged open chases.
+The bounded staged library retains a12tick crossing and considers24/36ticks;
+Surge keeps its free-burst windows and chaining. Only checked candidate controls
+can commit. Prize races track moving contact; ordinary food retains checked
+fixed-bearing turns/exits. A cramped ordinary tracked pursuit can yield to
+escape. Genuine progress/hunting is exempt from aimless accumulated-turn
+recovery. Big-body pocket closures propose a short link to an existing arm,
+using two64-cell searches with the own-body mask, sufficient arm lifetime and
+an outward turn reserve. Unresolved searches reject that trap proposal. The
+continuous curved/body/exit rollout still decides whether it can be driven.
+Phase emergence/expiry, Venom's post-bite continuation and Magnet's actual
+capture reach remain governed by their shared effect forecasts. Hunt entry
+emits an Alert and brief Angry mood; existing kill rewards produce Happy.
+
+Between scheduled strategy slots, V2 can reuse an enough-room area UTILITY
+hint if body length/radius still match. It is always marked unresolved. Every
+physical retained rollout still checks current bodies, walls and motion on
+every tick; cached/exhausted area searches never set `continuation=true`.
+This is bounded local planning, not a guarantee of giant tail circulation.
+
+`desktop_diag ... --aggression N` and `perf_tick ... --aggression N` select a
+level without changing UI or installed settings. Diagnostics are feature gated.
+Death CSVs include primary contest-at-death, a separate recent60tick contest
+flag, mechanics' credited killer/generation and the complete owner mask. A
+contest is a close live prize/food race, a hunt/bite plan, a flee response or a
+live same-generation attacker hunting that victim. Dead/stale observations
+cannot count as attackers. Non-contest lost-continuation/prediction-mismatch
+counts use the primary instant definition; the two-second alternative is
+reported separately. These are observational lead-up classes, not causal proof
+that every physically possible alternative was searched.
+
+Cut-off attempts are committed attack episodes separated by15 ticks without a
+cut-off (or a new life), including committed existing-body closure proposals.
+A success is a mechanics-credited victim death where that attacker targeted
+that victim/generation in the preceding60 ticks with an active cut-off. Boost
+and power-up assistance use that same attacking episode; they record observed
+use/held helpful effects (Surge/Magnet/Phase/Venom), not counterfactual causality.
+Mutual head contests can credit both snakes; incidental collision-owner kills
+are listed separately from active attacker kills. Observer accounting and replay
+serialization allocate outside the simulation tick; production policy uses only
+preallocated storage.
+
+
+### Exact room-search CPU recovery
+
+The fine V2 grid and aggression100 policy are unchanged. Room queries use
+word masks and horizontal-run saturation; the original two-hop physical
+clearance exception is seeded before ordinary connectivity. An exact complete
+component returns its size; a proven component larger than the requested cap
+returns precisely that cap with the unresolved flag. Search order never changes
+the returned area/cap pair. The original ordered BFS remains test-only.
+
+Ordinary connected-set lower bounds are shared within one rebuild. Their mask
+and earliest conservative release time guard reuse; future deposited trails
+never reuse those proofs. Narrow entries first measure a reachable ordinary
+component, and may reuse a proof encountered along a connected free prefix.
+A narrow-only proof remains root-specific and requires the start still be
+blocked. Ordinary capped proofs store membership bits in two preallocated
+entries per word, avoiding per-cell publication. Entries with the same mask
+and release threshold may merge using the smaller proven bound; exact,
+physical-only and future-trail results retain cell labels. All proofs
+invalidate on rebuild or topology changes.
+
+Masks are built lazily by word, with32 preallocated mask/time contexts and
+insertion starting at the first slot after each rebuild. Conservative release minima and exact maxima
+allow whole-word rejection or release; a minimum may be lower than the final
+cell minimum, so it can only forgo a rejection shortcut. All-owner cell queries use their exact maximum
+release time; partial masks retain owner-by-owner checks. Bucket clears and
+dilation traverse populated cells; segments are still rerasterized each tick.
+Owner-major release tables keep each body's sparse writes together. Word masks
+and release bounds are populated during insertion/dilation, updating only when
+a cell's release bound increases. Word owners include dilation across word
+boundaries. Cache publication visits only words reached by the search.
+Numeric keys from the preceding grid are cleared even across a resize.
+Cached topology retains small wrapped-axis deduplication and food-cluster
+floating addition order. Two preallocated search buffers cover the bounded
+narrow-to-ordinary query nesting; steady-state queries allocate nothing.
+
+`perf_tick ... profile` adds opt-in spatial and strategy timers. Spatial
+nanoseconds: insertion (including bitmap reset), dilation, room
+(including finishing and lazy masks), finishing, future marking, tail routing,
+food routing, lazy word masks, bitmap reset. Bitmap population is fused with
+insertion/dilation rather than timed as a separate stage. Strategy nanoseconds: hunt
+selection, cutoff construction, pocket/barrier admission, proposed attack
+rollouts. Nested timings must not be summed. CPU acceptance uses profiling and
+diagnostics OFF. Spatial counts include the sum of returned bounded areas,
+which is not a count of cells visited after proof reuse.
+
+The focused differential test compares792000 queries with the ordered BFS:
+1/2/3/63/64/65/127/128/129/255/256 columns,1/2/3/17/128 rows, wrap and walls,
+release horizons in decreasing/interleaved order, subset masks, five limits,
+future trails and repeated roots. Moving/resized worlds also compare sparse
+clears and dilation against full clears and dense key-order dilation. Word
+metadata is independently reconstructed, and a regression covers an owner
+present only in dilation at the adjacent64-cell word boundary.
+
+App-frame CPU recovery keeps the fine-grid query and candidate order intact.
+Wall-bounded body queries reuse already-clipped absolute bucket coordinates.
+The word flood detects a single contiguous open run and saturates it directly;
+holes retain the logarithmic flood, including future deposits and wrap edges.
+
+Short normalized width profiles (lengths 1–512) are shared read-only with the
+shader renderer. World construction also prepares exact length-only turning
+and nutrition-cost factors. These tables replace repeated log/powf calls;
+queries retain the original arithmetic and allocate nothing. Motion cache keys
+retain exact effect/payment/expiry inputs; a new boost's availability represents
+cooldown. When a new boost is unavailable, its schedule is the plain schedule,
+so counting down a positive cooldown alone does not invalidate motion.
+
+Candidate self-neck age is calculated once with its fixed maximum speed (or
+unchanging ordinary Classic speed). The reference differential retains the
+per-movement formula. Cell keys truncate before clamping to zero: nonnegative
+coordinates equal floor, while negative coordinates select the same zero cell.
+Boundary and nonfinite tests retain the original saturating-cast behavior.
+
+Venom candidates need at least twelve checked exit ticks after the forecast
+bite for normal admission or strike utility. Physical safety prefixes remain
+unchanged for diagnostics and emergency ranking. Severed
+stump samples advance and retaper with physical forecast trail travel, keeping
+one source spacing at the tail boundary as a reserve. Actual pending growth
+prevents later cut certification; a fractional nutrition balance alone does not.

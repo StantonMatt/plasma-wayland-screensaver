@@ -23,8 +23,10 @@ class Configuration final : public QObject
     Q_PROPERTY(int ballGravity READ ballGravity WRITE setBallGravity NOTIFY changed)
     Q_PROPERTY(int ballElasticity READ ballElasticity WRITE setBallElasticity NOTIFY changed)
     Q_PROPERTY(bool ballCollisions READ ballCollisions WRITE setBallCollisions NOTIFY changed)
+    Q_PROPERTY(int snakeAggression READ snakeAggression WRITE setSnakeAggression NOTIFY changed)
     Q_PROPERTY(int snakeIntelligence READ snakeIntelligence WRITE setSnakeIntelligence NOTIFY changed)
     Q_PROPERTY(bool snakeSelfCollisions READ snakeSelfCollisions WRITE setSnakeSelfCollisions NOTIFY changed)
+    Q_PROPERTY(bool snakeLengthLimit READ snakeLengthLimit WRITE setSnakeLengthLimit NOTIFY changed)
     Q_PROPERTY(bool snakePowerUps READ snakePowerUps WRITE setSnakePowerUps NOTIFY changed)
     Q_PROPERTY(bool snakeWorldEvents READ snakeWorldEvents WRITE setSnakeWorldEvents NOTIFY changed)
     Q_PROPERTY(bool snakeDeadlyWalls READ snakeDeadlyWalls WRITE setSnakeDeadlyWalls NOTIFY changed)
@@ -53,8 +55,10 @@ public:
     int ballElasticity() const;
     bool ballCollisions() const;
     int snakeIntelligence() const;
+    int snakeAggression() const;
     bool snakeSelfCollisions() const;
     bool snakeDeadlyWalls() const;
+    bool snakeLengthLimit() const;
     bool snakePowerUps() const;
     bool snakeWorldEvents() const;
     bool showClock() const;
@@ -78,8 +82,10 @@ public:
     void setBallElasticity(int value);
     void setBallCollisions(bool value);
     void setSnakeIntelligence(int value);
+    void setSnakeAggression(int value);
     void setSnakeSelfCollisions(bool value);
     void setSnakeDeadlyWalls(bool value);
+    void setSnakeLengthLimit(bool value);
     void setSnakePowerUps(bool value);
     void setSnakeWorldEvents(bool value);
     void setShowClock(bool value);
@@ -121,8 +127,10 @@ private:
     int m_ballElasticity = 92;
     bool m_ballCollisions = true;
     int m_snakeIntelligence = 75;
+    int m_snakeAggression = 100;
     bool m_snakeSelfCollisions = false;
     bool m_snakeDeadlyWalls = true;
+    bool m_snakeLengthLimit = false;
     bool m_snakePowerUps = true;
     bool m_snakeWorldEvents = true;
     bool m_showClock = true;

@@ -31,8 +31,10 @@ int Configuration::ballCount() const { return m_ballCount; }
 int Configuration::ballGravity() const { return m_ballGravity; }
 int Configuration::ballElasticity() const { return m_ballElasticity; }
 bool Configuration::ballCollisions() const { return m_ballCollisions; }
+int Configuration::snakeAggression() const { return m_snakeAggression; }
 int Configuration::snakeIntelligence() const { return m_snakeIntelligence; }
 bool Configuration::snakeSelfCollisions() const { return m_snakeSelfCollisions; }
+bool Configuration::snakeLengthLimit() const { return m_snakeLengthLimit; }
 bool Configuration::snakePowerUps() const { return m_snakePowerUps; }
 bool Configuration::snakeWorldEvents() const { return m_snakeWorldEvents; }
 bool Configuration::snakeDeadlyWalls() const { return m_snakeDeadlyWalls; }
@@ -121,11 +123,13 @@ void Configuration::setBallCount(int value) { update(m_ballCount, std::clamp(val
 void Configuration::setBallGravity(int value) { update(m_ballGravity, std::clamp(value, -100, 100)); }
 void Configuration::setBallElasticity(int value) { update(m_ballElasticity, std::clamp(value, 50, 100)); }
 void Configuration::setBallCollisions(bool value) { update(m_ballCollisions, value); }
+void Configuration::setSnakeAggression(int value) { update(m_snakeAggression, std::clamp(value, 0, 100)); }
 void Configuration::setSnakeIntelligence(int value)
 {
     update(m_snakeIntelligence, std::clamp(value, 0, 100));
 }
 void Configuration::setSnakeSelfCollisions(bool value) { update(m_snakeSelfCollisions, value); }
+void Configuration::setSnakeLengthLimit(bool value) { update(m_snakeLengthLimit, value); }
 void Configuration::setSnakePowerUps(bool value) { update(m_snakePowerUps, value); }
 void Configuration::setSnakeWorldEvents(bool value) { update(m_snakeWorldEvents, value); }
 void Configuration::setSnakeDeadlyWalls(bool value) { update(m_snakeDeadlyWalls, value); }
@@ -217,6 +221,9 @@ void Configuration::apply(const QVariantMap &settings)
     if (settings.contains(QStringLiteral("ballCollisions"))) {
         setBallCollisions(settings.value(QStringLiteral("ballCollisions")).toBool());
     }
+    if (settings.contains(QStringLiteral("snakeAggression"))) {
+        setSnakeAggression(settings.value(QStringLiteral("snakeAggression")).toInt());
+    }
     if (settings.contains(QStringLiteral("snakeIntelligence"))) {
         setSnakeIntelligence(settings.value(QStringLiteral("snakeIntelligence")).toInt());
     }
@@ -225,6 +232,9 @@ void Configuration::apply(const QVariantMap &settings)
     }
     if (settings.contains(QStringLiteral("snakeWorldEvents"))) {
         setSnakeWorldEvents(settings.value(QStringLiteral("snakeWorldEvents")).toBool());
+    }
+    if (settings.contains(QStringLiteral("snakeLengthLimit"))) {
+        setSnakeLengthLimit(settings.value(QStringLiteral("snakeLengthLimit")).toBool());
     }
     if (settings.contains(QStringLiteral("snakePowerUps"))) {
         setSnakePowerUps(settings.value(QStringLiteral("snakePowerUps")).toBool());
@@ -272,8 +282,10 @@ void Configuration::assignDefaults()
     setBallElasticity(92);
     setBallCollisions(true);
     setSnakeIntelligence(75);
+    setSnakeAggression(100);
     setSnakeSelfCollisions(false);
     setSnakeDeadlyWalls(true);
+    setSnakeLengthLimit(false);
     setSnakePowerUps(true);
     setSnakeWorldEvents(true);
     setShowClock(true);
@@ -310,8 +322,10 @@ void Configuration::reload()
     setBallElasticity(general.readEntry("BallElasticity", 92));
     setBallCollisions(general.readEntry("BallCollisions", true));
     setSnakeIntelligence(general.readEntry("SnakeIntelligence", 75));
+    setSnakeAggression(general.readEntry("SnakeAggression", 100));
     setSnakeSelfCollisions(general.readEntry("SnakeSelfCollisions", false));
     setSnakeDeadlyWalls(general.readEntry("SnakeDeadlyWalls", true));
+    setSnakeLengthLimit(general.readEntry("SnakeLengthLimit", false));
     setSnakePowerUps(general.readEntry("SnakePowerUps", true));
     setSnakeWorldEvents(general.readEntry("SnakeWorldEvents", true));
     setShowClock(general.readEntry("ShowClock", true));
@@ -340,8 +354,10 @@ void Configuration::save()
     general.writeEntry("BallElasticity", m_ballElasticity);
     general.writeEntry("BallCollisions", m_ballCollisions);
     general.writeEntry("SnakeIntelligence", m_snakeIntelligence);
+    general.writeEntry("SnakeAggression", m_snakeAggression);
     general.writeEntry("SnakeSelfCollisions", m_snakeSelfCollisions);
     general.writeEntry("SnakeDeadlyWalls", m_snakeDeadlyWalls);
+    general.writeEntry("SnakeLengthLimit", m_snakeLengthLimit);
     general.writeEntry("SnakePowerUps", m_snakePowerUps);
     general.writeEntry("SnakeWorldEvents", m_snakeWorldEvents);
     general.writeEntry("ShowClock", m_showClock);

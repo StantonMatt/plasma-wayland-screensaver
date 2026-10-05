@@ -90,6 +90,10 @@ impl World {
             if old.target_id!=0 && old.target_ticks>=30 && (self.items.iter().any(|i|i.id==old.target_id) || self.food.iter().any(|f|f.id | (1<<63)==old.target_id)) {self.emit_bubble(id,Glyph::Question);}
             else if target!=0 && (self.items.iter().any(|i|i.id==target) || self.food.iter().any(|f|f.id | (1<<63)==target)) {self.emit_bubble(id,Glyph::Alert);}
         }
+        if self.config.rules==RuleSet::V2 && self.config.aggression>50 && intent.prey!=u32::MAX && old.prey!=intent.prey {
+            self.emit_bubble(id,Glyph::Alert);
+            self.faces[id].angry_ticks=30;
+        }
         let desired=self.snakes[id].desired;
         let f=&mut self.faces[id];
         f.target_ticks=if target==old.target_id && target!=0 {old.target_ticks.saturating_add(1)} else {0};

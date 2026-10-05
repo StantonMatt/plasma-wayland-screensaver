@@ -53,7 +53,7 @@ fn forecast_state_from(w: &World, mut s: crate::world::Snake, rush: f64, offset:
     s.effect_ticks = remaining_ticks(s.effect_ticks, offset.saturating_add(1));
     if s.effect_ticks == 0 { s.effect_kind = EffectKind::None as u8; }
     s.rush = if offset < ticks { 0.6 } else { 0.0 };
-    s.blocked = s.len >= w.maximum_snake_segments(&s) || w.growth_slots == 0;
+    s.blocked = !w.growth_allowed(&s);
     s
 }
 
@@ -74,7 +74,7 @@ impl World {
             let at_pickup=forecast_state(self,id,rush,step-1);
             state.len=at_pickup.len;state.radius=at_pickup.radius;
             state.boost_cost=at_pickup.boost_paid;state.boost_paid=at_pickup.boost_paid;
-            state.blocked=state.len>=self.maximum_snake_segments(&state) || self.growth_slots==0;
+            state.blocked=!self.growth_allowed(&state);
         }
         state
     }

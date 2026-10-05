@@ -721,3 +721,95 @@ Capture rows `venom` and `venom-mono` use a 1920x1080 arena, default r=8.1 and
 capsule radius 2.1r, and replay an intact trail before showing the cut.
 `VENOM_AGE=<ticks>` advances the capture after Sever (for example 20 for wriggle,
 34 for dissolve); `REAL_CALM=1` freezes the procedural clock while age advances.
+
+## Stage E: monitor-filling giants
+
+`examples/render_giant.rs` measures the C render ABI with a rounded rectangular
+spiral: 6000 segments, radius 18, physical spacing 21.24px, plus eleven 80-segment
+snakes. Every giant source point fits inside a 3440x1440 monitor. The shared-world
+case is 7920x1440, with viewports (0,0,2560,1440), (2560,0,3440,1440) and
+(6000,195,1920,1080); the giant fills the middle viewport. Each timed build
+advances frame history, and buffers/renderer scratch are allocated before timing.
+Output reports mean/p99 build ms, visible giant source points, vertices, written
+bytes and caller capacity bytes. `reverse` reverses viewport/path order; `orphan`
+measures a fresh 2999-segment Sever and a cached draw separately.
+
+```sh
+RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc /usr/bin/cargo build \
+  --manifest-path rust/snakes-core/Cargo.toml --frozen --offline --release \
+  --example render_giant --target-dir build-render-e/render-target
+/home/mjstanton/.local/bin/heavy taskset -c 8 \
+  build-render-e/render-target/release/examples/render_giant
+/home/mjstanton/.local/bin/heavy taskset -c 8 \
+  build-render-e/render-target/release/examples/render_giant reverse
+/home/mjstanton/.local/bin/heavy taskset -c 8 \
+  build-render-e/render-target/release/examples/render_giant orphan
+```
+
+The single-monitor build averages about 0.103ms in both paths on CPU8: shader
+41280 vertices / 990720 bytes, classic 105366 / 1264392 bytes. The 0.6ms giant
+build gate has ample headroom; live-body LOD/culling changes are unnecessary.
+The existing 9600-vertex chaos gate is unchanged. Qt's retained geometry grows
+geometrically, requiring four allocations across 1600->6000 growth; it retains
+its storage on later draws. Simulation export history already reserves 7120
+segments per V2 snapshot and doubles on exceptional overflow. Rust allocation
+tests cover first builds, growth, Sever, cached orphan draws and reprojection.
+
+Uniform 100-edge sampling of a 2999-segment tail cuts up to 218px across this
+spiral's corners. Long-only cached best-first selection reduces that to 9.02px,
+retaining head/tail, bends, taper and original indices for markings/dissolve.
+Selection targets 0.75px until the unchanged 100-edge budget is exhausted; the
+fixed orphan cap takes precedence over that target. The short (<=800 segment)
+orphan path is retained exactly. One giant orphan emits 606 shader vertices
+(including its cut glow); the complete isolated Sever frame has 612 shader / 672
+classic vertices, within the existing shared 1200-vertex orphan cap. Fresh
+selection costs about 0.17ms, cached builds about 0.0074ms shader / 0.0043ms classic.
+
+Capture rows `giant`, `giant-classic`, `giant-venom` and `giant-venom-classic` use
+real 3440x1440 proportions, with optional `VENOM_AGE` and `REAL_CALM` controls:
+
+```sh
+QT_QPA_PLATFORM=wayland QT_QUICK_BACKEND=rhi QSG_RHI_BACKEND=opengl \
+  QSG_RENDER_LOOP=basic \
+  SNAKES_CAPTURE_PATH="$HOME/.cache/agent-scratch/plasma-wayland-screensaver/giant.png" \
+  build-render-e/bin/test-snakerenderer captureShaderFixture:giant -o -,txt
+```
+
+Repeat with the other row names and distinct output paths; Vulkan also supports
+these rows. The worker sandbox denies display sockets, so real RHI capture must
+be verified outside that sandbox. A review aid can rasterize classic triangles
+at native proportions without a display (flat average vertex colours, without
+GPU colour interpolation or shader effects):
+
+```sh
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+  SNAKES_CAPTURE_PATH="$HOME/.cache/agent-scratch/plasma-wayland-screensaver/giant-raster.png" \
+  build-render-e/bin/test-snakerenderer captureGiantClassicRaster:giant -o -,txt
+```
+
+Use `captureGiantClassicRaster:giant-venom` for the severed tail. Rust giant
+fingerprints freeze both full-body formats and keep collision detail unchanged.
+
+Shader viewport work uses conservative separating planes before preparing a
+wall-bounded snake. Both previous/current endpoints and boost trail samples
+participate; the padded envelope includes heads, gulps, corpse drift and stump
+glow. History, races, bubbles and independent effects still advance. Normal
+preparation skips a point only when both incident live-body edges are wholly
+outside the padded viewport. Wrapped bodies and corpse normals retain their
+original walks. Food rejects offscreen sprite/streak bounds before packing its
+colour and phase. Retained geometry is byte-identical to the unculled path.
+
+Exact taper profiles for lengths 1–512 are initialized once by Renderer/Spatial
+construction and shared read-only across snakes, AI and viewports (1.13 MiB).
+Short-body growth reads these profiles; it never allocates or repeats powf.
+The long-body and giant binning paths keep their existing caches. A complete
+width/alpha-byte comparison guards the shared profiles against their original
+formula.
+
+`scripts/prepare-snakes-frame-benchmark.py` generates an external CMake driver
+for `tests/perf_snakesframe.cpp`: actual simulation/export/history and shader
+QSG geometry for three independent view clocks. The instrumented simulation is
+a scratch copy; production receives no timers. `--paced` measures the first
+three minutes and minutes 10–15 at wall-clock presentation rates, accelerating
+only the unmeasured middle. `--hash` checks every geometry byte separately from
+timing. This harness excludes the Qt render loop, GPU and Wayland draw.

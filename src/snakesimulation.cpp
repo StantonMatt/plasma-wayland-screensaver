@@ -41,7 +41,10 @@ snakes_core_config SnakeSimulation::configuration(const Configuration &settings,
             std::bit_cast<qint32>(seed), 6, uint32_t(settings.snakeSelfCollisions()),
             uint32_t(settings.snakeDeadlyWalls()), SNAKES_CORE_RULE_DEFAULT,
             {(settings.snakePowerUps() ? SNAKES_CORE_POWER_UPS_ON : SNAKES_CORE_POWER_UPS_OFF)
-                | (settings.snakeWorldEvents() ? 0u : SNAKES_CORE_WORLD_EVENTS_OFF)}};
+                | (settings.snakeWorldEvents() ? 0u : SNAKES_CORE_WORLD_EVENTS_OFF)
+                | (settings.snakeLengthLimit() ? SNAKES_CORE_SNAKE_LENGTH_LIMIT : 0u)
+                | (settings.snakeAggression() == SNAKES_CORE_DEFAULT_AGGRESSION ? 0u
+                   : uint32_t(settings.snakeAggression() + 1) << SNAKES_CORE_AGGRESSION_SHIFT)}};
 }
 
 QVector<QColor> SnakeSimulation::colors(const QString &palette)
@@ -104,6 +107,11 @@ bool SnakeSimulation::exportFrame()
         m_storage.push_back(m_frame);
     }
     grow(m_frame->snakes, sizes.snakes);
+    // Capacity hint for the V2 shared pool, not an export limit. Reserve each
+    // history buffer on first use so ordinary giant growth does not allocate
+    // mid-session; corpse/floor overflow still uses the normal growth path.
+    if (m_config.rule_set != SNAKES_CORE_RULE_CLASSIC && m_frame->segments.capacity() == 0)
+        m_frame->segments.reserve(6000 + SNAKES_CORE_MAX_SNAKES * 80);
     grow(m_frame->segments, sizes.segments);
     grow(m_frame->food, sizes.food);
     m_frame->events.reserve(SNAKES_CORE_MAX_EVENTS);

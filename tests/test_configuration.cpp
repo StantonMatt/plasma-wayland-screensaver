@@ -32,8 +32,10 @@ private Q_SLOTS:
         QCOMPARE(config.ballElasticity(), 92);
         QCOMPARE(config.ballCollisions(), true);
         QCOMPARE(config.snakeIntelligence(), 75);
+        QCOMPARE(config.snakeAggression(), 100);
         QCOMPARE(config.snakeSelfCollisions(), false);
         QCOMPARE(config.snakeDeadlyWalls(), true);
+        QCOMPARE(config.snakeLengthLimit(), false);
         QCOMPARE(config.snakePowerUps(), true);
         QCOMPARE(config.snakeWorldEvents(), true);
         QCOMPARE(config.clockMovement(), QStringLiteral("bounce"));
@@ -56,6 +58,7 @@ private Q_SLOTS:
         config.setBallGravity(-999);
         config.setBallElasticity(2);
         config.setSnakeIntelligence(999);
+        config.setSnakeAggression(999);
         QCOMPARE(config.idleMinutes(), 1);
         QCOMPARE(config.frameRate(), 45);
         QCOMPARE(config.visualModule(), QStringLiteral("aurora"));
@@ -72,6 +75,9 @@ private Q_SLOTS:
         QCOMPARE(config.ballGravity(), -100);
         QCOMPARE(config.ballElasticity(), 50);
         QCOMPARE(config.snakeIntelligence(), 100);
+        QCOMPARE(config.snakeAggression(), 100);
+        config.setSnakeAggression(-1);
+        QCOMPARE(config.snakeAggression(), 0);
     }
 
     void roundTrip()
@@ -93,8 +99,10 @@ private Q_SLOTS:
             config.setBallElasticity(76);
             config.setBallCollisions(false);
             config.setSnakeIntelligence(90);
+            config.setSnakeAggression(50);
             config.setSnakeSelfCollisions(true);
             config.setSnakeDeadlyWalls(false);
+            config.setSnakeLengthLimit(true);
             config.setSnakePowerUps(false);
             config.setSnakeWorldEvents(false);
             config.setShowClock(false);
@@ -120,8 +128,10 @@ private Q_SLOTS:
         QCOMPARE(loaded.ballElasticity(), 76);
         QCOMPARE(loaded.ballCollisions(), false);
         QCOMPARE(loaded.snakeIntelligence(), 90);
+        QCOMPARE(loaded.snakeAggression(), 50);
         QCOMPARE(loaded.snakeSelfCollisions(), true);
         QCOMPARE(loaded.snakeDeadlyWalls(), false);
+        QCOMPARE(loaded.snakeLengthLimit(), true);
         QCOMPARE(loaded.snakePowerUps(), false);
         QCOMPARE(loaded.snakeWorldEvents(), false);
         QCOMPARE(loaded.showClock(), false);
@@ -147,8 +157,10 @@ private Q_SLOTS:
             {QStringLiteral("animationSpeed"), 170},
             {QStringLiteral("ballCount"), 11},
             {QStringLiteral("snakeIntelligence"), 85},
+            {QStringLiteral("snakeAggression"), 50},
             {QStringLiteral("snakeSelfCollisions"), true},
             {QStringLiteral("snakeDeadlyWalls"), false},
+            {QStringLiteral("snakeLengthLimit"), true},
             {QStringLiteral("snakePowerUps"), false},
             {QStringLiteral("snakeWorldEvents"), false},
             {QStringLiteral("showClock"), false},
@@ -165,8 +177,10 @@ private Q_SLOTS:
         QCOMPARE(config.animationSpeed(), 170);
         QCOMPARE(config.ballCount(), 11);
         QCOMPARE(config.snakeIntelligence(), 85);
+        QCOMPARE(config.snakeAggression(), 50);
         QCOMPARE(config.snakeSelfCollisions(), true);
         QCOMPARE(config.snakeDeadlyWalls(), false);
+        QCOMPARE(config.snakeLengthLimit(), true);
         QCOMPARE(config.snakePowerUps(), false);
         QCOMPARE(config.snakeWorldEvents(), false);
         QCOMPARE(config.showClock(), false);

@@ -9,6 +9,10 @@ pub const OK: i32 = 0;
 pub const INVALID_ARGUMENT: i32 = 1;
 pub const BUFFER_TOO_SMALL: i32 = 2;
 pub const ABI_VERSION: u32 = 3;
+pub const AGGRESSION_SHIFT:u32 = 16;
+pub const AGGRESSION_MASK:u32 = 0x007f_0000;
+pub const DEFAULT_AGGRESSION:u8 = 100;
+pub const SNAKE_LENGTH_LIMIT:u32 = 0x2000_0000;
 pub const WORLD_EVENTS_OFF:u32 = 0x4000_0000;
 pub const POWER_UPS_OFF: u32 = 0x8000_0000;
 #[repr(C)]
@@ -30,9 +34,11 @@ pub struct CoreConfig {
 }
 impl CoreConfig {
     fn checked(self) -> Option<Config> {
-        if self.self_collisions>1 || self.deadly_walls>1 || self.rule_set>2 || self.reserved & !(POWER_UPS_OFF|WORLD_EVENTS_OFF)!=0 {
+        if self.self_collisions>1 || self.deadly_walls>1 || self.rule_set>2 || self.reserved & !(POWER_UPS_OFF|WORLD_EVENTS_OFF|SNAKE_LENGTH_LIMIT|AGGRESSION_MASK)!=0 {
             return None;
         }
+        let encoded=(self.reserved & AGGRESSION_MASK)>>AGGRESSION_SHIFT;
+        if encoded>101 {return None;}
         let c = Config {
             width: self.width,
             height: self.height,
@@ -47,6 +53,8 @@ impl CoreConfig {
             deadly_walls: self.deadly_walls!=0,
             power_ups: self.reserved & POWER_UPS_OFF == 0,
             world_events:self.reserved & WORLD_EVENTS_OFF == 0,
+            snake_length_limit:self.reserved & SNAKE_LENGTH_LIMIT != 0,
+            aggression:if encoded==0 {DEFAULT_AGGRESSION} else {(encoded-1) as u8},
             rules: if self.rule_set == 1 { crate::RuleSet::Classic } else { crate::RuleSet::V2 }
         };
         c.validate().ok().map(|()|c)
@@ -67,7 +75,8 @@ impl From<Config> for CoreConfig {
             self_collisions: c.self_collisions as u32,
             deadly_walls: c.deadly_walls as u32,
             rule_set: if c.rules == crate::RuleSet::Classic { 1 } else { 2 },
-            reserved: (if c.power_ups {0} else {POWER_UPS_OFF}) | (if c.world_events {0} else {WORLD_EVENTS_OFF}),
+            reserved: (if c.power_ups {0} else {POWER_UPS_OFF}) | (if c.world_events {0} else {WORLD_EVENTS_OFF}) | (if c.snake_length_limit {SNAKE_LENGTH_LIMIT} else {0})
+                | (if c.aggression==DEFAULT_AGGRESSION {0} else {(c.aggression as u32+1)<<AGGRESSION_SHIFT}),
         }
     }
 }
@@ -627,6 +636,31 @@ const _: () = {
 mod v2_tests {
     use super::*;
     use crate::{Point, RuleSet, flags};
+    #[test]
+    fn optional_length_limit_round_trips_in_existing_config_word() {
+        for rules in [RuleSet::Classic,RuleSet::V2] {
+            for limit in [false,true] {
+                let config=Config {rules,snake_length_limit:limit,..Config::default()};
+                let core=CoreConfig::from(config);
+                assert_eq!(core.reserved,if limit {SNAKE_LENGTH_LIMIT} else {0});
+                assert_eq!(core.checked(),Some(config));
+                assert!(CoreConfig {reserved:core.reserved | 1,..core}.checked().is_none());
+            }
+        }
+    }
+    #[test]
+    fn aggression_uses_spare_bits_without_changing_the_v3_layout() {
+        assert_eq!(size_of::<CoreConfig>(),80);
+        assert_eq!(std::mem::offset_of!(CoreConfig,reserved),76);
+        for rules in [RuleSet::Classic,RuleSet::V2] {
+            for aggression in [0,50,75,100] {for limit in [false,true] {
+                let c=Config {aggression,rules,snake_length_limit:limit,power_ups:false,world_events:false,..Config::default()};
+                let core=CoreConfig::from(c);assert_eq!(core.checked(),Some(c));
+                for invalid in [102u32,127] {assert!(CoreConfig {reserved:(core.reserved & !AGGRESSION_MASK)|(invalid<<AGGRESSION_SHIFT),..core}.checked().is_none());}
+            }}
+        }
+        assert!(Config {aggression:101,..Config::default()}.validate().is_err());
+    }
     #[test]
     fn cold_future_food_payload_round_trips_without_expanding_ai_view() {
         assert!(size_of::<crate::FoodView>() <= 128);

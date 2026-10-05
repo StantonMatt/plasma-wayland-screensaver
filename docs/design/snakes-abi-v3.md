@@ -9,7 +9,7 @@ No new dependency, RNG draw or steady-state allocation is introduced.
 
 | Record | v2 bytes | v3 bytes | Appended data / offset |
 |---|---:|---:|---|
-| Config | 80 | 80 | Existing word at 76: bit 31 Power-ups off, bit 30 World events off; zero enables both |
+| Config | 80 | 80 | Existing word at 76: bit 31 Power-ups off, bit 30 World events off, bit 29 (`0x20000000`) Limit snake length on; bits16..22 aggression+1 (zero selects default100); zero enables power-ups/events and leaves length uncapped |
 | Steering | 24 | 32 | `actions` at 24: bit 0 held Flip request, currently inert; `reserved` at 28 must be zero |
 | Snake | 56 | 152 | mood/intensity/age at 56, target/face flags/jaw at 60, look delta/pupils at 64, effect/animation counters at 80, grudge identity/timer at 96, flip tick at 112, two bulges at 120 |
 | Food | 48 | 72 | ripe tick at 48, meteor origin at 56, motion countdown/capture owner at 64, reserved flags at 68 |
@@ -234,3 +234,38 @@ contacts; only a physical contact consumes the predicted charge.
 The S3 chaos fixture carries the reserved 24 Meteor records and fourth-slot
 Vortex item alongside live S3 features. Specialized meteor streaks and vortex
 rendering remain deferred to S6/S7; that record must stay inert in S3.
+
+## Long-body mechanics (stages A/B)
+
+The config remains 80 bytes. `SnakeLengthLimit` defaults false in Settings;
+bit 29 opts V2 into a physical length allowance of 1.5 times arena height,
+`floor(height * 1.5 / (radius * 1.18) + 1)` segments. Enabling it stops further
+growth of an already longer snake; it does not delete its existing body.
+Classic ignores this flag and keeps the released pool, length and speed rules.
+
+V2 has no individual gameplay cap when bit 29 is clear. Its storage ceiling is
+6000 segments per snake, and the shared area allowance uses 85% with a ceiling
+of 6000 segments. A snake below 80 segments can still grow when that pool is
+full. Those per-snake floors and respawns may temporarily exceed the shared
+allowance; it is an admission budget, not a destructive hard truncation.
+The V2 length speed penalty is bounded at 2.5 (40% of unpenalised speed);
+nutrition, boost and effects apply as before. Forecasts use the same rules.
+
+Trails retain exact tick samples through 1600 segments. Above that, history is
+compacted once and sampled at half body spacing, retaining the exact live head
+and cumulative travel coordinates. Maximum chord error is bounded by half
+spacing; ordinary curvature makes it much smaller (about spacing squared over
+8 times turning radius). Every physical segment and sweep remains in collision
+queries. No body sampling or collision LOD is introduced. Rings retain the
+legacy sizing bound with a minimum of 2*(6000+6)+16 samples. Renderer taper
+and conservative AI width caches are binned only above 1600. All cut/bulge
+indices fit u16; detached and orphan buffers scale with the internal maximum.
+
+### Aggression config bits
+
+The existing config word at byte offset 76 uses bits 16..22 for V2 aggression.
+Zero selects the default (100); 1..101 encode 0..100 plus one. Values 102..127
+are rejected. Default 100 canonically encodes as zero. Bits 23..28 and 0..15
+remain spare and must be zero; length-limit/world-events/power-up bits 29..31
+are unchanged. The config is still 80 bytes, ABI version 3. Classic accepts
+the field but ignores it; no World RNG draws or mechanics depend on it.
