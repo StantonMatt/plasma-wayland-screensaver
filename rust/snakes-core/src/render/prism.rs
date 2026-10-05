@@ -22,7 +22,10 @@ pub(super) fn widen(normals:&mut [P],centers:[(f64,f64);2]) {
         let last=((center+6.3).floor() as usize).min(normals.len()-1);
         for i in first..=last {
             if slot==1 && centers[0].1>0.0 && (i as f64-centers[0].0).abs()<=6.3 {continue;}
-            let a=centers.iter().map(|&(c,s)|{let z=(i as f64-c)/2.1;s*(-z*z).exp()}).fold(0.0_f64,f64::max);
+            // Most gulps occupy only one slot. An inactive slot contributes
+            // exactly zero; avoid its underflowing exponential per vertex.
+            let a=centers.iter().filter(|&&(_,s)|s>0.0)
+                .map(|&(c,s)|{let z=(i as f64-c)/2.1;s*(-z*z).exp()}).fold(0.0_f64,f64::max);
             normals[i]=normals[i]*(1.0+a);
         }
     }

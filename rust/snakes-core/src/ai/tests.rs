@@ -1494,7 +1494,10 @@ fn items_use_base_values_and_persist_as_high_bit_targets() {
     line(&mut w,0,Point{x:300.0,y:300.0},0.0,24);
     food(&mut w,Point{x:450.0,y:300.0});
     for (i,kind) in crate::effects::ENABLED_KINDS.iter().copied().enumerate() {
-        assert_eq!(kind.base_value(),[6.0,4.0,3.0,5.0][i]);
+        assert_eq!(kind.base_value(),[6.0,4.0,3.0,5.0,3.0][i]);
+    }
+    // Enabled kinds outnumber simultaneous item slots starting with Frost.
+    for (i,kind) in crate::effects::ENABLED_KINDS.iter().copied().take(crate::MAX_ITEMS).enumerate() {
         w.items.push(crate::Item{id:i as u64+1,kind,position:Point{x:470.0+i as f64*20.0,y:300.0},
             life_ticks:750,radius:12.0,..Default::default()});
     }
@@ -2810,3 +2813,95 @@ fn motion_cache_reuses_unavailable_boost_cooldowns_exactly() {
         ai.states[1].generation=w.snakes[1].generation;
         assert!(ai.contested_target(&w,w.snake(0).unwrap(),state));
     }
+
+
+#[test]
+fn desktop_shared_queries_match_all_candidate_controls_and_scores() {
+    // Exact reference keeps the original unpruned future-trail scans.
+    for deadly_walls in [true,false] {
+        let cfg=Config {width:3440.0,height:1440.0,density:80.0,trails:100.0,
+            scale:200.0,speed:300.0,intelligence:100.0,aggression:100,
+            self_collisions:true,deadly_walls,seed:1,rules:crate::RuleSet::V2,..Config::default()};
+        let mut a=World::new(cfg).unwrap();a.resize(5360.0,1440.0).unwrap();a.resize(7920.0,1440.0).unwrap();
+        let mut b=World::new(cfg).unwrap();b.resize(5360.0,1440.0).unwrap();b.resize(7920.0,1440.0).unwrap();
+        let mut fast=AiController::new();fast.enable_diagnostics();
+        let mut exact=AiController::new();exact.enable_diagnostics();exact.reference_queries=true;
+        for tick in 0..1800 {
+            a.step(&mut fast);b.step(&mut exact);
+            assert_eq!(a.rng_state(),b.rng_state());assert_eq!(a.stats(),b.stats());
+            for (a,b) in a.snakes().zip(b.snakes()) {
+                assert_eq!((a.generation,a.angle.to_bits(),a.flags,a.segments.len()),
+                    (b.generation,b.angle.to_bits(),b.flags,b.segments.len()));
+                assert_eq!(format!("{:?}",fast.decision(a.id as usize)),format!("{:?}",exact.decision(b.id as usize)),
+                    "walls={deadly_walls} tick={tick} snake={}",a.id);
+            }
+        }
+    }
+}
+
+#[test]
+fn replayed_corner_inward_arc_keeps_physical_safety_prefix() {
+    // F1 seed 991, snake 2 generation 8, first steering tick 33523.
+    // Its legal clockwise arc used to fail the inflated wall reserve at
+    // movement 3, so a shallow counterclockwise turn won and hit the corner.
+    // Reflect the measured birth body through all four arena corners.
+    for mirror_x in [false,true] {for mirror_y in [false,true] {for frozen in [0,4,75] {
+        let cfg=Config {width:7920.0,height:1440.0,density:80.0,trails:100.0,
+            scale:200.0,speed:300.0,intelligence:100.0,aggression:100,
+            rules:crate::RuleSet::V2,self_collisions:true,deadly_walls:true,
+            world_events:false,power_ups:true,..Config::default()};
+        let mut w=World::diagnostic_arena(cfg,&[(Point {x:101.06440122308867,y:1328.6182081096165},
+            1.9469011527505469,24,0.0)],&[]).unwrap();
+        let radius=19.69623692035671;
+        let original_angle=1.9469011527505469_f64;
+        let reflect=|p:Point|Point {x:if mirror_x {cfg.width-p.x} else {p.x},
+            y:if mirror_y {cfg.height-p.y} else {p.y}};
+        let heading=|a:f64| {
+            let x=if mirror_x {-a.cos()} else {a.cos()};
+            let y=if mirror_y {-a.sin()} else {a.sin()};y.atan2(x)
+        };
+        w.snakes[0].radius=radius;w.snakes[0].base_radius=radius;
+        w.snakes[0].traits.speed_bias=0.9137001042626798;
+        w.snakes[0].angle=heading(original_angle);w.snakes[0].desired=w.snakes[0].angle;
+        let body:Vec<_>=(0..24).map(|j|reflect(Point {
+            x:101.06440122308867-original_angle.cos()*radius*1.18*j as f64,
+            y:1328.6182081096165-original_angle.sin()*radius*1.18*j as f64})).collect();
+        w.diagnostic_body(0,&body,heading(original_angle)).unwrap();
+        w.snakes[0].frozen_ticks=frozen;w.faces[0].frozen_ticks=frozen;
+        let mut ai=AiController::new();ai.prepare(&w);
+        let mut state=State::default();state.desired=w.snakes[0].angle;
+        let kind=if mirror_x^mirror_y {5} else {6};
+        let candidate=ai.rollout(&w,w.snake(0).unwrap(),state,kind,NORMAL_STEPS);
+        assert_eq!(candidate.steps,NORMAL_STEPS,"mirrors={mirror_x}/{mirror_y} frozen={frozen}");
+        // Rollouts receive the post-decrement steering observation. Restore
+        // that decrement before driving the independent pre-step World clock.
+        if frozen>0 {w.snakes[0].frozen_ticks+=1;w.faces[0].frozen_ticks+=1;}
+        let mut driver=crate::controller::ScriptedController::new(|_,_:SnakeView<'_>|
+            Steering {desired_angle:candidate.desired,rush:0.0});
+        for j in 1..=NORMAL_STEPS {
+            w.step(&mut driver);
+            assert!(w.snake(0).unwrap().alive,"movement {j}: {:?}",w.last_death_reason(0));
+            assert!(w.distance_squared(w.snake(0).unwrap().segments[0].current,candidate.path[j])<1e-16,
+                "movement={j} mirrors={mirror_x}/{mirror_y} frozen={frozen} actual={:?} predicted={:?}",w.snake(0).unwrap().segments[0].current,candidate.path[j]);
+        }
+        assert_eq!(w.stats().wall_deaths,0);
+    }}}
+}
+
+#[test]
+fn wall_reserve_still_guards_settled_controls_and_horizon_endpoints() {
+    let mut w=arena(false);w.config.rules=crate::RuleSet::V2;
+    w.config.aggression=100;
+    line(&mut w,0,Point {x:1180.0,y:400.0},0.0,24);
+    let mut ai=AiController::new();ai.prepare(&w);
+    // A straight control still cannot enter the wall-turn reserve.
+    let straight=ai.rollout(&w,w.snake(0).unwrap(),State::default(),2,NORMAL_STEPS);
+    assert_eq!(straight.steps,0);
+    // Nor can an ongoing turn certify a too-short horizon whose endpoint
+    // has no reserve for the following control.
+    let turn=ai.rollout(&w,w.snake(0).unwrap(),State::default(),5,1);
+    assert!(turn.checked);assert_eq!(turn.steps,0);
+    // A turn that physically leaves the arena is rejected on that movement.
+    let turn=ai.rollout(&w,w.snake(0).unwrap(),State::default(),5,NORMAL_STEPS);
+    assert!(turn.steps<NORMAL_STEPS);
+}

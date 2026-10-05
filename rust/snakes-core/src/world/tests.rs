@@ -433,6 +433,21 @@ fn close(a: f64, b: f64) {
     w.snakes[0].len = 240;
     assert!(w.explode_snake(0)>180);
 }
+#[test] fn v2_newborn_rejects_a_clear_but_inescapable_corner() {
+    let mut w=World::new(Config {width:7920.0,height:1440.0,speed:300.0,
+        intelligence:100.0,rules:RuleSet::V2,deadly_walls:true,..Config::default()}).unwrap();
+    // Seed991's clear diagonal body points into both adjacent walls. Its
+    // newborn has only 13 movements before contact, with no safe turn arc.
+    let corner=Point {x:7839.313206603683,y:90.14257900373975};
+    assert!(!w.spawn_has_turn_room(corner,5.260385934566011,16.049505961295218,32));
+    assert!(w.spawn_has_turn_room(Point {x:4000.0,y:90.0},0.0,16.0,32));
+    assert!(w.spawn_has_turn_room(Point {x:4000.0,y:90.0},-std::f64::consts::FRAC_PI_2,16.0,32));
+    assert!(w.spawn_has_turn_room(Point {x:4000.0,y:720.0},5.26,16.0,32));
+    w.config.rules=RuleSet::Classic;
+    assert!(w.spawn_has_turn_room(corner,5.260385934566011,16.049505961295218,32));
+    w.config.rules=RuleSet::V2;w.config.deadly_walls=false;
+    assert!(w.spawn_has_turn_room(corner,5.260385934566011,16.049505961295218,32));
+}
 #[test] fn respawn_reuses_id_increments_generation_and_checks_clearance() {
     let mut w = world();
     let generation = w.snakes[0].generation;
@@ -793,4 +808,35 @@ fn cached_growth_cost_matches_original_arithmetic_for_every_length() {
         let expected=1.0+(len.saturating_sub(120) as f64/260.0).powf(0.85);
         assert_eq!(World::growth_cost(&s).to_bits(),expected.to_bits(),"len={len}");
     }
+}
+
+#[test]
+fn frost_nova_on_a_giant_preserves_length_floor_trail_and_collision_wall() {
+    let mut w=World::new(Config {width:16384.0,height:16384.0,speed:0.0,
+        rules:RuleSet::V2,deadly_walls:false,self_collisions:false,..Config::default()}).unwrap();
+    only(&mut w,2);
+    line(&mut w,0,Point{x:8000.0,y:8100.0},0.0,24);
+    line(&mut w,1,Point{x:8000.0,y:8000.0},0.0,6000);
+    w.snakes[1].growth=0.0;w.snakes[1].rush=0.0;
+    let (speed,turn)=(w.speed(&w.snakes[1]),w.turn_rate(&w.snakes[1]));
+    effects::activate(effects::EffectKind::Frost,&mut w,0);
+    assert_eq!(w.snakes[1].frozen_ticks,75);
+    assert_eq!(w.speed(&w.snakes[1]),speed*0.5);
+    assert_eq!(w.turn_rate(&w.snakes[1]),turn*0.6);
+    assert_eq!(w.snake(1).unwrap().segments.len(),6000);
+    let allocation=w.trails.as_ptr();
+    w.food.resize(w.config.food_count(),Food {p:Point{x:100.0,y:100.0},life:1000.0,owner:-1,value:0.0,..Default::default()});
+    let mut straight=ScriptedController::new(|_,s:SnakeView<'_>|Steering {desired_angle:s.angle,rush:0.0});
+    for _ in 0..75 {w.step(&mut straight);}
+    assert_eq!(w.trails.as_ptr(),allocation);
+    assert_eq!(w.snakes[1].frozen_ticks,0);
+    assert_eq!(w.faces[1].thaw_immunity_ticks,45);
+    assert_eq!(w.speed(&w.snakes[1]),speed);
+    // Ice never gives Phase contact immunity. A head crossing the giant's
+    // distant retained tail must still see its full collision body.
+    w.snakes[1].frozen_ticks=40;w.faces[1].frozen_ticks=40;
+    let tail=w.segments[MAX_SEGMENTS+5000].current;
+    line(&mut w,0,tail,0.0,24);w.snakes[0].growth=0.0;
+    w.mark_collisions();
+    assert_eq!(w.snakes[0].dying,DeathReason::Body);
 }

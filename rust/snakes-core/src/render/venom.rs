@@ -189,12 +189,22 @@ impl Renderer {
         Some((n,Color::new(0,0,0,255),o.radius*(p.scale_x*p.scale_y).sqrt(),fade))
     }
     pub(super) fn shader_orphans(&mut self,info:&FrameInfo,p:&Params,palette:&[Color],sink:&mut shader::SpriteSink<'_>) {
+        self.shader_orphans_impl::<true>(info,p,palette,sink);
+    }
+    fn shader_orphans_impl<const REUSE:bool>(&mut self,info:&FrameInfo,p:&Params,palette:&[Color],sink:&mut shader::SpriteSink<'_>) {
         use shader::bounds::BODY;
         let mut budget=200;
         let mut glows=[None;2];
+        let mut prepared=[None;2];let mut cached=None;
         // Reserve both cut ends before either trail spends the shared budget.
         for (slot,glow) in glows.iter_mut().enumerate() {
-            let Some((_,_,r,_))=self.orphan_points(slot,info,p) else {continue;};
+            if self.venom.orphans[slot].len==0 {continue;}
+            // A rejected giant can overwrite point scratch before returning
+            // None. Only a successful preparation owns the shared scratch.
+            cached=None;
+            let Some(geometry)=self.orphan_points(slot,info,p) else {continue;};
+            prepared[slot]=Some(geometry);cached=Some(slot);
+            let (_,_,r,_)=geometry;
             let o=self.venom.orphans[slot];
             let age=(event_time(info,p,self.reduced_motion)-o.time).max(0.0);
             if age>o.duration || !self.valid[0] {continue;}
@@ -207,7 +217,13 @@ impl Renderer {
             }
         }
         for (slot,glow) in glows.into_iter().enumerate() {
-            let Some((n,_,r,fade))=self.orphan_points(slot,info,p) else {continue;};
+            if prepared[slot].is_none() {continue;}
+            // The usual single orphan is already in scratch. With two active
+            // pieces, preserve the existing order and recompute after each
+            // overwrite. No retained storage or frame-to-frame cache is added.
+            let Some((n,_,r,fade))=(if REUSE && cached==Some(slot) {prepared[slot]}
+                else {self.orphan_points(slot,info,p)}) else {continue;};
+            cached=Some(slot);
             let o=self.venom.orphans[slot];let c=palette.get(o.color as usize%palette.len().max(1)).copied().unwrap_or(Color::new(0,255,255,255));
             let motion=if self.reduced_motion {0.6} else {1.0};
             let age=(event_time(info,p,self.reduced_motion)-o.time).max(0.0);
@@ -321,6 +337,24 @@ mod tests {
             }
         }
         (r,info,p)
+    }
+    #[test]
+    fn reused_orphan_preparation_preserves_every_shader_vertex() {
+        let colors=[Color::new(255,0,0,255),Color::new(0,255,0,255)];
+        for len in [1,19,799,1200] {for active in [1,2,3] {for moving in [false,true] {for invalid in [false,true] {
+            let render=|reuse:bool| {
+                let (mut r,mut info,mut p)=fixture(800.0,800.0,len,false);
+                r.reduced_motion=!moving;info.simulation_time+=0.3;p.presentation_time=info.simulation_time;
+                for slot in 0..2 {if active&(1<<slot)==0 {r.venom.orphans[slot].len=0;}}
+                if invalid {r.venom.tails[CAP..CAP+len].fill(P::new(f64::NAN,f64::NAN));}
+                let mut out=vec![shader::ShaderVertex::default();6000];
+                let mut sink=shader::SpriteSink {out:&mut out,count:0,view:P::new(800.0,800.0)};
+                if reuse {r.shader_orphans_impl::<true>(&info,&p,&colors,&mut sink);}
+                else {r.shader_orphans_impl::<false>(&info,&p,&colors,&mut sink);}
+                let count=sink.count;out.truncate(count);out
+            };
+            assert_eq!(render(true),render(false),"len={len} active={active} moving={moving} invalid={invalid}");
+        }}}}
     }
     #[test]
     fn venom_lod_unwraps_all_source_edges_before_selecting_points() {

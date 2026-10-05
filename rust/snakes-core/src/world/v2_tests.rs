@@ -60,7 +60,7 @@ fn boost_speed_digestion_turn_limit_minimum_and_free_rush_removed() {
 #[test]
 fn frozen_cuts_boost_and_pellets_expire() {
     let mut w=arena(24);w.advance_boost(0,true);
-    w.snakes[0].effect_kind=5;w.snakes[0].effect_ticks=75;
+    w.snakes[0].frozen_ticks=75;
     assert!(!w.boost_ready(0));w.advance_boost(0,true);
     assert_eq!(w.snakes[0].boost_ticks,0);assert_eq!(w.snakes[0].cooldown_ticks,36);
     assert_eq!(w.snake(0).unwrap().flags & flags::FROZEN,flags::FROZEN);

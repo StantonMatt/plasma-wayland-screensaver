@@ -250,7 +250,7 @@ Ranking is fun to watch per unit of cost and risk. Ticks are the 30 Hz simulatio
 
 - At pickup, a nova of 16 base radii. Rivals whose heads are inside become FROZEN for 75 ticks: speed x0.5, turn rate x0.6, no boost, and an active burst is cut. The holder's effect ends at once.
 - **New: thaw immunity.** A thawed snake cannot be frozen again for 45 ticks (no permafreeze chains).
-- **New: thaw crack.** A small ice-coloured impact (7 short sparks) at the head when FROZEN ends.
+- **New: thaw crack.** Seven bright, tapering ice shards burst from outside the head to about 5.5 r when FROZEN ends, with a thin pop ring and a short frost puff; one quad extends to 6 r.
 
 **AI.**
 
@@ -262,13 +262,13 @@ Ranking is fun to watch per unit of cost and risk. Ticks are the 30 Hz simulatio
 
 | Element | Vertices | Fragment | CPU / sim |
 |---|---|---|---|
-| Nova | 1 effect quad (new kind 18) | ring, spikes, faint fill | one radius pass over heads at pickup |
+| Nova | 1 effect quad (new kind 18), extent 1.05 nova radii | crisp near-white front, cold wake and inner glow, 18 tapering needles and static frost flecks; cubic expansion over 0.7 s | one radius pass over heads at pickup |
 | Ice tint | 0 | 0 (vertex colour, 60% toward `#c8eeff`) | CPU colour mix |
-| Crystals and sparkles | 0 | body branch on FROZEN (body `packed.y` bit 7): diamonds every 2 segments plus a hashed twinkle; about 15 ALU on frozen bodies only | 0 |
-| Shiver, squint, breath | 0 | head mood | 0 |
-| Thaw crack | 1 effect quad (kind 6 variant) | existing | 0 |
+| Crystals and sparkles | 0 | body branch on FROZEN (body `packed.y` bit 7): spine-aligned diamonds every 2 segments (0.84 w long × 0.40 w wide); four-point glints on about 12% of segments, reseeded at 3 Hz with a smooth envelope | 0 |
+| Shiver, squint, breath | 0 | head mood; three near-white puffs grow from the snout each 1.25 s exhale, within the existing 2.9-unit head quad | 0 |
+| Thaw crack | 1 effect quad (kind 6 variant), extent 6 r | seven shards, pop ring and frost puff over 0.5 s | 0 |
 
-**Reduced motion.** No shiver, no breath puff, no twinkle (crystals stay).
+**Reduced motion.** No shiver or breath puffs; crystals and glints stay static. Nova and thaw crack retain their full 0.7 s and 0.5 s lifetimes in simulation time.
 
 **Risk.** Low to medium. The turn-rate change feeds AI forecasts, which the spec already covers.
 
@@ -405,10 +405,10 @@ Each slice ships and is measured on its own. The spec's section 9 gates apply to
 | S1: Faces and races | 0.11.0 | Moods (head shader), emote bubbles and glyph atlas tiles, drop-in telegraph, contest arcs, denied/grudge rule, plus **all ABI record changes** for later slices. Ships with the engineer's race AI. | Head-shader ALU check; bubble cap test; a clock-overlap test (no bubble inside the clock rectangle) |
 | S2: Prism and gulp | 0.12.0 | Seed, ripening, Feast event, bulge, rainbow wave, vulture-circling AI, head-on gulp | Vertex count unchanged (bulge and rainbow are 0-vertex) |
 | S3: Venom | 0.13.0 | Severing, bite immunity, strike pose, stump, orphan wriggle, standoff counter-play | Orphan buffer allocation test; titan-tail cut fixture |
-| S4: Frost | 0.14.0 | Nova, FROZEN bit and looks, thaw immunity and crack, frost-window and avoid-Frost AI | Duel suite: frozen-prey cut-off success rate reported |
-| S5: Flip | 0.15.0 | Held charge, in-place reversal plus `rebuild_trail`, false eyes, escape/ambush/loot AI, tail danger cone | Reversal fuzz test (wrap and walls); forecast consistency after a flip |
-| S6: Starfall and Nightfall | 0.16.0 | Event scheduler, meteors, star food, `ambient` uniform, eyeshine, sleepy moods, "World events" setting | GPU gate; a 30-minute soak shows both events firing on schedule |
-| S7: Whirlpool | 0.17.0 | Vortex record, capture and burst, orbit AI, spawn exclusivity | GPU fill gate at 4K; food-ownership tests |
+| S4: Frost | 0.16.0 | Nova, FROZEN bit and looks, thaw immunity and crack, frost-window and avoid-Frost AI | Duel suite: frozen-prey cut-off success rate reported |
+| S5: Flip | 0.17.0 | Held charge, in-place reversal plus `rebuild_trail`, false eyes, escape/ambush/loot AI, tail danger cone | Reversal fuzz test (wrap and walls); forecast consistency after a flip |
+| S6: Starfall and Nightfall | 0.18.0 | Event scheduler, meteors, star food, `ambient` uniform, eyeshine, sleepy moods, "World events" setting | GPU gate; a 30-minute soak shows both events firing on schedule |
+| S7: Whirlpool | 0.19.0 | Vortex record, capture and burst, orbit AI, spawn exclusivity | GPU fill gate at 4K; food-ownership tests |
 
 **Backlog**, in order: Rampage streaks, Hatching and molting, Seasonal touches (a candidate quick win in October: a jack-o'-lantern prism and orange eyeshine at Nightfall, behind a "Seasonal touches" setting).
 

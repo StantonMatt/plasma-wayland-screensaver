@@ -47,6 +47,7 @@ pub(super) const CONTRAIL: f64 = value("BOUNDS_CONTRAIL");
 pub(super) const VACUUM: f64 = value("BOUNDS_VACUUM");
 pub(super) const DEVELOPER: f64 = value("BOUNDS_DEVELOPER");
 pub(super) const CORPSE_DRIFT: f64 = value("BOUNDS_CORPSE_DRIFT");
+pub(in crate::render) const FROST_CRACK: f64 = value("BOUNDS_FROST_CRACK");
 
 #[cfg(test)]
 mod tests {
@@ -132,7 +133,21 @@ mod tests {
         assert!(HEAD_SIDE >= 0.56 + 1.1 + 0.05);
         // Sweat's tear uses a tighter AA ceiling and stays in the head quad.
         assert!(HEAD_SIDE >= 1.37 + 2.0*(0.025 + 0.12) + 0.08);
-        assert!(HEAD_FRONT >= 1.65 + 0.55*0.9 + 0.28 + 0.40*0.9); // growing frost puff
+        // Frost breath: the third puff's centre and radius peak together at e=1;
+        // its soft profile is exactly zero at u=1, so no AA term.
+        for expression in ["vec2(1.58+(0.20+0.34*fi)*(0.55+0.45*e)", "((0.13+0.07*fi)*(0.85+0.45*e))", "for(int i=0;i<3;i++)", "(1.0-smoothstep(0.45,1.0,u))"] {
+            assert!(SHADER.contains(expression), "rederive frost breath: {expression}");
+        }
+        assert!(HEAD_FRONT >= 1.58 + (0.20 + 0.34*2.0) + (0.13 + 0.07*2.0)*(0.85 + 0.45));
+        assert!(HEAD_SIDE >= 0.07*2.0 + (0.13 + 0.07*2.0)*(0.85 + 0.45));
+        // Thaw shards: start 1.2 + 3.4*burst*(<=1.2), length 1.2*(1-age), burst cubic.
+        for expression in ["float start=1.2+3.4*burst*(0.6+0.6*hash(", "float length_=1.2*(1.0-age)",
+            "float burst=1.0-pow(1.0-age,3.0)", "abs(r-(1.3+1.2*burst))", "falloff(r/1.9)"] {
+            assert!(SHADER.contains(expression), "rederive thaw crack: {expression}");
+        }
+        let shard_end = (0..=1000).map(|j| { let u = j as f64 / 1000.0; 1.2 + 4.08*(1.0 - u*u*u) + 1.2*u })
+            .fold(0.0_f64, f64::max);
+        assert!(FROST_CRACK >= shard_end + 0.3); // + 1.6px taper/AA at r >= 6px
         assert!(HEAD_FRONT >= 1.08 + 0.34 + 0.02 + head_aa); // yawn
         assert!(CAPSULE >= 2.8 + 0.45 + 0.04 + aa); // outside crosshair ticks
         assert!(SHADER.contains("clamp(fwidth(dropDistance),0.008,0.08)"));

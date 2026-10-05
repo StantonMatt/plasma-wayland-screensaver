@@ -97,10 +97,30 @@ impl Renderer {
         // with warnings and Magnet. Offscreen events consume no capacity.
         for age_index in 0..self.effects.len() {
             let e=self.effects[(self.effect_head+self.effects.len()-1-age_index)%self.effects.len()];
-            if !e.active || !matches!(e.kind,6|12|13) || budget.full() {continue;}
-            let duration=0.5*if self.reduced_motion && e.color&0x80000000!=0 {0.6} else {1.0};
+            if !e.active || !matches!(e.kind,6|12|13|18) || budget.full() {continue;}
+            let duration=if e.duration_ticks>0 {e.duration_ticks as f64*crate::STEP_SECONDS} else {0.5*if self.reduced_motion && e.color&0x80000000!=0 {0.6} else {1.0}};
             let age=(event_time(info,p,self.reduced_motion)-e.time)/duration;
-            if !(0.0..1.0).contains(&age) {continue;}
+            if !(0.0..1.0).contains(&age) || (e.duration_ticks>0 && age+1e-9>=1.0) {continue;}
+            if e.kind==18 || (e.kind==6 && e.duration_ticks>0) {
+                let radius=e.radius*scale;let extent=radius*if e.kind==18 {1.05} else {super::shader::bounds::FROST_CRACK};
+                let (xs,ys)=copies(e.p,e.p,P::new(extent/p.scale_x,extent/p.scale_y),arena,p.deadly_walls!=0);
+                // Matches the shader: a whitened ice front and shards, cubic burst.
+                let c=accent(5,palette).boost().fade((1.0-age)*0.9);
+                let progress=1.0-(1.0-age).powi(3);
+                for x in xs.first..=xs.last {for y in ys.first..=ys.last {
+                    if budget.full() {continue;}
+                    let center=map(e.p+P::new(x as f64*xs.extent,y as f64*ys.extent));let before=sink.count;
+                    if e.kind==18 {self.classic_ring(center,radius*(0.08+0.88*progress),(radius*0.012).max(0.5),c,sink);}
+                    for k in 0..if e.kind==18 {12} else {7} {
+                        let angle=k as f64*std::f64::consts::TAU/if e.kind==18 {12.0} else {7.0};let d=P::new(angle.cos(),angle.sin());
+                        let start=radius*if e.kind==18 {0.08+0.88*progress} else {1.2+3.1*progress};
+                        let end=start+radius*if e.kind==18 {0.07*(1.0-age)} else {1.2*(1.0-age)};
+                        sink.segment(center+d*start,center+d*end,(radius*0.025).max(0.5),c);
+                    }
+                    budget.emitted(before,sink.count);
+                }}
+                continue;
+            }
             if e.kind==6 {
                 // Preserve the classic death flash geometry, but share history
                 // order and the visible-copy cap with the other transients.

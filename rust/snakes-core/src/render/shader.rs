@@ -22,7 +22,7 @@ pub struct ShaderVertex {
 #[derive(Clone, Copy, Default)]
 pub(super) struct Effect {
     pub(super) p: P, pub(super) time: f64, pub(super) radius: f64, pub(super) color: u32, pub(super) kind: u8, pub(super) active: bool,
-    snake_id: u32, generation: u32, seed: u8,
+    snake_id: u32, generation: u32, seed: u8, pub(super) duration_ticks:u16,
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct Wave { pub(super) time: f64, pub(super) active: bool, pub(super) kind: u8, pub(super) duration_ticks: u16 }
@@ -334,16 +334,21 @@ impl Renderer {
             if e.kind==0 || e.kind==1 || e.kind==4 {
                 self.effect(Effect { p:P::new(e.x as f64,e.y as f64),time,radius,
                     color:if e.kind==1 {0x80000004} else {e.color_index},kind:if e.kind==0 || e.kind==1 { 6 } else { 7 },active:true,
-                    snake_id:e.snake_id,generation:0,seed:(e.tick as u8).wrapping_add((e.snake_id as u8).wrapping_mul(13)) });
+                    snake_id:e.snake_id,generation:0,duration_ticks:0,seed:(e.tick as u8).wrapping_add((e.snake_id as u8).wrapping_mul(13)) });
             }
             if matches!(e.kind,2|6|7) {
                 self.effect(Effect {p:P::new(e.x as f64,e.y as f64),time,radius,
-                    color:e.other_snake_id,kind:if e.kind==2 {12} else {13},active:true,
-                    snake_id:e.snake_id,generation:0,seed:e.tick as u8});
+                    color:if e.kind==7 && e.other_snake_id==5 {0x80000005} else {e.other_snake_id},kind:if e.kind==2 {12} else if e.kind==7 && e.other_snake_id==5 {6} else {13},active:true,
+                    snake_id:e.snake_id,generation:0,duration_ticks:if e.kind==7 && e.other_snake_id==5 {e.duration_ticks} else {0},seed:e.tick as u8});
                 if e.kind==2 && (e.snake_id as usize)<MAX_SNAKES {
                     let waves=&mut self.waves[e.snake_id as usize];
                     waves[1]=waves[0];waves[0]=Wave {time,active:true,kind:e.other_snake_id as u8,..Wave::default()};
                 }
+            }
+            if e.kind==crate::EventKind::Nova as u8 && e.value.is_finite() && e.value>0.0 {
+                self.effect(Effect {p:P::new(e.x as f64,e.y as f64),time,radius:e.value as f64,
+                    color:0x80000005,kind:18,active:true,snake_id:e.snake_id,generation:e.generation,
+                    seed:e.tick as u8,duration_ticks:e.duration_ticks});
             }
             if e.kind==0 && (e.other_snake_id as usize)<MAX_SNAKES {
                 let waves=&mut self.waves[e.other_snake_id as usize];
@@ -362,7 +367,7 @@ impl Renderer {
                 let head=segments[s.segment_offset as usize];
                 if segment_valid(&head) {
                     self.effect(Effect { p:if s.segment_count>1 { P::new(head.x as f64,head.y as f64) } else { P::new(f64::NAN,f64::NAN) },time:info.simulation_time,
-                        radius:s.radius,color:s.color_index,kind:9,active:true,snake_id:s.id,generation:s.generation,seed:info.tick as u8 });
+                        radius:s.radius,color:s.color_index,kind:9,active:true,snake_id:s.id,generation:s.generation,duration_ticks:0,seed:info.tick as u8 });
                 }
             }
             self.shader_flags[id]=s.flags;
@@ -490,9 +495,10 @@ impl Renderer {
             if gulp {prism::widen(&mut self.normals[..n],gulp_centers);}
             let tier=if n<24 { 0 } else if n<100 { 1 } else if n<250 { 2 } else { 3 };
             let active_kind=if s.alive!=0 && !corpse && s.effect_ticks>0 {s.effect_kind&7} else {0};
-            let flags=s.flags as u8;let c=color(s.color_index);
+            let flags=s.flags as u8;let c=frost::ice(color(s.color_index),s.flags,palette);
             let rainbow=self.waves[id].iter().any(|w|w.active && w.kind==8)
-                && prism::rainbow(s,self.waves[id],info,p,self.reduced_motion,palette,c,&mut self.rainbow[..n]);
+                && prism::rainbow(s,self.waves[id],info,p,self.reduced_motion,palette,color(s.color_index),&mut self.rainbow[..n]);
+            if rainbow && s.flags&flags::FROZEN!=0 {for c in &mut self.rainbow[..n] {*c=frost::ice(*c,s.flags,palette);}}
             if moving(s) && s.flags&flags::BOOSTING!=0 {
                 let trail=&self.trails[id];let mut prev:Option<(P,f64)>=None;
                 for i in 0..trail.len { let index=(trail.head+15-trail.len+i)%15;
@@ -555,7 +561,7 @@ impl Renderer {
             // Body envelope includes waves, breathing and taper quantization. Per-edge seam selection
             // bounds even multi-lap bodies, and normals are computed only once.
             if walls && !corpse {
-                let params=[0,tier|(active_kind<<2)|if white_crown { 64 } else { 0 },body_flags,0];
+                let params=[0,tier|(active_kind<<2)|if s.flags&flags::FROZEN!=0 {128} else {0}|if white_crown { 64 } else { 0 },body_flags,0];
                 if !rainbow && !gulp {
                     if mixed {
                         sink.live_ribbon::<true>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
@@ -588,7 +594,7 @@ impl Renderer {
                     let drift=normal*(local*r*CORPSE_DRIFT*if piece%2==0 { 1.0 } else { -1.0 });
                     ma=ma+drift;mb=mb+drift;an=an*(1.0-local*0.5);bn=bn*(1.0-local*0.5);
                 }
-                let mut params=[0,tier|(active_kind<<2)|if i<=3 { 32 } else { 0 }|if white_crown { 64 } else { 0 },body_flags,
+                let mut params=[0,tier|(active_kind<<2)|if s.flags&flags::FROZEN!=0 {128} else {0}|if i<=3 { 32 } else { 0 }|if white_crown { 64 } else { 0 },body_flags,
                     if corpse { (alpha*255.0).round() as u8 } else {self.brightness[i-1]}];
                 if !corpse && mixed {params[2]|=self.wave_origins[i-1];}
                 let cc=if corpse && age<0.08/0.55 { Color::new(255,255,255,c.alpha) } else if corpse { c.boost() } else { c };
@@ -690,14 +696,14 @@ impl Renderer {
         let mut effect_budget=EffectBudget::default();
         for age_index in 0..self.effects.len() {
             let e=self.effects[(self.effect_head+self.effects.len()-1-age_index)%self.effects.len()];
-            let duration=(if e.kind==6 { 0.5 } else if e.kind==9 { 0.28 } else if e.kind>=12 {0.5} else { 0.6 })*motion_scale;let age=event_time(info,p,self.reduced_motion)-e.time;
-            if !e.active || !(0.0..duration).contains(&age) { continue; }
-            let extent=if e.kind==6 { IMPACT } else { RING };
+            let duration=if e.duration_ticks>0 {e.duration_ticks as f64*crate::STEP_SECONDS} else {(if e.kind==6 { 0.5 } else if e.kind==9 { 0.28 } else if e.kind>=12 {0.5} else { 0.6 })*motion_scale};let age=event_time(info,p,self.reduced_motion)-e.time;
+            if !e.active || !(0.0..duration).contains(&age) || (e.duration_ticks>0 && age+1e-9>=duration) { continue; }
+            let extent=if e.kind==18 {1.05} else if e.kind==6 && e.duration_ticks>0 {FROST_CRACK} else if e.kind==6 { IMPACT } else { RING };
             let r=e.radius*scale*extent;let (xs,ys)=copies(e.p,e.p,P::new(r/sx,r/sy),arena,walls);
             for x in xs.first..=xs.last { for y in ys.first..=ys.last {
                 if effect_budget.full() {continue;}
                 let before=sink.count;
-                sink.effect_sprite(map(e.p+P::new(x as f64*xs.extent,y as f64*ys.extent)),r,extent,if e.kind>=12 || e.color&0x80000000!=0 {items::accent(e.color as u8,palette)} else {color(e.color)},[e.kind,if e.kind==7 && white_crown { e.seed|64 } else if e.kind==7 { e.seed&!64 } else { e.seed },0,(age/duration*255.0).round() as u8]);
+                sink.effect_sprite(map(e.p+P::new(x as f64*xs.extent,y as f64*ys.extent)),r,extent,if e.kind>=12 || e.color&0x80000000!=0 {items::accent(e.color as u8,palette)} else {color(e.color)},[e.kind,if e.kind==7 && white_crown { e.seed|64 } else if e.kind==7 { e.seed&!64 } else { e.seed },if e.kind==6 && e.duration_ticks>0 {1} else {0},(age/duration*255.0).round() as u8]);
                 effect_budget.emitted(before,sink.count);
             }}
         }
@@ -796,6 +802,10 @@ mod tests {
         trail.len=0;body[0].previous_x=50.0;
         assert!(snake_on_screen(&s,&body,&trail,&p,1.0));
         s.flags=flags::FROZEN;
+        // Frost slows movement rather than stopping it. Its visible previous
+        // sample still contributes at intermediate presentation phases.
+        assert!(snake_on_screen(&s,&body,&trail,&p,1.0));
+        body[0].previous_x=290.0;
         assert!(!snake_on_screen(&s,&body,&trail,&p,1.0));
         // An edge crossing the viewport has no common separating plane.
         body[0].x=-100.0;

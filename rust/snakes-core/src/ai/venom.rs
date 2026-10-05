@@ -127,6 +127,7 @@ impl AiController {
                     if eta<nearest_eta {nearest_eta=eta;nearest=Some(VenomPlan {goal:Self::venom_strike_goal(w,s,r,index,standoff),
                         target:r.id as usize+1,generation:r.generation,index,standoff});}
                     let value=(len-index) as f64/(0.6+eta)
+                        *if r.face.frozen_ticks as f64*STEP_SECONDS>eta {1.0+aggression::level(w)} else {1.0}
                         *(1.0+(len as f64/s.segments.len() as f64).min(3.0)*0.15)
                         *if standoff {0.3+0.3*aggression::bold(w)} else {1.0}
                         *if state.venom_target==r.id as usize+1 && state.venom_generation==r.generation {1.15} else {1.0};

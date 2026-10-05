@@ -269,3 +269,41 @@ are rejected. Default 100 canonically encodes as zero. Bits 23..28 and 0..15
 remain spare and must be zero; length-limit/world-events/power-up bits 29..31
 are unchanged. The config is still 80 bytes, ABI version 3. Classic accepts
 the field but ignores it; no World RNG draws or mechanics depend on it.
+
+## S4 (0.16.0): Frost, ABI still 3
+
+Frost joins the enabled capsule pool. Weights are Surge 25, Magnet 30, Phase
+15, Venom 20 and Frost 10, normalized over those enabled kinds with the existing
+previous-kind exclusion. Classic consumes no new RNG draws.
+
+Freezing is independent of the held effect: `frozen_ticks` and FROZEN report
+75 ticks after a Nova, while `effect_kind/effect_ticks` still report the rival's
+Surge, Magnet, Phase or Venom. Phase does not block cold; its intangibility and
+Venom bite rules still apply. Speed is multiplied by 0.5 and the ordinary turn
+limit by 0.6. A frozen snake cannot start a burst; Nova immediately cancels an
+active burst and its unpaid segment debt. Thaw does not resume that burst.
+The holder's Frost effect is consumed immediately, replacing its previous
+held effect through the ordinary capsule pickup rule.
+
+Nova=3 carries its owner's identity, `duration_ticks=21` (0.7 s) and `value`
+as the world-space radius, exactly 16 config base radii. Its centre is the
+holder's pickup endpoint. Alive rival heads within the inclusive radius freeze
+unless already frozen or thaw-immune; wrap uses the ordinary world geometry.
+All forecasts and tactical valuations share that eligibility primitive.
+Movement and feeding precede pickups/Nova, and collisions follow them. Frozen
+motion therefore starts on the following movement, while the burst is already
+cancelled at the pickup endpoint. Forecasts retain held effects, cancel burst
+payments, update all affected rival paths and respect capsule order/guards.
+
+Thaw grants `thaw_immunity_ticks=45`, `scared_ticks=36` internally and a crack
+using EffectExpiry=7 with Frost payload `other_snake_id=5` and
+`duration_ticks=15`. `breath_ticks` follows the frozen countdown. Power-ups off
+clears freezing, immunity and breath along with capsules and held effects.
+
+Shader kind 18 is the Nova quad. Body `params[1]` bit 7 is FROZEN; ice tint is
+60% toward #c8eeff, with the established Mono/Pastel accent transform. Crystals
+use the existing body ribbon and cost no vertices. The thaw crack reuses kind 6
+with `params[2]=1` for seven short sparks. Nova/crack duration comes from the
+event, including in Calm; Calm freezes procedural shiver, breath and twinkle.
+Both vertex formats retain their layouts, and frozen snakes still interpolate
+movement. No record, function signature, ABI version or fingerprint changes.

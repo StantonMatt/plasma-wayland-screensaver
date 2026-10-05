@@ -59,7 +59,7 @@ impl World {
         }
         for f in &mut self.faces {
             for counter in [&mut f.happy_ticks,&mut f.angry_ticks,&mut f.scared_ticks,&mut f.dizzy_ticks,
-                &mut f.frozen_ticks,&mut f.thaw_immunity_ticks,&mut f.bite_immunity_ticks,&mut f.stump_ticks,
+                &mut f.thaw_immunity_ticks,&mut f.bite_immunity_ticks,&mut f.stump_ticks,
                 &mut f.breath_ticks,&mut f.flip_grace_ticks,&mut f.grudge_ticks,&mut f.bubble_cooldown,&mut f.jaw_ticks] {
                 *counter=counter.saturating_sub(1);
             }
@@ -156,7 +156,7 @@ impl World {
             // Urgent/event moods enter immediately; calm/sleep/hunt need six
             // stable observations, and exits cannot flutter on one tick.
             let urgent=matches!(next,Mood::Frozen|Mood::Dizzy|Mood::Trapped|Mood::Happy|Mood::Angry|Mood::Scared);
-            if next!=f.mood && (f.pending_ticks>=6 || (urgent && next as u8>f.mood as u8)) {f.mood=next;f.age=0;} else {f.age=f.age.saturating_add(1);}
+            if next!=f.mood && (f.pending_ticks>=6 || (f.mood==Mood::Frozen && f.frozen_ticks==0) || (urgent && next as u8>f.mood as u8)) {f.mood=next;f.age=0;} else {f.age=f.age.saturating_add(1);}
             f.intensity=((f.age.min(6) as u32*255)/6) as u8;
             let d=crate::normalize_angle(f.look.y.atan2(f.look.x)-angle);
             f.pupil=Point{x:d.cos()*0.18,y:d.sin()*0.35};

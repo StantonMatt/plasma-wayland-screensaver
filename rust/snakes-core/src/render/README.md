@@ -813,3 +813,21 @@ a scratch copy; production receives no timers. `--paced` measures the first
 three minutes and minutes 10–15 at wall-clock presentation rates, accelerating
 only the unmeasured middle. `--hash` checks every geometry byte separately from
 timing. This harness excludes the Qt render loop, GPU and Wayland draw.
+
+S4: body `params[1] & 128` means FROZEN, independent of the three-bit held-effect
+kind. CPU colour mixes 60% toward palette-adjusted #c8eeff, including Feast
+vertices. The body shader draws spine-aligned diamonds every two segments
+(0.84 w long × 0.40 w wide) and four-point glints on about 12% of segments,
+reseeded at 3 Hz with a smooth envelope. Frozen heads exhale three growing
+near-white puffs every 1.25 s, contained within the existing 2.9-unit head quad.
+Kind 18 is one Nova quad, sized to 1.05 times the event's world radius: a crisp
+near-white front expands cubically, with 18 tapering needles, a cold wake,
+inner glow and static frost flecks. Kind 6 with `params[2]=1` is the thaw crack:
+seven bright shards burst from outside the head to about 5.5 snake radii,
+with a thin pop ring and short frost puff. Its quad uses `BOUNDS_FROST_CRACK`
+(6 snake radii), shared by shader and Classic geometry and checked in bounds
+tests. Both effects share the eight-effect copy budget and store lifetimes
+and age in simulation time (Nova 0.7 s, crack 0.5 s), including Calm.
+The 12-byte fallback uses a whitened ice ring/spikes and longer outward crack
+strokes with the same cubic expansion. Frozen snakes crawl and interpolate;
+Calm suppresses shiver and breath, retaining static crystals and glints.

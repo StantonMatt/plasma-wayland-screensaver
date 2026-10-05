@@ -29,6 +29,7 @@ const float BOUNDS_IMPACT = 10.2;
 const float BOUNDS_RING = 7.0;
 const float BOUNDS_MAGNET = 10.2;
 const float BOUNDS_CAPSULE = 3.4;
+const float BOUNDS_FROST_CRACK = 6.0; // thaw-crack quad, snake radii
 const float BOUNDS_CONTRAIL = 0.465;
 const float BOUNDS_VACUUM = 0.65;
 const float BOUNDS_DEVELOPER = 1.2;
@@ -185,6 +186,35 @@ void main() {
         float track=(state&4)!=0?coverage(dr-0.5*px,px)*0.10:0.0;
         fragColor=vec4((col*(core+0.25*halo)*a+vec3(track))*ub.opacity,0);return;
     }
+    if(kind==18) {
+        // Nova (coord in nova radii): a crisp white-ice front with a cold wake,
+        // 18 tapering needles (prototype) and an inner glow bounded by the front.
+        float age=packed.w/255.0,fade=1.0-age;
+        float radius=0.08+0.88*(1.0-fade*fade*fade);
+        float r=length(coord),d=r-radius;
+        float px=max(fwidth(r),0.0005);
+        if(d>0.11) {fragColor=vec4(0);return;}
+        vec3 rim=mix(base.rgb,white,0.55),deep=base.rgb*base.rgb;
+        float front=coverage(abs(d)-px*(0.6+1.0*fade),px);
+        float halo=exp(-abs(d)/(px*5.0));
+        float wake=d<0.0?exp(d/(0.035+0.10*age)):0.0;
+        float inner=falloff(r/max(radius,0.001));
+        const float SECTOR=0.3490659;   // 18 needles
+        float a=atan(coord.y,coord.x);float k=floor(a/SECTOR+0.5);
+        float len=(0.05+0.04*hash(k+packed.y))*fade;
+        float u=d/max(len,0.0001);
+        float needle=coverage(abs(a-k*SECTOR)*r-px*(0.35+0.75*(1.0-u)),px)*step(0.0,u)*step(u,1.0);
+        // Frost flecks settle behind the front: one hashed point per 0.035 R cell.
+        vec2 cell=floor(coord/0.035);
+        float h=hash(cell.x*13.7+cell.y*71.3+packed.y);
+        float fleck=0.0;
+        if(h>0.78 && d<0.0) {
+            vec2 at=(cell+0.2+0.6*vec2(hash(h*17.0),hash(h*29.0)))*0.035;
+            fleck=coverage(length(coord-at)-px*0.8,px)*exp(d/0.18);
+        }
+        vec3 light=rim*(front*0.95+needle*0.8+fleck*0.7)+base.rgb*halo*0.30+deep*(wake*0.30+inner*0.20);
+        fragColor=vec4(min(light*fade,vec3(0.95))*base.a*ub.opacity,0);return;
+    }
     if(kind==12 || kind==13 || kind==14) {
         float age=packed.w/255.0;float r=length(coord);vec3 accent=base.rgb;
         float radius=kind==12?1.0+5.0*(1.0-pow(1.0-age,2.0)):kind==14?2.0:2.5*(1.0-age);
@@ -300,6 +330,24 @@ void main() {
             float outline=coverage(abs(abs(across)-1.2)-0.06,aaA)*dash;
             float scan=coverage(abs(mod(coord.y+t*14.0,5.0)-2.5)*SEG-0.125,aaA)*body;
             over+=itemAccent(3)*outline*0.75+mix(itemAccent(3),white,0.5)*scan*0.5;
+        }
+        if((int(packed.y+0.5)&128)!=0 && !corpse) {
+            // Frozen: a crystal every two segments with its long axis on the spine
+            // (prototype 0.84 w x 0.40 w), plus four-point glints on about 12% of
+            // segments, reseeded at 3 Hz (each under 0.6 w; still in Calm).
+            float along=(mod(coord.y+1.0,2.0)-1.0)*SEG;
+            float diamond=mask((abs(along)*0.20+abs(acrossR)*0.42-0.084*w)*2.15)*body;
+            float frame=floor(t*3.0),cell=floor(coord.y);
+            float glint=0.0;
+            if(hash(cell*7.1+frame*3.3+base.r*31.0)>0.88) {
+                float pixelR=max(length(vec2(dFdx(acrossR),dFdy(acrossR))),0.0001);
+                vec2 g=abs(vec2(acrossR-(hash(cell+frame)-0.5)*1.1*w,(fract(coord.y)-0.5)*SEG));
+                float L=0.55*w;
+                float star=min(max(g.x-L,g.y-pixelR*0.8*(1.0-g.x/L)),max(g.y-L,g.x-pixelR*0.8*(1.0-g.y/L)));
+                float life=ub.motionScale==1.0?sin(3.141593*fract(t*3.0)):1.0;
+                glint=(coverage(star,pixelR*0.6)+falloff(length(g)/(0.45*w))*0.4)*life;
+            }
+            over+=(moodAccent(vec3(0.86,0.96,1.0))*diamond*0.6+white*glint*0.85)*body;
         }
         float alpha=max(body,shadow);
         vec3 rgb=mix(vec3(0.008,0.012,0.031),tube,body/max(alpha,0.0001));
@@ -480,9 +528,19 @@ void main() {
             float sweat=coverage(dropDistance,clamp(fwidth(dropDistance),0.008,0.08))*intensity;
             rgb=mix(rgb,moodAccent(vec3(0.7,0.88,1)),sweat);alpha=max(alpha,sweat);
         } else if(mood==8 && moving) {
-            float q=fract(t*0.8+seed*0.31)*0.9;
-            float breath=falloff(length(p-vec2(1.65+0.55*q,0))/(0.28+0.40*q))*(1.0-q/0.9)*0.5*intensity;
-            glow+=moodAccent(vec3(0.78,0.933,1))*breath;
+            // Frosty breath: three puffs leave the snout in turn, growing, then fade
+            // (one exhale per 1.25 s). Max reach 2.81 head units < HEAD_FRONT.
+            float q=fract(t*0.8+seed*0.31);
+            float side=hash(seed+6.0)>0.5?1.0:-1.0;
+            float e=smoothstep(0.0,0.6,q);
+            float puff=0.0;
+            for(int i=0;i<3;i++) {
+                float fi=float(i);
+                vec2 centre=vec2(1.58+(0.20+0.34*fi)*(0.55+0.45*e),side*0.07*fi*e);
+                float u=length(p-centre)/((0.13+0.07*fi)*(0.85+0.45*e));
+                puff=max(puff,(1.0-smoothstep(0.45,1.0,u))*smoothstep(fi*0.14,fi*0.14+0.12,q)*(1.0-0.2*fi));
+            }
+            glow+=moodAccent(vec3(0.9,0.965,1))*puff*(1.0-smoothstep(0.55,1.0,q))*0.85*intensity;
         }
         if(boosting) {
             // bow wave, two strokes fitted to the prototype beziers; needs the widened boost quad.
@@ -512,7 +570,25 @@ void main() {
         float age=packed.w/255.0;float radius=length(effectCoord);float progress=1.0-pow(1.0-age,2.0);
         float ring=mask(abs(radius-(1.0+(kind==9?2.2:5.0)*progress)/BOUNDS_EFFECT_UNITS)-0.012)*(1.0-age)*0.8;
         vec3 glow=(kind==7?gold:mix(c,white,0.5))*ring;
-        if(kind==6) {
+        if(kind==6 && packed.z>0.5) {
+            // Thaw crack (coord in snake radii, quad 6 r): seven ice shards fly out
+            // from just outside the head (prototype shatter), a thin pop ring and a
+            // short frost puff. Shards taper from about 1.6 px to a point.
+            float r=length(coord);float px=max(fwidth(r),0.0001);
+            float burst=1.0-pow(1.0-age,3.0);
+            vec3 shard=mix(c,white,0.6);float shards=0.0;
+            for(int k=0;k<7;k++) {
+                float angle=float(k)*0.897598+hash(packed.y+float(k))*0.5;
+                vec2 direction=vec2(cos(angle),sin(angle));
+                float start=1.2+3.4*burst*(0.6+0.6*hash(packed.y+float(k)*3.0+1.0));
+                float length_=1.2*(1.0-age);
+                float along=clamp(dot(coord,direction)-start,0.0,length_);
+                float w=px*(0.25+0.6*(1.0-along/max(length_,0.0001)));
+                shards=max(shards,coverage(length(coord-direction*(start+along))-w,px)*step(0.001,length_));
+            }
+            float pop=coverage(abs(r-(1.3+1.2*burst))-px*0.6,px)*pow(1.0-age,3.0);
+            glow=shard*(shards*(1.0-age)+pop*0.6)+c*falloff(r/1.9)*0.30*(1.0-age)*(1.0-age);
+        } else if(kind==6) {
             glow+=white*exp(-radius*radius*8.0)*(1.0-smoothstep(6.0,BOUNDS_RING,length(coord)))*(1.0-age)*(1.0-age)*0.9;
             float sparks=0.0;
             for(int k=0;k<9;k++) {

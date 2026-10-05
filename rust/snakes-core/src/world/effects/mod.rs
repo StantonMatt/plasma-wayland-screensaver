@@ -6,6 +6,7 @@ mod motion;
 pub(crate) use motion::{forecast_motion, forecast_boost, forecast_motion_before_tick, forecast_schedule_before_tick};
 mod magnet;
 mod phase;
+pub(crate) mod frost;
 #[cfg(test)]
 pub(crate) use surge::tests::grant_surge;
 use super::World;
@@ -29,7 +30,7 @@ use crate::controller::Steering;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EffectKind { #[default] None, Surge, Magnet, Phase, Venom, Frost, Flip, Whirlpool }
 /// Extend for R4; weights of disabled kinds are never included in the draw.
-pub const ENABLED_KINDS: &[EffectKind] = &[EffectKind::Surge, EffectKind::Magnet, EffectKind::Phase, EffectKind::Venom];
+pub const ENABLED_KINDS: &[EffectKind] = &[EffectKind::Surge, EffectKind::Magnet, EffectKind::Phase, EffectKind::Venom, EffectKind::Frost];
 pub const WARNING_TICKS: u16 = 36;
 impl EffectKind {
     pub fn from_byte(kind: u8) -> Self {
@@ -75,6 +76,7 @@ macro_rules! dispatch {
             EffectKind::Surge => surge::Surge::$method($($arg),*),
             EffectKind::Magnet => magnet::Magnet::$method($($arg),*),
             EffectKind::Phase => phase::Phase::$method($($arg),*),
+            EffectKind::Frost => frost::Frost::$method($($arg),*),
             _ => DefaultHook::$method($($arg),*),
         }
     }
@@ -111,11 +113,12 @@ mod timing_tests {
                         self_collisions:false,..Config::default()},
                         &[(Point{x:500.0,y:400.0},0.0,120,0.0)],&[]).unwrap();
                     if observed {w.advance_boost(0,true);}
+                    w.food.resize(w.config.food_count(),crate::world::Food {p:Point{x:100.0,y:100.0},life:1000.0,value:0.0,owner:-1,..Default::default()});
                     w.snakes[0].effect_kind=kind as u8;w.snakes[0].effect_ticks=ticks;
                     let predictions:Vec<_>=(0..139).map(|offset|(forecast_motion(&w,0,0.6,offset),motion::forecast_state(&w,0,0.6,offset))).collect();
+                    w.snakes[0].effect_ticks+=1; // Input above is post-decrement.
                     for (offset,(prediction,state)) in predictions.into_iter().enumerate() {
-                        if offset>0 {w.advance_items_and_effects();}
-                        w.advance_boost(0,offset==0);
+                        w.step(&mut crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering {desired_angle:s.angle,rush:if offset==0 {0.6} else {0.0}}));
                         let actual=w.snakes[0];
                         assert_eq!((state.effect_kind,state.effect_ticks,state.boost_ticks,state.cooldown_ticks,state.boost_cost,state.boost_paid,state.len),
                             (actual.effect_kind,actual.effect_ticks,actual.boost_ticks,actual.cooldown_ticks,actual.boost_cost,actual.boost_paid,actual.len),
@@ -134,14 +137,15 @@ mod timing_tests {
                 let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,density:0.0,
                     self_collisions:false,..Config::default()},
                     &[(Point{x:500.0,y:400.0},0.0,120,0.0)],&[]).unwrap();
+                w.food.resize(w.config.food_count(),crate::world::Food {p:Point{x:100.0,y:100.0},life:1000.0,value:0.0,owner:-1,..Default::default()});
                 w.snakes[0].effect_kind=kind as u8;w.snakes[0].effect_ticks=ticks;
                 w.snakes[0].cooldown_ticks=cooldown;w.snakes[0].boost_ticks=burst;
                 let predictions:Vec<_>=(0..139).map(|offset|motion::forecast_state(&w,0,0.6,offset)).collect();
+                w.snakes[0].effect_ticks+=1; // Input above is post-decrement.
                 for (offset,state) in predictions.into_iter().enumerate() {
-                    if offset>0 {w.advance_items_and_effects();}
+                    w.step(&mut crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering {desired_angle:s.angle,rush:if offset==0 {0.6} else {0.0}}));
                     assert_eq!(modifiers(kind as u8,remaining_ticks(ticks,offset+1)).intangible,
                         modifiers(w.snakes[0].effect_kind,w.snakes[0].effect_ticks).intangible);
-                    w.advance_boost(0,offset==0);
                     let actual=w.snakes[0];
                     assert_eq!((state.boost_ticks,state.cooldown_ticks,state.len),
                         (actual.boost_ticks,actual.cooldown_ticks,actual.len),

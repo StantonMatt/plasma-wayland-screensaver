@@ -63,3 +63,11 @@ modifiers deliberately use the default hook: bite dispatch belongs to the body
 collision pass (`world/venom.rs`), after endpoint pickups, never to unchecked
 final AI steering. Immunity/stump state lives in the cold face array, keeping
 copied motion Snake records unchanged. Sever food is delayed in reserved storage.
+
+S4 adds Frost with section-5 weights 20/24/12/16/10 normalized over the five
+shipped kinds. `frost.rs` owns the instantaneous Nova and shared inclusive-radius
+freeze gate. Cold is a separate movement counter, so another held effect can
+coexist with freezing; the existing effect hooks remain responsible for that
+effect. Frozen speed/turn and burst cancellation are mirrored by motion and
+candidate forecasts. Thaw immunity, crack and breath use the reserved ABI-v3
+fields. No allocations, RNG draws at pickup or new ABI records are required.

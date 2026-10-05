@@ -196,3 +196,9 @@ and paired performance measurements against 0.12.0. ABI remains 3. Standard
 and reference pooled mean tick deltas are +0.018492 ms and +0.004474 ms (two
 alternating pairs; the standard pair spread is documented). Real shader
 captures and desktop process CPU/cadence require external validation.
+
+## S4 (0.16.0) Frost release slice
+
+See [S4_FROST_REPORT.md](S4_FROST_REPORT.md) for the v0.15.0 integration,
+production-resize observations, paired CPU results, rendering gates and CI
+verification. Earlier Frost timings against 0.13.0 do not certify this release.
