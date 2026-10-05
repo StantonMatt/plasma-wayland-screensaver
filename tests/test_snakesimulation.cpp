@@ -16,6 +16,33 @@ class SnakeSimulationTest final : public QObject
     Q_OBJECT
     static snakes_core_config defaults() { return {1280, 720, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, {0}}; }
 private Q_SLOTS:
+    void aggressionSettingsReachCoreWithoutRestartingWorld()
+    {
+        QTemporaryDir dir;
+        Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
+        settings.setSnakeLengthLimit(true);
+        settings.setSnakePowerUps(false);
+        settings.setSnakeWorldEvents(false);
+        SnakeSimulation sim(SnakeSimulation::configuration(settings, 1280, 720, 73));
+        sim.advance(1.0 / 30);
+        const auto generation = sim.frame().info.geometry_generation;
+        const auto tick = sim.frame().info.tick;
+        for (const int aggression : {0, 50, 100}) {
+            settings.setSnakeAggression(aggression);
+            sim.applySettings(settings);
+            const auto config = sim.config();
+            const uint32_t encoded = (config.reserved & SNAKES_CORE_AGGRESSION_MASK)
+                >> SNAKES_CORE_AGGRESSION_SHIFT;
+            QCOMPARE(encoded, aggression == SNAKES_CORE_DEFAULT_AGGRESSION
+                         ? 0u : uint32_t(aggression + 1));
+            QVERIFY(config.reserved & SNAKES_CORE_SNAKE_LENGTH_LIMIT);
+            QVERIFY(config.reserved & SNAKES_CORE_POWER_UPS_OFF);
+            QVERIFY(config.reserved & SNAKES_CORE_WORLD_EVENTS_OFF);
+            QCOMPARE(sim.frame().info.tick, tick);
+            QCOMPARE(sim.frame().info.geometry_generation, generation);
+        }
+    }
+
     void compactHistoryOutlivesPhaseHistoryAndResetsOnRestart()
     {
         SnakeSimulation sim(defaults());
@@ -230,12 +257,20 @@ private Q_SLOTS:
         settings.setSnakeWorldEvents(true);
         settings.setSnakePowerUps(false);
         QCOMPARE(SnakeSimulation::configuration(settings, 1280, 720, 1).power_ups, SNAKES_CORE_POWER_UPS_OFF);
+        settings.setSnakeLengthLimit(true);
+        QCOMPARE(SnakeSimulation::configuration(settings, 1280, 720, 1).reserved,
+                 SNAKES_CORE_POWER_UPS_OFF | SNAKES_CORE_SNAKE_LENGTH_LIMIT);
         QCOMPARE(config.width, 80); QCOMPARE(config.height, 16384);
         QCOMPARE(config.density, 90); QCOMPARE(config.trails, 80);
         QCOMPARE(config.scale, 150); QCOMPARE(config.speed, 125);
         QCOMPARE(config.intelligence, 99); QCOMPARE(config.seed, -1);
         QCOMPARE(config.palette_size, 6U); QCOMPARE(config.self_collisions, 1U);
         QCOMPARE(config.deadly_walls, 0U);
+        settings.setSnakeAggression(0);
+        const auto passive = SnakeSimulation::configuration(settings, 1280, 720, 1);
+        QCOMPARE((passive.reserved & SNAKES_CORE_AGGRESSION_MASK) >> SNAKES_CORE_AGGRESSION_SHIFT, 1U);
+        settings.setSnakeAggression(100);
+        QCOMPARE((SnakeSimulation::configuration(settings, 1280, 720, 1).reserved & SNAKES_CORE_AGGRESSION_MASK) >> SNAKES_CORE_AGGRESSION_SHIFT, 0U);
         SnakeSimulation sim(config);
         sim.applySettings(settings);
         QCOMPARE(sim.palette().first(), QColor("#fff1a8"));

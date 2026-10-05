@@ -10,9 +10,20 @@ impl Point {
         (self.x-other.x).powi(2)+(self.y-other.y).powi(2)
     }
 }
+#[inline]
 pub fn normalize_angle(mut angle: f64) -> f64 {
     // Preserve the JS sign at exactly +/- PI, but bound work for external inputs.
-    angle %= TAU;
+    // The remainder is exactly the input inside one turn (including -0).
+    // Most planner steps/headings take this path. Keep the original remainder
+    // for turn boundaries, arbitrary external values, infinities and NaNs.
+    let magnitude=angle.abs();
+    if !(magnitude<TAU) {
+        // Sterbenz subtraction is exact between one and two turns. Keep
+        // exact-turn inputs on remainder to preserve its signed-zero result.
+        if magnitude>TAU && magnitude<2.0*TAU {
+            if angle>0.0 {angle-=TAU;} else {angle+=TAU;}
+        } else {angle%=TAU;}
+    }
     if angle > PI {
         angle -= TAU;
     }
@@ -124,4 +135,32 @@ fn planar_point_segment(p: Point, a: Point, b: Point) -> f64 {
         x: a.x+x*t,
         y: a.y+y*t
     })
+}
+
+#[cfg(test)]
+mod angle_tests {
+    use super::*;
+    fn reference(mut angle:f64)->f64 {
+        angle%=TAU;
+        if angle>PI {angle-=TAU;}
+        if angle< -PI {angle+=TAU;}
+        angle
+    }
+    #[test]
+    fn fast_angle_normalization_is_bit_exact() {
+        for value in [0.0,-0.0,f64::MIN_POSITIVE,-f64::MIN_POSITIVE,PI,-PI,TAU,-TAU,
+            3.0*TAU,-3.0*TAU,f64::INFINITY,f64::NEG_INFINITY,f64::NAN] {
+            for v in [value,value.next_down(),value.next_up()] {
+                assert_eq!(normalize_angle(v).to_bits(),reference(v).to_bits(),"{v:?}");
+            }
+        }
+        let mut random=0x1234_5678_9abc_def0u64;
+        for _ in 0..1_000_000 {
+            random^=random<<13;random^=random>>7;random^=random<<17;
+            // Cover bounded planner headings and the complete f64 bit range.
+            for v in [(random as i64 as f64/i64::MAX as f64)*4.0*TAU,f64::from_bits(random)] {
+                assert_eq!(normalize_angle(v).to_bits(),reference(v).to_bits(),"{v:?}");
+            }
+        }
+    }
 }

@@ -545,8 +545,10 @@ pub(crate) fn allocation_fixture() -> World {
     let cap = w.config.maximum_world_segments();
     assert_eq!(cap, 6000);
     for i in 0..MAX_SNAKES {
-        let remainder = cap - MAX_SEGMENTS;
-        let len = if i == 0 {MAX_SEGMENTS} else {
+        // This is the released Classic cap fixture, not a giant fixture.
+        // Keep live bodies in every slot when the V2 storage ceiling rises.
+        let remainder = cap - 1600;
+        let len = if i == 0 {1600} else {
             remainder/(MAX_SNAKES-1)+usize::from(i-1<remainder%(MAX_SNAKES-1))
         };
         w.snakes[i].radius = w.snakes[i].base_radius*1.25;
@@ -560,6 +562,7 @@ pub(crate) fn allocation_fixture() -> World {
 #[test] fn cap_fixture_is_finite() {
     let w = allocation_fixture();
     assert_eq!(w.stats().total_segments, 6000);
+    assert!(w.snakes().all(|s|s.alive && !s.segments.is_empty()));
 }
 #[path = "golden.rs"] mod golden;
 #[test] fn density_shrink_and_grow_do_not_reuse_generation() {
@@ -706,4 +709,88 @@ fn passive_head_record_keeps_multiple_lethal_owners_and_collision_precedence() {
     let e=w.collision_events().find(|e|e.victim==0).unwrap();
     assert_eq!(e.reason,DeathReason::Head,"mechanics head precedence overrides wall");
     assert_eq!(e.owner_mask,6);assert_eq!(e.owner_lengths[1],32);assert_eq!(e.owner_lengths[2],40);
+}
+
+#[test]
+fn v2_uncapped_growth_floor_and_optional_physical_limit() {
+    let mut w=World::new(Config {width:7920.0,height:1440.0,scale:200.0,
+        rules:RuleSet::V2,..Config::default()}).unwrap();
+    let mut s=w.snakes[0];s.len=5999;s.radius=18.0;
+    assert_eq!(w.config.maximum_world_segments(),6000);
+    assert_eq!(w.maximum_snake_segments(&s),6000);
+    w.growth_slots=1;assert!(w.growth_allowed(&s));
+    s.len=6000;assert!(!w.growth_allowed(&s));
+    w.growth_slots=0;s.len=79;assert!(w.growth_allowed(&s));
+    s.len=80;assert!(!w.growth_allowed(&s));
+    w.config.snake_length_limit=true;w.growth_slots=6000;
+    let cap=w.maximum_snake_segments(&s);
+    assert_eq!(cap,102);
+    s.len=cap;assert!(!w.growth_allowed(&s));
+    assert!((cap-1) as f64*s.radius*1.18<=w.config.height*1.5);
+    w.config.rules=RuleSet::Classic;
+    assert_eq!(w.maximum_snake_segments(&s),1123);
+}
+#[test]
+fn v2_speed_floor_preserves_short_and_classic_motion() {
+    let mut w=World::new(Config {rules:RuleSet::V2,..Config::default()}).unwrap();
+    let mut s=w.snakes[0];s.growth=0.0;s.rush=0.0;s.traits.speed_bias=1.0;
+    let full=52.0+w.config.speed*0.66;
+    for len in [24,80,1600,6000] {s.len=len;
+        close(w.speed(&s),full/(1.0+(len.saturating_sub(24) as f64)*0.004).min(2.5));
+    }
+    s.len=6000;w.config.rules=RuleSet::Classic;
+    close(w.speed(&s),full/(1.0+(6000-24) as f64*0.004));
+}
+#[test]
+fn giant_trail_is_bounded_and_keeps_full_collision_body() {
+    let mut w=World::new(Config {width:16384.0,height:16384.0,speed:0.0,
+        rules:RuleSet::V2,deadly_walls:false,..Config::default()}).unwrap();
+    only(&mut w,1);
+    line(&mut w,0,Point{x:8000.0,y:8000.0},0.0,6000);
+    let capacity=w.trail_capacity;let mut max_samples=0;
+    for tick in 0..54000 {
+        w.snakes[0].desired=tick as f64*0.001;
+        w.move_snake(0,STEP_SECONDS);
+        max_samples=max_samples.max(w.snakes[0].trail_len);
+        assert!(w.snakes[0].trail_len<capacity);
+        assert_eq!(w.snake(0).unwrap().segments.len(),6000);
+        assert!(w.segments[..6000].iter().all(|p|p.current.x.is_finite() && p.current.y.is_finite()));
+    }
+    assert!(max_samples<2*6000+32,"{max_samples}");
+}
+
+#[test]
+fn optional_limit_stops_real_growth_with_radius_maturation() {
+    let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,
+        snake_length_limit:true,deadly_walls:false,..Config::default()},
+        &[(Point{x:500.0,y:400.0},0.0,10,0.0)],&[]).unwrap();
+    w.snakes[0].growth=1e6;w.growth_slots=6000;
+    for _ in 0..5000 {w.move_snake(0,STEP_SECONDS);}
+    let s=w.snakes[0];
+    assert!(s.len>100);
+    assert!((s.len-1) as f64*s.radius*1.18<=w.config.height*1.5);
+    assert!(!w.growth_allowed(&s));
+    assert!(s.blocked);
+}
+
+#[test]
+fn cached_turn_radius_matches_original_arithmetic_for_every_length() {
+    prepare_turn_radius_factors();
+    for len in 0..=MAX_SEGMENTS {
+        for radius in [0.0,1.0,1.3,31.104,2048.0] {
+            let s=Snake {len,radius,..Default::default()};
+            let expected=radius*(3.15+((len as f64/20.0).max(1.0).ln()/25.0_f64.ln()).clamp(0.0,1.0)*1.35);
+            assert_eq!(World::minimum_turn_radius(&s).to_bits(),expected.to_bits(),"len={len} radius={radius}");
+        }
+    }
+}
+
+#[test]
+fn cached_growth_cost_matches_original_arithmetic_for_every_length() {
+    prepare_turn_radius_factors();
+    for len in 0..=MAX_SEGMENTS {
+        let s=Snake {len,..Default::default()};
+        let expected=1.0+(len.saturating_sub(120) as f64/260.0).powf(0.85);
+        assert_eq!(World::growth_cost(&s).to_bits(),expected.to_bits(),"len={len}");
+    }
 }

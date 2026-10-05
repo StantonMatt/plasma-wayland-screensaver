@@ -14,7 +14,23 @@ use crate::{ Point, WorldRng, normalize_angle };
 use crate::math::Geometry;
 use crate::controller::{ Controller, Steering };
 pub const MAX_SNAKES: usize  =  14;
-pub const MAX_SEGMENTS: usize  =  1600;
+pub const MAX_SEGMENTS: usize  =  6000;
+const EXACT_TRAIL_SEGMENTS:usize=1600;
+// Length-only turning factors are immutable across worlds and forecasts.
+// Construction initializes both 6001-entry arrays once (~94 KiB); queries
+// retain the original arithmetic without repeated log/powf or allocation.
+struct LengthFactors {turn:Box<[f64]>,growth:Box<[f64]>}
+static LENGTH_FACTORS:std::sync::OnceLock<LengthFactors>=std::sync::OnceLock::new();
+fn prepare_turn_radius_factors() {
+    LENGTH_FACTORS.get_or_init(||LengthFactors {
+        turn:(0..=MAX_SEGMENTS).map(|len|
+            3.15+((len as f64/20.0).max(1.0).ln()/25.0_f64.ln()).clamp(0.0,1.0)*1.35
+        ).collect::<Vec<_>>().into_boxed_slice(),
+        growth:(0..=MAX_SEGMENTS).map(|len|
+            1.0+(len.saturating_sub(120) as f64/260.0).powf(0.85)
+        ).collect::<Vec<_>>().into_boxed_slice(),
+    });
+}
 pub const MAX_FOOD: usize  =  480;
 pub const STEP_SECONDS: f64  =  1.0/30.0;
 /// Rust callers keep Classic by default; the C ABI defaults to V2.
@@ -61,6 +77,9 @@ pub struct Config {
     pub rules: RuleSet,
     pub power_ups: bool,
     pub world_events: bool,
+    pub snake_length_limit: bool,
+    /// V2 willingness to contest prizes and commit to checked attacks (0..100).
+    pub aggression: u8,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -79,6 +98,8 @@ impl Default for Config {
             rules: RuleSet::Classic,
             power_ups: true,
             world_events: true,
+            snake_length_limit: false,
+            aggression: 100,
         }
     }
 }
@@ -96,6 +117,7 @@ impl Config {
         if [self.density, self.trails, self.scale, self.speed, self.intelligence].iter().any(|v|!v.is_finite() || !(0.0..=1000.0).contains(v)) {
             return Err(ConfigError::InvalidControl);
         }
+        if self.aggression>100 {return Err(ConfigError::InvalidControl);}
         if self.palette_size==0 || self.palette_size>4096 {
             return Err(ConfigError::InvalidPalette);
         }
@@ -115,7 +137,7 @@ impl Config {
     }
     pub fn maximum_world_segments(self) -> usize {
         let radius = self.base_radius()*1.14*1.25;
-        (self.width*self.height*0.22/(radius*radius*2.35).max(1.0)).floor().clamp((self.snake_count()*80) as f64, 6000.0).round() as usize
+        (self.width*self.height*(if self.rules==RuleSet::V2 {0.85} else {0.22})/(radius*radius*2.35).max(1.0)).floor().clamp((self.snake_count()*80) as f64, 6000.0).round() as usize
     }
     fn geometry(self) -> Geometry {
         Geometry {
@@ -201,6 +223,7 @@ pub(crate) struct Snake {
     pub effect_ticks: u16,
     trail_start: usize,
     trail_len: usize,
+    trail_decimated: bool,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct SnakeView<'a> {
@@ -344,6 +367,7 @@ pub struct World {
 impl World {
     pub fn new(config: Config) -> Result<Self, ConfigError> {
         config.validate()?;
+        prepare_turn_radius_factors();
         let mut world = Self {
             config,
             faces:[FaceState::default();MAX_SNAKES],
@@ -461,13 +485,13 @@ impl World {
         stats
     }
     fn prepare_storage(&mut self) {
-        // One trail sample per 30 Hz tick. Minimum possible speed is the
-        // lowest bias at maximum length, without rush/growth boost. Include
-        // birth samples, the four-point tail reserve, and pruning slack.
+        // Exact tick history only through 1600; longer trails decimate by
+        // distance. Keep the legacy capacity plus the giant distance bound.
+        // Include birth samples, four-point tail reserve and pruning slack.
         let radius = self.snakes.iter().fold(self.config.base_radius()*1.14*1.25, |r, s|r.max(s.base_radius*1.25));
-        let min_step = (52.0+self.config.speed*0.66)*0.86/(1.0+(MAX_SEGMENTS-24) as f64*0.004)*STEP_SECONDS;
+        let min_step = (52.0+self.config.speed*0.66)*0.86/(1.0+(EXACT_TRAIL_SEGMENTS-24) as f64*0.004)*STEP_SECONDS;
         let retained = self.snakes.iter().map(|s|s.trail_len+2).max().unwrap_or(2);
-        let capacity = ((radius*1.18*(MAX_SEGMENTS+6) as f64/min_step).ceil() as usize+MAX_SEGMENTS+16).max(retained).next_power_of_two();
+        let capacity = ((radius*1.18*(EXACT_TRAIL_SEGMENTS+6) as f64/min_step).ceil() as usize+EXACT_TRAIL_SEGMENTS+16).max(2*(MAX_SEGMENTS+6)+16).max(retained).next_power_of_two();
         if capacity!=self.trail_capacity {
             let mut trails = vec![TrailPoint::default();
             capacity*self.snakes.len()];
@@ -725,6 +749,7 @@ impl World {
         let s = self.snakes[i];
         self.snakes[i].trail_start = 0;
         self.snakes[i].trail_len = 0;
+        self.snakes[i].trail_decimated = false;
         if s.len==0 {
             return;
         }
@@ -787,6 +812,24 @@ impl World {
         }
     }
     fn append_head_trail(&mut self, i: usize) {
+        // Preserve every tick sample through 1600. On first entering the giant
+        // path compact old history once, in place, keeping arc coordinates and
+        // both endpoints. Thereafter the last sample remains the exact head;
+        // seal it only after half a body spacing of travel. Collision bodies
+        // still contain every segment; this is trail storage, not collision LOD.
+        if self.snakes[i].len>EXACT_TRAIL_SEGMENTS && !self.snakes[i].trail_decimated {
+            let spacing=self.snakes[i].radius*1.18*0.5;
+            let old_len=self.snakes[i].trail_len;
+            let mut kept=1;
+            for j in 1..old_len {
+                let point=self.trail_point(i,j);
+                if j+1==old_len || point.distance-self.trail_point(i,kept-1).distance>=spacing {
+                    let index=self.trail_index(i,kept);self.trails[index]=point;kept+=1;
+                }
+            }
+            self.snakes[i].trail_len=kept;
+            self.snakes[i].trail_decimated=true;
+        }
         let s = self.snakes[i];
         let latest = self.trail_point(i, s.trail_len-1);
         let g = self.config.geometry();
@@ -802,10 +845,11 @@ impl World {
         };
         let travel = p.distance2(latest.p).sqrt();
         if travel>0.0001 {
-            self.push_trail(i, TrailPoint {
-                p,
-                distance: latest.distance+travel
-            });
+            let point=TrailPoint {p,distance:latest.distance+travel};
+            if s.trail_decimated && s.trail_len>2
+                && latest.distance-self.trail_point(i,s.trail_len-2).distance<s.radius*1.18*0.5 {
+                let index=self.trail_index(i,s.trail_len-1);self.trails[index]=point;
+            } else {self.push_trail(i,point);}
         }
     }
     fn place_segments(&mut self, i: usize) {
@@ -836,10 +880,22 @@ impl World {
         }
     }
     fn growth_cost(s: &Snake) -> f64 {
-        1.0+((s.len.saturating_sub(120)) as f64/260.0).powf(0.85)
+        LENGTH_FACTORS.get().expect("World::new initializes length factors").growth[s.len]
     }
     fn maximum_snake_segments(&self, s: &Snake) -> usize {
-        (self.config.width*self.config.height*0.075/(s.radius*s.radius*2.35).max(1.0)).floor().clamp(400.0, 1600.0).round() as usize
+        if self.config.rules==RuleSet::Classic {
+            (self.config.width*self.config.height*0.075/(s.radius*s.radius*2.35).max(1.0)).floor().clamp(400.0, 1600.0).round() as usize
+        } else if self.config.snake_length_limit {
+            (self.config.height*1.5/(s.radius*1.18)+1.0).floor().clamp(2.0,MAX_SEGMENTS as f64) as usize
+        } else {MAX_SEGMENTS}
+    }
+    fn growth_allowed(&self,s:&Snake)->bool {
+        if s.len>=self.maximum_snake_segments(s) {return false;}
+        if self.config.rules==RuleSet::V2 && self.config.snake_length_limit {
+            let mut grown=*s;grown.len+=1;Self::update_radius(&mut grown);
+            if grown.len>self.maximum_snake_segments(&grown) {return false;}
+        }
+        self.growth_slots>0 || (self.config.rules==RuleSet::V2 && s.len<80)
     }
     fn speed(&self, s: &Snake) -> f64 {
         let boost = if !s.blocked && s.growth>=Self::growth_cost(s) {
@@ -847,11 +903,14 @@ impl World {
         } else {
             0.0
         };
-        (52.0+self.config.speed*0.66)*s.traits.speed_bias*(1.0+s.rush+boost)/(1.0+s.len.saturating_sub(24) as f64*0.004)
+        let penalty=1.0+s.len.saturating_sub(24) as f64*0.004;
+        // Apply the floor only to the length penalty, before effects/nutrition.
+        let penalty=if self.config.rules==RuleSet::V2 {penalty.min(1.0/0.40)} else {penalty};
+        (52.0+self.config.speed*0.66)*s.traits.speed_bias*(1.0+s.rush+boost)/penalty
             * effects::modifiers(s.effect_kind,s.effect_ticks).speed
     }
     fn minimum_turn_radius(s: &Snake) -> f64 {
-        s.radius*(3.15+((s.len as f64/20.0).max(1.0).ln()/25.0_f64.ln()).clamp(0.0, 1.0)*1.35)
+        s.radius*LENGTH_FACTORS.get().expect("World::new initializes length factors").turn[s.len]
     }
     fn turn_rate(&self, s: &Snake) -> f64 {
         (2.05+(self.config.intelligence/100.0).clamp(0.0, 1.0)*1.8+20.0/(s.len.max(8) as f64)).min(self.speed(s)/Self::minimum_turn_radius(s).max(1.0))
@@ -861,7 +920,7 @@ impl World {
     }
     fn move_snake(&mut self, i: usize, seconds: f64) {
         let cost = Self::growth_cost(&self.snakes[i]);
-        let allowed = self.snakes[i].len<self.maximum_snake_segments(&self.snakes[i]) && self.growth_slots>0;
+        let allowed = self.growth_allowed(&self.snakes[i]);
         self.snakes[i].blocked = !allowed;
         let base = i*MAX_SEGMENTS;
         for j in 0..self.snakes[i].len {

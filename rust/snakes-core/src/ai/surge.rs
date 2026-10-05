@@ -11,7 +11,7 @@ pub(super) fn active(w: &World, s: SnakeView<'_>) -> bool {
 /// this borrowed view cannot affect the world's traits or scripted controls.
 #[inline]
 pub(super) fn planner_view<'a>(w: &World, mut s: SnakeView<'a>) -> SnakeView<'a> {
-    if active(w, s) { s.traits.aggression = s.traits.aggression.max(0.85); }
+    if active(w, s) { s.traits.aggression = s.traits.aggression.max(0.85*(2.0*aggression::level(w)).min(1.0)); }
     s
 }
 
@@ -40,7 +40,7 @@ mod tests {
     use std::f64::consts::{PI, FRAC_PI_2};
 
     fn duel(surged: bool) -> World {
-        let mut w = World::diagnostic_arena(Config { width: 1600.0, height: 1000.0,
+        let mut w = World::diagnostic_arena(Config {aggression:50, width: 1600.0, height: 1000.0,
             density: 0.0, trails: 0.0, scale: 70.0, seed: 73, intelligence: 100.0,
             rules: RuleSet::V2, self_collisions: true, deadly_walls: true,
             ..Config::default() }, &[

@@ -111,7 +111,7 @@ fn emit(w: &mut World, out: &mut impl Write) -> io::Result<()> {
 pub fn run(input: &str, out: &mut impl Write) -> io::Result<()> {
     let mut r = Input(input.split_whitespace());
     assert_eq!(r.n::<u32>(), 1, "unsupported numeric protocol");
-    let config = Config { world_events:true, power_ups:true, rules:RuleSet::Classic, width:r.n(), height:r.n(), seed:r.n(), density:r.n(), trails:r.n(), scale:r.n(), speed:r.n(), intelligence:r.n(), palette_size:r.n(), self_collisions:r.flag(), deadly_walls:r.flag() };
+    let config = Config { aggression:75, snake_length_limit:false, world_events:true, power_ups:true, rules:RuleSet::Classic, width:r.n(), height:r.n(), seed:r.n(), density:r.n(), trails:r.n(), scale:r.n(), speed:r.n(), intelligence:r.n(), palette_size:r.n(), self_collisions:r.flag(), deadly_walls:r.flag() };
     let ticks: u64 = r.n();
     let dt: f64 = r.n();
     let collision_only = r.flag();

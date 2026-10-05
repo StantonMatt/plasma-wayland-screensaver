@@ -2344,3 +2344,92 @@ fn fallback_corpse_never_keeps_a_bright_bite_stump() {
     assert_eq!(COUNT.with(|c|c.replace(None)).unwrap(),0);
     assert!(out[..fading].iter().all(|v|v.color.alpha!=220));
 }
+
+#[path="support/giant_render_fixture.rs"] mod giant_render_fixture;
+#[test]
+fn giant_6000_visible_both_paths_and_growth_are_allocation_free() {
+    let (mut f,mut s,b)=giant_render_fixture::fixture(false);
+    let pal=giant_render_fixture::palette();let p=RenderParams{interpolation:1.0,..params()};
+    assert_eq!(b[..6000].iter().filter(|v|v.x>=0.0 && v.x<3440.0 && v.y>=0.0 && v.y<1440.0).count(),6000);
+    let mut shader=RenderHandle::new();let mut classic=RenderHandle::new();
+    let mut gpu=vec![ShaderRenderVertex::default();150000];let mut out=vec![RenderVertex::default();500000];
+    COUNT.with(|c|c.set(Some(0)));
+    let mut last=(0,0);
+    for count in (1600..6000).step_by(64).chain([6000]) {
+        s[0].segment_count=count;f.tick+=1;
+        last=(shader.build_shader(&f,&s,&b,&[],&[],&pal,&p,&mut gpu).vertex_count,
+              classic.build(&f,&s,&b,&[],&[],&pal,&p,&mut out).vertex_count);
+    }
+    assert_eq!(COUNT.with(|c|c.replace(None)).unwrap(),0);
+    assert_eq!(last,(41280,105366));
+    assert!(gpu[..last.0].iter().all(|v|v.x.is_finite() && v.y.is_finite()));
+    assert!(out[..last.1].iter().all(|v|v.x.is_finite() && v.y.is_finite()));
+    assert_eq!(shader_fingerprint(&gpu[..last.0]),0xf131030cb72994b0);
+    assert_eq!(fingerprint(&out[..last.1]),0x58000893da28c848);
+}
+
+#[test]
+fn giant_2999_segment_venom_orphan_both_paths_keep_cap_and_source_indices() {
+    for calm in [false,true] {
+        let (mut f,mut s,b)=giant_render_fixture::fixture(false);s.truncate(1);
+        let pal=giant_render_fixture::palette();let mut p=RenderParams{interpolation:1.0,..params()};
+        let mut shader=RenderHandle::new();let mut classic=RenderHandle::new();
+        shader.reduced_motion=calm;classic.reduced_motion=calm;
+        let mut gpu=vec![ShaderRenderVertex::default();150000];let mut out=vec![RenderVertex::default();500000];
+        shader.build_shader(&f,&s,&b,&[],&[],&pal,&p,&mut gpu);
+        classic.build(&f,&s,&b,&[],&[],&pal,&p,&mut out);
+        s[0].segment_count=3001;s[0].alive=0; // Isolate the orphan geometry after observing its full trail.
+        f.tick+=1;f.simulation_time+=1.0/30.0;p.presentation_time=f.simulation_time;
+        let event=EventRecord{tick:f.tick,kind:1,snake_id:0,generation:1,cut_index:3001,duration_ticks:33,
+            release_tick:f.tick+33,..Default::default()};
+        COUNT.with(|c|c.set(Some(0)));
+        let a=shader.build_shader(&f,&s,&b,&[],&[event],&pal,&p,&mut gpu).vertex_count;
+        let c=classic.build(&f,&s,&b,&[],&[event],&pal,&p,&mut out).vertex_count;
+        assert_eq!(COUNT.with(|c|c.replace(None)).unwrap(),0);
+        let orphan:Vec<_>=gpu[..a].iter().filter(|v|v.params[2]&128!=0 || v.params[0]==25).collect();
+        assert!(!orphan.is_empty() && orphan.len()<=1200);
+        assert_eq!(orphan.iter().filter(|v|v.params[0]==25).count(),6);
+        assert!(orphan.iter().any(|v|v.params[2]&128!=0 && v.along==2998.0));
+        assert!(orphan.iter().any(|v|v.params[2]&128!=0 && v.along==0.0));
+        assert!(c>0 && c<=1200,"classic orphan: {c}");
+        if calm {
+            let mut error=0.0_f64;
+            for edge in gpu[..a].chunks_exact(6).filter(|e|e[0].params[2]&128!=0) {
+                let from=2998-edge[0].along as usize;let to=2998-edge[2].along as usize;
+                let start=b[3001+from];let end=b[3001+to];
+                let dx=(end.x-start.x) as f64;let dy=(end.y-start.y) as f64;let length=dx*dx+dy*dy;
+                for point in &b[3001+from..=3001+to] {
+                    let x=(point.x-start.x) as f64;let y=(point.y-start.y) as f64;
+                    let t=if length>0.0 {((x*dx+y*dy)/length).clamp(0.0,1.0)} else {0.0};
+                    error=error.max((x-t*dx).hypot(y-t*dy));
+                }
+            }
+            let mut uniform_error=0.0_f64;
+            for i in 0..100 {
+                let from=i*2998/100;let to=(i+1)*2998/100;
+                let start=b[3001+from];let end=b[3001+to];
+                let dx=(end.x-start.x) as f64;let dy=(end.y-start.y) as f64;let length=dx*dx+dy*dy;
+                for point in &b[3001+from..=3001+to] {
+                    let x=(point.x-start.x) as f64;let y=(point.y-start.y) as f64;
+                    let t=if length>0.0 {((x*dx+y*dy)/length).clamp(0.0,1.0)} else {0.0};
+                    uniform_error=uniform_error.max((x-t*dx).hypot(y-t*dy));
+                }
+            }
+            println!("2999-segment orphan: shader={a}, classic={c}, chord_error_px={uniform_error:.3}->{error:.3}");
+            assert!(error<=12.0 && error<uniform_error*0.1,
+                "Long orphan must preserve the tight spiral turns within its existing vertex cap");
+        }
+        COUNT.with(|c|c.set(Some(0)));
+        for sample in 0..32 {
+            p.scale_x=if sample%2==0 {1.0} else {0.75};
+            let a=shader.build_shader(&f,&s,&b,&[],&[event],&pal,&p,&mut gpu).vertex_count;
+            let c=classic.build(&f,&s,&b,&[],&[event],&pal,&p,&mut out).vertex_count;
+            assert!(a<=1200 && c<=1200);
+        }
+        assert_eq!(COUNT.with(|c|c.replace(None)).unwrap(),0);
+        f.tick+=60;f.simulation_time+=2.0;
+        if !calm {p.presentation_time=f.simulation_time;}
+        assert_eq!(shader.build_shader(&f,&s,&b,&[],&[event],&pal,&p,&mut gpu).vertex_count,0);
+        assert_eq!(classic.build(&f,&s,&b,&[],&[event],&pal,&p,&mut out).vertex_count,0);
+    }
+}

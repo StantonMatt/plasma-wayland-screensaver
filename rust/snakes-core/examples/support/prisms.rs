@@ -21,6 +21,16 @@ mod tests {
     }
     impl ScoreController for Straight {}
     #[test]
+    fn replacement_life_cannot_inherit_prize_orbit_progress() {
+        let w=World::diagnostic_arena(Config {rules:RuleSet::V2,..Default::default()},
+            &[(Point{x:400.0,y:300.0},0.0,24,0.9)],&[]).unwrap();
+        let mut p=Prisms::default();p.generation[0]=w.snake(0).unwrap().generation+1;
+        let mut record=Prize::default();record.orbit_turn[0]=0.3;p.records.push(record);
+        p.after(&w,&Straight,&[Tactics::default();MAX_SNAKES]);
+        assert_eq!(p.records[0].orbit_turn[0],0.0);
+        assert!(!p.records[0].circled);
+    }
+    #[test]
     fn near_prize_kills_require_an_opponent_owner() {
         for opponent in [false,true] {
             let p=Point{x:if opponent {400.0} else {799.0},y:300.0};
@@ -55,6 +65,12 @@ impl Prisms {
         self.prize=w.foods().find(|f|matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed)).map(|f|f.position);
     }
     pub fn after<C:ScoreController>(&mut self,w:&World,c:&C,tactics:&[Tactics;MAX_SNAKES]) {
+        for s in w.snakes().filter(|s|s.alive) {
+            let id=s.id as usize;
+            if self.generation[id]!=s.generation {
+                for record in &mut self.records {record.orbit_turn[id]=0.0;}
+            }
+        }
         for f in w.foods().filter(|f|matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed)) {
             if !self.records.iter().any(|r|r.id==f.id) {
                 self.records.push(Prize {id:f.id,ripe:w.tick()+f.motion_ticks as u64,..Default::default()});
@@ -66,7 +82,7 @@ impl Prisms {
                 record.contenders=record.contenders.max(contenders);
                 for s in w.snakes().filter(|s|s.alive) {
                     let id=s.id as usize;
-                    if c.ai().is_some_and(|ai|ai.vulturing(id)) && self.active[id] && self.generation[id]==s.generation {
+                    if c.ai().is_some_and(|ai|ai.debug(id).is_some_and(|d|d.generation==s.generation) && ai.vulturing(id)) && self.active[id] && self.generation[id]==s.generation {
                         record.orbit_turn[id]+=normalize_angle(s.angle-self.angle[id]).abs();
                         // At least twenty degrees of intentional orbit, rather
                         // than a single boolean frame masquerading as circling.
@@ -83,7 +99,7 @@ impl Prisms {
         }
         for id in 0..MAX_SNAKES {
             let snake=w.snake(id);
-            let v=snake.is_some_and(|s|s.alive) && c.ai().is_some_and(|ai|ai.vulturing(id));
+            let v=snake.is_some_and(|s|s.alive && c.ai().is_some_and(|ai|ai.debug(id).is_some_and(|d|d.generation==s.generation) && ai.vulturing(id)));
             let angle=snake.map_or(0.0,|s|s.angle);
             let generation=snake.map_or(0,|s|s.generation);
             if v {

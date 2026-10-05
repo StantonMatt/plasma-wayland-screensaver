@@ -2,7 +2,7 @@
 use super::*;
 use crate::{Config, Segment, Traits};
 fn arena(wrap:bool) -> World {
-    let mut w=World::new(Config {width:1200.0,height:800.0,scale:70.0,density:0.0,
+    let mut w=World::new(Config {aggression:50,width:1200.0,height:800.0,scale:70.0,density:0.0,
         self_collisions:true,deadly_walls:!wrap,intelligence:100.0,seed:73,..Config::default()}).unwrap();
     for s in &mut w.snakes {s.alive=false;s.len=0;s.respawn=1000.0;}
     w.food.clear();w
@@ -216,11 +216,17 @@ fn area_cache_is_invalidated_on_world_rebuild() {
     let p=Point{x:100.0,y:100.0};
     let open=grid.area(p,u16::MAX);
     assert_eq!(open,grid.area(p,u16::MAX));
-    // A closed square in cell occupancy changes the same query's answer.
-    grid.rebuild(&w);
+    // Rebuild from a body around the starting cell. Editing only occupied
+    // bits would bypass the word metadata and sparse-clear bookkeeping.
     let key=grid.key(p);
-    for (x,y) in [(1,0),(-1,0),(0,1),(0,-1)] {if let Some(k)=grid.offset(key,x,y) {grid.occupied[k]=1;}}
+    line(&mut w,0,p,0.0,5);
+    for (j,(x,y)) in [(1,0),(-1,0),(0,1),(0,-1)].into_iter().enumerate() {
+        let point=grid.center(grid.offset(key,x,y).unwrap());
+        w.segments[j+1]=Segment {current:point,previous:point};
+    }
+    grid.rebuild(&w);
     assert_eq!(grid.area(p,u16::MAX),(1,false));
+    w.snakes[0].alive=false;w.snakes[0].len=0;
     w.tick+=1;grid.rebuild(&w);
     assert_eq!(grid.area(p,u16::MAX),open);
 }
@@ -275,8 +281,29 @@ fn sustained_turn_escape_interrupts_tail_recovery() {
 }
 
 #[test]
+fn suspended_food_cannot_overwrite_escape_to_recovery_goal() {
+    let mut w=arena(false);w.reconfigure(Config {rules:crate::RuleSet::V2,..w.config()}).unwrap();
+    line(&mut w,0,Point{x:500.0,y:400.0},0.0,24);
+    food(&mut w,Point{x:500.0,y:650.0});
+    let mut ai=AiController::new();ai.prepare(&w);let s=w.snake(0).unwrap();
+    ai.states[0]=State {generation:s.generation,last_angle:s.angle,desired:2.5,turn_accum:3.3,
+        turn_until:u64::MAX,escape_until:45,suspended_target:100000,
+        goal:s.segments.last().unwrap().current,..Default::default()};
+    ai.steer(&w,s);
+    assert_eq!(ai.states[0].escape_until,0);
+    assert_eq!(ai.states[0].orbit_until,36);
+    assert_eq!(ai.states[0].target,0);
+    assert_eq!(ai.states[0].suspended_target,100000);
+    assert_eq!(ai.states[0].goal,Point{x:800.0,y:400.0});
+    for tick in 1..36 {w.tick=tick;ai.steer(&w,w.snake(0).unwrap());
+        assert_eq!(ai.states[0].goal,Point{x:800.0,y:400.0});
+        assert_eq!(ai.states[0].suspended_target,100000);
+    }
+}
+
+#[test]
 fn diagnostics_and_profiling_do_not_change_decisions() {
-    let cfg=Config {width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,deadly_walls:true,self_collisions:true,seed:20260814,..Config::default()};
+    let cfg=Config {aggression:50,width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,deadly_walls:true,self_collisions:true,seed:20260814,..Config::default()};
     let mut a=World::new(cfg).unwrap();let mut b=a.diagnostic_snapshot();
     let mut plain=AiController::new();let mut observed=AiController::new();
     observed.enable_diagnostics();observed.enable_profile();
@@ -512,7 +539,7 @@ fn sustained_turn_recovery_cancels_the_hunt_and_its_rush() {
 
 #[test]
 fn sluggish_giants_wait_for_a_reachable_cutoff_instead_of_chasing_fast_rivals() {
-    let w=World::diagnostic_arena(Config {width:3440.0,height:1440.0,deadly_walls:false,density:0.0,
+    let w=World::diagnostic_arena(Config {aggression:50,width:3440.0,height:1440.0,deadly_walls:false,density:0.0,
         ..Config::default()},&[(Point{x:3200.0,y:400.0},0.0,1600,1.0),
         (Point{x:3200.0,y:600.0},0.0,340,1.0)],&[]).unwrap();
     let mut ai=AiController::new();ai.prepare(&w);
@@ -523,7 +550,7 @@ fn sluggish_giants_wait_for_a_reachable_cutoff_instead_of_chasing_fast_rivals() 
 
 #[test]
 fn staged_cutoff_uses_the_discrete_stage_speed_and_continues_after_the_switch() {
-    let mut w=World::diagnostic_arena(Config {width:1600.0,height:1000.0,density:0.0,deadly_walls:true,self_collisions:true,..Config::default()},
+    let mut w=World::diagnostic_arena(Config {aggression:50,width:1600.0,height:1000.0,density:0.0,deadly_walls:true,self_collisions:true,..Config::default()},
         &[(Point{x:700.0,y:400.0},0.0,72,1.0),(Point{x:750.0,y:700.0},0.0,24,0.6)],&[]).unwrap();
     let attack=Attack {valid:true,side:1,prey:2,prey_generation:w.snake(1).unwrap().generation,point:Point{x:750.0,y:700.0},start:0,turn_at:8,end:48,approach:0.4,crossing:1.3,burst:1.0,crossing_rush:0.15,..Attack::default()};
     let mut ai=AiController::new();ai.prepare(&w);
@@ -542,7 +569,7 @@ fn staged_cutoff_uses_the_discrete_stage_speed_and_continues_after_the_switch() 
 
 #[test]
 fn cutoff_library_rejects_unreachable_geometry_and_keeps_at_most_two_paths() {
-    let w=World::diagnostic_arena(Config {width:3440.0,height:1440.0,density:0.0,..Config::default()},
+    let w=World::diagnostic_arena(Config {aggression:50,width:3440.0,height:1440.0,density:0.0,..Config::default()},
         &[(Point{x:800.0,y:400.0},0.0,400,1.0),(Point{x:1400.0,y:650.0},0.0,24,0.6)],&[]).unwrap();
     let mut ai=AiController::new();ai.prepare(&w);
     assert!(ai.cutoffs(&w,w.snake(0).unwrap(),State {prey:2,..State::default()}).iter().all(|a|!a.valid));
@@ -567,7 +594,7 @@ fn spiral_tracks_radius_without_the_old_inward_equilibrium_and_obeys_pitch_curva
 
 #[test]
 fn pocket_rejects_open_space_and_releases_by_actual_travel() {
-    let w=World::diagnostic_arena(Config {width:1600.0,height:1000.0,density:0.0,deadly_walls:true,..Config::default()},
+    let w=World::diagnostic_arena(Config {aggression:50,width:1600.0,height:1000.0,density:0.0,deadly_walls:true,..Config::default()},
         &[(Point{x:900.0,y:500.0},std::f64::consts::FRAC_PI_2,130,1.0),
           (Point{x:750.0,y:500.0},0.0,24,0.6)],&[]).unwrap();
     let mut ai=AiController::new();ai.prepare(&w);
@@ -594,7 +621,7 @@ fn opponent_response_delay_never_skips_immediate_body_or_wall_safety() {
 #[test]
 fn existing_wall_u_can_enter_one_legal_pitch_inside_its_arms() {
     let center=Point{x:875.0,y:195.0};let radius=180.0;let theta=-0.4;
-    let mut w=World::diagnostic_arena(Config {width:1600.0,height:1000.0,density:0.0,deadly_walls:true,intelligence:100.0,self_collisions:true,..Config::default()},
+    let mut w=World::diagnostic_arena(Config {aggression:50,width:1600.0,height:1000.0,density:0.0,deadly_walls:true,intelligence:100.0,self_collisions:true,..Config::default()},
         &[(Point{x:1000.0,y:100.0},0.0,180,1.0),(center,-std::f64::consts::FRAC_PI_2,24,0.6)],&[]).unwrap();
     let mut body=Vec::new();
     for j in 0usize..180 {
@@ -616,7 +643,7 @@ fn existing_wall_u_can_enter_one_legal_pitch_inside_its_arms() {
 
 #[test]
 fn pending_response_survives_quota_phase_and_recovery_returns() {
-    let mut w=World::new(Config {width:1200.0,height:800.0,density:45.0,scale:70.0,deadly_walls:true,self_collisions:true,..Config::default()}).unwrap();
+    let mut w=World::new(Config {aggression:50,width:1200.0,height:800.0,density:45.0,scale:70.0,deadly_walls:true,self_collisions:true,..Config::default()}).unwrap();
     // Eight slots / two strategy slots / two-tick response: slot 2's
     // strategy is odd, whereas the old consumed response stayed even.
     for id in 0..8 {line(&mut w,id,Point{x:300.0+id as f64*100.0,y:650.0},0.0,1);}
@@ -1205,10 +1232,11 @@ fn v2_retained_cutoff_survives_its_payments_but_rejects_unplanned_growth() {
 
 #[test]
 fn advisory_retained_hunt_refresh_does_not_rebudget_paid_boost_segments() {
-    // Cover the base cost and its size-dependent siblings at both boundaries.
-    for length in [30,100,200] {
+    // Cover paid boost costs, the 0.40 speed-floor boundary and giants.
+    // Dropping through the floor must refresh speed without cancelling a plan.
+    for length in [30,100,200,399,400,1000] {
         let mut w=arena(true);w.config.rules=crate::RuleSet::V2;
-        w.config.width=3440.0;w.config.height=1440.0;
+        w.config.width=if length>200 {16384.0} else {3440.0};w.config.height=1440.0;
         line(&mut w,0,Point{x:1800.0,y:400.0},0.0,length);
         line(&mut w,1,Point{x:1600.0,y:200.0},0.0,length-4-2-length/100);
         w.snakes[1].traits.speed_bias=0.2;
@@ -2114,7 +2142,7 @@ fn all_snake_effect_forecast_matches_seeded_world_step_oracle() {
     for seed in 1..=96u64 {
         let mut rng=seed.wrapping_mul(0x9e3779b97f4a7c15);
         let mut next=|| {rng^=rng<<13;rng^=rng>>7;rng^=rng<<17;rng};
-        let mut source=World::new(Config {width:6000.0,height:6000.0,scale:70.0,density:100.0,
+        let mut source=World::new(Config {aggression:50,width:6000.0,height:6000.0,scale:70.0,density:100.0,
             seed:seed as i32,rules:crate::RuleSet::V2,self_collisions:false,deadly_walls:false,..Config::default()}).unwrap();
         source.config.density=0.0;source.food.clear();source.items.clear();
         for i in 0..source.config.food_count() {
@@ -2337,6 +2365,10 @@ fn magnet_food_reach_uses_the_movement_effect_before_capsule_replacement() {
 fn fast_rival_phase_acquisition_preserves_the_preceding_corporeal_sweep() {
     let mut w=arena(false);w.config.rules=crate::RuleSet::V2;w.config.self_collisions=false;
     let p=Point{x:400.0,y:400.0};line(&mut w,0,p,0.0,600);
+    // Keep this regression's >4x rival sweep after bounding the V2 length
+    // penalty. Slow the fixture's own bias; the test still checks the same
+    // corporeal collision before a later Phase pickup.
+    w.snakes[0].traits.speed_bias=0.75;
     let own_travel=w.motion_limits(0,0.0).unwrap().0*STEP_SECONDS;
     let body=Point{x:p.x+own_travel*2.0+9.3,y:650.0};
     line(&mut w,1,body,std::f64::consts::FRAC_PI_2,60);
@@ -2652,7 +2684,7 @@ fn tick_fast_paths_match_exact_queries_and_duplicate_tracking_rollouts() {
     for rules in [crate::RuleSet::Classic,crate::RuleSet::V2] {
         for deadly_walls in [false,true] {
             for reference_settings in [false,true] {
-                let cfg=Config {width:3440.0,height:1440.0,density:if reference_settings {30.0} else {100.0},
+                let cfg=Config {aggression:50,width:3440.0,height:1440.0,density:if reference_settings {30.0} else {100.0},
                     trails:100.0,scale:if reference_settings {185.0} else {100.0},
                     speed:if reference_settings {230.0} else {100.0},intelligence:100.0,
                     self_collisions:true,seed:73,rules,deadly_walls,..Config::default()};
@@ -2713,3 +2745,68 @@ fn retained_motion_schedules_invalidate_on_physical_inputs() {
         }
     }
 }
+
+#[test]
+fn optional_length_limit_invalidates_retained_motion_schedule() {
+    let mut w=arena(true);w.config.rules=crate::RuleSet::V2;
+    line(&mut w,0,Point{x:400.0,y:400.0},0.0,600);
+    w.snakes[0].growth=100.0;
+    let mut ai=AiController::new();ai.prepare(&w);
+    let before=ai.motion[0].at(0).0;
+    w.config.snake_length_limit=true;w.tick+=1;ai.prepare(&w);
+    let after=ai.motion[0].at(0).0;
+    assert!(after<before);
+    assert_eq!(ai.motion[0].at(0),Motion::forecast(&w,0,0.0).at(0));
+    w.config.snake_length_limit=false;w.tick+=1;ai.prepare(&w);
+    assert_eq!(ai.motion[0].at(0).0,before);
+}
+
+#[test]
+fn motion_cache_reuses_unavailable_boost_cooldowns_exactly() {
+    for active in [false,true] {
+        let mut w=World::diagnostic_arena(Config {rules:crate::RuleSet::V2,density:0.0,
+            width:1600.0,height:1000.0,..Config::default()},
+            &[(Point{x:800.0,y:500.0},0.0,180,0.5)],&[]).unwrap();
+        let mut ai=AiController::new();
+        if active {
+            w.step(&mut crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|
+                Steering {desired_angle:s.angle,rush:0.6}));
+            w.snakes[0].boost_ticks=9;
+        }
+        w.snakes[0].cooldown_ticks=100;let key=MotionKey::observed(&w,0);
+        for cooldown in [100,60,16,1,0] {
+            w.snakes[0].cooldown_ticks=cooldown;w.tick+=1;ai.prepare(&w);
+            assert_eq!(MotionKey::observed(&w,0)==key,active || cooldown!=0);
+            let plain=Motion::forecast(&w,0,0.0);
+            let boosted=if w.boost_ready(0) {Motion::forecast(&w,0,0.6)} else {plain};
+            for (cached,exact) in [(ai.motion[0],plain),(ai.boosted_motion[0],boosted)] {
+                for j in 0..=STEPS {
+                    assert_eq!(cached.at(j),exact.at(j));
+                    assert_eq!(cached.radii[j.min(24)].to_bits(),exact.radii[j.min(24)].to_bits());
+                }
+                assert_eq!((cached.max_speed,cached.max_curve,cached.expiry,cached.expired_limits),
+                    (exact.max_speed,exact.max_curve,exact.expiry,exact.expired_limits));
+            }
+        }
+    }
+}
+
+    #[cfg(feature="desktop-diag")]
+    #[test]
+    fn contested_target_ignores_a_respawned_rivals_previous_target() {
+        let mut w=arena(false);
+        w.reconfigure(Config {rules:crate::RuleSet::V2,..w.config()}).unwrap();
+        line(&mut w,0,Point{x:350.0,y:300.0},0.0,24);
+        line(&mut w,1,Point{x:350.0,y:500.0},0.0,24);
+        food(&mut w,Point{x:700.0,y:400.0});
+        let mut ai=AiController::new();ai.prepare(&w);
+        let state=State {generation:w.snakes[0].generation,target:100000,..Default::default()};
+        ai.states[1]=State {generation:w.snakes[1].generation,target:state.target,..Default::default()};
+        let eta=ai.target_arrival(&w,w.snake(0).unwrap(),ai.target_food(state).unwrap());
+        assert!(eta>2.0 && eta<5.0,"fixture must rely on target identity, eta={eta}");
+        assert!(ai.contested_target(&w,w.snake(0).unwrap(),state));
+        w.snakes[1].generation+=1;
+        assert!(!ai.contested_target(&w,w.snake(0).unwrap(),state));
+        ai.states[1].generation=w.snakes[1].generation;
+        assert!(ai.contested_target(&w,w.snake(0).unwrap(),state));
+    }

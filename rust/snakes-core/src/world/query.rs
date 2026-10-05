@@ -49,6 +49,12 @@ impl World {
         let t=((target-a.distance)/(b.distance-a.distance).max(0.0001)).clamp(0.0,1.0);
         self.canonical_point(Point{x:a.p.x+(b.p.x-a.p.x)*t,y:a.p.y+(b.p.y-a.p.y)*t})
     }
+    /// A fractional nutrition balance reserves tail room but cannot actually
+    /// stretch the physical trail until it can pay for a segment.
+    pub(crate) fn forecast_growth_active(&self,id:usize)->bool {
+        let s=&self.snakes[id];
+        self.growth_allowed(s) && s.growth>=Self::growth_cost(s)
+    }
     /// Independent diagnostic snapshot. Allocates only when explicitly called;
     /// simulation and controller ticks never invoke it.
     pub fn diagnostic_snapshot(&self) -> Self {
@@ -128,7 +134,7 @@ impl World {
         let mut s = *self.snakes.get(id)?;
         s.rush = if self.config.rules == RuleSet::Classic { rush.clamp(0.0, 1.0) }
             else if s.boost_ticks > 0 || (rush > 0.0 && self.boost_ready(id)) { 0.6 } else { 0.0 };
-        s.blocked = s.len >= self.maximum_snake_segments(&s) || self.growth_slots == 0;
+        s.blocked = !self.growth_allowed(&s);
         Some((self.speed(&s), self.turn_rate(&s)))
     }
     /// Motion on a future tick of a single requested burst, holding the
@@ -154,7 +160,7 @@ impl World {
     /// and radius changes during these at most twelve growth increments.
     pub fn tail_growth_delay(&self, id: usize) -> Option<f64> {
         let s=self.snakes.get(id)?;
-        if s.len>=self.maximum_snake_segments(s) || self.growth_slots==0 {return Some(0.0);}
+        if !self.growth_allowed(s) {return Some(0.0);}
         let speed=self.motion_limits(id,0.0)?.0;
         let increments=(s.growth/Self::growth_cost(s)).ceil();
         Some((increments-s.stretch).max(0.0)*s.radius*1.18/(speed*0.65*0.62).max(1.0))

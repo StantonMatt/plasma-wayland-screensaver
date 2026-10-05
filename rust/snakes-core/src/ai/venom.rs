@@ -12,7 +12,7 @@ impl AiController {
         // The release delay includes slowing/growth reserves. It is not a
         // physical prediction. During outstanding growth, certify on the exact
         // first-tick sweep only, rather than awarding an uncertain future cut.
-        if r.growth_delay>0.0 {return None;}
+        if w.forecast_growth_active(other) {return None;}
         let position=|index:usize,step:usize| {
             let behind=index as f64*spacing-r.distance[step];
             if behind>=0.0 {return w.forecast_trail_point(other,behind);}
@@ -87,7 +87,7 @@ impl AiController {
         if w.config().rules!=crate::RuleSet::V2 {return;}
         let head=s.segments[0].current;
         state.venom_standoff=false;state.venom_alternative=None;
-        if s.effect_kind==4 && s.effect_ticks>1 {
+        if s.effect_kind==4 && s.effect_ticks>1 && aggression::level(w)>0.0 {
             // A large cut is valuable, but a smaller nearby rival is preferable
             // to letting the entire effect expire. Sample the severable body,
             // rather than using distance to its head or one rear-quarter point.
@@ -128,7 +128,7 @@ impl AiController {
                         target:r.id as usize+1,generation:r.generation,index,standoff});}
                     let value=(len-index) as f64/(0.6+eta)
                         *(1.0+(len as f64/s.segments.len() as f64).min(3.0)*0.15)
-                        *if standoff {0.3} else {1.0}
+                        *if standoff {0.3+0.3*aggression::bold(w)} else {1.0}
                         *if state.venom_target==r.id as usize+1 && state.venom_generation==r.generation {1.15} else {1.0};
                     for slot in 0..choices.len() {
                         if value>choices[slot].map_or(0.0,|(_,_,_,v)|v) {
@@ -206,6 +206,35 @@ impl AiController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn venom_growth_reserves_do_not_substitute_for_physical_bite_certification() {
+        for growing in [false,true] {
+            let mut w=crate::world::venom::tests::fixture(80,62);
+            w.snakes[1].growth=if growing {100.0} else {0.01};
+            let mut ai=AiController::new();ai.prepare(&w);ai.rivals[1].distance.fill(0.0);
+            assert!(ai.rivals[1].growth_delay>0.0);
+            assert_eq!(w.forecast_growth_active(1),growing);
+            let s=w.snake(0).unwrap();let p=s.segments[0].current;
+            let mut effects=ai.effects;let mut visits=0;
+            let result=ai.body_blocked_effects::<true>(&w,s,p,p,2.0*STEP_SECONDS,0.0,&mut visits,false,&mut effects);
+            assert_eq!(result.0,growing,"a future cut is unresolved only during actual stretching");
+            assert_eq!(effects.consumed_at[0],if growing {0} else {2});
+        }
+    }
+    #[test]
+    fn checked_sever_exit_releases_moved_stump_but_keeps_a_stationary_stump() {
+        let w=crate::world::venom::tests::fixture(80,62);let mut ai=AiController::new();ai.prepare(&w);
+        let s=w.snake(0).unwrap();let stump=w.snake(1).unwrap().segments[61].current;
+        for moved in [false,true] {
+            ai.rivals[1].distance.fill(if moved {40.0} else {0.0});
+            let mut effects=ai.effects;effects.sever_cut[1]=62;effects.bite_step[1]=1;effects.consumed_at[0]=1;
+            let mut visits=0;
+            assert!(2.0*STEP_SECONDS<STEP_SECONDS+ai.rivals[1].release_rate+0.15,
+                "the former conservative stump reserve has not expired");
+            let result=ai.body_blocked_effects::<true>(&w,s,stump,stump,2.0*STEP_SECONDS,0.0,&mut visits,false,&mut effects);
+            assert_eq!(result.0,!moved,"only physical tail motion can release the retained stump");
+        }
+    }
     #[test]
     fn shared_bite_forecast_consumes_once_and_respects_immunity_phase_and_front_half() {
         for (cut,immunity,phase,expected) in [(62,0,false,false),(40,0,false,true),(62,1,false,true),(62,0,true,false)] {
@@ -455,7 +484,9 @@ mod tests {
     fn venom_holder_severs_a_moving_body_and_survives_its_exit() {
         for speed in [100.0,230.0] {
         let mut w=crate::world::venom::tests::hunt_fixture();
-        w.reconfigure(crate::Config {speed,..w.config()}).unwrap();
+        // This duel asserts the original personality policy. Full-aggression
+        // defenders can counter-hunt instead of exposing the same rear body.
+        w.reconfigure(crate::Config {speed,aggression:50,..w.config()}).unwrap();
         let mut ai=AiController::new();let mut bitten=false;let mut exit_until=0;
         for _ in 0..240 {
             w.step(&mut ai);
@@ -464,6 +495,41 @@ mod tests {
         }
         assert!(bitten,"held Venom should close and sever the accessible moving rear body");
         assert!(w.snakes[0].alive,"strike exit must retain ordinary safety checks");
+        }
+    }
+    #[test]
+    fn aggressive_venom_close_intercept_keeps_an_exit_at_real_speed() {
+        struct Attacker {ai:AiController}
+        impl Controller for Attacker {
+            fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
+                if s.id==0 {self.ai.steer(w,s)} else {Steering {desired_angle:s.angle,rush:0.0}}
+            }
+            fn face_intent(&self,id:u32)->crate::controller::FaceIntent {
+                if id==0 {self.ai.face_intent(id)} else {crate::controller::FaceIntent::default()}
+            }
+        }
+        for speed in [100.0,230.0] {
+            let mut w=crate::world::venom::tests::hunt_fixture();
+            w.reconfigure(crate::Config {speed,aggression:100,..w.config()}).unwrap();
+            // Place the holder within a short checked intercept of the rear
+            // half, still outside contact. This tests the offensive strike
+            // and exit rather than whether a distant chase wins admission.
+            let body:[Point;20]=std::array::from_fn(|j|Point {
+                x:w.segments[j].current.x-100.0,y:w.segments[j].current.y-70.0});
+            w.diagnostic_body(0,&body,w.snakes[0].angle).unwrap();
+            let mut ai=Attacker {ai:AiController::new()};ai.ai.enable_diagnostics();let mut bitten=false;let mut exit_until=0;
+            for _ in 0..240 {
+                w.step(&mut ai);
+                if w.frame_events().any(|e|e.kind==crate::EventKind::Sever && e.other_snake_id==0) {
+                    let decision=ai.ai.decision(0);let selected=&ai.ai.candidates.as_ref().unwrap()[decision.selected];
+                    assert!(selected.venom_bite>0 && selected.steps>=selected.venom_bite+VENOM_EXIT_STEPS && !selected.capped,
+                        "speed{speed}: strike must have a checked exit");
+                    bitten=true;exit_until=w.tick()+VENOM_EXIT_STEPS as u64;
+                }
+                if exit_until>0 && w.tick()>=exit_until {break;}
+            }
+            assert!(bitten,"aggression100 must use held Venom against an accessible moving body at speed{speed}");
+            assert!(w.snakes[0].alive,"the aggressive bite must retain an exit at speed{speed}");
         }
     }
     #[test]

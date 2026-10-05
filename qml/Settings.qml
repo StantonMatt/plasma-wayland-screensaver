@@ -34,8 +34,10 @@ ApplicationWindow {
             ballElasticity: Math.round(ballElasticity.value),
             ballCollisions: ballCollisions.checked,
             snakeIntelligence: Math.round(snakeIntelligence.value),
+            snakeAggression: Math.round(snakeAggression.value),
             snakeSelfCollisions: snakeSelfCollisions.checked,
             snakeDeadlyWalls: snakeDeadlyWalls.checked,
+            snakeLengthLimit: snakeLengthLimit.checked,
             snakePowerUps: snakePowerUps.checked,
             snakeWorldEvents: snakeWorldEvents.checked,
             showClock: showClock.checked,
@@ -145,7 +147,7 @@ ApplicationWindow {
                 Layout.margins: 22
                 Layout.bottomMargin: 0
                 wrapMode: Text.WordWrap
-                color: palette.mid
+                color: palette.placeholderText
                 text: qsTr("A decorative overlay for an unlocked session. It does not lock the computer or protect your data.")
             }
 
@@ -330,27 +332,46 @@ ApplicationWindow {
                         horizontalAlignment: Text.AlignRight
                     }
 
+                    Label {
+                        text: qsTr("Aggression")
+                        visible: visual.currentValue === "snakes"
+                    }
+                    Slider {
+                        id: snakeAggression
+                        Layout.fillWidth: true
+                        from: 0; to: 100; stepSize: 5
+                        value: window.screensaverConfig.snakeAggression
+                        visible: visual.currentValue === "snakes"
+                    }
+                    Label {
+                        text: Math.round(snakeAggression.value) + "%"
+                        visible: visual.currentValue === "snakes"
+                        horizontalAlignment: Text.AlignRight
+                    }
+
+                    Label {
+                        text: qsTr("Rules")
+                        visible: visual.currentValue === "snakes"
+                    }
                     CheckBox {
                         id: snakePowerUps
-                        Layout.columnSpan: 3
+                        Layout.columnSpan: 2
                         text: qsTr("Power-ups")
                         checked: window.screensaverConfig.snakePowerUps
                         visible: visual.currentValue === "snakes"
                     }
 
+                    // Hidden until the first world events ship.
+                    Item { visible: false }
                     CheckBox {
                         id: snakeWorldEvents
-                        Layout.columnSpan: 3
+                        Layout.columnSpan: 2
                         text: qsTr("World events")
                         checked: window.screensaverConfig.snakeWorldEvents
-                        // Hidden until the first world events ship.
                         visible: false
                     }
 
-                    Label {
-                        text: qsTr("Self collision")
-                        visible: visual.currentValue === "snakes"
-                    }
+                    Item { visible: visual.currentValue === "snakes" }
                     CheckBox {
                         id: snakeSelfCollisions
                         Layout.columnSpan: 2
@@ -359,10 +380,7 @@ ApplicationWindow {
                         visible: visual.currentValue === "snakes"
                     }
 
-                    Label {
-                        text: qsTr("Screen edges")
-                        visible: visual.currentValue === "snakes"
-                    }
+                    Item { visible: visual.currentValue === "snakes" }
                     CheckBox {
                         id: snakeDeadlyWalls
                         Layout.columnSpan: 2
@@ -371,13 +389,13 @@ ApplicationWindow {
                         visible: visual.currentValue === "snakes"
                     }
 
-                    Label {
-                        Layout.columnSpan: 3
-                        Layout.fillWidth: true
+                    Item { visible: visual.currentValue === "snakes" }
+                    CheckBox {
+                        id: snakeLengthLimit
+                        Layout.columnSpan: 2
+                        text: qsTr("Limit snake length")
+                        checked: window.screensaverConfig.snakeLengthLimit
                         visible: visual.currentValue === "snakes"
-                        wrapMode: Text.WordWrap
-                        color: palette.mid
-                        text: qsTr("At high intelligence, snakes predict moving rivals, plan around continuous body shapes and their own turning radius, remember an escape direction, and weave curved vacuum paths through the richest food regions. They also understand when their own tail will vacate a route and sweep efficiently along defeated rivals' particle trails. Champions can become very long, but adaptive screen-area and ecosystem budgets prevent one snake from filling the display. The optimized renderer caps this animation at 60 fps to avoid wasting power on duplicate high-refresh frames.")
                     }
 
                     Label { text: qsTr("Ball interaction"); visible: visual.currentValue === "bounce" }
@@ -494,6 +512,18 @@ ApplicationWindow {
                         Component.onCompleted: currentIndex = indexOfValue(window.screensaverConfig.frameRate)
                         enabled: !reducedMotion.checked || visual.currentValue === "snakes"
                     }
+
+                    // OverlayManager caps snakes at 60 fps; say so only when the choice exceeds it.
+                    Item { visible: snakesFrameRateCap.visible }
+                    Label {
+                        id: snakesFrameRateCap
+                        Layout.fillWidth: true
+                        visible: visual.currentValue === "snakes"
+                                 && (frameRate.currentValue === 0 || frameRate.currentValue > 60)
+                        wrapMode: Text.WordWrap
+                        color: palette.placeholderText
+                        text: qsTr("Slithering Snakes runs at up to 60 fps.")
+                    }
                 }
             }
 
@@ -502,7 +532,7 @@ ApplicationWindow {
                 Layout.leftMargin: 22
                 Layout.rightMargin: 22
                 wrapMode: Text.WordWrap
-                color: palette.mid
+                color: palette.placeholderText
                 text: qsTr("OLED tip: Pure Black, moving elements, a moving clock, seamless mode, and panel coverage minimize static pixels. Match each monitor removes timer jitter and follows every display's native refresh, while fixed caps save GPU power.")
             }
 
@@ -527,7 +557,7 @@ ApplicationWindow {
                         Label {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
-                            color: palette.mid
+                            color: palette.placeholderText
                             text: qsTr("Updates are delivered through the system update page when the app is installed from the project's Launchpad PPA.")
                         }
                         Label {
@@ -542,7 +572,6 @@ ApplicationWindow {
                         text: qsTr("Check for Updates")
                         onClicked: {
                             const opened = window.controller.openUpdateCenter()
-                            updateStatus.color = opened ? palette.highlight : palette.brightText
                             updateStatus.text = opened
                                 ? qsTr("System updates opened. Available Plasma Visual Screensaver updates will appear there.")
                                 : qsTr("Could not open the software manager or release page.")
@@ -575,8 +604,10 @@ ApplicationWindow {
                         ballElasticity.value = 92
                         ballCollisions.checked = true
                         snakeIntelligence.value = 75
+                        snakeAggression.value = 100
                         snakeSelfCollisions.checked = false
                         snakeDeadlyWalls.checked = true
+                        snakeLengthLimit.checked = false
                         snakePowerUps.checked = true
                         snakeWorldEvents.checked = true
                         showClock.checked = true

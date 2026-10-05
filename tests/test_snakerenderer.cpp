@@ -11,6 +11,7 @@
 #include <QSGTexture>
 #include <QTest>
 #include <QElapsedTimer>
+#include <QPainter>
 #include <QCryptographicHash>
 #include <numeric>
 #include <cmath>
@@ -43,6 +44,50 @@ class SnakeRendererTest final : public QObject
         }
         return frame;
     }
+    static SnakeFrame giantFrame()
+    {
+        SnakeFrame frame;
+        frame.info = {600,20,3440,1440,0,1,0,{}, {}};
+        std::vector<QPointF> path;
+        for (int lap=0; lap<20; ++lap) {
+            const double inset=25+lap*34, r=48;
+            const QPointF centers[]={{3440-inset-r,inset+r},{3440-inset-r,1440-inset-r},
+                                     {inset+r,1440-inset-r},{inset+r,inset+r}};
+            for (int corner=0; corner<4; ++corner)
+                for (int step=0; step<=32; ++step) {
+                    const double a=-M_PI_2+corner*M_PI_2+step*M_PI_2/32;
+                    path.emplace_back(centers[corner].x()+r*std::cos(a),centers[corner].y()+r*std::sin(a));
+                }
+        }
+        double remaining=0;
+        for (size_t i=1; i<path.size() && frame.segments.size()<6000; ++i) {
+            QPointF q=path[i-1];
+            double distance=std::hypot(path[i].x()-q.x(),path[i].y()-q.y());
+            while (remaining<=distance && frame.segments.size()<6000) {
+                q+=(path[i]-q)*(remaining/distance);
+                frame.segments.push_back({float(q.x()),float(q.y()),float(q.x()),float(q.y())});
+                distance-=remaining; remaining=21.24;
+            }
+            remaining-=distance;
+        }
+        snakes_core_snake snake{};
+        snake.id=0;snake.generation=1;snake.alive=1;snake.radius=18;snake.segment_count=6000;
+        snake.color_index=1;snake.grudge_snake_id=UINT32_MAX;
+        snake.angle=std::atan2(frame.segments[0].y-frame.segments[1].y,frame.segments[0].x-frame.segments[1].x);
+        snake.desired_angle=snake.angle;frame.snakes.push_back(snake);
+        for (uint32_t id=1; id<12; ++id) {
+            snake={};snake.id=id;snake.generation=1;snake.alive=1;snake.radius=8;
+            snake.segment_offset=frame.segments.size();snake.segment_count=80;snake.color_index=id%6;
+            snake.grudge_snake_id=UINT32_MAX;
+            for (int j=0; j<80; ++j) {
+                const float x=850+((id-1)%4)*780-j*9.44, y=200+((id-1)/4)*430+std::sin(j*0.08)*18;
+                frame.segments.push_back({x,y,x,y});
+            }
+            frame.snakes.push_back(snake);
+        }
+        return frame;
+    }
+
     static SnakeFrame anatomyFrame()
     {
         constexpr double W = 1280, H = 720, r = 0.0108 * H;
@@ -567,6 +612,82 @@ private Q_SLOTS:
         QCOMPARE(guarded % 3, 0);
         delete node;
     }
+    static void severGiantFrame(SnakeFrame &frame)
+    {
+        frame.info.tick=601;frame.info.simulation_time=601.0/30;
+        auto &victim=frame.snakes[0];victim.segment_count=3001;victim.stump_ticks=48;
+        snakes_core_event event{};event.tick=601;event.kind=SNAKES_CORE_EVENT_SEVER;
+        event.snake_id=0;event.generation=1;event.other_snake_id=1;event.other_generation=1;
+        event.cut_index=3001;event.duration_ticks=33;event.release_tick=634;event.value=2999;
+        event.x=frame.segments[3001].x;event.y=frame.segments[3001].y;event.color_index=1;
+        frame.events.push_back(event);
+    }
+    void captureGiantClassicRaster_data()
+    {
+        QTest::addColumn<bool>("venom");
+        QTest::newRow("giant") << false;
+        QTest::newRow("giant-venom") << true;
+    }
+    void captureGiantClassicRaster()
+    {
+        QFETCH(bool,venom);
+        const auto path=qEnvironmentVariable("SNAKES_CAPTURE_PATH");
+        if (path.isEmpty()) QSKIP("Set SNAKES_CAPTURE_PATH to inspect the CPU triangle raster");
+        SnakeRenderer renderer;renderer.setSize({3440,1440});auto frame=giantFrame();
+        renderer.syncFrame(frame,palette,1,true);QSGNode *node=renderer.updatePaintNode(nullptr,nullptr);
+        if (venom) {
+            severGiantFrame(frame);renderer.syncFrame(frame,palette,1,true);
+            node=renderer.updatePaintNode(node,nullptr);
+        }
+        QImage image(3440,1440,QImage::Format_ARGB32_Premultiplied);image.fill(Qt::black);
+        QPainter painter(&image);painter.setPen(Qt::NoPen);
+        const auto *g=static_cast<QSGGeometryNode *>(node)->geometry();
+        const auto *v=g->vertexDataAsColoredPoint2D();
+        // Review aid only: flat average vertex colour, without GPU interpolation.
+        for (int i=0; i<g->vertexCount(); i+=3) {
+            painter.setBrush(QColor((int(v[i].r)+v[i+1].r+v[i+2].r)/3,
+                                   (int(v[i].g)+v[i+1].g+v[i+2].g)/3,
+                                   (int(v[i].b)+v[i+1].b+v[i+2].b)/3,
+                                   (int(v[i].a)+v[i+1].a+v[i+2].a)/3));
+            const QPointF triangle[]={{v[i].x,v[i].y},{v[i+1].x,v[i+1].y},{v[i+2].x,v[i+2].y}};
+            painter.drawPolygon(triangle,3);
+        }
+        painter.end();QVERIFY(image.save(path));delete node;
+    }
+
+    void giantGeometryGrowth_data()
+    {
+        QTest::addColumn<bool>("shader");
+        QTest::newRow("shader") << true;
+        QTest::newRow("classic") << false;
+    }
+    void giantGeometryGrowth()
+    {
+        QFETCH(bool,shader);
+        SnakeRenderer renderer;renderer.m_shaderGeometryForTest=shader;renderer.setSize({3440,1440});
+        auto frame=giantFrame();QCOMPARE(frame.segments.size(),size_t(6880));
+        QSGNode *node=nullptr;int reallocations=0,capacity=0;
+        for (int count=1600; count<=6000; count+=64) {
+            frame.snakes[0].segment_count=uint32_t(std::min(count,6000));
+            renderer.syncFrame(frame,palette,1,true);node=renderer.updatePaintNode(node,nullptr);
+            if (capacity!=renderer.m_geometryCapacity) {++reallocations;capacity=renderer.m_geometryCapacity;}
+            QVERIFY(!node->nextSibling());
+        }
+        frame.snakes[0].segment_count=6000;
+        renderer.syncFrame(frame,palette,1,true);node=renderer.updatePaintNode(node,nullptr);
+        if (capacity!=renderer.m_geometryCapacity) ++reallocations;
+#if QT_VERSION >= QT_VERSION_CHECK(6,10,0)
+        QVERIFY2(reallocations<=5,"Geometry must grow geometrically, not on each growth frame");
+        const auto *storage=static_cast<QSGGeometryNode *>(node)->geometry()->vertexData();
+        for (int i=0;i<8;++i) node=renderer.updatePaintNode(node,nullptr);
+        QCOMPARE(static_cast<QSGGeometryNode *>(node)->geometry()->vertexData(),storage);
+#endif
+        qInfo()<<"Giant"<<(shader?"shader":"classic")<<"vertices"
+               <<static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount()<<"growth allocations"<<reallocations
+               <<"capacity bytes"<<size_t(renderer.m_geometryCapacity)*static_cast<QSGGeometryNode *>(node)->geometry()->sizeOfVertex();
+        delete node;
+    }
+
     void resyncReadsNativePreviousPositions()
     {
         SnakeRenderer renderer;
@@ -1648,15 +1769,21 @@ private Q_SLOTS:
         QTest::addColumn<bool>("monoPalette");
         QTest::addColumn<bool>("prism");
         QTest::addColumn<bool>("venom");
-        QTest::newRow("shader") << false << false << false << false << false << false;
-        QTest::newRow("driver-rejection-fallback") << true << false << false << false << false << false;
-        QTest::newRow("powerups") << false << true << false << false << false << false;
-        QTest::newRow("faces") << false << false << true << false << false << false;
-        QTest::newRow("faces-mono") << false << false << true << true << false << false;
-        QTest::newRow("prism") << false << false << false << false << true << false;
-        QTest::newRow("prism-mono") << false << false << false << true << true << false;
-        QTest::newRow("venom") << false << false << false << false << false << true;
-        QTest::newRow("venom-mono") << false << false << false << true << false << true;
+        QTest::addColumn<bool>("giant");
+        QTest::addColumn<bool>("classic");
+        QTest::newRow("shader") << false << false << false << false << false << false << false << false;
+        QTest::newRow("driver-rejection-fallback") << true << false << false << false << false << false << false << false;
+        QTest::newRow("powerups") << false << true << false << false << false << false << false << false;
+        QTest::newRow("faces") << false << false << true << false << false << false << false << false;
+        QTest::newRow("faces-mono") << false << false << true << true << false << false << false << false;
+        QTest::newRow("prism") << false << false << false << false << true << false << false << false;
+        QTest::newRow("prism-mono") << false << false << false << true << true << false << false << false;
+        QTest::newRow("venom") << false << false << false << false << false << true << false << false;
+        QTest::newRow("venom-mono") << false << false << false << true << false << true << false << false;
+        QTest::newRow("giant") << false << false << false << false << false << false << true << false;
+        QTest::newRow("giant-classic") << false << false << false << false << false << false << true << true;
+        QTest::newRow("giant-venom") << false << false << false << false << false << true << true << false;
+        QTest::newRow("giant-venom-classic") << false << false << false << false << false << true << true << true;
     }
 
     void captureShaderFixture()
@@ -1667,11 +1794,13 @@ private Q_SLOTS:
         QFETCH(bool, monoPalette);
         QFETCH(bool, prism);
         QFETCH(bool, venom);
+        QFETCH(bool, giant);
+        QFETCH(bool, classic);
         const auto colors = SnakeSimulation::colors(monoPalette ? QStringLiteral("mono") : QStringLiteral("ocean"));
         const auto path = qEnvironmentVariable("SNAKES_CAPTURE_PATH");
         if (path.isEmpty()) QSKIP("Set SNAKES_CAPTURE_PATH to capture the RHI fixture");
         QQuickWindow window;
-        window.resize(venom ? 1920 : 1280, venom ? 1080 : 720);
+        window.resize(giant ? 3440 : venom ? 1920 : 1280, giant ? 1440 : venom ? 1080 : 720);
         window.setColor(Qt::black);
         // The borrowed snapshot outlives the item and every render-thread sync.
         SnakeFrame frame;
@@ -1695,15 +1824,16 @@ private Q_SLOTS:
                                                      vertex, fragmentShader());
             };
         }
-        renderer.setSize(venom ? QSizeF(1920,1080) : QSizeF(1280, 720));
-        frame = venom ? venomFrame() : prism ? prismFrame() : faces ? facesFrame(false) : powerups ? powerupsFrame() : anatomyFrame();
+        if (classic) renderer.m_shaderSupportCheck=[](QQuickWindow *) { return false; };
+        renderer.setSize(giant ? QSizeF(3440,1440) : venom ? QSizeF(1920,1080) : QSizeF(1280, 720));
+        frame = giant ? giantFrame() : venom ? venomFrame() : prism ? prismFrame() : faces ? facesFrame(false) : powerups ? powerupsFrame() : anatomyFrame();
         if (faces) {
             adultFrame = facesFrame(true);
             adultRenderer.setSize({1280,720});
             adultRenderer.syncFrame(adultFrame,colors,1,true);
         }
         // Capture the R8 atlas and capsule contours through a real RHI path.
-        for (uint8_t kind = 1; !powerups && !faces && !prism && !venom && kind <= 3; ++kind) {
+        for (uint8_t kind = 1; !powerups && !faces && !prism && !venom && !giant && kind <= 3; ++kind) {
             snakes_core_item item{};
             item.id = kind; item.kind = kind;
             item.x = 180 + (kind - 1) * 400; item.y = 650;
@@ -1746,7 +1876,7 @@ private Q_SLOTS:
         QVERIFY(SnakeMaterial::shadersAvailable());
         if (venom) {
             QVERIFY(!window.grabWindow().isNull()); // Retain the intact trail before Sever.
-            severVenomFrame(frame);
+            if (giant) severGiantFrame(frame); else severVenomFrame(frame);
             renderer.syncFrame(frame,colors,1,true);
             const int age=qEnvironmentVariableIntValue("VENOM_AGE");
             if (age>0) {
@@ -1755,14 +1885,14 @@ private Q_SLOTS:
                 frame.info.tick=601+age; frame.info.simulation_time=(601.0+age)/30;
                 auto &victim=frame.snakes[0];
                 victim.stump_ticks=age<48?48-age:0; victim.bite_immunity_ticks=age<60?60-age:0;
-                if (age<44) frame.info.bubbles[0].age_ticks=age; else frame.info.bubble_count=0;
+                if (!giant && age<44) frame.info.bubbles[0].age_ticks=age; else frame.info.bubble_count=0;
                 renderer.syncFrame(frame,colors,1,true);
             }
         }
         const QImage image = window.grabWindow();
         QVERIFY(!image.isNull());
-        QCOMPARE(renderer.m_shaderFailed, rejectPipeline);
-        QCOMPARE(renderer.m_shaderInUse, !rejectPipeline);
+        QCOMPARE(renderer.m_shaderFailed, rejectPipeline || classic);
+        QCOMPARE(renderer.m_shaderInUse, !rejectPipeline && !classic);
         const QRgb background = image.pixel(0, 0);
         int coloredSamples = 0;
         for (int y = 0; y < image.height(); y += 8)
@@ -1806,7 +1936,7 @@ private Q_SLOTS:
             }
         }
         qInfo() << "Shader fixture:" << outputPath << "RHI API" << window.rendererInterface()->graphicsApi()
-                << "classic fallback" << rejectPipeline;
+                << "classic fallback" << (rejectPipeline || classic);
     }
 
     void benchmarkMatureGeometry()

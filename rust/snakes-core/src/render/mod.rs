@@ -153,6 +153,8 @@ struct Corpse {
     active: bool
 }
 pub struct Renderer {
+    #[cfg(test)]
+    shader_culling:bool,
     venom:venom::History,
     points: Vec<P>,
     mapped: Vec<P>,
@@ -193,6 +195,7 @@ impl Default for Renderer {
 }
 impl Renderer {
     pub fn new() -> Self {
+        crate::shape::prepare_short_tapers();
         let mut circles = [[P::default();13];13];
         for sides in [4, 5, 6, 7, 8, 12] {
             for side in 0..=sides {
@@ -201,6 +204,8 @@ impl Renderer {
             }
         }
         Self {
+            #[cfg(test)]
+            shader_culling:true,
             venom:venom::History::new(),
             points: vec![P::default();MAX_SEGMENTS],
             mapped: vec![P::default();MAX_SEGMENTS],
