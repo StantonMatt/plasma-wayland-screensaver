@@ -1,3 +1,17 @@
+plasma-visual-screensaver (0.15.0-1ppa1~resolute1) resolute; urgency=medium
+
+  * Add a new Settings window with Appearance, General and About pages.
+    Pick an animation from a thumbnail gallery with one-click preview,
+    colour swatches and one clock choice. Show monitor layout cards when
+    several monitors are connected.
+  * Keep each animation's speed, density, size, trails and colours separate.
+    Carry over existing settings.
+  * Apply changes instantly. Add Defaults with Undo on each page.
+  * Show clearer messages when a preview or update check fails and make
+    secondary text readable in dark themes.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Mon, 05 Oct 2026 08:20:09 -0300
+
 plasma-visual-screensaver (0.14.0-1ppa1~resolute1) resolute; urgency=medium
 
   * Make Slithering Snakes bolder and smarter: race hard for power-ups and

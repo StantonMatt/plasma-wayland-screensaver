@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(plasma-visual-screensaver
-        VERSION 0.14.0
+        VERSION 0.15.0
         DESCRIPTION "Non-locking visual screensaver for KDE Plasma Wayland"
         HOMEPAGE_URL "https://github.com/StantonMatt/plasma-wayland-screensaver"
         LANGUAGES CXX)
@@ -100,7 +100,7 @@ set(CPACK_DEBIAN_PACKAGE_RELEASE "${DEBIAN_PACKAGE_RELEASE}")
 set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "${PROJECT_HOMEPAGE_URL}")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 set(CPACK_DEBIAN_PACKAGE_DEPENDS
-    "qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts")
+    "qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts, qml6-module-org-kde-kirigami, qml6-module-org-kde-kcmutils, qml6-module-org-kde-kirigamiaddons-delegates, qml6-module-qtquick-shapes")
 set(CPACK_DEBIAN_PACKAGE_RECOMMENDS "xdg-desktop-portal-kde, powerdevil, libvulkan1, mesa-vulkan-drivers")
 set(CPACK_DEBIAN_COMPRESSION_TYPE "zstd")
 set(CPACK_STRIP_FILES ON)
