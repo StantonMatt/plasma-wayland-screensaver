@@ -46,8 +46,11 @@ Install the packaging tools once:
 ```bash
 sudo apt install appstream build-essential cargo rustc cmake debhelper devscripts dput \
   extra-cmake-modules libkf6config-dev libkf6idletime-dev \
-  liblayershellqtinterface-dev lintian ninja-build qt6-base-dev \
-  qt6-declarative-dev
+  liblayershellqtinterface-dev libvulkan-dev lintian ninja-build qt6-base-dev \
+  qt6-base-private-dev qt6-declarative-dev qt6-shadertools-dev \
+  qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+  qml6-module-org-kde-kirigami qml6-module-org-kde-kcmutils \
+  qml6-module-org-kde-kirigamiaddons-delegates qml6-module-qtquick-shapes
 ```
 
 Use the distribution's Rust 1.93 or newer toolchain. Binary builds run Cargo
@@ -81,10 +84,10 @@ version:
 - `data/metainfo/org.kde.plasmavisualscreensaver.metainfo.xml`; and
 - `debian/changelog`.
 
-Use a PPA version such as `0.14.0-1ppa1~resolute1`. Increase `ppa1` when
+Use a PPA version such as `0.15.0-1ppa1~resolute1`. Increase `ppa1` when
 re-uploading changed packaging for the same app version; Launchpad never
 accepts the same source version twice. The PPA version is deliberately newer
-than the corresponding standalone `0.14.0-1` GitHub package, allowing existing
+than the corresponding standalone `0.15.0-1` GitHub package, allowing existing
 users to migrate without a forced downgrade.
 
 Build, sign, lint, and upload with:

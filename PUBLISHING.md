@@ -25,7 +25,7 @@ visibility is a maintainer decision.
 
 ## Prepare a release
 
-1. Choose a semantic version, for example `0.14.0`.
+1. Choose a semantic version, for example `0.15.0`.
 2. Update `VERSION` in the top-level `CMakeLists.txt`.
 3. Add a matching newest entry to `packaging/debian/changelog`. Increment the
    revision after the dash when rebuilding the same upstream version.
@@ -50,8 +50,8 @@ visibility is a maintainer decision.
 Create and push an annotated tag whose name exactly matches the CMake version:
 
 ```bash
-git tag -a v0.14.0 -m "Plasma Visual Screensaver 0.14.0"
-git push origin v0.14.0
+git tag -a v0.15.0 -m "Plasma Visual Screensaver 0.15.0"
+git push origin v0.15.0
 ```
 
 The **Publish release** workflow then:
