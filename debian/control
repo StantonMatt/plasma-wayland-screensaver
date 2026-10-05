@@ -5,6 +5,7 @@ Build-Depends:
  appstream,
  cargo (>= 1.93),
  cmake (>= 3.22),
+ dbus-daemon,
  debhelper-compat (= 13),
  extra-cmake-modules (>= 6.0),
  libkf6config-dev (>= 6.0),

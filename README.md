@@ -49,10 +49,10 @@ opens the latest GitHub release instead.
   rotation, and rearrangement. Optional exclusive zone `-1` coverage extends
   surfaces beneath Plasma panels without changing panel configuration.
 - `Inhibitor` requests the XDG Desktop Portal `Inhibit` API with both idle and
-  suspend flags. If the portal is unavailable it falls back to Plasma's
-  `org.freedesktop.PowerManagement.Inhibit` service. Activation is refused if
-  neither inhibitor can be acquired, so the application never knowingly shows
-  an overlay that can be blanked or suspended underneath it.
+  suspend flags. If the portal fails it requires `org.freedesktop.ScreenSaver.Inhibit`
+  for idle/display/locking inhibition and also attempts
+  `org.freedesktop.PowerManagement.Inhibit` for suspend inhibition. Activation is
+  refused if ScreenSaver inhibition fails; any suspend cookie is then released.
 - `ApplicationController` ties those components together and exports
   single-instance D-Bus commands for settings, preview, and quit.
 - Animation and background are independent. Replaceable animation modules
@@ -396,9 +396,11 @@ session:
    intentionally defer an automatic suspend until dismissal.)
 11. Run `plasma-visual-screensaver --quit` and verify the process exits. Start it
    again and confirm settings persisted.
-12. Use `busctl --user list | grep -E 'portal|PowerManagement'` and PowerDevil's
-   battery/status UI to verify an inhibition appears only while the overlay is
-   active and is released after every dismissal and failed activation.
+12. Use `busctl --user list | grep -E 'portal|ScreenSaver|PowerManagement'` to check
+   the portal and fallback services. Confirm idle inhibition with
+   `busctl --user get-property org.kde.Solid.PowerManagement /org/kde/Solid/PowerManagement/PolicyAgent org.kde.Solid.PowerManagement.PolicyAgent ActiveInhibitions`:
+   the overlay's inhibition should appear only while active and disappear after
+   every dismissal and failed activation.
 
 ## Troubleshooting
 
