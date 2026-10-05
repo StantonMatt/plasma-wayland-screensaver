@@ -1,3 +1,19 @@
+plasma-visual-screensaver (0.14.0-1ppa1~resolute1) resolute; urgency=medium
+
+  * Make Slithering Snakes bolder and smarter: race hard for power-ups and
+    contested food, boost to cut rivals off, and use power-ups offensively,
+    with far fewer aimless escape loops.
+  * Add Aggression next to Intelligence, defaulting to 100%.
+  * Let snakes grow without a length cap, up to filling a monitor, while
+    giants keep moving at a sensible speed. Add "Limit snake length",
+    off by default.
+  * Group Snakes options under Rules and make previously hard-to-read grey
+    settings text readable in dark themes.
+  * Optimise simulation and rendering to keep CPU use at or below 0.13.0
+    in long sessions.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Mon, 05 Oct 2026 05:51:49 -0300
+
 plasma-visual-screensaver (0.13.0-1ppa1~resolute1) resolute; urgency=medium
 
   * Add Venom capsules. Holders hunt rivals and bite their bodies to sever

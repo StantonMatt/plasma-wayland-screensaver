@@ -20,6 +20,15 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.14.0" date="2026-10-05">
+      <description>
+        <p>Makes Slithering Snakes bolder and smarter: they race hard for power-ups and contested food, boost to cut rivals off, and use power-ups offensively, with far fewer aimless escape loops.</p>
+        <p>Adds Aggression next to Intelligence, defaulting to 100%.</p>
+        <p>Lets snakes grow without a length cap, up to filling a monitor, while giants keep moving at a sensible speed. Adds "Limit snake length", off by default.</p>
+        <p>Groups Snakes options under Rules and makes previously hard-to-read grey settings text readable in dark themes.</p>
+        <p>Optimises simulation and rendering to keep CPU use at or below 0.13.0 in long sessions.</p>
+      </description>
+    </release>
     <release version="0.13.0" date="2026-10-04">
       <description>
         <p>Adds Venom capsules to Slithering Snakes. Holders hunt rivals and bite their bodies to sever their tails. Severed tails thrash, then shatter into food.</p>

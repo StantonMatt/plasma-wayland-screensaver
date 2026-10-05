@@ -58,16 +58,18 @@ opens the latest GitHub release instead.
 - Animation and background are independent. Replaceable animation modules
   provide None, Aurora Drift, Floating Orbs, Bouncing Balls, Hyperspace,
   Digital Rain, Kaleidoscope, Fireflies, Neon Ribbons, Constellations, and
-  Slithering Snakes (with adjustable AI that plans paths, avoids collisions,
-  and seeks open space; bigger snakes contest food and cut rivals off, while
-  smaller snakes avoid losing head-on encounters; short boosts for cut-offs,
+  Slithering Snakes (with adjustable Intelligence and Aggression, the latter
+  defaulting to 100%; AI plans paths, avoids collisions, and seeks open space,
+  with far fewer aimless escape loops; bigger snakes contest food and cut rivals
+  off, while smaller snakes avoid losing head-on encounters; short boosts for cut-offs,
   escapes and food races cost tail segments dropped as edible pellets and
   need time to cool down; glowing hexagon power-ups grant one effect at a
   time: Surge gives free, back-to-back boosts and a faster snake for chained
   attacks, Magnet pulls in food from three times as far, and Phase lets snakes
   slip through rivals' bodies until it wears off. Snakes seek them out to hunt,
-  scavenge and escape. They race for capsules, boost or give up, cut off the
-  leader, guard the next capsule and hold short grudges. A one-second landing
+  scavenge and escape. Bolder, smarter snakes race hard for power-ups and
+  contested food, boost to cut rivals off, and use power-ups offensively. They
+  guard the next capsule and hold short grudges. A one-second landing
   signal and contest arcs show the race. Crackling arcs, an orbiting magnet
   ring and a translucent hologram show each effect. Prism seeds show a
   three-second ripening timer; snakes circle them and race to pounce when ripe.
@@ -86,17 +88,22 @@ opens the latest GitHub release instead.
   outward self-tail escapes, swept neck/body collision detection that follows
   the tapered body, forward growth, persistent food vacuum locks, optional
   self-collision, deadly or wraparound edges, and
-  size-proportional edible death particles). Rendering costs less, with the
-  previous look kept automatically on systems without shader support. A soft
-  shadow keeps the clock readable over busy scenes. Snake length uses adaptive
-  individual and arena-wide painted-area budgets rather than a small fixed cap,
-  with progressively more food required for extreme late-game growth. Ambient
-  food expires after a randomized 34–46 seconds and is replenished elsewhere
+  size-proportional edible death particles). Simulation and rendering
+  optimisations keep CPU use at or below 0.13.0 in long sessions. Systems without
+  shader support keep the previous look automatically. A soft
+  shadow keeps the clock readable over busy scenes. Snakes can grow without a
+  length cap, up to filling a monitor, while giants keep moving at a sensible
+  speed. Enable "Limit snake length" to apply adaptive individual and arena-wide
+  painted-area budgets; it is off by default. Extreme late-game growth requires
+  progressively more food. Ambient food expires after a randomized 34–46 seconds
+  and is replenished elsewhere
   to avoid persistent bright points on OLED panels;
   backgrounds provide Pure Black and several dark gradients. Every module has
   contextual controls for motion speed, population/detail, scale, palette, and
-  trails or glow. Frame-rate choices range from 15 through 240 fps, with an
-  automatic mode that follows each output's presentation rate independently.
+  trails or glow. Snakes options are grouped under Rules, and previously
+  hard-to-read grey settings text is readable in dark themes. Frame-rate choices
+  range from 15 through 240 fps, with an automatic mode that follows each
+  output's presentation rate independently.
   Every module also honors the static reduced-motion setting.
 - `PresentationClock` gives each overlay window its own frame cadence. It uses
   swap feedback to align `QWindow::requestUpdate()` with the output's refresh
@@ -244,7 +251,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.13.0`, publishes the verified
+matching the CMake project version, such as `v0.14.0`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 
