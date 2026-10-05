@@ -2,6 +2,7 @@
 #pragma once
 
 #include <QObject>
+#include <QMap>
 #include <QString>
 #include <QVariantMap>
 #include <memory>
@@ -30,6 +31,8 @@ class Configuration final : public QObject
     Q_PROPERTY(bool snakePowerUps READ snakePowerUps WRITE setSnakePowerUps NOTIFY changed)
     Q_PROPERTY(bool snakeWorldEvents READ snakeWorldEvents WRITE setSnakeWorldEvents NOTIFY changed)
     Q_PROPERTY(bool snakeDeadlyWalls READ snakeDeadlyWalls WRITE setSnakeDeadlyWalls NOTIFY changed)
+    // 0 Off, 1 Centered, 2 Slowly, 3 Drifting, 4 Quickly.
+    Q_PROPERTY(int clockMode READ clockMode WRITE setClockMode NOTIFY changed)
     Q_PROPERTY(bool showClock READ showClock WRITE setShowClock NOTIFY changed)
     Q_PROPERTY(QString clockMovement READ clockMovement WRITE setClockMovement NOTIFY changed)
     Q_PROPERTY(QString clockSpeed READ clockSpeed WRITE setClockSpeed NOTIFY changed)
@@ -61,6 +64,7 @@ public:
     bool snakeLengthLimit() const;
     bool snakePowerUps() const;
     bool snakeWorldEvents() const;
+    int clockMode() const;
     bool showClock() const;
     QString clockMovement() const;
     QString clockSpeed() const;
@@ -88,6 +92,7 @@ public:
     void setSnakeLengthLimit(bool value);
     void setSnakePowerUps(bool value);
     void setSnakeWorldEvents(bool value);
+    void setClockMode(int mode);
     void setShowClock(bool value);
     void setClockMovement(const QString &value);
     void setClockSpeed(const QString &value);
@@ -95,11 +100,16 @@ public:
     void setReducedMotion(bool value);
     void setMonitorBehavior(const QString &value);
     void setCoverPanels(bool value);
-    void apply(const QVariantMap &settings);
+    Q_INVOKABLE void apply(const QVariantMap &settings);
+    // page is "appearance", "general", or empty for all settings. Appearance
+    // maps include every animation profile; apply(snapshot(page)) restores Undo
+    // atomically, including the selected module. Unknown pages return empty maps.
+    Q_INVOKABLE QVariantMap defaults(const QString &page = {}) const;
+    Q_INVOKABLE QVariantMap snapshot(const QString &page = {}) const;
 
     Q_INVOKABLE void reload();
     Q_INVOKABLE void save();
-    Q_INVOKABLE void restoreDefaults();
+    Q_INVOKABLE void restoreDefaults(const QString &page = {});
 
 Q_SIGNALS:
     void changed();
@@ -109,35 +119,40 @@ private:
     void beginUpdate();
     void endUpdate();
     void assignDefaults();
+    QVariantMap activeAnimationSettings() const;
+    void applyAnimationSettings(const QVariantMap &settings);
     template<typename T> void update(T &member, const T &value);
 
     std::unique_ptr<KConfig> m_config;
-    int m_updateDepth = 0;
-    bool m_changedPending = false;
-    int m_idleMinutes = 10;
-    QString m_visualModule = QStringLiteral("aurora");
-    QString m_backgroundStyle = QStringLiteral("midnight");
-    int m_animationSpeed = 100;
-    int m_animationDensity = 50;
-    int m_animationScale = 100;
-    QString m_animationPalette = QStringLiteral("ocean");
-    int m_trailAmount = 35;
-    int m_ballCount = 5;
-    int m_ballGravity = 35;
-    int m_ballElasticity = 92;
-    bool m_ballCollisions = true;
-    int m_snakeIntelligence = 75;
-    int m_snakeAggression = 100;
-    bool m_snakeSelfCollisions = false;
-    bool m_snakeDeadlyWalls = true;
-    bool m_snakeLengthLimit = false;
-    bool m_snakePowerUps = true;
-    bool m_snakeWorldEvents = true;
-    bool m_showClock = true;
-    QString m_clockMovement = QStringLiteral("bounce");
-    QString m_clockSpeed = QStringLiteral("normal");
-    int m_frameRate = 30;
-    bool m_reducedMotion = false;
-    QString m_monitorBehavior = QStringLiteral("independent");
-    bool m_coverPanels = true;
+    // Profiles are touched only by config edits/load/save. Render/tick getters
+    // keep reading the scalar active-profile fields below without map lookups.
+    QMap<QString, QVariantMap> m_animationSettings;
+    int m_updateDepth = {};
+    bool m_changedPending = {};
+    int m_idleMinutes = {};
+    QString m_visualModule;
+    QString m_backgroundStyle;
+    int m_animationSpeed = {};
+    int m_animationDensity = {};
+    int m_animationScale = {};
+    QString m_animationPalette;
+    int m_trailAmount = {};
+    int m_ballCount = {};
+    int m_ballGravity = {};
+    int m_ballElasticity = {};
+    bool m_ballCollisions = {};
+    int m_snakeIntelligence = {};
+    int m_snakeAggression = {};
+    bool m_snakeSelfCollisions = {};
+    bool m_snakeDeadlyWalls = {};
+    bool m_snakeLengthLimit = {};
+    bool m_snakePowerUps = {};
+    bool m_snakeWorldEvents = {};
+    bool m_showClock = {};
+    QString m_clockMovement;
+    QString m_clockSpeed;
+    int m_frameRate = {};
+    bool m_reducedMotion = {};
+    QString m_monitorBehavior;
+    bool m_coverPanels = {};
 };

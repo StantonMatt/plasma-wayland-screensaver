@@ -3,7 +3,6 @@
 
 #include <QObject>
 #include <QString>
-#include <QVariantMap>
 #include <memory>
 
 #include "configuration.h"
@@ -17,10 +16,13 @@ class QQmlApplicationEngine;
 class ApplicationController final : public QObject
 {
     Q_OBJECT
+    friend class ApplicationControllerTest;
     Q_CLASSINFO("D-Bus Interface", "org.kde.PlasmaVisualScreensaver")
     Q_PROPERTY(Configuration *configuration READ configuration CONSTANT)
     Q_PROPERTY(bool screensaverActive READ screensaverActive NOTIFY screensaverActiveChanged)
+    Q_PROPERTY(int monitorCount READ monitorCount NOTIFY monitorCountChanged)
     Q_PROPERTY(QString applicationVersion READ applicationVersion CONSTANT)
+    Q_PROPERTY(QString applicationLicenseText READ applicationLicenseText CONSTANT)
 
 public:
     explicit ApplicationController(QObject *parent = nullptr);
@@ -28,7 +30,9 @@ public:
 
     Configuration *configuration();
     bool screensaverActive() const;
+    int monitorCount() const;
     QString applicationVersion() const;
+    QString applicationLicenseText() const;
     void start();
 
 public Q_SLOTS:
@@ -36,16 +40,18 @@ public Q_SLOTS:
     Q_SCRIPTABLE void Preview();
     Q_SCRIPTABLE void PreviewDebug();
     Q_SCRIPTABLE void Quit();
-    Q_INVOKABLE void saveSettings(const QVariantMap &settings);
-    Q_INVOKABLE bool openUpdateCenter() const;
+    // Returns "discover", "releases", or "failed" for the settings UI.
+    Q_INVOKABLE QString openUpdateCenter() const;
 
 Q_SIGNALS:
     void screensaverActiveChanged();
+    void monitorCountChanged();
+    void previewFailed(const QString &reason);
 
 private Q_SLOTS:
     void activate(bool preview);
     void finishActivation();
-    void failActivation(const QString &error);
+    void failActivation(const QString &error, const QString &userReason);
     void dismiss();
     void scheduleIdleTimeout();
 
@@ -56,6 +62,7 @@ private:
     OverlayManager m_overlays;
     ScreensaverStateMachine m_stateMachine;
     std::unique_ptr<QQmlApplicationEngine> m_settingsEngine;
+    bool m_activationIsPreview = false;
     bool m_debugPreviewPending = false;
     bool m_waitForIdleResumeOnDismissal = false;
 };

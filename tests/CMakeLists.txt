@@ -188,3 +188,41 @@ target_include_directories(test-overlaysnakes PRIVATE ../src)
 target_link_libraries(test-overlaysnakes PRIVATE Qt6::Quick Qt6::Test KF6::ConfigCore LayerShellQt::Interface SnakesCore::snakes_core)
 add_test(NAME overlay-snakes COMMAND test-overlaysnakes)
 set_tests_properties(overlay-snakes PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+
+# Controller failures and the settings window run offscreen with an
+# isolated config directory and an unavailable session bus (never the desktop).
+add_executable(test-applicationcontroller
+    test_applicationcontroller.cpp
+    ../src/applicationcontroller.cpp ../src/applicationcontroller.h
+    ../src/idlemonitor.cpp ../src/idlemonitor.h
+    ../src/inhibitor.cpp ../src/inhibitor.h
+    ../src/screensaverstatemachine.cpp ../src/screensaverstatemachine.h
+    ../src/overlaymanager.cpp ../src/overlaymanager.h
+    ../src/animationstate.cpp ../src/animationstate.h
+    ../src/presentationclock.cpp ../src/presentationclock.h
+    ../src/snakesimulation.cpp ../src/snakesimulation.h
+    ../src/snakerenderer.cpp ../src/snakerenderer.h
+    ../src/fireflyrenderer.cpp ../src/fireflyrenderer.h
+    ../src/configuration.cpp ../src/configuration.h
+    ../src/resources.qrc)
+target_include_directories(test-applicationcontroller PRIVATE ../src)
+target_link_libraries(test-applicationcontroller PRIVATE GraphicsBackend SnakeMaterial
+    Qt6::DBus Qt6::Quick Qt6::QuickControls2 Qt6::Test KF6::ConfigCore KF6::IdleTime
+    LayerShellQt::Interface SnakesCore::snakes_core)
+add_test(NAME application-controller COMMAND test-applicationcontroller
+    settingsQmlDependenciesAreAvailable reportsRealInhibitorFailureOnlyForPreview exposesReactiveMonitorCount
+    settingsWindowLoadsFromResources mapsTechnicalInhibitorErrors busyPreviewReportsFailure updateCenterReportsDestination)
+add_test(NAME application-controller-no-screens COMMAND test-applicationcontroller
+    -platform "offscreen:configfile=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/offscreen-no-screens.json"
+    noUsableScreenReportsPreviewFailure)
+set_tests_properties(application-controller application-controller-no-screens PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+
+# The real settings window (from the app's resources) with a real Configuration
+# and a stand-in controller; offscreen, isolated config and session bus.
+add_executable(test-settingsqml test_settingsqml.cpp
+    ../src/configuration.cpp ../src/configuration.h ../src/resources.qrc)
+target_include_directories(test-settingsqml PRIVATE ../src)
+target_link_libraries(test-settingsqml PRIVATE Qt6::Quick Qt6::Qml Qt6::QuickTest KF6::ConfigCore)
+add_test(NAME settings-qml COMMAND test-settingsqml -input "${CMAKE_CURRENT_SOURCE_DIR}/settings")
+set_tests_properties(settings-qml PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")

@@ -1,8 +1,30 @@
 <RCC>
+    <qresource prefix="/">
+        <file alias="LICENSE">../LICENSE</file>
+    </qresource>
     <qresource prefix="/qml">
         <file alias="Screensaver.qml">../qml/Screensaver.qml</file>
         <file alias="images/clock-scrim.png">../qml/images/clock-scrim.png</file>
         <file alias="Settings.qml">../qml/Settings.qml</file>
+        <file alias="settings/AboutPage.qml">../qml/settings/AboutPage.qml</file>
+        <file alias="settings/AnimationGallery.qml">../qml/settings/AnimationGallery.qml</file>
+        <file alias="settings/AppearancePage.qml">../qml/settings/AppearancePage.qml</file>
+        <file alias="settings/Catalog.js">../qml/settings/Catalog.js</file>
+        <file alias="settings/GeneralPage.qml">../qml/settings/GeneralPage.qml</file>
+        <file alias="settings/MonitorModeChooser.qml">../qml/settings/MonitorModeChooser.qml</file>
+        <file alias="settings/PreviewErrorMessage.qml">../qml/settings/PreviewErrorMessage.qml</file>
+        <file alias="settings/SwatchPicker.qml">../qml/settings/SwatchPicker.qml</file>
+        <file alias="settings/ValueSlider.qml">../qml/settings/ValueSlider.qml</file>
+        <file alias="images/thumbnails/aurora.png">../qml/images/thumbnails/aurora.png</file>
+        <file alias="images/thumbnails/bounce.png">../qml/images/thumbnails/bounce.png</file>
+        <file alias="images/thumbnails/constellation.png">../qml/images/thumbnails/constellation.png</file>
+        <file alias="images/thumbnails/fireflies.png">../qml/images/thumbnails/fireflies.png</file>
+        <file alias="images/thumbnails/kaleidoscope.png">../qml/images/thumbnails/kaleidoscope.png</file>
+        <file alias="images/thumbnails/matrix.png">../qml/images/thumbnails/matrix.png</file>
+        <file alias="images/thumbnails/orbs.png">../qml/images/thumbnails/orbs.png</file>
+        <file alias="images/thumbnails/ribbons.png">../qml/images/thumbnails/ribbons.png</file>
+        <file alias="images/thumbnails/snakes.png">../qml/images/thumbnails/snakes.png</file>
+        <file alias="images/thumbnails/starfield.png">../qml/images/thumbnails/starfield.png</file>
         <file alias="visuals/Aurora.qml">../qml/visuals/Aurora.qml</file>
         <file alias="visuals/Orbs.qml">../qml/visuals/Orbs.qml</file>
         <file alias="visuals/Bounce.qml">../qml/visuals/Bounce.qml</file>

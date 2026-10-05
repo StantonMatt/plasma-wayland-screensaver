@@ -8,6 +8,53 @@
 #include <algorithm>
 #include <cstdlib>
 
+namespace {
+const QStringList &visualModules()
+{
+    static const QStringList modules = {
+        QStringLiteral("aurora"),
+        QStringLiteral("orbs"),
+        QStringLiteral("none"),
+        QStringLiteral("bounce"),
+        QStringLiteral("starfield"),
+        QStringLiteral("matrix"),
+        QStringLiteral("kaleidoscope"),
+        QStringLiteral("fireflies"),
+        QStringLiteral("ribbons"),
+        QStringLiteral("constellation"),
+        QStringLiteral("snakes"),
+    };
+    return modules;
+}
+const QStringList &animationKeys()
+{
+    static const QStringList keys = {QStringLiteral("animationSpeed"), QStringLiteral("animationDensity"),
+        QStringLiteral("animationScale"), QStringLiteral("animationPalette"), QStringLiteral("trailAmount")};
+    return keys;
+}
+const QStringList &generalKeys()
+{
+    static const QStringList keys = {QStringLiteral("idleMinutes"), QStringLiteral("monitorBehavior"),
+        QStringLiteral("coverPanels"), QStringLiteral("frameRate"), QStringLiteral("reducedMotion")};
+    return keys;
+}
+QString diskKey(QString key)
+{
+    key[0] = key[0].toUpper();
+    return key;
+}
+QVariantMap pageValues(QVariantMap values, const QString &page)
+{
+    if (page.isEmpty()) return values;
+    if (page != QStringLiteral("appearance") && page != QStringLiteral("general")) return {};
+    for (auto it = values.begin(); it != values.end();) {
+        if (generalKeys().contains(it.key()) != (page == QStringLiteral("general"))) it = values.erase(it);
+        else ++it;
+    }
+    return values;
+}
+} // namespace
+
 Configuration::Configuration(const QString &filePath, QObject *parent)
     : QObject(parent)
     , m_config(filePath.isEmpty()
@@ -78,20 +125,13 @@ void Configuration::endUpdate()
 void Configuration::setIdleMinutes(int value) { update(m_idleMinutes, std::clamp(value, 1, 240)); }
 void Configuration::setVisualModule(const QString &value)
 {
-    static const QStringList modules = {
-        QStringLiteral("aurora"),
-        QStringLiteral("orbs"),
-        QStringLiteral("none"),
-        QStringLiteral("bounce"),
-        QStringLiteral("starfield"),
-        QStringLiteral("matrix"),
-        QStringLiteral("kaleidoscope"),
-        QStringLiteral("fireflies"),
-        QStringLiteral("ribbons"),
-        QStringLiteral("constellation"),
-        QStringLiteral("snakes"),
-    };
-    update(m_visualModule, modules.contains(value) ? value : QStringLiteral("aurora"));
+    const QString module = visualModules().contains(value) ? value : QStringLiteral("aurora");
+    if (module == m_visualModule) return;
+    beginUpdate();
+    m_animationSettings.insert(m_visualModule, activeAnimationSettings());
+    update(m_visualModule, module);
+    applyAnimationSettings(m_animationSettings.value(module));
+    endUpdate();
 }
 void Configuration::setBackgroundStyle(const QString &value)
 {
@@ -191,6 +231,17 @@ void Configuration::apply(const QVariantMap &settings)
     if (settings.contains(QStringLiteral("visualModule"))) {
         setVisualModule(settings.value(QStringLiteral("visualModule")).toString());
     }
+    if (settings.contains(QStringLiteral("animationSettings"))) {
+        const QVariantMap profiles = settings.value(QStringLiteral("animationSettings")).toMap();
+        const QString selected = m_visualModule;
+        for (const QString &module : visualModules()) {
+            if (!profiles.contains(module)) continue;
+            setVisualModule(module);
+            applyAnimationSettings(profiles.value(module).toMap());
+            m_animationSettings.insert(module, activeAnimationSettings());
+        }
+        setVisualModule(selected);
+    }
     if (settings.contains(QStringLiteral("backgroundStyle"))) {
         setBackgroundStyle(settings.value(QStringLiteral("backgroundStyle")).toString());
     }
@@ -263,79 +314,120 @@ void Configuration::apply(const QVariantMap &settings)
     if (settings.contains(QStringLiteral("coverPanels"))) {
         setCoverPanels(settings.value(QStringLiteral("coverPanels")).toBool());
     }
+    if (settings.contains(QStringLiteral("clockMode"))) setClockMode(settings.value(QStringLiteral("clockMode")).toInt());
     endUpdate();
+}
+
+QVariantMap Configuration::defaults(const QString &page) const
+{
+    QVariantMap values = {
+        {QStringLiteral("idleMinutes"), 10},
+        {QStringLiteral("visualModule"), QStringLiteral("aurora")},
+        {QStringLiteral("backgroundStyle"), QStringLiteral("midnight")},
+        {QStringLiteral("animationSpeed"), 100},
+        {QStringLiteral("animationDensity"), 50},
+        {QStringLiteral("animationScale"), 100},
+        {QStringLiteral("animationPalette"), QStringLiteral("ocean")},
+        {QStringLiteral("trailAmount"), 35},
+        {QStringLiteral("ballCount"), 5},
+        {QStringLiteral("ballGravity"), 35},
+        {QStringLiteral("ballElasticity"), 92},
+        {QStringLiteral("ballCollisions"), true},
+        {QStringLiteral("snakeIntelligence"), 75},
+        {QStringLiteral("snakeAggression"), 100},
+        {QStringLiteral("snakeSelfCollisions"), false},
+        {QStringLiteral("snakeDeadlyWalls"), true},
+        {QStringLiteral("snakeLengthLimit"), false},
+        {QStringLiteral("snakePowerUps"), true},
+        {QStringLiteral("snakeWorldEvents"), true},
+        {QStringLiteral("showClock"), true},
+        {QStringLiteral("clockMovement"), QStringLiteral("bounce")},
+        {QStringLiteral("clockSpeed"), QStringLiteral("normal")},
+        {QStringLiteral("frameRate"), 30},
+        {QStringLiteral("reducedMotion"), false},
+        {QStringLiteral("monitorBehavior"), QStringLiteral("independent")},
+        {QStringLiteral("coverPanels"), true}
+    };
+    QVariantMap animation;
+    for (const QString &key : animationKeys()) animation.insert(key, values.value(key));
+    QVariantMap profiles;
+    for (const QString &module : visualModules()) profiles.insert(module, animation);
+    values.insert(QStringLiteral("animationSettings"), profiles);
+    return pageValues(values, page);
+}
+
+QVariantMap Configuration::snapshot(const QString &page) const
+{
+    QVariantMap values;
+    const QVariantMap defaultValues = defaults();
+    for (auto it = defaultValues.cbegin(); it != defaultValues.cend(); ++it) {
+        if (it.key() != QStringLiteral("animationSettings")) values.insert(it.key(), property(it.key().toUtf8().constData()));
+    }
+    QVariantMap profiles;
+    for (const QString &module : visualModules()) {
+        profiles.insert(module, module == m_visualModule ? activeAnimationSettings() : m_animationSettings.value(module));
+    }
+    values.insert(QStringLiteral("animationSettings"), profiles);
+    return pageValues(values, page);
+}
+
+QVariantMap Configuration::activeAnimationSettings() const
+{
+    return {{QStringLiteral("animationSpeed"), m_animationSpeed},
+        {QStringLiteral("animationDensity"), m_animationDensity},
+        {QStringLiteral("animationScale"), m_animationScale},
+        {QStringLiteral("animationPalette"), m_animationPalette},
+        {QStringLiteral("trailAmount"), m_trailAmount}};
+}
+
+void Configuration::applyAnimationSettings(const QVariantMap &settings)
+{
+    for (const QString &key : animationKeys()) {
+        if (settings.contains(key)) setProperty(key.toUtf8().constData(), settings.value(key));
+    }
 }
 
 void Configuration::assignDefaults()
 {
-    beginUpdate();
-    setIdleMinutes(10);
-    setVisualModule(QStringLiteral("aurora"));
-    setBackgroundStyle(QStringLiteral("midnight"));
-    setAnimationSpeed(100);
-    setAnimationDensity(50);
-    setAnimationScale(100);
-    setAnimationPalette(QStringLiteral("ocean"));
-    setTrailAmount(35);
-    setBallCount(5);
-    setBallGravity(35);
-    setBallElasticity(92);
-    setBallCollisions(true);
-    setSnakeIntelligence(75);
-    setSnakeAggression(100);
-    setSnakeSelfCollisions(false);
-    setSnakeDeadlyWalls(true);
-    setSnakeLengthLimit(false);
-    setSnakePowerUps(true);
-    setSnakeWorldEvents(true);
-    setShowClock(true);
-    setClockMovement(QStringLiteral("bounce"));
-    setClockSpeed(QStringLiteral("normal"));
-    setFrameRate(30);
-    setReducedMotion(false);
-    setMonitorBehavior(QStringLiteral("independent"));
-    setCoverPanels(true);
-    endUpdate();
+    apply(defaults());
 }
 
 void Configuration::reload()
 {
     m_config->reparseConfiguration();
     const KConfigGroup general(m_config.get(), QStringLiteral("General"));
-    beginUpdate();
-    setIdleMinutes(general.readEntry("IdleMinutes", 10));
-    QString visual = general.readEntry("VisualModule", QStringLiteral("aurora"));
-    const QString legacyBackground = visual == QStringLiteral("black") || visual == QStringLiteral("bounce")
-        ? QStringLiteral("black") : QStringLiteral("midnight");
-    if (visual == QStringLiteral("black")) {
-        visual = QStringLiteral("none");
+    const QVariantMap defaultValues = defaults();
+    QVariantMap values;
+    for (auto it = defaultValues.cbegin(); it != defaultValues.cend(); ++it) {
+        if (it.key() == QStringLiteral("animationSettings")) continue;
+        values.insert(it.key(), general.readEntry(diskKey(it.key()), it.value()));
     }
-    setVisualModule(visual);
-    setBackgroundStyle(general.readEntry("BackgroundStyle", legacyBackground));
-    setAnimationSpeed(general.readEntry("AnimationSpeed", 100));
-    setAnimationDensity(general.readEntry("AnimationDensity", 50));
-    setAnimationScale(general.readEntry("AnimationScale", 100));
-    setAnimationPalette(general.readEntry("AnimationPalette", QStringLiteral("ocean")));
-    setTrailAmount(general.readEntry("TrailAmount", 35));
-    setBallCount(general.readEntry("BallCount", 5));
-    setBallGravity(general.readEntry("BallGravity", 35));
-    setBallElasticity(general.readEntry("BallElasticity", 92));
-    setBallCollisions(general.readEntry("BallCollisions", true));
-    setSnakeIntelligence(general.readEntry("SnakeIntelligence", 75));
-    setSnakeAggression(general.readEntry("SnakeAggression", 100));
-    setSnakeSelfCollisions(general.readEntry("SnakeSelfCollisions", false));
-    setSnakeDeadlyWalls(general.readEntry("SnakeDeadlyWalls", true));
-    setSnakeLengthLimit(general.readEntry("SnakeLengthLimit", false));
-    setSnakePowerUps(general.readEntry("SnakePowerUps", true));
-    setSnakeWorldEvents(general.readEntry("SnakeWorldEvents", true));
-    setShowClock(general.readEntry("ShowClock", true));
-    setClockMovement(general.readEntry("ClockMovement", QStringLiteral("bounce")));
-    setClockSpeed(general.readEntry("ClockSpeed", QStringLiteral("normal")));
-    setFrameRate(general.readEntry("FrameRate", 30));
-    setReducedMotion(general.readEntry("ReducedMotion", false));
-    setMonitorBehavior(general.readEntry("MonitorBehavior", QStringLiteral("independent")));
-    setCoverPanels(general.readEntry("CoverPanels", true));
+    const QString legacyVisual = values.value(QStringLiteral("visualModule")).toString();
+    if (legacyVisual == QStringLiteral("black")) values[QStringLiteral("visualModule")] = QStringLiteral("none");
+    if (!general.hasKey("BackgroundStyle") && (legacyVisual == QStringLiteral("black") || legacyVisual == QStringLiteral("bounce"))) {
+        values[QStringLiteral("backgroundStyle")] = QStringLiteral("black");
+    }
+    beginUpdate();
+    assignDefaults();
+    apply(values);
+    const bool migrate = general.readEntry("AnimationSettingsVersion", 0) < 1;
+    const QVariantMap legacyAnimation = activeAnimationSettings(); // normalized by setters
+    const KConfigGroup animations(m_config.get(), QStringLiteral("Animations"));
+    QVariantMap profiles;
+    for (const QString &module : visualModules()) {
+        const KConfigGroup group = animations.group(module);
+        QVariantMap profile;
+        for (const QString &key : animationKeys()) {
+            const QVariant fallback = migrate ? legacyAnimation.value(key) : defaultValues.value(key);
+            profile.insert(key, group.readEntry(diskKey(key), fallback));
+        }
+        profiles.insert(module, profile);
+    }
+    apply({{QStringLiteral("animationSettings"), profiles}});
     endUpdate();
+    // Persist the one-time migration even if the settings window is never opened.
+    // A brand new configuration remains unwritten until the first explicit save.
+    if (migrate && general.exists()) save();
 }
 
 void Configuration::save()
@@ -367,11 +459,41 @@ void Configuration::save()
     general.writeEntry("ReducedMotion", m_reducedMotion);
     general.writeEntry("MonitorBehavior", m_monitorBehavior);
     general.writeEntry("CoverPanels", m_coverPanels);
+    KConfigGroup animations(m_config.get(), QStringLiteral("Animations"));
+    m_animationSettings.insert(m_visualModule, activeAnimationSettings());
+    for (const QString &module : visualModules()) {
+        KConfigGroup group = animations.group(module);
+        const QVariantMap profile = m_animationSettings.value(module);
+        for (const QString &key : animationKeys()) group.writeEntry(diskKey(key), profile.value(key));
+    }
+    general.writeEntry("AnimationSettingsVersion", 1);
     m_config->sync();
     Q_EMIT saved();
 }
 
-void Configuration::restoreDefaults()
+void Configuration::restoreDefaults(const QString &page)
 {
-    assignDefaults();
+    if (page.isEmpty()) assignDefaults();
+    else apply(defaults(page));
+}
+
+int Configuration::clockMode() const
+{
+    if (!m_showClock) return 0;
+    if (m_clockMovement == QStringLiteral("center")) return 1;
+    if (m_clockSpeed == QStringLiteral("slow")) return 2;
+    return m_clockSpeed == QStringLiteral("fast") ? 4 : 3;
+}
+
+void Configuration::setClockMode(int mode)
+{
+    beginUpdate();
+    mode = std::clamp(mode, 0, 4);
+    setShowClock(mode != 0);
+    if (mode == 1) setClockMovement(QStringLiteral("center"));
+    if (mode >= 2) {
+        setClockMovement(QStringLiteral("bounce"));
+        setClockSpeed(mode == 2 ? QStringLiteral("slow") : mode == 4 ? QStringLiteral("fast") : QStringLiteral("normal"));
+    }
+    endUpdate();
 }
