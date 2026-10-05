@@ -1,625 +1,179 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+// Settings window: a sidebar with Appearance, General and About. Every control
+// writes its Configuration property directly; the file write is batched.
+pragma ComponentBehavior: Bound
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
+import QtQuick.Controls as QQC2
+import org.kde.kirigami as Kirigami
+import org.kde.kirigamiaddons.delegates as Delegates
 
-ApplicationWindow {
+Kirigami.ApplicationWindow {
     id: window
+
     required property var controller
     required property var screensaverConfig
-    width: 720
-    height: 900
-    minimumWidth: 600
-    minimumHeight: 700
+    property string initialPage: "appearance"
+    // Set when a preview could not start; shown at the top of the page.
+    property string previewError: ""
+
+    width: Kirigami.Units.gridUnit * 57
+    height: Kirigami.Units.gridUnit * 40
+    minimumWidth: Kirigami.Units.gridUnit * 34
+    minimumHeight: Kirigami.Units.gridUnit * 26
     visible: true
     title: qsTr("Plasma Visual Screensaver")
 
-    onClosing: function(close) {
+    // Hide instead of quitting; the background service keeps running.
+    onClosing: close => {
         close.accepted = false
+        window.flush()
         window.hide()
     }
+    // Quit over D-Bus destroys the window without closing it.
+    Component.onDestruction: flush()
 
-    function store() {
-        controller.saveSettings({
-            idleMinutes: idleTimeout.value,
-            visualModule: visual.currentValue,
-            backgroundStyle: background.currentValue,
-            animationSpeed: Math.round(animationSpeed.value),
-            animationDensity: Math.round(animationDensity.value),
-            animationScale: Math.round(animationScale.value),
-            animationPalette: paletteChoice.currentValue,
-            trailAmount: Math.round(trailAmount.value),
-            ballCount: ballCount.value,
-            ballGravity: Math.round(ballGravity.value),
-            ballElasticity: Math.round(ballElasticity.value),
-            ballCollisions: ballCollisions.checked,
-            snakeIntelligence: Math.round(snakeIntelligence.value),
-            snakeAggression: Math.round(snakeAggression.value),
-            snakeSelfCollisions: snakeSelfCollisions.checked,
-            snakeDeadlyWalls: snakeDeadlyWalls.checked,
-            snakeLengthLimit: snakeLengthLimit.checked,
-            snakePowerUps: snakePowerUps.checked,
-            snakeWorldEvents: snakeWorldEvents.checked,
-            showClock: showClock.checked,
-            clockMovement: clockMovement.currentValue,
-            clockSpeed: clockSpeed.currentValue,
-            frameRate: frameRate.currentValue,
-            reducedMotion: reducedMotion.checked,
-            monitorBehavior: monitors.currentValue,
-            coverPanels: coverPanels.checked
+    // Open popups (combo lists, menus) take Escape first.
+    Shortcut {
+        sequences: [StandardKey.Close, "Escape"]
+        onActivated: window.close()
+    }
+
+    // ---- Instant apply ---------------------------------------------------
+    Timer {
+        id: saveTimer
+        interval: 400
+        onTriggered: window.screensaverConfig.save()
+    }
+
+    function write(key, value) {
+        if (screensaverConfig[key] === value) return
+        screensaverConfig[key] = value
+        saveTimer.restart()
+    }
+
+    function flush() {
+        if (!saveTimer.running) return
+        saveTimer.stop()
+        screensaverConfig.save()
+    }
+
+    // Defaults stay disabled while the page already matches them, as in
+    // System Settings. Re-evaluated on every Configuration change.
+    property int revision: 0
+    Connections {
+        target: window.screensaverConfig
+        function onChanged() { window.revision += 1 }
+    }
+    readonly property string appearanceDefaultsJson: JSON.stringify(screensaverConfig.defaults("appearance"))
+    readonly property string generalDefaultsJson: JSON.stringify(screensaverConfig.defaults("general"))
+    readonly property bool appearanceIsDefault: revision >= 0
+        && JSON.stringify(screensaverConfig.snapshot("appearance")) === appearanceDefaultsJson
+    readonly property bool generalIsDefault: revision >= 0
+        && JSON.stringify(screensaverConfig.snapshot("general")) === generalDefaultsJson
+
+    function restoreDefaults(page) {
+        const previous = screensaverConfig.snapshot(page)
+        screensaverConfig.restoreDefaults(page)
+        saveTimer.restart()
+        showPassiveNotification(page === "general" ? qsTr("General settings restored to defaults")
+                                                   : qsTr("Appearance restored to defaults"),
+                                "long", qsTr("Undo"), () => {
+            screensaverConfig.apply(previous)
+            saveTimer.restart()
         })
     }
 
-    function optionTitle() {
-        switch (visual.currentValue) {
-        case "bounce": return qsTr("Bouncing Balls physics")
-        case "starfield": return qsTr("Hyperspace flight controls")
-        case "matrix": return qsTr("Digital Rain controls")
-        case "kaleidoscope": return qsTr("Kaleidoscope geometry")
-        case "fireflies": return qsTr("Firefly swarm controls")
-        case "ribbons": return qsTr("Neon Ribbon controls")
-        case "constellation": return qsTr("Constellation controls")
-        case "snakes": return qsTr("Slithering Snakes ecosystem")
-        case "orbs": return qsTr("Floating Orb controls")
-        default: return qsTr("Aurora controls")
+    function preview() {
+        previewError = ""
+        saveTimer.stop()
+        screensaverConfig.save()
+        controller.Preview()
+    }
+
+    function quit() {
+        saveTimer.stop()
+        screensaverConfig.save()
+        controller.Quit()
+    }
+
+    Connections {
+        target: window.controller
+        function onPreviewFailed(reason) {
+            window.previewError = qsTr("Couldn't start the preview. %1").arg(reason)
         }
     }
 
-    function speedLabel() {
-        if (visual.currentValue === "bounce") return qsTr("Physics speed")
-        if (visual.currentValue === "starfield") return qsTr("Warp speed")
-        if (visual.currentValue === "matrix") return qsTr("Fall speed")
-        if (visual.currentValue === "fireflies") return qsTr("Swarm speed")
-        if (visual.currentValue === "snakes") return qsTr("Slither speed")
-        return qsTr("Motion speed")
-    }
+    // ---- Pages -----------------------------------------------------------
+    readonly property var pages: [
+        { id: "appearance", text: qsTr("Appearance"), icon: "preferences-desktop-theme-global", source: "settings/AppearancePage.qml" },
+        { id: "general", text: qsTr("General"), icon: "preferences-system", source: "settings/GeneralPage.qml" },
+        { id: "about", text: qsTr("About"), icon: "help-about", source: "settings/AboutPage.qml" }
+    ]
+    property var pageCache: ({})
+    property string currentPage: ""
 
-    function densityLabel() {
-        switch (visual.currentValue) {
-        case "aurora": return qsTr("Aurora layers")
-        case "orbs": return qsTr("Orb count")
-        case "starfield": return qsTr("Star count")
-        case "matrix": return qsTr("Glyph density")
-        case "kaleidoscope": return qsTr("Symmetry & detail")
-        case "fireflies": return qsTr("Swarm size")
-        case "ribbons": return qsTr("Ribbon count")
-        case "constellation": return qsTr("Star count")
-        case "snakes": return qsTr("Snake population")
-        default: return qsTr("Density")
+    function showPage(id) {
+        if (id === currentPage) return
+        let page = pageCache[id]
+        if (!page) {
+            const entry = pages.find(p => p.id === id)
+            const component = Qt.createComponent(entry.source)
+            if (component.status !== Component.Ready) {
+                console.error(component.errorString())
+                return
+            }
+            page = component.createObject(window, { settings: window })
+            pageCache[id] = page
         }
+        currentPage = id
+        if (pageStack.depth === 0) pageStack.push(page)
+        else pageStack.replace(page)
     }
 
-    function scaleLabel() {
-        switch (visual.currentValue) {
-        case "bounce": return qsTr("Ball size")
-        case "matrix": return qsTr("Glyph size")
-        case "kaleidoscope": return qsTr("Pattern spread")
-        case "ribbons": return qsTr("Ribbon thickness")
-        case "constellation": return qsTr("Star size")
-        case "snakes": return qsTr("Snake thickness")
-        default: return qsTr("Element size")
-        }
-    }
+    Component.onCompleted: showPage(initialPage)
 
-    function trailLabel() {
-        if (visual.currentValue === "bounce" || visual.currentValue === "starfield")
-            return qsTr("Trail length")
-        if (visual.currentValue === "constellation")
-            return qsTr("Link brightness")
-        if (visual.currentValue === "snakes")
-            return qsTr("Food abundance")
-        return qsTr("Glow intensity")
-    }
+    pageStack.globalToolBar.style: Kirigami.ApplicationHeaderStyle.ToolBar
+    pageStack.globalToolBar.showNavigationButtons: Kirigami.ApplicationHeaderStyle.NoNavigationButtons
+    pageStack.columnView.columnResizeMode: Kirigami.ColumnView.SingleColumn
 
-    header: ToolBar {
-        RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 22
-            anchors.rightMargin: 16
-            Label {
-                text: qsTr("Visual Screensaver")
-                font.pixelSize: 23
-                font.weight: Font.DemiBold
-                Layout.fillWidth: true
+    // ---- Sidebar ---------------------------------------------------------
+    // Same construction as Kirigami Addons' ConfigurationView window, minus
+    // its search header. Collapses to icons on narrow windows.
+    readonly property bool narrow: width < Kirigami.Units.gridUnit * 40
+
+    globalDrawer: Kirigami.OverlayDrawer {
+        edge: Application.layoutDirection === Qt.RightToLeft ? Qt.RightEdge : Qt.LeftEdge
+        modal: false
+        drawerOpen: true
+        handleVisible: false
+        width: window.narrow ? Kirigami.Units.gridUnit * 3 : Kirigami.Units.gridUnit * 10
+        Kirigami.Theme.colorSet: Kirigami.Theme.View
+        Kirigami.Theme.inherit: false
+        leftPadding: 0; rightPadding: 0; topPadding: 0; bottomPadding: 0
+
+        contentItem: ListView {
+            id: sidebar
+            topMargin: Kirigami.Units.smallSpacing
+            model: window.pages
+            currentIndex: window.pages.findIndex(p => p.id === window.currentPage)
+            activeFocusOnTab: true
+            Accessible.role: Accessible.PageTabList
+
+            delegate: Delegates.RoundedItemDelegate {
+                required property var modelData
+                required property int index
+                text: modelData.text
+                icon.name: modelData.icon
+                checked: ListView.isCurrentItem
+                display: window.narrow ? QQC2.AbstractButton.IconOnly : QQC2.AbstractButton.TextBesideIcon
+                Accessible.role: Accessible.PageTab
+                QQC2.ToolTip.text: text
+                QQC2.ToolTip.visible: window.narrow && hovered
+                QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
+                onClicked: window.showPage(modelData.id)
             }
-            Button {
-                text: qsTr("Preview")
-                onClicked: { window.store(); window.controller.Preview() }
-            }
-            Button {
-                text: qsTr("Save")
-                highlighted: true
-                onClicked: window.store()
-            }
-        }
-    }
-
-    ScrollView {
-        anchors.fill: parent
-        contentWidth: availableWidth
-
-        ColumnLayout {
-            width: parent.width
-            spacing: 14
-
-            Label {
-                Layout.fillWidth: true
-                Layout.margins: 22
-                Layout.bottomMargin: 0
-                wrapMode: Text.WordWrap
-                color: palette.placeholderText
-                text: qsTr("A decorative overlay for an unlocked session. It does not lock the computer or protect your data.")
-            }
-
-            GroupBox {
-                title: qsTr("Activation and appearance")
-                Layout.fillWidth: true
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
-
-                GridLayout {
-                    anchors.fill: parent
-                    columns: 2
-                    columnSpacing: 22
-                    rowSpacing: 12
-
-                    Label { text: qsTr("Start after") }
-                    RowLayout {
-                        SpinBox {
-                            id: idleTimeout
-                            from: 1; to: 240
-                            value: window.screensaverConfig.idleMinutes
-                        }
-                        Label { text: qsTr("minutes of inactivity") }
-                    }
-
-                    Label { text: qsTr("Animation") }
-                    ComboBox {
-                        id: visual
-                        Layout.fillWidth: true
-                        textRole: "text"; valueRole: "value"
-                        model: [
-                            { text: qsTr("None"), value: "none" },
-                            { text: qsTr("Aurora Drift"), value: "aurora" },
-                            { text: qsTr("Floating Orbs"), value: "orbs" },
-                            { text: qsTr("Bouncing Balls"), value: "bounce" },
-                            { text: qsTr("Hyperspace"), value: "starfield" },
-                            { text: qsTr("Digital Rain"), value: "matrix" },
-                            { text: qsTr("Kaleidoscope"), value: "kaleidoscope" },
-                            { text: qsTr("Fireflies"), value: "fireflies" },
-                            { text: qsTr("Neon Ribbons"), value: "ribbons" },
-                            { text: qsTr("Constellation"), value: "constellation" },
-                            { text: qsTr("Slithering Snakes"), value: "snakes" }
-                        ]
-                        Component.onCompleted: currentIndex = indexOfValue(window.screensaverConfig.visualModule)
-                    }
-
-                    Label { text: qsTr("Background") }
-                    ComboBox {
-                        id: background
-                        Layout.fillWidth: true
-                        textRole: "text"; valueRole: "value"
-                        model: [
-                            { text: qsTr("Pure Black"), value: "black" },
-                            { text: qsTr("Midnight Gradient"), value: "midnight" },
-                            { text: qsTr("Deep Ocean"), value: "ocean" },
-                            { text: qsTr("Dark Plum"), value: "plum" }
-                        ]
-                        Component.onCompleted: currentIndex = indexOfValue(window.screensaverConfig.backgroundStyle)
-                    }
-                }
-            }
-
-            GroupBox {
-                title: window.optionTitle()
-                visible: visual.currentValue !== "none"
-                Layout.fillWidth: true
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
-
-                GridLayout {
-                    anchors.fill: parent
-                    columns: 3
-                    columnSpacing: 16
-                    rowSpacing: 8
-
-                    Label { text: qsTr("Color palette") }
-                    ComboBox {
-                        id: paletteChoice
-                        Layout.columnSpan: 2
-                        Layout.fillWidth: true
-                        textRole: "text"; valueRole: "value"
-                        model: [
-                            { text: qsTr("Ocean Electric"), value: "ocean" },
-                            { text: qsTr("Full Spectrum"), value: "spectrum" },
-                            { text: qsTr("Ember & Gold"), value: "ember" },
-                            { text: qsTr("Forest Glow"), value: "forest" },
-                            { text: qsTr("Monochrome"), value: "mono" },
-                            { text: qsTr("Soft Pastels"), value: "pastel" }
-                        ]
-                        Component.onCompleted: currentIndex = indexOfValue(window.screensaverConfig.animationPalette)
-                    }
-
-                    Label { text: window.speedLabel() }
-                    Slider {
-                        id: animationSpeed
-                        Layout.fillWidth: true
-                        from: 10; to: 300; stepSize: 10
-                        value: window.screensaverConfig.animationSpeed
-                    }
-                    Label { text: Math.round(animationSpeed.value) + "%"; horizontalAlignment: Text.AlignRight }
-
-                    Label { text: window.densityLabel(); visible: visual.currentValue !== "bounce" }
-                    Slider {
-                        id: animationDensity
-                        Layout.fillWidth: true
-                        from: 10; to: 100; stepSize: 5
-                        value: window.screensaverConfig.animationDensity
-                        visible: visual.currentValue !== "bounce"
-                    }
-                    Label {
-                        text: Math.round(animationDensity.value) + "%"
-                        visible: visual.currentValue !== "bounce"
-                        horizontalAlignment: Text.AlignRight
-                    }
-
-                    Label { text: window.scaleLabel() }
-                    Slider {
-                        id: animationScale
-                        Layout.fillWidth: true
-                        from: 25; to: 200; stepSize: 5
-                        value: window.screensaverConfig.animationScale
-                    }
-                    Label { text: Math.round(animationScale.value) + "%"; horizontalAlignment: Text.AlignRight }
-
-                    Label { text: window.trailLabel() }
-                    Slider {
-                        id: trailAmount
-                        Layout.fillWidth: true
-                        from: 0; to: 100; stepSize: 5
-                        value: window.screensaverConfig.trailAmount
-                    }
-                    Label { text: Math.round(trailAmount.value) + "%"; horizontalAlignment: Text.AlignRight }
-
-                    Label { text: qsTr("Number of balls"); visible: visual.currentValue === "bounce" }
-                    SpinBox {
-                        id: ballCount
-                        from: 1; to: 20
-                        value: window.screensaverConfig.ballCount
-                        visible: visual.currentValue === "bounce"
-                    }
-                    Item { visible: visual.currentValue === "bounce" }
-
-                    Label { text: qsTr("Gravity"); visible: visual.currentValue === "bounce" }
-                    Slider {
-                        id: ballGravity
-                        Layout.fillWidth: true
-                        from: -100; to: 100; stepSize: 5
-                        value: window.screensaverConfig.ballGravity
-                        visible: visual.currentValue === "bounce"
-                    }
-                    Label {
-                        visible: visual.currentValue === "bounce"
-                        text: ballGravity.value < -2 ? qsTr("Up %1").arg(Math.abs(Math.round(ballGravity.value)))
-                              : (ballGravity.value > 2 ? qsTr("Down %1").arg(Math.round(ballGravity.value))
-                                 : qsTr("Zero-G"))
-                    }
-
-                    Label { text: qsTr("Elasticity"); visible: visual.currentValue === "bounce" }
-                    Slider {
-                        id: ballElasticity
-                        Layout.fillWidth: true
-                        from: 50; to: 100; stepSize: 1
-                        value: window.screensaverConfig.ballElasticity
-                        visible: visual.currentValue === "bounce"
-                    }
-                    Label { text: Math.round(ballElasticity.value) + "%"; visible: visual.currentValue === "bounce" }
-
-                    Label {
-                        text: qsTr("Intelligence")
-                        visible: visual.currentValue === "snakes"
-                    }
-                    Slider {
-                        id: snakeIntelligence
-                        Layout.fillWidth: true
-                        from: 0; to: 100; stepSize: 5
-                        value: window.screensaverConfig.snakeIntelligence
-                        visible: visual.currentValue === "snakes"
-                    }
-                    Label {
-                        text: Math.round(snakeIntelligence.value) + "%"
-                        visible: visual.currentValue === "snakes"
-                        horizontalAlignment: Text.AlignRight
-                    }
-
-                    Label {
-                        text: qsTr("Aggression")
-                        visible: visual.currentValue === "snakes"
-                    }
-                    Slider {
-                        id: snakeAggression
-                        Layout.fillWidth: true
-                        from: 0; to: 100; stepSize: 5
-                        value: window.screensaverConfig.snakeAggression
-                        visible: visual.currentValue === "snakes"
-                    }
-                    Label {
-                        text: Math.round(snakeAggression.value) + "%"
-                        visible: visual.currentValue === "snakes"
-                        horizontalAlignment: Text.AlignRight
-                    }
-
-                    Label {
-                        text: qsTr("Rules")
-                        visible: visual.currentValue === "snakes"
-                    }
-                    CheckBox {
-                        id: snakePowerUps
-                        Layout.columnSpan: 2
-                        text: qsTr("Power-ups")
-                        checked: window.screensaverConfig.snakePowerUps
-                        visible: visual.currentValue === "snakes"
-                    }
-
-                    // Hidden until the first world events ship.
-                    Item { visible: false }
-                    CheckBox {
-                        id: snakeWorldEvents
-                        Layout.columnSpan: 2
-                        text: qsTr("World events")
-                        checked: window.screensaverConfig.snakeWorldEvents
-                        visible: false
-                    }
-
-                    Item { visible: visual.currentValue === "snakes" }
-                    CheckBox {
-                        id: snakeSelfCollisions
-                        Layout.columnSpan: 2
-                        text: qsTr("Snakes can crash into their own bodies")
-                        checked: window.screensaverConfig.snakeSelfCollisions
-                        visible: visual.currentValue === "snakes"
-                    }
-
-                    Item { visible: visual.currentValue === "snakes" }
-                    CheckBox {
-                        id: snakeDeadlyWalls
-                        Layout.columnSpan: 2
-                        text: qsTr("Edges are deadly walls")
-                        checked: window.screensaverConfig.snakeDeadlyWalls
-                        visible: visual.currentValue === "snakes"
-                    }
-
-                    Item { visible: visual.currentValue === "snakes" }
-                    CheckBox {
-                        id: snakeLengthLimit
-                        Layout.columnSpan: 2
-                        text: qsTr("Limit snake length")
-                        checked: window.screensaverConfig.snakeLengthLimit
-                        visible: visual.currentValue === "snakes"
-                    }
-
-                    Label { text: qsTr("Ball interaction"); visible: visual.currentValue === "bounce" }
-                    CheckBox {
-                        id: ballCollisions
-                        Layout.columnSpan: 2
-                        text: qsTr("Balls collide with each other")
-                        checked: window.screensaverConfig.ballCollisions
-                        visible: visual.currentValue === "bounce"
-                    }
-                }
-            }
-
-            GroupBox {
-                title: qsTr("Clock and displays")
-                Layout.fillWidth: true
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
-
-                GridLayout {
-                    anchors.fill: parent
-                    columns: 2
-                    columnSpacing: 22
-                    rowSpacing: 10
-
-                    Label { text: qsTr("Clock") }
-                    CheckBox { id: showClock; text: qsTr("Show clock and date"); checked: window.screensaverConfig.showClock }
-
-                    Label { text: qsTr("Clock movement") }
-                    ComboBox {
-                        id: clockMovement
-                        Layout.fillWidth: true
-                        textRole: "text"; valueRole: "value"
-                        model: [
-                            { text: qsTr("Move around the display"), value: "bounce" },
-                            { text: qsTr("Stay centered"), value: "center" }
-                        ]
-                        Component.onCompleted: currentIndex = indexOfValue(window.screensaverConfig.clockMovement)
-                        enabled: showClock.checked
-                    }
-
-                    Label { text: qsTr("Clock speed") }
-                    ComboBox {
-                        id: clockSpeed
-                        Layout.fillWidth: true
-                        textRole: "text"; valueRole: "value"
-                        model: [
-                            { text: qsTr("Slow"), value: "slow" },
-                            { text: qsTr("Normal"), value: "normal" },
-                            { text: qsTr("Fast"), value: "fast" }
-                        ]
-                        Component.onCompleted: currentIndex = indexOfValue(window.screensaverConfig.clockSpeed)
-                        enabled: showClock.checked && clockMovement.currentValue === "bounce"
-                    }
-
-                    Label { text: qsTr("Multiple monitors") }
-                    ComboBox {
-                        id: monitors
-                        Layout.fillWidth: true
-                        textRole: "text"; valueRole: "value"
-                        model: [
-                            { text: qsTr("Independent motion on every monitor"), value: "independent" },
-                            { text: qsTr("Synchronized motion on every monitor"), value: "synchronized" },
-                            { text: qsTr("Seamless virtual desktop"), value: "seamless" }
-                        ]
-                        Component.onCompleted: currentIndex = indexOfValue(window.screensaverConfig.monitorBehavior)
-                    }
-
-                    Label { text: qsTr("Panels") }
-                    CheckBox { id: coverPanels; text: qsTr("Cover taskbars and panels"); checked: window.screensaverConfig.coverPanels }
-                }
-            }
-
-            GroupBox {
-                title: qsTr("Power and accessibility")
-                Layout.fillWidth: true
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
-
-                GridLayout {
-                    anchors.fill: parent
-                    columns: 2
-                    columnSpacing: 22
-
-                    Label { text: qsTr("Motion") }
-                    CheckBox {
-                        id: reducedMotion
-                        text: qsTr("Reduced motion")
-                        checked: window.screensaverConfig.reducedMotion
-                    }
-
-                    Label { text: qsTr("Frame rate") }
-                    ComboBox {
-                        id: frameRate
-                        Layout.fillWidth: true
-                        textRole: "text"; valueRole: "value"
-                        model: [
-                            { text: qsTr("Match each monitor — smoothest"), value: 0 },
-                            { text: qsTr("15 fps — lowest power"), value: 15 },
-                            { text: qsTr("24 fps — cinematic"), value: 24 },
-                            { text: qsTr("30 fps — low power"), value: 30 },
-                            { text: qsTr("45 fps"), value: 45 },
-                            { text: qsTr("60 fps — balanced"), value: 60 },
-                            { text: qsTr("75 fps"), value: 75 },
-                            { text: qsTr("90 fps"), value: 90 },
-                            { text: qsTr("100 fps"), value: 100 },
-                            { text: qsTr("120 fps"), value: 120 },
-                            { text: qsTr("144 fps"), value: 144 },
-                            { text: qsTr("165 fps"), value: 165 },
-                            { text: qsTr("175 fps"), value: 175 },
-                            { text: qsTr("200 fps"), value: 200 },
-                            { text: qsTr("240 fps"), value: 240 }
-                        ]
-                        Component.onCompleted: currentIndex = indexOfValue(window.screensaverConfig.frameRate)
-                        enabled: !reducedMotion.checked || visual.currentValue === "snakes"
-                    }
-
-                    // OverlayManager caps snakes at 60 fps; say so only when the choice exceeds it.
-                    Item { visible: snakesFrameRateCap.visible }
-                    Label {
-                        id: snakesFrameRateCap
-                        Layout.fillWidth: true
-                        visible: visual.currentValue === "snakes"
-                                 && (frameRate.currentValue === 0 || frameRate.currentValue > 60)
-                        wrapMode: Text.WordWrap
-                        color: palette.placeholderText
-                        text: qsTr("Slithering Snakes runs at up to 60 fps.")
-                    }
-                }
-            }
-
-            Label {
-                Layout.fillWidth: true
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
-                wrapMode: Text.WordWrap
-                color: palette.placeholderText
-                text: qsTr("OLED tip: Pure Black, moving elements, a moving clock, seamless mode, and panel coverage minimize static pixels. Match each monitor removes timer jitter and follows every display's native refresh, while fixed caps save GPU power.")
-            }
-
-            GroupBox {
-                title: qsTr("About and updates")
-                Layout.fillWidth: true
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
-
-                RowLayout {
-                    anchors.fill: parent
-                    spacing: 16
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 3
-
-                        Label {
-                            text: qsTr("Plasma Visual Screensaver %1").arg(window.controller.applicationVersion)
-                            font.weight: Font.DemiBold
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            color: palette.placeholderText
-                            text: qsTr("Updates are delivered through the system update page when the app is installed from the project's Launchpad PPA.")
-                        }
-                        Label {
-                            id: updateStatus
-                            Layout.fillWidth: true
-                            wrapMode: Text.WordWrap
-                            visible: text.length > 0
-                        }
-                    }
-
-                    Button {
-                        text: qsTr("Check for Updates")
-                        onClicked: {
-                            const opened = window.controller.openUpdateCenter()
-                            updateStatus.text = opened
-                                ? qsTr("System updates opened. Available Plasma Visual Screensaver updates will appear there.")
-                                : qsTr("Could not open the software manager or release page.")
-                        }
-                    }
-                }
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.leftMargin: 22
-                Layout.rightMargin: 22
-                Layout.bottomMargin: 22
-
-                Button { text: qsTr("Stop Background Process"); onClicked: window.controller.Quit() }
-                Item { Layout.fillWidth: true }
-                Button {
-                    text: qsTr("Defaults")
-                    onClicked: {
-                        idleTimeout.value = 10
-                        visual.currentIndex = visual.indexOfValue("aurora")
-                        background.currentIndex = background.indexOfValue("midnight")
-                        animationSpeed.value = 100
-                        animationDensity.value = 50
-                        animationScale.value = 100
-                        paletteChoice.currentIndex = paletteChoice.indexOfValue("ocean")
-                        trailAmount.value = 35
-                        ballCount.value = 5
-                        ballGravity.value = 35
-                        ballElasticity.value = 92
-                        ballCollisions.checked = true
-                        snakeIntelligence.value = 75
-                        snakeAggression.value = 100
-                        snakeSelfCollisions.checked = false
-                        snakeDeadlyWalls.checked = true
-                        snakeLengthLimit.checked = false
-                        snakePowerUps.checked = true
-                        snakeWorldEvents.checked = true
-                        showClock.checked = true
-                        clockMovement.currentIndex = clockMovement.indexOfValue("bounce")
-                        clockSpeed.currentIndex = clockSpeed.indexOfValue("normal")
-                        frameRate.currentIndex = frameRate.indexOfValue(30)
-                        reducedMotion.checked = false
-                        monitors.currentIndex = monitors.indexOfValue("independent")
-                        coverPanels.checked = true
-                    }
-                }
-            }
+            Keys.onUpPressed: window.showPage(window.pages[Math.max(0, currentIndex - 1)].id)
+            Keys.onDownPressed: window.showPage(window.pages[Math.min(count - 1, currentIndex + 1)].id)
         }
     }
 }

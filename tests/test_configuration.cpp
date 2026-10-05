@@ -4,6 +4,7 @@
 #include <KConfig>
 #include <KConfigGroup>
 #include <QSignalSpy>
+#include <QFile>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -234,6 +235,163 @@ private Q_SLOTS:
         QCOMPARE(config.frameRate(), 15);
         config.setFrameRate(5);
         QCOMPARE(config.frameRate(), 15);
+    }
+
+    void migratesRealSharedConfigurationOnce()
+    {
+        QTemporaryDir directory;
+        const QString path = directory.filePath(QStringLiteral("settingsrc"));
+        const QString fixture = QFINDTESTDATA("fixtures/settings-pre-animation-profiles.rc");
+        QVERIFY(!fixture.isEmpty());
+        QVERIFY(QFile::copy(fixture, path));
+        Configuration config(path);
+        QCOMPARE(config.visualModule(), QStringLiteral("snakes"));
+        QCOMPARE(config.idleMinutes(), 1);
+        QCOMPARE(config.backgroundStyle(), QStringLiteral("black"));
+        QCOMPARE(config.monitorBehavior(), QStringLiteral("seamless"));
+        QCOMPARE(config.clockMode(), 4);
+        QCOMPARE(config.ballCount(), 20);
+        QCOMPARE(config.snakeIntelligence(), 100);
+        const QVariantMap profiles = config.snapshot().value(QStringLiteral("animationSettings")).toMap();
+        QCOMPARE(profiles.size(), 11);
+        for (auto it = profiles.cbegin(); it != profiles.cend(); ++it) {
+            config.setVisualModule(it.key());
+            QCOMPARE(config.animationSpeed(), 300);
+            QCOMPARE(config.animationDensity(), 80);
+            QCOMPARE(config.animationScale(), 200);
+            QCOMPARE(config.trailAmount(), 100);
+            QCOMPARE(config.animationPalette(), QStringLiteral("ember"));
+        }
+        // Migration was persisted before any explicit save.
+        KConfig migrated(path, KConfig::SimpleConfig);
+        QCOMPARE(KConfigGroup(&migrated, QStringLiteral("General")).readEntry("AnimationSettingsVersion", 0), 1);
+        config.setVisualModule(QStringLiteral("aurora"));
+        config.setAnimationSpeed(120);
+        config.setAnimationPalette(QStringLiteral("pastel"));
+        config.save();
+        // Old shared keys must never seed the profiles a second time.
+        KConfigGroup general(&migrated, QStringLiteral("General"));
+        general.writeEntry("AnimationSpeed", 10);
+        migrated.sync();
+        config.reload();
+        QCOMPARE(config.animationSpeed(), 120);
+        QCOMPARE(config.animationPalette(), QStringLiteral("pastel"));
+        config.setVisualModule(QStringLiteral("snakes"));
+        QCOMPARE(config.animationSpeed(), 300);
+        QCOMPARE(config.animationPalette(), QStringLiteral("ember"));
+    }
+
+    void perAnimationRoundTripsAndValidates()
+    {
+        QTemporaryDir directory;
+        const QString path = directory.filePath(QStringLiteral("settingsrc"));
+        Configuration config(path);
+        const QStringList modules = config.defaults().value(QStringLiteral("animationSettings")).toMap().keys();
+        QVariantMap expected;
+        int i = 0;
+        for (const QString &module : modules) {
+            config.apply({{QStringLiteral("visualModule"), module},
+                {QStringLiteral("animationSpeed"), 10 + i * 20},
+                {QStringLiteral("animationDensity"), 10 + i * 5},
+                {QStringLiteral("animationScale"), 25 + i * 10},
+                {QStringLiteral("trailAmount"), i * 7},
+                {QStringLiteral("animationPalette"), i % 2 ? QStringLiteral("ember") : QStringLiteral("mono")}});
+            expected = config.snapshot();
+            ++i;
+        }
+        config.save();
+        Configuration loaded(path);
+        QCOMPARE(loaded.snapshot(), expected);
+        {
+            KConfig raw(path, KConfig::SimpleConfig);
+            KConfigGroup animations(&raw, QStringLiteral("Animations"));
+            KConfigGroup snakes = animations.group(QStringLiteral("snakes"));
+            snakes.writeEntry("AnimationSpeed", 999);
+            snakes.writeEntry("AnimationDensity", -20);
+            snakes.writeEntry("AnimationScale", 999);
+            snakes.writeEntry("TrailAmount", -10);
+            snakes.writeEntry("AnimationPalette", QStringLiteral("unknown"));
+            // A missing profile after migration uses defaults, not the shared keys.
+            animations.group(QStringLiteral("orbs")).deleteGroup();
+            raw.sync();
+        }
+        loaded.reload();
+        loaded.setVisualModule(QStringLiteral("snakes"));
+        QCOMPARE(loaded.animationSpeed(), 300);
+        QCOMPARE(loaded.animationDensity(), 10);
+        QCOMPARE(loaded.animationScale(), 200);
+        QCOMPARE(loaded.trailAmount(), 0);
+        QCOMPARE(loaded.animationPalette(), QStringLiteral("ocean"));
+        loaded.setVisualModule(QStringLiteral("orbs"));
+        QCOMPARE(loaded.animationSpeed(), 100);
+        QCOMPARE(loaded.animationDensity(), 50);
+        QCOMPARE(loaded.animationScale(), 100);
+        QCOMPARE(loaded.trailAmount(), 35);
+        QCOMPARE(loaded.animationPalette(), QStringLiteral("ocean"));
+    }
+
+    void pageDefaultsAndUndoRestoreAllProfiles()
+    {
+        QTemporaryDir directory;
+        Configuration config(directory.filePath(QStringLiteral("settingsrc")));
+        QCOMPARE(config.snapshot(), config.defaults());
+        config.setAnimationSpeed(250);
+        config.setVisualModule(QStringLiteral("snakes"));
+        config.setAnimationDensity(80);
+        config.setAnimationPalette(QStringLiteral("ember"));
+        config.setSnakeAggression(45);
+        config.setIdleMinutes(1);
+        config.setFrameRate(144);
+        const QVariantMap appearance = config.snapshot(QStringLiteral("appearance"));
+        const QVariantMap general = config.snapshot(QStringLiteral("general"));
+        const QVariantMap before = config.snapshot();
+        QSignalSpy changed(&config, &Configuration::changed);
+        config.restoreDefaults(QStringLiteral("appearance"));
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(config.snapshot(QStringLiteral("appearance")), config.defaults(QStringLiteral("appearance")));
+        QCOMPARE(config.snapshot(QStringLiteral("general")), general);
+        changed.clear();
+        config.apply(appearance);
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(config.snapshot(), before);
+        config.restoreDefaults(QStringLiteral("general"));
+        QCOMPARE(config.snapshot(QStringLiteral("appearance")), appearance);
+        QCOMPARE(config.snapshot(QStringLiteral("general")), config.defaults(QStringLiteral("general")));
+        config.apply(general);
+        QCOMPARE(config.snapshot(), before);
+        config.restoreDefaults(QStringLiteral("invalid"));
+        QCOMPARE(config.snapshot(), before);
+        config.restoreDefaults();
+        QCOMPARE(config.snapshot(), config.defaults());
+    }
+
+    void clockModeMappingPreservesHiddenChoices()
+    {
+        QTemporaryDir directory;
+        Configuration config(directory.filePath(QStringLiteral("settingsrc")));
+        for (int mode : {2, 3, 4}) {
+            QSignalSpy changed(&config, &Configuration::changed);
+            config.setClockMode(mode);
+            QCOMPARE(config.clockMode(), mode);
+            QCOMPARE(config.showClock(), true);
+            QCOMPARE(config.clockMovement(), QStringLiteral("bounce"));
+            QCOMPARE(config.clockSpeed(), mode == 2 ? QStringLiteral("slow") : mode == 4 ? QStringLiteral("fast") : QStringLiteral("normal"));
+            QVERIFY(changed.count() <= 1);
+        }
+        config.setClockMode(0);
+        QCOMPARE(config.showClock(), false);
+        QCOMPARE(config.clockSpeed(), QStringLiteral("fast"));
+        QCOMPARE(config.clockMovement(), QStringLiteral("bounce"));
+        config.setClockMode(1);
+        QCOMPARE(config.clockMode(), 1);
+        QCOMPARE(config.clockSpeed(), QStringLiteral("fast"));
+        config.setClockMode(-10);
+        QCOMPARE(config.clockMode(), 0);
+        QCOMPARE(config.clockMovement(), QStringLiteral("center"));
+        config.apply({{QStringLiteral("clockMode"), 99}});
+        QCOMPARE(config.clockMode(), 4);
+        config.setShowClock(false);
+        QCOMPARE(config.clockMode(), 0);
     }
 
     void migratesCombinedBlackVisual()

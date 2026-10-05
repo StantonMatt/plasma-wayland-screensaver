@@ -4,6 +4,7 @@
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDesktopServices>
+#include <QFile>
 #include <QGuiApplication>
 #include <QProcess>
 #include <QQmlApplicationEngine>
@@ -17,6 +18,8 @@ ApplicationController::ApplicationController(QObject *parent)
     : QObject(parent)
     , m_overlays(&m_configuration, this)
 {
+    connect(qGuiApp, &QGuiApplication::screenAdded, this, &ApplicationController::monitorCountChanged);
+    connect(qGuiApp, &QGuiApplication::screenRemoved, this, &ApplicationController::monitorCountChanged);
     connect(&m_idleMonitor, &IdleMonitor::idleTimeoutReached,
             &m_stateMachine, &ScreensaverStateMachine::idleTimeoutReached);
     connect(&m_idleMonitor, &IdleMonitor::activityResumed, this, [this] {
@@ -37,8 +40,9 @@ ApplicationController::ApplicationController(QObject *parent)
     });
     connect(&m_inhibitor, &Inhibitor::acquired,
             this, &ApplicationController::finishActivation);
-    connect(&m_inhibitor, &Inhibitor::failed,
-            this, &ApplicationController::failActivation);
+    connect(&m_inhibitor, &Inhibitor::failed, this, [this](const QString &error) {
+        failActivation(error, tr("The display couldn't be kept awake."));
+    });
     connect(&m_stateMachine, &ScreensaverStateMachine::activationRequested,
             this, &ApplicationController::activate);
     connect(&m_stateMachine, &ScreensaverStateMachine::dismissalRequested,
@@ -66,9 +70,24 @@ bool ApplicationController::screensaverActive() const
     return m_stateMachine.isActive();
 }
 
+int ApplicationController::monitorCount() const
+{
+    return QGuiApplication::screens().size();
+}
+
 QString ApplicationController::applicationVersion() const
 {
     return QCoreApplication::applicationVersion();
+}
+
+QString ApplicationController::applicationLicenseText() const
+{
+    static const QString text = [] {
+        QFile license(QStringLiteral(":/LICENSE"));
+        if (!license.open(QIODevice::ReadOnly)) return QString();
+        return QString::fromUtf8(license.readAll());
+    }();
+    return text;
 }
 
 void ApplicationController::start()
@@ -101,12 +120,22 @@ void ApplicationController::ShowSettings()
 
 void ApplicationController::Preview()
 {
+    if (m_stateMachine.isActive()) {
+        qWarning() << "Preview requested while the screensaver is starting or running";
+        Q_EMIT previewFailed(tr("The screensaver is already running."));
+        return;
+    }
     m_debugPreviewPending = false;
     m_stateMachine.previewRequested();
 }
 
 void ApplicationController::PreviewDebug()
 {
+    if (m_stateMachine.isActive()) {
+        qWarning() << "Debug preview requested while the screensaver is starting or running";
+        Q_EMIT previewFailed(tr("The screensaver is already running."));
+        return;
+    }
     m_debugPreviewPending = true;
     m_stateMachine.previewRequested();
 }
@@ -123,13 +152,7 @@ void ApplicationController::Quit()
     });
 }
 
-void ApplicationController::saveSettings(const QVariantMap &settings)
-{
-    m_configuration.apply(settings);
-    m_configuration.save();
-}
-
-bool ApplicationController::openUpdateCenter() const
+QString ApplicationController::openUpdateCenter() const
 {
     const QString discover = QStandardPaths::findExecutable(QStringLiteral("plasma-discover"));
     if (!discover.isEmpty()) {
@@ -138,7 +161,7 @@ bool ApplicationController::openUpdateCenter() const
             QStringLiteral("Update"),
         };
         if (QProcess::startDetached(discover, arguments)) {
-            return true;
+            return QStringLiteral("discover");
         }
         qWarning() << "Could not start KDE Discover from" << discover;
     }
@@ -146,15 +169,16 @@ bool ApplicationController::openUpdateCenter() const
     const QUrl releasesUrl(QStringLiteral(
         "https://github.com/StantonMatt/plasma-wayland-screensaver/releases/latest"));
     if (QDesktopServices::openUrl(releasesUrl)) {
-        return true;
+        return QStringLiteral("releases");
     }
 
     qWarning() << "Could not open the Plasma Visual Screensaver update page";
-    return false;
+    return QStringLiteral("failed");
 }
 
 void ApplicationController::activate(bool preview)
 {
+    m_activationIsPreview = preview;
     m_overlays.setDeveloperMode(preview && m_debugPreviewPending);
     m_debugPreviewPending = false;
     m_idleMonitor.watchForResume();
@@ -168,27 +192,32 @@ void ApplicationController::finishActivation()
         return;
     }
     if (!m_overlays.show()) {
-        qWarning() << "No usable screen was available for the screensaver overlay";
         m_inhibitor.release();
-        m_stateMachine.activationFailed();
+        failActivation(QStringLiteral("No usable screen was available for the screensaver overlay"),
+                       tr("The display couldn't be prepared."));
         return;
     }
+    m_activationIsPreview = false;
     m_stateMachine.activationSucceeded();
 }
 
-void ApplicationController::failActivation(const QString &error)
+void ApplicationController::failActivation(const QString &error, const QString &userReason)
 {
     if (m_stateMachine.state() != ScreensaverStateMachine::State::Activating) {
         return;
     }
-    qWarning().noquote() << "Refusing to activate without a power/display inhibitor:" << error;
+    qWarning().noquote() << "Screensaver activation failed:" << error;
+    const bool preview = m_activationIsPreview;
+    m_activationIsPreview = false;
     m_stateMachine.activationFailed();
+    if (preview) Q_EMIT previewFailed(userReason);
     // Do not spin while the current idle interval remains above the threshold.
     // KIdleTime's already-armed resume notification starts a fresh interval.
 }
 
 void ApplicationController::dismiss()
 {
+    m_activationIsPreview = false;
     m_overlays.hide();
     m_inhibitor.release();
     if (m_waitForIdleResumeOnDismissal) {

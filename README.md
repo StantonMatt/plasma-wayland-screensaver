@@ -25,9 +25,10 @@ plasma-visual-screensaver --background
 ```
 
 Open **Plasma Visual Screensaver** from the application menu to configure it.
+Changes apply immediately, and each page's **Defaults** button can be undone.
 Settings are retained across upgrades in
 `~/.config/plasma-visual-screensaverrc`.
-The **About and updates** section shows the installed application version. Its
+The **About** page shows the installed application version. Its
 **Check for Updates** button opens KDE Discover's system update page, where PPA
 updates can be reviewed and installed. If Discover is unavailable, the button
 opens the latest GitHub release instead.
@@ -145,7 +146,10 @@ sudo apt update
 sudo apt install build-essential cargo rustc cmake ninja-build extra-cmake-modules \
   appstream desktop-file-utils lintian shellcheck \
   qt6-base-dev qt6-base-private-dev qt6-declarative-dev qt6-shadertools-dev qt6-tools-dev \
-  libkf6config-dev libkf6idletime-dev liblayershellqtinterface-dev
+  libkf6config-dev libkf6idletime-dev liblayershellqtinterface-dev \
+  qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+  qml6-module-org-kde-kirigami qml6-module-org-kde-kcmutils \
+  qml6-module-org-kde-kirigamiaddons-delegates qml6-module-qtquick-shapes
 ```
 
 Rust 1.93 or newer is required. CMake prefers `/usr/bin/cargo` and
@@ -154,7 +158,8 @@ third-party crates. Debug uses the Rust dev profile; all other build types,
 including Debian's `None`, use the optimized release profile.
 
 At runtime Plasma should provide `xdg-desktop-portal`,
-`xdg-desktop-portal-kde`, PowerDevil, and the Qt Quick/Controls modules. A normal
+`xdg-desktop-portal-kde`, PowerDevil, and the Qt Quick/Controls, Kirigami, KCMUtils, Kirigami Addons delegates,
+and Qt Quick Shapes modules. A normal
 Kubuntu Plasma installation already includes these.
 
 ## Build and run
@@ -175,7 +180,7 @@ Useful commands:
 ```
 
 Only one instance runs per session. Subsequent commands are forwarded over the
-session D-Bus. Preview saves current UI values and then uses the same overlay and
+session D-Bus. Preview saves any pending settings change and then uses the same overlay and
 inhibition path as idle activation.
 
 ### Snake path developer preview
@@ -251,7 +256,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.14.0`, publishes the verified
+matching the CMake project version, such as `v0.15.0`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 
@@ -389,11 +394,10 @@ session:
 7. Combine every animation with each background and palette. Exercise each
    contextual speed, density/detail, scale, and trail/glow control. For Bouncing
    Balls, test counts 1 and 20, upward/zero/downward gravity, low/high
-   elasticity, and collisions on/off. Test moving and centered clock modes,
-   slow/normal/fast clock speeds, the clock toggle, all frame rates, and reduced
-   motion. Test automatic refresh and several fixed caps, including 15, 60,
+   elasticity, and collisions on/off. Test every Clock choice (Off, Centered and
+   the three drifting speeds), all frame rates, and reduced motion. Test automatic refresh and several fixed caps, including 15, 60,
    144, and 240 fps. Moving items must freeze under reduced motion.
-8. Confirm that Settings shows the same version as
+8. Confirm that the About page in Settings shows the same version as
    `plasma-visual-screensaver --version`, then select **Check for Updates** and
    verify that KDE Discover opens its system update page.
 9. Let the configured idle interval expire naturally. Confirm activity dismisses

@@ -85,7 +85,9 @@ jobs:
             devscripts dpkg-dev extra-cmake-modules libkf6config-dev \
             libkf6idletime-dev liblayershellqtinterface-dev lintian ninja-build qt6-base-dev qt6-base-private-dev \
             qt6-declarative-dev qt6-shadertools-dev qt6-tools-dev qml6-module-qtquick \
-            qml6-module-qtquick-controls qml6-module-qtquick-layouts shellcheck
+            qml6-module-qtquick-controls qml6-module-qtquick-layouts \
+            qml6-module-org-kde-kirigami qml6-module-org-kde-kcmutils \
+            qml6-module-org-kde-kirigamiaddons-delegates qml6-module-qtquick-shapes shellcheck
 
       - name: Build, test, validate, and package
         run: ./scripts/build-deb.sh "$RUNNER_TEMP/build" "$RUNNER_TEMP/dist"
