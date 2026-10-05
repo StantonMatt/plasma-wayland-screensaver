@@ -20,6 +20,13 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.16.0" date="2026-10-05">
+      <description>
+        <p>Adds Frost capsules that send out a freezing Nova burst. Snakes grab them when rivals are close, then cut off or bite frozen prey.</p>
+        <p>Gives frozen snakes an ice tint, frosty breath and a thaw crack.</p>
+        <p>Make the first minutes of a session as light on CPU as 0.13.0 again.</p>
+      </description>
+    </release>
     <release version="0.15.0" date="2026-10-05">
       <description>
         <p>Adds a new Settings window with Appearance, General and About pages. Pick an animation from a thumbnail gallery with one-click preview, colour swatches and one clock choice. Shows monitor layout cards when several monitors are connected.</p>
