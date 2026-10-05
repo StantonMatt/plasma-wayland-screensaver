@@ -60,5 +60,5 @@ fn main(){
  println!("giant_ticks={giant_ticks}");
  let mean=times.iter().sum::<f64>()/ticks as f64;times.sort_unstable_by(f64::total_cmp);
  println!("case={case} seed={seed} ticks={ticks} mean_us={mean:.3} p99_us={:.3} world_hash={world_hash} decision_hash={} deaths={} segments={:.1} alive={:.1}",times[(ticks-1)*99/100],ai.hash,w.stats().deaths,segments as f64/ticks as f64,live as f64/ticks as f64);
- if prof {println!("profile_ns={:?} forecast_ns={:?}",ai.ai.profile(),ai.ai.forecast_profile());println!("spatial_ns_counts={:?}",ai.ai.spatial_profile());println!("strategy_ns={:?}",ai.ai.strategy_profile());}
+ if prof {println!("profile_ns={:?} forecast_ns={:?}",ai.ai.profile(),ai.ai.forecast_profile());println!("spatial_ns_counts={:?}",ai.ai.spatial_profile());println!("strategy_ns={:?} race_ns={:?}",ai.ai.strategy_profile(),ai.ai.race_profile());}
 }

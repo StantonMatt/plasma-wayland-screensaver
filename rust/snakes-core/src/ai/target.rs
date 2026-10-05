@@ -2,6 +2,7 @@
 //! Steering ends at World::feed_snakes' capture disk or pickup_items' contact
 //! disk. Captured food is pulled/consumed by World without further pursuit;
 //! Spark, Shard (including death fields), Pellet and Prism share that rule.
+use super::aggression;
 use crate::{effects, FoodView, Point, SnakeView, World};
 
 pub(super) const ITEM_BIT: u64 = 1 << 63;
@@ -170,6 +171,13 @@ impl super::AiController {
         // Preserve a useful current effect until its window is nearly over.
         let held=super::forecast::Effect::observed(w,s);
         let replacement=if held.ticks as f64*crate::STEP_SECONDS>eta+1.0 {0.45} else {1.0};
+        // An instant Nova has no inventory value. Race for it only when the
+        // arrival forecast includes an eligible rival, and scale its offensive
+        // value with the user's aggression setting.
+        if item.kind==EffectKind::Frost {
+            let victims=self.frost_value_at(w,s,item.position,eta)/8.0;
+            return victims*(35.0+145.0*aggression::level(w))*urgency*replacement;
+        }
         let base=if item.kind==EffectKind::Venom && useful==0.0 {25.0} else {110.0};
         (base+useful+effects::ai_bonus(item.kind,w,s,item.position))*urgency*replacement
     }

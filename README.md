@@ -78,6 +78,9 @@ opens the latest GitHub release instead.
   Venom capsule holders hunt rivals and bite their bodies to sever their tails.
   Severed tails thrash, then shatter into food. An acid spine, fangs and a strike
   pose show who holds Venom. Bitten snakes face the attacker and hold a grudge.
+  Frost capsules send out a Nova: rivals turn icy, crawl and turn slowly for
+  2.5 seconds while hunters plan cut-offs. Survivors shed ice and briefly
+  resist another freeze. Calm keeps the crystals and suppresses shiver and breath.
   Turn power-ups off with the Settings checkbox;
   glossy, shaded, glowing bodies with pointed tails,
   chevrons, saddle bands and glowing spine lights on the biggest snakes;
@@ -256,7 +259,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.15.0`, publishes the verified
+matching the CMake project version, such as `v0.16.0`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 

@@ -1652,3 +1652,57 @@ unchanged for diagnostics and emergency ranking. Severed
 stump samples advance and retaper with physical forecast trail travel, keeping
 one source spacing at the tail boundary as a reserve. Actual pending growth
 prevents later cut certification; a fractional nutrition balance alone does not.
+
+## S4 Frost (0.16.0)
+
+`frost.rs` owns Frost arrival valuation (35 to 180 per eligible projected rival,
+scaled by Aggression, using cached rival rows through the shared safety horizon),
+empty-Nova approach gaps and evacuation
+when a closer rival can take a nearby Frost capsule, and frozen-prey selection.
+Exact pickup rollouts reward each eligible freeze by 320 to 800 utility and
+penalize an empty Nova by 700 to 1100, scaled by Aggression. Ordinary safety,
+continuation and emergency ordering still rank before that utility.
+It aims 36 ticks ahead to lay a barrier rather than steering into the current
+head. The existing staged cutoff certifies the approach, crossing and safe
+exit with half-speed, 0.6-turn prey limits. Venom keeps its rear-quarter plan
+against frozen prey and doubles their bite utility at full aggression. Frost
+evacuation and hunts suspend the current objective for ordinary guarded
+resumption. Target slot/generation changes clear retained attacks;
+there is no new persistent per-target Frost state or shared targeting rewrite.
+Eligibility uses the rival's arrival endpoint within the full Nova radius;
+current head distance cannot exclude the outer ring or an approaching rival.
+Acquiring a different capsule resets its progress clock and best distance.
+Refreshing the same capsule retains progress and its route; changing objective
+identity clears the previous route before candidate selection.
+
+`forecast.rs` records bounded Nova masks separately from held-effect pickups.
+Freeze/immunity checks use `effects::frost::freeze_eligible`, including exact
+endpoint positions in both cached and uncached contact passes. Nova changes
+movement after its pickup endpoint, preserves rival effects, stops unpaid
+burst debt and updates changed rival paths. Independent effect expiry/thaw
+limits retain the ordinary motion cache's fast path. See the S4 report for
+real-setting timings, the duel results and the natural capsule sample.
+
+Capsule ownership bounds do not prune Nova victims: candidate item passes also
+retain heads that can reach the collector's Nova disk. Rollouts without item
+handling still use the shared effect-aware motion clock. Existing-body release
+uses its observed conservative speed floor, discounted over each predicted
+freeze's future movement interval (the pickup endpoint itself is unchanged).
+Body-query caches distinguish complete Nova step/mask histories. Spatial
+occupancy uses the same release rates and the slowest included owner's release
+clock, conservatively retaining the pooled grid without per-candidate rebuilds.
+Future deposited-body reservations include the freeze delay, and rival escape
+distances reuse integrated effect-aware travel rather than the observed speed.
+Burst payment cutoffs also preserve the candidate's physical body length:
+Nova cancellation and Surge forgiveness cannot erase unpaid segments from
+future deposited-self occupancy or reply barriers.
+
+Wall-turn reserves apply after a sampled control settles and at its horizon
+endpoint. A rate-limited turn checks its actual arc against the wall on every
+movement instead: applying the inflated reserve halfway through an inward arc
+can truncate a physically safe escape and favor a shallow turn into a corner.
+When no candidate completes the horizon, emergency ranking first preserves a
+positive safety prefix with one turning circle that clears both adjacent walls.
+Separate per-axis escapes can require opposite turns and cannot establish that
+corner continuation. This bounded first-step check uses the cached candidate
+motion and stack storage; ordinary complete-horizon ranking is unchanged.

@@ -38,7 +38,7 @@ impl AiController {
     /// the exact discrete integration, and retain only two geometric finalists.
     pub(super) fn cutoffs(&self,w:&World,s:SnakeView<'_>,state:State)->[Attack;2] {
         let mut best=[Attack::default();2];
-        if state.prey==0 || state.coil_radius>0.0 || s.traits.aggression<if w.config().rules==crate::RuleSet::V2 {0.2} else {0.32} {return best;}
+        if state.prey==0 || state.coil_radius>0.0 || (s.traits.aggression<if w.config().rules==crate::RuleSet::V2 {0.2} else {0.32} && w.snake(state.prey-1).is_none_or(|p|p.face.frozen_ticks==0)) {return best;}
         let prey=self.opportunity_rival(state.prey-1);
         let v2=w.config().rules==crate::RuleSet::V2;
         if v2 && (!w.boost_ready(s.id as usize) || s.segments.len()<16) {return best;}
@@ -54,7 +54,7 @@ impl AiController {
         // Paid bursts need short crossings. A free Surge can approach farther
         // through its boosted movement and remaining speed bonus, with the
         // same three-window budget and the ordinary exact safety rollout.
-        for ticks in if v2 && !surge::active(w,s) {if aggression::bold(w)>0.0 {[12usize,24,36]} else {[12usize,18,24]}} else {[18usize,30,42]} {for side in [-1i8,1] {
+        for ticks in if v2 && !surge::active(w,s) && !frost::extended_cutoff_window(w,state.prey-1) {if aggression::bold(w)>0.0 {[12usize,24,36]} else {[12usize,18,24]}} else {[18usize,30,42]} {for side in [-1i8,1] {
             // Lay the barrier 0.2s before the prey's nominal arrival.
             let arrive=ticks.saturating_sub(6);let point=prey.path[ticks];
             let forward=w.displacement(prey.path[ticks-2],point);

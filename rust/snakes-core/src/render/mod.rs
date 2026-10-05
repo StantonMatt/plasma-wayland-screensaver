@@ -5,6 +5,7 @@ mod geometry;
 mod faces;
 mod prism;
 mod venom;
+mod frost;
 mod shader;
 pub(crate) mod items;
 pub use shader::ShaderVertex;
@@ -55,10 +56,10 @@ pub(crate) fn frame_valid(info: &FrameInfo, p: &Params) -> bool {
 fn event_time(info: &FrameInfo, p: &Params, calm: bool) -> f64 {
     if calm { p.presentation_time.max(info.simulation_time) } else { p.presentation_time }
 }
-// Frozen snapshots can retain the last moving tick's previous coordinates.
-// Use the same policy for the body and every head-attached primitive/overlay.
+// Corpses stop moving. Frozen snakes still crawl and interpolate normally;
+// body and head-attached primitives share this policy.
 fn moving(s: &SnakeRecord) -> bool {
-    s.alive != 0 && s.flags & (flags::CORPSE | flags::FROZEN) == 0
+    s.alive != 0 && s.flags & flags::CORPSE == 0
 }
 #[inline(always)]
 fn position(seg: &SegmentRecord, interpolate: bool, info: &FrameInfo, p: &Params) -> P {
@@ -425,6 +426,7 @@ impl Renderer {
             });
             let rainbow=prism::rainbow(s,self.waves[s.id as usize],info,p,self.reduced_motion,palette,
                 color(s.color_index),&mut self.rainbow[..n]);
+            if rainbow && s.flags&flags::FROZEN!=0 {for c in &mut self.rainbow[..n] {*c=frost::ice(*c,s.flags,palette);}}
             let gulp_centers=prism::centers(s,info,p,self.reduced_motion);
             let has_gulp=gulp_centers.iter().any(|c|c.1>0.0);
             let has_pickup_wave=pickup_waves.iter().any(|&(_,kind)|kind!=0);
@@ -505,6 +507,7 @@ impl Renderer {
             } else {
                 color(s.color_index)
             };
+            let c=frost::ice(c,s.flags,palette);
             // The ring holds at most 14 edges; each gets every seam copy.
             if interpolate && s.flags & flags::BOOSTING != 0 {
                 let trail = &self.trails[s.id as usize];

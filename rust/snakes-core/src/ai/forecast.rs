@@ -36,13 +36,44 @@ impl Track {
 }
 #[derive(Clone, Copy, Default)]
 struct Pickup {step:u16,id:u8,effect:Effect}
+#[derive(Clone,Copy,Default)]
+struct Freeze {step:u16,mask:u16}
+// Release deadlines use the observed conservative speed floor. A Nova can
+// lower that floor: discount only its future movement interval, never its
+// pickup movement. Keeping the original floor after thaw is conservative.
+fn release_clock(novas:&[Freeze],id:usize,time:f64,slowdown:f64)->f64 {
+    let mut clock=time;
+    if slowdown<1.0 {for nova in novas.iter().filter(|n|n.mask&(1<<id)!=0) {
+        let start=nova.step as f64*STEP_SECONDS;
+        let duration=(crate::effects::frost::FROZEN_TICKS-1) as f64*STEP_SECONDS;
+        clock-=(time-start).clamp(0.0,duration)*(1.0-slowdown);
+    }}
+    clock
+}
 /// Candidates retain events, not two full per-step mask tables. The hot
 /// rollout owns those masks; endpoint queries reconstruct their fourteen bits.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Snapshot {
     initial:[Effect;MAX_SNAKES],pickups:[Pickup;crate::MAX_ITEMS],count:usize,
+    novas:[Freeze;crate::MAX_ITEMS],nova_count:usize,
 }
 impl Snapshot {
+    pub fn body_time(&self,id:usize,time:f64,r:&Rival)->f64 {
+        let duration=(crate::effects::frost::FROZEN_TICKS-1) as f64*STEP_SECONDS;
+        time+self.novas[..self.nova_count].iter().filter(|n|n.mask&(1<<id)!=0).count() as f64
+            *duration*(1.0-r.release_slowdown.min(1.0))
+    }
+    /// The pooled grid has one query clock. Use the slowest included owner's
+    /// clock so it cannot clear any body earlier than its exact release clock.
+    /// This preserves grid/proof caches without rebuilding cells per candidate.
+    pub fn space_time(&self,mask:u16,time:f64,rivals:&[Rival;MAX_SNAKES])->f64 {
+        let victims=self.novas[..self.nova_count].iter().fold(0,|bits,n|bits|n.mask)&mask;
+        let mut bits=victims;let mut clock=time;
+        while bits!=0 {let id=bits.trailing_zeros() as usize;bits&=bits-1;
+            clock=clock.min(release_clock(&self.novas[..self.nova_count],id,time,rivals[id].release_slowdown));
+        }
+        clock
+    }
     pub fn at(&self,id:usize,step:usize)->Effect {
         let step=step.max(1);
         for p in self.pickups[..self.count].iter().rev() {
@@ -65,6 +96,11 @@ pub(super) struct Timeline {
     pickup_mask:u16,
     movement_mask:u16,
     venom_possible:u16,
+    pub(super) frost_empty:u16,
+    pub(super) frost_hits:[u8;MAX_SNAKES],
+    frozen:[u16;MAX_SNAKES],
+    immunity:[u16;MAX_SNAKES],
+    novas:[Freeze;crate::MAX_ITEMS],nova_count:usize,
     guards:u16,
     guard_targets:[u64;MAX_SNAKES],
     pub sever_cut:[usize;MAX_SNAKES],
@@ -74,13 +110,14 @@ pub(super) struct Timeline {
     surge:[u16;STEPS+1],
 }
 impl Default for Timeline {
-    fn default()->Self {Self {initial:[Effect::default();MAX_SNAKES],pickups:[Pickup::default();crate::MAX_ITEMS],count:0,pickup_mask:0,movement_mask:0,venom_possible:0,guards:0,guard_targets:[0;MAX_SNAKES],sever_cut:[0;MAX_SNAKES],bite_step:[0;MAX_SNAKES],consumed_at:[0;MAX_SNAKES],phase:[0;STEPS+1],surge:[0;STEPS+1]}}
+    fn default()->Self {Self {initial:[Effect::default();MAX_SNAKES],pickups:[Pickup::default();crate::MAX_ITEMS],count:0,pickup_mask:0,movement_mask:0,venom_possible:0,frost_empty:0,frost_hits:[0;MAX_SNAKES],frozen:[0;MAX_SNAKES],immunity:[0;MAX_SNAKES],novas:[Freeze::default();crate::MAX_ITEMS],nova_count:0,guards:0,guard_targets:[0;MAX_SNAKES],sever_cut:[0;MAX_SNAKES],bite_step:[0;MAX_SNAKES],consumed_at:[0;MAX_SNAKES],phase:[0;STEPS+1],surge:[0;STEPS+1]}}
 }
 impl Timeline {
     pub fn new(w:&World)->Self {
         let mut result=Self::default();
         for s in w.snakes().filter(|s|s.alive) {
             let id=s.id as usize;let e=Effect::observed(w,s);result.initial[id]=e;
+            result.frozen[id]=s.face.frozen_ticks;result.immunity[id]=s.face.thaw_immunity_ticks;
             if e.is(EffectKind::Venom) {result.venom_possible|=1<<id;}
             result.set_guard(id,s.face.guarding,s.face.target_id);
             let masks=if e.is(EffectKind::Phase) {&mut result.phase}
@@ -112,7 +149,13 @@ impl Timeline {
                     certain&=distance+error<=reach;
                 }
                 if possible {
-                    if certain {result.pickup(id,*item,1);}
+                    if certain {result.pickup(id,*item,1);
+                        if item.kind==EffectKind::Frost {
+                            let positions=|other:usize| {let r=w.snake(other).unwrap();let (v,_)=motions[other].at(0);let h=r.segments[0].current;w.canonical_point(Point{x:h.x+r.angle.cos()*v*STEP_SECONDS,y:h.y+r.angle.sin()*v*STEP_SECONDS})};
+                            let alive=w.snakes().filter(|r|r.alive).fold(0,|m,r|m|(1<<r.id));
+                            result.nova(w,id,positions(id),1,alive,positions);
+                        }
+                    }
                     // A lower live ID that might win prevents certainty for
                     // every later ID, even if that later endpoint is inside.
                     break;
@@ -121,8 +164,11 @@ impl Timeline {
         }
         result
     }
-    pub fn observed_before(&self,id:usize,step:usize)->Effect {self.initial[id].after(step.saturating_sub(1))}
-    pub fn snapshot(&self)->Snapshot {Snapshot {initial:self.initial,pickups:self.pickups,count:self.count}}
+    pub fn snapshot(&self)->Snapshot {Snapshot {initial:self.initial,pickups:self.pickups,count:self.count,novas:self.novas,nova_count:self.nova_count}}
+    pub fn release_clock(&self,id:usize,time:f64,slowdown:f64)->f64 {release_clock(&self.novas[..self.nova_count],id,time,slowdown)}
+    pub fn release_key(&self)->[u32;crate::MAX_ITEMS] {
+        std::array::from_fn(|i|if i<self.nova_count {(self.novas[i].step as u32)<<16|self.novas[i].mask as u32} else {0})
+    }
     pub fn track(&self,id:usize)->Track {
         let mut result=Track {initial:self.initial[id],..Track::default()};
         for pickup in &self.pickups[..self.count] {
@@ -144,7 +190,7 @@ impl Timeline {
     }
     pub fn movement_bits(&self)->u16 {self.movement_mask}
     pub fn movement_event(&self,step:usize)->bool {
-        self.pickups[..self.count].iter().any(|p|p.step as usize==step && self.movement_mask&(1<<p.id)!=0)
+        self.pickups[..self.count].iter().any(|p|p.step as usize==step && self.movement_mask&(1<<p.id)!=0) || self.novas[..self.nova_count].iter().any(|n|n.step as usize==step && n.mask!=0)
     }
     pub fn has_pickup(&self,id:usize)->bool {self.pickup_mask&(1<<id)!=0}
     fn surge_pickup_before(&self,id:usize,step:usize)->Option<usize> {
@@ -156,6 +202,8 @@ impl Timeline {
         let a=self.before(id,step);let b=other.before(id,step);
         crate::effects::modifiers(a.kind,a.ticks).speed==crate::effects::modifiers(b.kind,b.ticks).speed
             && self.surge_pickup_before(id,step)==other.surge_pickup_before(id,step)
+            && self.freeze_step(id,step)==other.freeze_step(id,step)
+            && self.frozen_at(id,step)==other.frozen_at(id,step)
     }
     #[inline]
     pub fn at(&self,id:usize,step:usize)->Effect {
@@ -208,7 +256,7 @@ impl Timeline {
         item.pickup_eligible(tick+step as u64,step-1,alive,guarding,
             if guarding {self.at(id,step).ticks} else {0})
     }
-    fn pickup(&mut self,id:usize,item:crate::Item,step:usize) {
+    pub(super) fn pickup(&mut self,id:usize,item:crate::Item,step:usize) {
         // Mechanics clears every guard committed to a capsule when it is
         // consumed, before considering the next capsule in item order.
         let mut guards=self.guards;
@@ -218,7 +266,7 @@ impl Timeline {
         }
         let kind=item.kind;
         if kind==EffectKind::Venom {self.venom_possible|=1<<id;}
-        let effect=Effect {kind:kind as u8,ticks:kind.duration()};
+        let effect=if kind==EffectKind::Frost {Effect::default()} else {Effect {kind:kind as u8,ticks:kind.duration()}};
         self.pickups[self.count]=Pickup {id:id as u8,effect,step:step as u16};self.count+=1;self.pickup_mask|=1<<id;
         let initial=self.initial[id];
         if kind==EffectKind::Surge || crate::effects::modifiers(initial.kind,initial.ticks).speed!=1.0 {self.movement_mask|=1<<id;}
@@ -229,6 +277,33 @@ impl Timeline {
                 if kind==EffectKind::Surge {self.surge[j]|=1<<id;}
             }
         }
+    }
+    fn freeze_step(&self,id:usize,step:usize)->Option<usize> {
+        self.novas[..self.nova_count].iter().find(|n|n.mask&(1<<id)!=0 && (n.step as usize)<step).map(|n|n.step as usize)
+    }
+    fn frozen_at(&self,id:usize,step:usize)->u16 {
+        let at=self.novas[..self.nova_count].iter().rev().find(|n|n.mask&(1<<id)!=0 && n.step as usize<=step);
+        if let Some(n)=at {crate::effects::frost::FROZEN_TICKS.saturating_sub((step-n.step as usize).min(u16::MAX as usize) as u16)}
+        else {self.frozen[id].saturating_sub(step.saturating_sub(1).min(u16::MAX as usize) as u16)}
+    }
+    fn immunity_at(&self,id:usize,step:usize)->u16 {
+        let at=self.novas[..self.nova_count].iter().rev().find(|n|n.mask&(1<<id)!=0 && n.step as usize<=step);
+        let end=at.map(|n|n.step as usize+crate::effects::frost::FROZEN_TICKS as usize)
+            .or_else(||(self.frozen[id]>0).then_some(self.frozen[id] as usize+1));
+        if let Some(end)=end {if step<end {0} else {crate::effects::frost::THAW_IMMUNITY_TICKS.saturating_sub((step-end).min(u16::MAX as usize) as u16)}}
+        else {self.immunity[id].saturating_sub(step.saturating_sub(1).min(u16::MAX as usize) as u16)}
+    }
+    pub(super) fn nova(&mut self,w:&World,owner:usize,center:Point,step:usize,alive:u16,positions:impl Fn(usize)->Point) {
+        let mut mask=0u16;let mut heads=alive;
+        while heads!=0 {
+            let id=heads.trailing_zeros() as usize;heads&=heads-1;
+            if crate::effects::frost::freeze_eligible(true,id==owner,self.frozen_at(id,step),self.immunity_at(id,step),
+                w.distance_squared(center,positions(id)),w.config().base_radius()) {mask|=1<<id;}
+        }
+        if mask==0 {self.frost_empty|=1<<owner;}
+        self.frost_hits[owner]+=mask.count_ones() as u8;
+        self.novas[self.nova_count]=Freeze {step:step as u16,mask};self.nova_count+=1;
+        self.pickup_mask|=mask;self.movement_mask|=mask;
     }
     pub fn mask(&self,w:&World,id:usize,step:usize)->u16 {
         if self.phased(id,step) {0} else {
@@ -253,14 +328,26 @@ pub(super) struct Items {
     pickup_steps:[u16;crate::MAX_ITEMS],
     pickup_owners:[u8;crate::MAX_ITEMS],
     movement_mask:u16,
+    pickup_movement:[u16;crate::MAX_ITEMS],
 }
 impl Default for Items {
-    fn default()->Self {Self {reach:[[[u16::MAX;MAX_SNAKES];crate::MAX_ITEMS];2],earliest:[[u16::MAX;MAX_SNAKES];2],owners:[[0;crate::MAX_ITEMS];STEPS+1],hits:[[0;crate::MAX_ITEMS];STEPS+1],near:[[0;crate::MAX_ITEMS];STEPS+1],items:[crate::Item::default();crate::MAX_ITEMS],pending:0,alive:0,radii:[0.0;MAX_SNAKES],pickup_steps:[u16::MAX;crate::MAX_ITEMS],pickup_owners:[MAX_SNAKES as u8;crate::MAX_ITEMS],movement_mask:0}}
+    fn default()->Self {Self {reach:[[[u16::MAX;MAX_SNAKES];crate::MAX_ITEMS];2],earliest:[[u16::MAX;MAX_SNAKES];2],owners:[[0;crate::MAX_ITEMS];STEPS+1],hits:[[0;crate::MAX_ITEMS];STEPS+1],near:[[0;crate::MAX_ITEMS];STEPS+1],items:[crate::Item::default();crate::MAX_ITEMS],pending:0,alive:0,radii:[0.0;MAX_SNAKES],pickup_steps:[u16::MAX;crate::MAX_ITEMS],pickup_owners:[MAX_SNAKES as u8;crate::MAX_ITEMS],movement_mask:0,pickup_movement:[0;crate::MAX_ITEMS]}}
 }
 impl Items {
     pub fn shared(&mut self,forecast:&Forecast) {
         self.pickup_steps=forecast.pickup_steps;self.pickup_owners=forecast.pickup_owners;
         self.movement_mask=forecast.effects.movement_bits();
+        for i in 0..crate::MAX_ITEMS {
+            let owner=self.pickup_owners[i] as usize;
+            self.pickup_movement[i]=if owner<MAX_SNAKES {(1<<owner)&self.movement_mask} else {0};
+            if self.items[i].kind==EffectKind::Frost {
+                // A missed Nova restores its victims' full-speed paths. Several
+                // Novas at one endpoint may share victims, so retain their union.
+                for nova in &forecast.effects.novas[..forecast.effects.nova_count] {
+                    if nova.step==self.pickup_steps[i] {self.pickup_movement[i]|=nova.mask;}
+                }
+            }
+        }
     }
     pub fn reachable(&self,id:usize,horizon:usize,boosted:bool)->bool {self.earliest[usize::from(boosted)][id] as usize<=horizon}
     pub fn prepare(w:&World,motions:&[Motion;MAX_SNAKES],boosted:&[Motion;MAX_SNAKES])->Self {
@@ -280,6 +367,14 @@ impl Items {
                     // Round down: pruning may retain an extra tick, never drop a reachable pickup.
                     result.reach[mode][i][id]=(travel/(motion.max_speed*scale*STEP_SECONDS)).floor().clamp(1.0,u16::MAX as f64) as u16;
                     result.earliest[mode][id]=result.earliest[mode][id].min(result.reach[mode][i][id]);
+                    if item.kind==EffectKind::Frost {
+                        // Contact bounds prune capsule ownership, not Nova
+                        // participation. Its centre is the collector's head.
+                        let owner_radius=result.radii.iter().copied().fold(0.0,f64::max);
+                        let nova_travel=(distance-16.0*w.config().base_radius()-1.3*owner_radius-item.radius).max(0.0);
+                        let nova_step=(nova_travel/(motion.max_speed*scale*STEP_SECONDS)).floor().clamp(1.0,u16::MAX as f64) as u16;
+                        result.earliest[mode][id]=result.earliest[mode][id].min(nova_step);
+                    }
                     let step=result.reach[mode][i][id] as usize;
                     if mode==0 && step<=STEPS {result.owners[step][i]|=1<<id;}
                 }
@@ -295,12 +390,12 @@ impl Items {
             for (id,r) in rivals.iter().enumerate().filter(|(_,r)|r.alive) {
                 if self.reach[0][i][id] as usize>STEPS {continue;}
                 let surge=effects.surge_pickup_before(id,STEPS+1);
-                let pickup_radius=surge.map(|step|w.ai_forecast_radius(id,0.0,step,Some(step)));
+                let pickup_radius=surge.map(|step|w.ai_forecast_radius(id,0.0,step,Some(step),effects.freeze_step(id,STEPS+1)));
                 // Cache endpoint contact only: award-time eligibility depends
                 // on earlier pickups in each candidate's own item pass.
                 for step in 1..=STEPS {
                     if !item.pickup_eligible(w.tick()+step as u64,step-1,true,false,0) {continue;}
-                    let radius=if surge.is_some_and(|s|s<step) {pickup_radius.unwrap()} else {motions[id].radii[(step-1).min(24)]};
+                    let radius=if surge.is_some_and(|s|s<step) {pickup_radius.unwrap()} else {motions[id].radii[effects.freeze_step(id,step).map_or(step-1,|f|(step-1).min(f-1)).min(24)]};
                     let reach=1.3*radius+item.radius;
                     let distance=w.distance_squared(r.path[step],item.position);
                     if distance<=reach*reach {self.hits[step][i]|=1<<id;}
@@ -403,14 +498,15 @@ impl Forecast {
             let expected=items.pickup_owners[i] as usize;
             let expected_step=items.pickup_steps[i] as usize;
             if expected_step==step && winner!=expected {
-                self.movement_changed|=(1<<expected)&items.movement_mask;
+                self.movement_changed|=items.pickup_movement[i];
             }
             if winner!=MAX_SNAKES {
                 self.effects.pickup(winner,item,step);
+                if item.kind==EffectKind::Frost {self.effects.nova(w,winner,positions(winner),step,self.alive,&positions);self.movement_changed|=self.effects.movement_bits()|items.pickup_movement[i];}
                 self.pickup_steps[i]=step as u16;self.pickup_owners[i]=winner as u8;
                 if winner!=expected || step!=expected_step {
                     let affected=(1<<winner) | if expected<MAX_SNAKES {1<<expected} else {0};
-                    self.movement_changed|=affected&(items.movement_mask|self.effects.movement_bits());
+                    self.movement_changed|=items.pickup_movement[i]|affected&(items.movement_mask|self.effects.movement_bits());
                 }
                 self.pending&=!(1<<i);
             }
@@ -441,6 +537,9 @@ impl Forecast {
             self.owners[i]=owners;
             if owners==0 {self.pending&=!(1<<i);}
         }
+    }
+    pub fn body_len(&self,w:&World,id:usize,rush:f64,step:usize)->usize {
+        w.ai_forecast_len(id,rush,24,self.effects.surge_pickup_before(id,step+1),self.effects.freeze_step(id,step+1))
     }
     pub fn has_items(&self)->bool {self.pending!=0}
     pub fn set_radius(&mut self,id:usize,radius:f64) {self.radii[id]=radius;}
@@ -474,7 +573,9 @@ impl Forecast {
                 let distance=w.distance_squared(positions(id),item.position);
                 if item.kind==EffectKind::Phase && reserve>0.0 && distance<=(reach+reserve).powi(2) {self.sweep_needed=true;}
                 if distance>reach*reach {continue;}
-                self.effects.pickup(id,item,step);self.pickup_steps[i]=step as u16;self.pickup_owners[i]=id as u8;self.pending&=!(1<<i);break;
+                self.effects.pickup(id,item,step);
+                if item.kind==EffectKind::Frost {self.effects.nova(w,id,positions(id),step,self.alive,&positions);self.movement_changed|=self.effects.movement_bits();}
+                self.pickup_steps[i]=step as u16;self.pickup_owners[i]=id as u8;self.pending&=!(1<<i);break;
             }
         }
     }
@@ -487,11 +588,15 @@ impl Forecast {
     fn radius_after_pickup(&self,w:&World,id:usize,rush:f64,motion:&Motion,step:usize)->f64 {
         if let Some(surge)=self.effects.surge_pickup_before(id,step) {
             let cached=self.radius_cache[id].get();
-            if cached.0==surge {return cached.1;}
-            let radius=w.ai_forecast_radius(id,rush,step-1,Some(surge));
-            self.radius_cache[id].set((surge,radius));radius
+            let freeze=self.effects.freeze_step(id,step);
+            // Only the first payment cutoff matters; retain the original
+            // cache footprint while also invalidating an earlier freeze.
+            let cutoff=freeze.map_or(surge,|f|surge.min(f));
+            if cached.0==cutoff {return cached.1;}
+            let radius=w.ai_forecast_radius(id,rush,step-1,Some(surge),freeze);
+            self.radius_cache[id].set((cutoff,radius));radius
         }
-        else {motion.radii[(step-1).min(24)]}
+        else {motion.radii[self.effects.freeze_step(id,step).map_or(step-1,|f|(step-1).min(f-1)).min(24)]}
     }
     #[inline]
     pub fn motion(&self,w:&World,id:usize,rush:f64,motion:&Motion,step:usize)->(f64,f64) {
@@ -507,16 +612,225 @@ impl Forecast {
         // Phase/Magnet replacement changes contact/feed state, not motion.
         // Only Surge changes the speed modifier or forgives burst debt in R3.
         let initial=self.effects.initial[id].after(step-1);
-        if surge.is_none() && crate::effects::modifiers(effect.kind,effect.ticks).speed==crate::effects::modifiers(initial.kind,initial.ticks).speed {motion.at(step-1)}
+        let freeze=self.effects.freeze_step(id,step);
+        let frozen=self.effects.frozen_at(id,step);
+        if freeze.is_none() && surge.is_none() && crate::effects::modifiers(effect.kind,effect.ticks).speed==crate::effects::modifiers(initial.kind,initial.ticks).speed {motion.at(step-1)}
         else {
             // After the single burst ends, only effect speed transitions can
             // change motion. Counter decrements alone do not change limits.
-            let key=(step-1).min(24) as u16 | ((if effect.ticks>0 {effect.kind} else {0}) as u16)<<8;
+            let key=(step-1).min(24) as u16 | ((if effect.ticks>0 {effect.kind} else {0}) as u16)<<8 | if frozen>0 {0x8000} else {0};
             let surge_step=surge.unwrap_or(usize::MAX);
             let cached=self.motion_cache[id].get();
             if cached.key==key && cached.surge==surge_step && cached.rush==rush {return cached.limits;}
-            let limits=w.ai_forecast_motion(id,rush,step-1,effect.kind,effect.ticks,surge);
+            let limits=w.ai_forecast_frost_motion(id,rush,step-1,effect.kind,effect.ticks,surge,freeze,frozen);
             self.motion_cache[id].set(MotionValue {key,surge:surge_step,rush,limits});limits
+        }
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::{Config,RuleSet,Item};
+    use crate::controller::ScriptedController;
+
+    #[test]
+    fn remote_nova_victim_rollouts_match_world_step() {
+        for burst in [false,true] {for kind in [EffectKind::None,EffectKind::Surge,EffectKind::Phase] {
+            let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,density:0.0,
+                speed:0.0,scale:200.0,width:10000.0,height:4000.0,self_collisions:false,
+                deadly_walls:false,..Default::default()},
+                &[(Point{x:6000.0,y:2000.0},0.0,24,0.0),(Point{x:6000.0,y:2270.0},0.0,800,0.0)],&[]).unwrap();
+            w.snakes[1].effect_kind=kind as u8;w.snakes[1].effect_ticks=if kind==EffectKind::None {0} else {8};
+            w.items.push(Item {id:42,kind:EffectKind::Frost,position:w.segments[0].current,
+                radius:2.0,life_ticks:750,..Default::default()});
+            struct Observe {ai:AiController,c:Candidate,shared:Candidate,observed:Option<World>,burst:bool}
+            impl Controller for Observe {
+                fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
+                    if self.observed.is_none() {
+                        self.observed=Some(w.diagnostic_snapshot());self.ai.prepare(w);
+                        let victim=w.snake(1).unwrap();
+                        let motion=if self.burst {self.ai.boosted_motion[1]} else {self.ai.motion[1]};
+                        assert!(w.distance_squared(victim.segments[0].current,w.items[0].position).sqrt()
+                            >motion.max_speed*STEPS as f64*STEP_SECONDS+1.3*victim.radius+w.items[0].radius,
+                            "fixture must exclude capsule contact");
+                        assert!(self.ai.effects.freeze_step(1,2).is_some(),"shared Nova must hit victim");
+                        self.ai.rollout_into(w,victim,State {desired:0.6,rush:if self.burst {0.6} else {0.0},
+                            turn_until:u64::MAX,..Default::default()},1,STEPS,&mut self.c);
+                        assert_eq!(self.c.steps,STEPS);
+                        // Also exercise the branch that reuses a shared Nova
+                        // timeline without handling any candidate pickups.
+                        let mut rivals=self.ai.simulation_rivals.take().unwrap();
+                        for r in rivals.iter_mut() {r.dynamic=false;}
+                        self.ai.rollout_simulation::<false,true>(w,victim,State {desired:0.6,
+                            rush:if self.burst {0.6} else {0.0},turn_until:u64::MAX,..Default::default()},
+                            1,STEPS,&mut self.shared,&mut rivals);
+                        self.ai.simulation_rivals=Some(rivals);
+                        assert_eq!(self.shared.steps,STEPS);
+                    }
+                    Steering {desired_angle:if s.id==1 {0.6} else {s.angle},rush:if s.id==1 && w.tick()==0 && self.burst {0.6} else {0.0}}
+                }
+            }
+            let mut c=Observe {ai:AiController::new(),c:Candidate::default(),shared:Candidate::default(),observed:None,burst};
+            for step in 1..=STEPS {
+                w.step(&mut c);
+                assert!(w.snakes[1].alive);
+                assert_eq!(c.c.body_len,w.snakes[1].len,"Nova must retain unpaid burst segments");
+                assert_eq!(c.shared.body_len,w.snakes[1].len);
+                if step==1 {assert_eq!(w.snakes[1].frozen_ticks,75);assert_eq!(w.snakes[1].boost_ticks,0);}
+                assert!(w.distance_squared(c.c.path[step],w.segments[MAX_SEGMENTS].current)<1e-12,
+                    "burst={burst} kind={kind:?} step={step} predicted={:?} actual={:?}",c.c.path[step],w.segments[MAX_SEGMENTS].current);
+                assert!(w.distance_squared(c.shared.path[step],w.segments[MAX_SEGMENTS].current)<1e-12,
+                    "shared branch burst={burst} kind={kind:?} step={step}");
+            }
+        }}
+    }
+
+    #[test]
+    fn nova_keeps_existing_tail_and_spatial_occupancy_through_world_step() {
+        let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,density:0.0,
+            speed:100.0,scale:200.0,width:4000.0,height:2000.0,self_collisions:false,
+            deadly_walls:false,..Default::default()},
+            &[(Point{x:2000.0,y:1100.0},0.0,1,0.0),(Point{x:2000.0,y:1000.0},0.0,64,0.0)],&[]).unwrap();
+        w.snakes[1].traits.speed_bias=1.16;
+        let crossing=w.segments[MAX_SEGMENTS+43].current;
+        w.items.push(Item {id:42,kind:EffectKind::Frost,position:w.segments[0].current,
+            radius:2.0,life_ticks:750,..Default::default()});
+        struct Observe {ai:AiController,source:Option<World>}
+        impl Controller for Observe {
+            fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
+                if self.source.is_none() {self.source=Some(w.diagnostic_snapshot());self.ai.prepare(w);}
+                Steering {desired_angle:s.angle,rush:0.0}
+            }
+        }
+        let mut c=Observe {ai:AiController::new(),source:None};
+        for _ in 0..70 {w.step(&mut c);}
+        assert_eq!(w.snakes[1].frozen_ticks,6);
+        assert!(w.segments[MAX_SEGMENTS+63].current.x<crossing.x,"real tail has not cleared crossing: tail={:?} crossing={:?} head={:?} len={} radius={}",w.segments[MAX_SEGMENTS+63].current,crossing,w.segments[MAX_SEGMENTS].current,w.snakes[1].len,w.snakes[1].radius);
+        let source=c.source.as_ref().unwrap();let time=70.0*STEP_SECONDS;let mut tests=0;
+        let ordinary=c.ai.initial_effects;let frozen=c.ai.effects;
+        assert!(!c.ai.cached_body_blocked_phase(source,source.snake(0).unwrap(),crossing,crossing,time,0.0,&mut tests,false,&ordinary).0);
+        assert!(c.ai.body_blocked(source,source.snake(0).unwrap(),crossing,crossing,time,0.0,&mut tests).0,
+            "predicted freeze must retain the old trail");
+        assert!(c.ai.cached_body_blocked_phase(source,source.snake(0).unwrap(),crossing,crossing,time,0.0,&mut tests,false,&frozen).0,
+            "cached ordinary release must not certify a frozen crossing");
+        assert!(!c.ai.cached_body_blocked_phase(source,source.snake(0).unwrap(),crossing,crossing,time,0.0,&mut tests,false,&ordinary).0);
+        let mask=1<<1;
+        assert!(!c.ai.spatial.physical_blocked(c.ai.spatial.key(crossing),mask,time));
+        let clock=c.ai.effects.snapshot().space_time(mask,time,&c.ai.rivals);
+        assert!(c.ai.spatial.physical_blocked(c.ai.spatial.key(crossing),mask,clock),
+            "spatial estimates must retain the same trail");
+    }
+
+    #[test]
+    fn skipped_pickups_invalidate_shared_motion_through_world_step() {
+        for initial in [EffectKind::None,EffectKind::Surge] {
+            for kind in [EffectKind::Frost,EffectKind::Surge,EffectKind::Phase,EffectKind::Magnet,EffectKind::Venom] {
+                let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,density:0.0,
+                    width:4000.0,height:2000.0,self_collisions:false,..Default::default()},
+                    &[(Point{x:1500.0,y:1000.0},0.0,24,0.0),(Point{x:1500.0,y:1050.0},0.0,24,0.0)],&[]).unwrap();
+                w.snakes[0].effect_kind=initial as u8;w.snakes[0].effect_ticks=initial.duration();
+                let travel=w.motion_limits(0,0.0).unwrap().0*STEP_SECONDS;
+                let item=Item {id:42,kind,position:Point{x:1500.0+travel+1.3*w.snakes[0].radius+2.0-0.001,y:1000.0},
+                    radius:2.0,life_ticks:750,..Default::default()};
+                w.items.push(item);
+                // Shared straight endpoint really picks up in production order.
+                let mut shared=World::diagnostic_arena(w.config(),
+                    &[(Point{x:1500.0,y:1000.0},0.0,24,0.0),(Point{x:1500.0,y:1050.0},0.0,24,0.0)],&[]).unwrap();
+                shared.snakes[0].effect_kind=initial as u8;shared.snakes[0].effect_ticks=initial.duration();shared.items.push(item);
+                shared.step(&mut ScriptedController::new(|_,s:SnakeView<'_>|Steering {desired_angle:s.angle,rush:0.0}));
+                assert!(shared.items.is_empty(),"kind={kind:?}");
+                let initial_timeline=Timeline::new(&w);
+                let mut forecast=Forecast::new(&w,initial_timeline);
+                forecast.advance(&w,1,|id|shared.segments[id*MAX_SEGMENTS].current,0.0);
+                let mut items=Items::default();items.items[0]=item;items.pending=1;items.alive=3;
+                items.radii[0]=w.snakes[0].radius;items.radii[1]=w.snakes[1].radius;
+                items.owners.fill([3,0,0,0]);items.hits[1][0]=1;
+                items.shared(&forecast);
+                let affected=forecast.effects.movement_bits();
+                let mut candidate=Forecast::cached(&w,initial_timeline,&items,4,0);
+                w.step(&mut ScriptedController::new(|_,s:SnakeView<'_>|Steering {
+                    desired_angle:if s.id==0 {std::f64::consts::PI} else {s.angle},rush:0.0}));
+                assert_eq!(w.items.len(),1,"candidate must skip kind={kind:?}");
+                candidate.advance_cached(&w,1,|id|w.segments[id*MAX_SEGMENTS].current,1,&items,0.0);
+                assert_eq!(candidate.movement_changed()&affected,affected,"initial={initial:?} kind={kind:?}");
+                // The same capsule is collected one tick later, after the
+                // shared Nova's half-speed row has already become invalid.
+                w.step(&mut ScriptedController::new(|_,s:SnakeView<'_>|Steering {desired_angle:s.angle,rush:0.0}));
+                assert!(w.items.is_empty(),"delayed kind={kind:?}");
+                candidate.advance_cached(&w,2,|id|w.segments[id*MAX_SEGMENTS].current,3,&items,0.0);
+                assert_eq!(candidate.pickup_steps[0],2);
+                assert_eq!(candidate.pickup_owners[0],0);
+                if kind==EffectKind::Frost {assert_eq!(candidate.effects.frozen_at(1,2),w.snakes[1].frozen_ticks);}
+            }
+        }
+    }
+
+    #[test]
+    fn thaw_immunity_matches_forecast_and_real_pickups_through_world_step() {
+        struct CheckThaw {initial:Option<Timeline>,step:usize}
+        impl Controller for CheckThaw {
+            fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
+                if s.id==1 {
+                    let initial=self.initial.get_or_insert_with(||Timeline::new(w));
+                    self.step+=1;
+                    assert_eq!(initial.frozen_at(1,self.step),s.face.frozen_ticks);
+                    assert_eq!(initial.immunity_at(1,self.step),s.face.thaw_immunity_ticks);
+                    if self.step==2 {assert_eq!(s.face.scared_ticks,36);}
+                }
+                Steering {desired_angle:s.angle,rush:0.0}
+            }
+        }
+        let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,density:0.0,
+            width:4000.0,height:2000.0,self_collisions:false,..Default::default()},
+            &[(Point{x:1500.0,y:1000.0},0.0,24,0.0),(Point{x:1500.0,y:1050.0},0.0,24,0.0)],&[]).unwrap();
+        w.snakes[1].frozen_ticks=2;w.faces[1].frozen_ticks=2;
+        let mut check=CheckThaw {initial:None,step:0};let mut thaws=0;
+        for step in 1..=47 {
+            w.items.push(Item {id:42+step,kind:EffectKind::Frost,position:w.segments[0].current,
+                radius:2.1*w.config.base_radius(),life_ticks:750,..Default::default()});
+            w.step(&mut check);
+            assert!(w.items.is_empty());
+            thaws+=w.frame_events().filter(|e|e.kind==crate::EventKind::EffectExpiry && e.other_snake_id==5).count();
+            assert_eq!(w.snakes[1].frozen_ticks,if step==1 {1} else if step==47 {75} else {0},"step={step}");
+        }
+        assert_eq!(thaws,1);
+    }
+    #[test]
+    fn later_pickups_preserve_freeze_cutoff_and_radius_through_world_step() {
+        for (freeze,surge) in [(1,10),(10,1),(5,5)] {
+            for kind in [EffectKind::Surge,EffectKind::Phase,EffectKind::Magnet,EffectKind::Venom] {
+                let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,density:0.0,
+                    width:8000.0,height:4000.0,self_collisions:false,deadly_walls:false,..Default::default()},
+                    &[(Point{x:3000.0,y:2000.0},0.0,24,0.0),(Point{x:3000.0,y:2050.0},0.0,400,0.0)],&[]).unwrap();
+                w.snakes[1].birth_len=390;w.snakes[1].radius=w.snakes[1].base_radius*1.025;
+                let original=w.diagnostic_snapshot();
+                let motion=Motion::forecast(&original,1,0.6);
+                let mut forecast=Forecast::new(&original,Timeline::new(&original));
+                for step in 1..=25 {
+                    if step==freeze {w.items.push(Item {id:42,kind:EffectKind::Frost,
+                        position:w.segments[0].current,radius:2.1*w.config.base_radius(),life_ticks:750,..Default::default()});}
+                    if step==surge {w.items.push(Item {id:43,kind,position:w.segments[MAX_SEGMENTS].current,
+                        radius:2.0,life_ticks:750,..Default::default()});}
+                    w.step(&mut ScriptedController::new(|tick,s:SnakeView<'_>|Steering {desired_angle:s.angle,rush:if s.id==1 && tick==0 {0.6} else {0.0}}));
+                    let positions=|id:usize|w.segments[id*MAX_SEGMENTS].current;
+                    if step==freeze {
+                        assert_eq!(w.snakes[1].frozen_ticks,75);
+                        forecast.effects.pickup(0,Item {id:42,kind:EffectKind::Frost,..Default::default()},step);
+                        forecast.effects.nova(&original,0,positions(0),step,3,positions);
+                    }
+                    if step==surge {
+                        assert_eq!(w.snakes[1].effect_kind,kind as u8);
+                        forecast.effects.pickup(1,Item {id:43,kind,..Default::default()},step);
+                    }
+                    if step!=freeze && step!=surge {
+                        assert_eq!(forecast.motion(&original,1,0.6,&motion,step),w.motion_limits(1,0.0).unwrap(),
+                            "motion freeze={freeze} pickup={surge} kind={kind:?} step={step}");
+                    }
+                    assert_eq!(forecast.radius(&original,1,0.6,&motion,step),w.snakes[1].radius,
+                        "freeze={freeze} pickup={surge} kind={kind:?} step={step} len={}",w.snakes[1].len);
+                }
+            }
         }
     }
 }

@@ -393,7 +393,7 @@ fn contrail_history_expires_after_skipped_presentation_ticks() {
 #[test]
 fn stationary_snakes_do_not_replay_stale_interpolation() {
     for walls in [0, 1] {
-        for stationary in [flags::CORPSE, flags::FROZEN] {
+        for stationary in [flags::CORPSE] {
             let mut r = RenderHandle::new();
             let mut s = snake();
             s.flags = stationary | flags::LEADER;
@@ -403,7 +403,7 @@ fn stationary_snakes_do_not_replay_stale_interpolation() {
             p.deadly_walls = walls;
             p.developer_mode = 1;
             let mut b = body();
-            // A frozen final move crossing a seam must stay at its endpoint.
+            // A corpse final move crossing a seam must stay at its endpoint.
             for seg in &mut b {
                 seg.x -= 197.0;
                 seg.previous_x = i.world_width as f32 - 5.0;
@@ -1058,7 +1058,7 @@ fn shader_head_angle_interpolates_shortest_arc_and_retries_stably() {
         assert_eq!(r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count,n);
         assert_eq!(snapshot,out[..n]);
     }
-    s.flags=flags::FROZEN;p.interpolation=0.0;
+    s.flags=flags::FROZEN;p.interpolation=1.0;
     let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
     let head=&out[n-6..n];
     let actual=((head[1].y-head[0].y) as f64).atan2((head[1].x-head[0].x) as f64);
@@ -2432,4 +2432,49 @@ fn giant_2999_segment_venom_orphan_both_paths_keep_cap_and_source_indices() {
         assert_eq!(shader.build_shader(&f,&s,&b,&[],&[event],&pal,&p,&mut gpu).vertex_count,0);
         assert_eq!(classic.build(&f,&s,&b,&[],&[event],&pal,&p,&mut out).vertex_count,0);
     }
+}
+
+#[test]
+fn frost_packing_ice_tint_interpolation_and_palette_modes() {
+    let b=body();let mut output=vec![ShaderRenderVertex::default();4096];
+    for pal in [palette(),[RenderColor {red:255,green:255,blue:255,alpha:255}],[RenderColor {red:255,green:200,blue:221,alpha:255}]] {
+        let mut s=snake();s.flags=flags::FROZEN;s.frozen_ticks=75;s.mood=8;s.face_flags=2;
+        let n=RenderHandle::new().build_shader(&info(),&[s],&b,&[],&[],&pal,&params(),&mut output).vertex_count;
+        let bodies:Vec<_>=output[..n].iter().filter(|v|v.params[0]==0).copied().collect();
+        assert!(!bodies.is_empty());assert!(bodies.iter().all(|v|v.params[1]&128!=0));
+        let expected=if pal[0].red==77 {(151,235,255)} else if pal[0].green==255 {(238,241,242)} else {(232,226,241)};
+        assert_eq!((bodies[0].color.red,bodies[0].color.green,bodies[0].color.blue),expected);
+        assert!(output[..n].iter().filter(|v|v.params[0]==1).all(|v|(v.params[2]>>1)&15==8));
+        s.flags=0;s.frozen_ticks=0;s.mood=0;
+        let m=RenderHandle::new().build_shader(&info(),&[s],&b,&[],&[],&pal,&params(),&mut output).vertex_count;
+        assert_eq!(n,m,"ice adds no body geometry");
+        let ordinary=output[..m].iter().find(|v|v.params[0]==0).unwrap();
+        assert_eq!(bodies[0].x,ordinary.x,"frozen bodies still interpolate half-speed motion");
+        assert_ne!(bodies[0].color,ordinary.color);
+    }
+}
+#[test]
+fn frost_nova_crack_lifetimes_and_both_formats_are_allocation_free_in_calm() {
+    for calm in [false,true] {for shader in [false,true] {
+        let mut r=RenderHandle::new();r.reduced_motion=calm;
+        let mut i=info();let mut p=params();let pal=palette();
+        let nova=EventRecord {tick:i.tick,x:700.0,y:500.0,kind:3,value:288.0,duration_ticks:21,..Default::default()};
+        let crack=EventRecord {tick:i.tick,x:200.0,y:200.0,kind:7,other_snake_id:5,duration_ticks:15,..Default::default()};
+        let mut classic=vec![RenderVertex::default();4096];let mut out=vec![ShaderRenderVertex::default();4096];
+        let mut previous=0;
+        COUNT.with(|c|c.set(Some(0)));
+        for age in [0u64,14,15,20,21,45] {
+            i.tick=600+age;i.simulation_time=20.0+age as f64/30.0;
+            // Frozen procedural time does not hold transient simulation lifetimes.
+            if !calm {p.presentation_time=i.simulation_time;}
+            let events=if age==0 {&[nova,crack][..]} else {&[][..]};
+            let n=if shader {r.build_shader(&i,&[snake()],&body(),&[],events,&pal,&p,&mut out).vertex_count}
+                else {r.build(&i,&[snake()],&body(),&[],events,&pal,&p,&mut classic).vertex_count};
+            if shader {
+                assert_eq!(out[..n].iter().filter(|v|v.params[0]==18).count(),if age<21 {6} else {0});
+                assert_eq!(out[..n].iter().filter(|v|v.params[0]==6 && v.params[2]==1).count(),if age<15 {6} else {0});
+            } else if age==0 {previous=n;} else if age>=21 {assert!(n<previous);}
+        }
+        assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+    }}
 }

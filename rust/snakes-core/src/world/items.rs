@@ -70,6 +70,8 @@ impl World {
         self.item_timer = 0;
         self.event_count = 0; // No stale pickup/effect event after disabling.
         for id in 0..self.snakes.len() {
+            self.snakes[id].frozen_ticks=0;
+            self.faces[id].frozen_ticks=0;self.faces[id].thaw_immunity_ticks=0;self.faces[id].breath_ticks=0;
             let kind = EffectKind::from_byte(self.snakes[id].effect_kind);
             if kind != EffectKind::None { effects::end(kind,self,id,EndReason::Disabled); }
             self.snakes[id].effect_kind = 0;
@@ -77,6 +79,7 @@ impl World {
         }
     }
     pub(super) fn advance_items_and_effects(&mut self) {
+        self.advance_frost();
         for id in 0..self.snakes.len() {
             if !self.snakes[id].alive || self.snakes[id].effect_ticks == 0 { continue; }
             let kind = EffectKind::from_byte(self.snakes[id].effect_kind);

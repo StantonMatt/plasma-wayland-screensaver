@@ -13,9 +13,9 @@ struct RoomProof {time:f64,epoch:u32,count:u16,mask:u16}
 #[derive(Clone,Copy,Default)]
 struct WordProof {cells:u64,proof:RoomProof}
 #[derive(Clone)]
-struct RoomScratch {reached:[u64;WORDS],seeds:[u64;WORDS],queued:[u64;WORDS/64],pending:[usize;WORDS],touched:[usize;WORDS]}
+struct RoomScratch {reached:[u64;WORDS],seeds:[u64;WORDS],dirty:[u64;WORDS/64],queued:[u64;WORDS/64],pending:[usize;WORDS],touched:[usize;WORDS]}
 impl RoomScratch {
-    fn new()->Self {Self {reached:[0;WORDS],seeds:[0;WORDS],queued:[0;WORDS/64],pending:[0;WORDS],touched:[0;WORDS]}}
+    fn new()->Self {Self {reached:[0;WORDS],seeds:[0;WORDS],dirty:[0;WORDS/64],queued:[0;WORDS/64],pending:[0;WORDS],touched:[0;WORDS]}}
 }
 
 /// Bound a narrow-phase contact plus its safety margin and possible motion.
@@ -524,7 +524,10 @@ impl Spatial {
         for cell in 0..self.cols*self.rows {if self.boundary[cell] {self.boundary_words[(cell/self.cols)*4+(cell%self.cols)/64]|=1<<((cell%self.cols)%64);}}
         self.area_count=0;
     }
-    pub fn rebuild(&mut self, w: &World) {
+    #[cfg(test)]
+    pub fn rebuild(&mut self, w: &World) {self.rebuild_impl(w,None);}
+    pub fn rebuild_with_rivals(&mut self,w:&World,rivals:&[super::Rival;MAX_SNAKES]) {self.rebuild_impl(w,Some(rivals));}
+    fn rebuild_impl(&mut self, w: &World,rivals:Option<&[super::Rival;MAX_SNAKES]>) {
         let clock=self.profile_enabled.then(std::time::Instant::now);
         self.invalidate_proofs();
         self.word_keys.fill(SpaceKey::default());
@@ -573,9 +576,10 @@ impl Spatial {
                     }
                 }
             }
-            let speed=w.motion_limits(s.id as usize,0.0).unwrap().0;
-            let rate=s.radius*1.18/(speed*0.65).max(1.0);
-            let growth_delay=w.tail_growth_delay(s.id as usize).unwrap();
+            let (rate,growth_delay)=if let Some(rivals)=rivals {(rivals[id].release_rate,rivals[id].growth_delay)} else {
+                let speed=w.motion_limits(id,0.0).unwrap().0;
+                (s.radius*1.18/(speed*0.65).max(1.0),w.tail_growth_delay(id).unwrap())
+            };
             for (j, seg) in s.segments.iter().enumerate().skip(1) {
                 motion_squared=motion_squared.max(w.distance_squared(seg.previous,seg.current));
                 let key = self.key(w.canonical_point(seg.current));
@@ -608,34 +612,35 @@ impl Spatial {
         // conservative, and the continuous rollout still proves motion safety.
         for index in 0..self.occupied_count {
             let key=self.occupied_cells[index] as usize;
-            let mask=self.occupied[key];
-            // Topology and traversal order are fixed for an arena. Reuse the
-            // exact 3x3 bucket list instead of dividing/wrapping each insertion.
-            for k in self.clearance_neighbours[key] {
-                if k!=u16::MAX {
+            let mut owners=self.occupied[key];
+            // An owner's release is identical at every neighbour. Traverse
+            // owners once per source cell, keeping each owner's source-cell
+            // and neighbour order unchanged, instead of reloading its release
+            // and enumerating its bit for every neighbour.
+            while owners!=0 {
+                let id=owners.trailing_zeros() as usize;owners&=owners-1;
+                let bit=1<<id;
+                let release=self.release[id*CELLS+key];
+                for k in self.clearance_neighbours[key] {
+                    if k==u16::MAX {continue;}
                     let k=k as usize;
                     let previous=self.navigable[k];
                     if previous==0 {self.navigable_cells[self.navigable_count]=k as u16;self.navigable_count+=1;self.navigable_max[k]=0.0;}
-                    self.navigable[k]|=mask;
-                    let mut bits=mask;
-                    while bits!=0 {
-                        let id=bits.trailing_zeros() as usize;bits&=bits-1;
-                        let release=self.release[id*CELLS+key];
-                        let first=previous&(1<<id)==0;
-                        if first || release>self.space_release[id*CELLS+k] {
-                            self.space_release[id*CELLS+k]=release;
-                            let at=self.cell_word[k] as usize;
-                            if first {
-                                self.navigable_words[at][id]|=1<<self.cell_bit[k];
-                                self.word_owners[at]|=1<<id;
-                                // Contributions only increase this cell's
-                                // release. Keeping its initial value in the
-                                // word minimum is a conservative lower bound.
-                                self.word_min[at][id]=self.word_min[at][id].min(release);
-                            }
-                            self.word_max[at][id]=self.word_max[at][id].max(release);
-                            self.navigable_max[k]=self.navigable_max[k].max(release);
+                    self.navigable[k]|=bit;
+                    let first=previous&bit==0;
+                    if first || release>self.space_release[id*CELLS+k] {
+                        self.space_release[id*CELLS+k]=release;
+                        let at=self.cell_word[k] as usize;
+                        if first {
+                            self.navigable_words[at][id]|=1<<self.cell_bit[k];
+                            self.word_owners[at]|=bit;
+                            // Contributions only increase this cell's
+                            // release. Keeping its initial value in the
+                            // word minimum is a conservative lower bound.
+                            self.word_min[at][id]=self.word_min[at][id].min(release);
                         }
+                        self.word_max[at][id]=self.word_max[at][id].max(release);
+                        self.navigable_max[k]=self.navigable_max[k].max(release);
                     }
                 }
             }
@@ -767,9 +772,20 @@ impl Spatial {
     }
     fn space_search(&mut self,root:usize,root_blocked:bool,mask:u16,limit:usize,time:f64,scratch:&mut RoomScratch)->(usize,bool) {
         let slot=self.space_slot(mask,time);
-        let RoomScratch {reached,seeds,queued,pending,touched}=scratch;
+        let RoomScratch {reached,seeds,dirty,queued,pending,touched}=scratch;
         let mut touched_count=0;
-        reached[..self.rows*4].fill(0);seeds[..self.rows*4].fill(0);queued.fill(0);
+        // Capped queries usually touch only a few words. Clear every word
+        // written by the preceding query, including pending seeds on an early
+        // return and words outside a resized arena, without streaming the
+        // entire arena's scratch through cache for each candidate.
+        for (block,mask) in dirty.iter_mut().enumerate() {
+            let mut bits=*mask;*mask=0;
+            while bits!=0 {
+                let index=block*64+bits.trailing_zeros() as usize;bits&=bits-1;
+                reached[index]=0;seeds[index]=0;
+            }
+        }
+        queued.fill(0);
         let mut read=0;let mut write=0;let mut pending_count=0;let mut count=0;let mut proof_time=0.0_f64;
         let words=self.cols.div_ceil(64);
         // Preserve the original two-hop exception exactly. Once these cells
@@ -831,7 +847,9 @@ impl Spatial {
         }
         if root_blocked {
             for &cell in &self.queue[..initial] {
-                reached[self.cell_word[cell] as usize]|=1<<self.cell_bit[cell];
+                let index=self.cell_word[cell] as usize;
+                dirty[index/64]|=1<<(index%64);
+                reached[index]|=1<<self.cell_bit[cell];
             }
             count=initial;
             if count>limit {return self.finish_words(reached,&touched[..touched_count],root,true,limit,true,proof_time);}
@@ -840,6 +858,7 @@ impl Spatial {
             let mut add=|cell:usize| {
                 let index=self.cell_word[cell] as usize;let bit=1<<self.cell_bit[cell];
                 if bit&reached[index]!=0 {return;}
+                dirty[index/64]|=1<<(index%64);
                 seeds[index]|=bit;
                 if queued[index/64]&(1<<(index%64))==0 {
                     queued[index/64]|=1<<(index%64);pending[write]=index;write=(write+1)%WORDS;pending_count+=1;
@@ -894,6 +913,7 @@ impl Spatial {
             let mut add=|target:usize,bits:u64| {
                 let bits=bits&!reached[target];
                 if bits==0 {return;}
+                dirty[target/64]|=1<<(target%64);
                 seeds[target]|=bits;
                 if queued[target/64]&(1<<(target%64))==0 {
                     queued[target/64]|=1<<(target%64);pending[write]=target;write=(write+1)%WORDS;pending_count+=1;
@@ -1102,7 +1122,7 @@ impl Spatial {
         result
     }
     #[inline(always)]
-    fn physical_blocked(&self,key:usize,mask:u16,time:f64)->bool {
+    pub(super) fn physical_blocked(&self,key:usize,mask:u16,time:f64)->bool {
         if self.future_active && self.future[key]==self.future_stamp {return true;}
         let mut bits=self.occupied[key]&mask;
         if bits==0 {return false;}

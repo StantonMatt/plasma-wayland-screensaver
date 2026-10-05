@@ -14,7 +14,7 @@ pub(crate) fn forecast_boost(w: &World, id: usize, rush: f64) -> (usize, usize, 
 #[inline]
 fn forecast_boost_from(s: &crate::world::Snake, rush: f64) -> (usize, usize, usize, u8) {
     let effect = modifiers(s.effect_kind, remaining_ticks(s.effect_ticks, 1));
-    let frozen = s.effect_kind == EffectKind::Frost as u8 && remaining_ticks(s.effect_ticks, 1) > 0;
+    let frozen = s.frozen_ticks > 0;
     let mut ticks = s.boost_ticks as usize;
     let mut cooldown = s.cooldown_ticks;
     let mut cost = s.boost_cost as usize;
@@ -50,6 +50,7 @@ fn forecast_state_from(w: &World, mut s: crate::world::Snake, rush: f64, offset:
         expiry.boost_cooldown.saturating_sub((offset - ticks).min(u8::MAX as usize) as u8)
     } else if ticks > 0 { cooldown }
     else { cooldown.saturating_sub(offset.min(u8::MAX as usize) as u8) };
+    s.frozen_ticks = remaining_ticks(s.frozen_ticks, offset.saturating_add(1));
     s.effect_ticks = remaining_ticks(s.effect_ticks, offset.saturating_add(1));
     if s.effect_ticks == 0 { s.effect_kind = EffectKind::None as u8; }
     s.rush = if offset < ticks { 0.6 } else { 0.0 };
@@ -65,24 +66,32 @@ pub(crate) fn forecast_motion(w: &World, id: usize, rush: f64, offset: usize) ->
 /// AI movement after forecast replacement, without changing mechanics.
 /// Surge activation forgives unpaid burst segments at the pickup movement.
 impl World {
-    pub(crate) fn ai_forecast_radius(&self,id:usize,rush:f64,offset:usize,surge_step:Option<usize>)->f64 {
-        self.ai_forecast_state(id,rush,offset,surge_step).radius
+    pub(crate) fn ai_forecast_len(&self,id:usize,rush:f64,offset:usize,surge_step:Option<usize>,freeze:Option<usize>)->usize {
+        self.ai_forecast_state(id,rush,offset,surge_step,freeze).len
     }
-    fn ai_forecast_state(&self,id:usize,rush:f64,offset:usize,surge_step:Option<usize>)->crate::world::Snake {
-        let mut state=forecast_state(self,id,rush,offset);
+    pub(crate) fn ai_forecast_radius(&self,id:usize,rush:f64,offset:usize,surge_step:Option<usize>,freeze:Option<usize>)->f64 {
+        self.ai_forecast_state(id,rush,offset,surge_step,freeze).radius
+    }
+    fn ai_forecast_state(&self,id:usize,rush:f64,offset:usize,surge_step:Option<usize>,freeze:Option<usize>)->crate::world::Snake {
+        // Endpoint freeze cancels payments after that movement. Surge forgives
+        // debt at its endpoint; neither operation can restore cancelled debt.
+        let cutoff=|offset:usize|freeze.map_or(offset,|f|offset.min(f-1));
+        let mut state=forecast_state(self,id,rush,cutoff(offset));
         if let Some(step)=surge_step {
-            let at_pickup=forecast_state(self,id,rush,step-1);
+            let at_pickup=forecast_state(self,id,rush,cutoff(step-1));
             state.len=at_pickup.len;state.radius=at_pickup.radius;
             state.boost_cost=at_pickup.boost_paid;state.boost_paid=at_pickup.boost_paid;
             state.blocked=!self.growth_allowed(&state);
         }
         state
     }
-    pub(crate) fn ai_forecast_motion(&self,id:usize,rush:f64,offset:usize,kind:u8,ticks:u16,surge_step:Option<usize>)->(f64,f64) {
-        let mut state=self.ai_forecast_state(id,rush,offset,surge_step);
-        state.effect_kind=kind;state.effect_ticks=ticks;
+    pub(crate) fn ai_forecast_frost_motion(&self,id:usize,rush:f64,offset:usize,kind:u8,ticks:u16,surge:Option<usize>,freeze:Option<usize>,frozen:u16)->(f64,f64) {
+        let mut state=self.ai_forecast_state(id,rush,offset,surge,freeze);
+        state.effect_kind=kind;state.effect_ticks=ticks;state.frozen_ticks=frozen;
+        if freeze.is_some() {state.rush=0.0;state.boost_ticks=0;}
         (self.speed(&state),self.turn_rate(&state))
     }
+
 }
 
 /// Adapt a pre-tick diagnostic observation to the steering forecast's input.
@@ -100,7 +109,7 @@ pub(crate) fn forecast_schedule_before_tick(w: &World, id: usize, rush: f64) -> 
     let mut schedule = [first; 25];
     for offset in 1..25 {
         let state = forecast_state_before_tick(w, id, rush, offset);
-        let changed = state.len != previous.len || state.rush != previous.rush
+        let changed = (state.frozen_ticks>0) != (previous.frozen_ticks>0) || state.len != previous.len || state.rush != previous.rush
             || modifiers(state.effect_kind,state.effect_ticks).speed
                 != modifiers(previous.effect_kind,previous.effect_ticks).speed;
         schedule[offset] = if changed { (w.speed(&state), w.turn_rate(&state)) }
@@ -112,6 +121,7 @@ pub(crate) fn forecast_schedule_before_tick(w: &World, id: usize, rush: f64) -> 
 
 fn forecast_state_before_tick(w: &World, id: usize, rush: f64, offset: usize) -> crate::world::Snake {
     let mut observed = w.snakes[id];
+    observed.frozen_ticks = observed.frozen_ticks.saturating_sub(1);
     observed.effect_ticks = observed.effect_ticks.saturating_sub(1);
     if observed.effect_ticks == 0 { observed.effect_kind = EffectKind::None as u8; }
     forecast_state_from(w, observed, rush, offset)
@@ -131,6 +141,7 @@ mod tests {
                         let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,
                             density:0.0,self_collisions:false,..Config::default()},
                             &[(Point{x:500.0,y:400.0},0.0,120,0.0)],&[]).unwrap();
+                        w.food.resize(w.config.food_count(),crate::world::Food {p:Point{x:100.0,y:100.0},life:1000.0,value:0.0,owner:-1,..Default::default()});
                         w.snakes[0].effect_kind=kind as u8;
                         w.snakes[0].effect_ticks=ticks;
                         w.snakes[0].boost_ticks=burst;
@@ -145,8 +156,7 @@ mod tests {
                             (forecast_state_before_tick(&w,0,0.6,offset),
                              forecast_motion_before_tick(&w,0,0.6,offset))).collect();
                         for (offset,(state,motion)) in predicted.into_iter().enumerate() {
-                            w.advance_items_and_effects();
-                            w.advance_boost(0,offset==0);
+                            w.step(&mut crate::controller::ScriptedController::new(|_,s:crate::SnakeView<'_>|crate::controller::Steering {desired_angle:s.angle,rush:if offset==0 {0.6} else {0.0}}));
                             let actual=w.snakes[0];
                             assert_eq!((state.effect_kind,state.effect_ticks,state.boost_ticks,
                                 state.cooldown_ticks,state.boost_cost,state.boost_paid,state.len),

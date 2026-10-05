@@ -108,7 +108,7 @@ impl AiController {
         state.guarding=self.guard_worth(w,s,f) && near && radius<=7.0*s.radius && s.effect_ticks>if state.guarding {crate::Item::GUARD_RELEASE_TICKS} else {90};
         if state.guarding {
             state.guard_radius=radius;state.coil_sign=if s.traits.turn_bias<0.0 {-1.0} else {1.0};
-            state.goal=f.position;state.track_goal=true;state.best_distance=f64::MAX;state.last_progress=w.tick();
+            state.waypoint=None;state.goal=f.position;state.track_goal=true;state.best_distance=f64::MAX;state.last_progress=w.tick();
         }
     }
 }

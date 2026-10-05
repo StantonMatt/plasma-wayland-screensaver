@@ -244,3 +244,74 @@ fn zero_allocations_venom_hunting_strike_and_escape() {
     ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
     assert_eq!(bites,1);assert!(boosts>0);assert!(survived_exit);
 }
+
+#[test]
+fn zero_allocations_frost_nova_freeze_thaw_and_ai() {
+    let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,width:1600.0,height:1000.0,
+        density:0.0,scale:200.0,self_collisions:false,deadly_walls:false,..Default::default()},
+        &[(Point{x:500.0,y:400.0},0.0,24,1.0),(Point{x:610.0,y:500.0},0.0,48,0.0)],&[]).unwrap();
+    let mut ai=ai::AiController::new();
+    let mut saw_frozen=false;let mut saw_thaw=false;let mut saw_nova=false;
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    effects::activate(effects::EffectKind::Frost,&mut w,0);
+    for _ in 0..160 {
+        saw_frozen|=w.snakes().any(|s|s.face.frozen_ticks>0);
+        saw_thaw|=w.snakes().any(|s|s.face.thaw_immunity_ticks>0);
+        saw_nova|=w.frame_events().any(|e|e.kind==EventKind::Nova);
+        w.step(&mut ai);
+    }
+    ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
+    assert!(saw_frozen && saw_thaw && saw_nova);
+}
+
+#[test]
+fn zero_allocations_frost_power_up_toggles_from_disabled_world() {
+    let mut w=World::new(Config {rules:RuleSet::V2,width:1600.0,height:1000.0,
+        density:0.0,power_ups:false,..Default::default()}).unwrap();
+    let mut ai=ai::AiController::new();
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    for enabled in [true,false,true,false] {
+        w.reconfigure(Config {power_ups:enabled,..w.config()}).unwrap();
+        if enabled {effects::activate(effects::EffectKind::Frost,&mut w,0);}
+        w.step(&mut ai);
+    }
+    ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
+    assert!(w.snakes().all(|s|s.face.frozen_ticks==0 && s.face.thaw_immunity_ticks==0));
+}
+
+#[test]
+fn zero_allocations_frost_growth_past_the_legacy_trail_cap() {
+    let mut w=world::tests::allocation_fixture();
+    w.config.rules=RuleSet::V2;
+    w.reconfigure(Config {power_ups:true,..w.config()}).unwrap();
+    assert_eq!(w.stats().total_segments,6000);
+    // Leave the maximum-length titan alone: V2's continuous-body contacts
+    // legitimately kill the crossing Classic cap fixture's other occupants.
+    for s in w.snakes.iter_mut().skip(1) {s.alive=false;s.len=0;s.respawn=1000.0;}
+    let mut straight=controller::ScriptedController::new(|_,s:SnakeView<'_>|controller::Steering {desired_angle:s.angle,rush:0.0});
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    for _ in 0..8 {
+        for id in 0..w.snakes.len() {w.snakes[id].frozen_ticks=75;w.faces[id].frozen_ticks=75;}
+        w.step_n(&mut straight,120);
+    }
+    ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
+    assert!(w.snake(0).unwrap().segments.len()>1600,"V2 must retain uncapped growth while frozen");
+}
+
+#[test]
+fn zero_allocations_frost_nova_on_a_6000_segment_giant() {
+    let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,width:16384.0,height:16384.0,
+        density:0.0,scale:200.0,speed:0.0,self_collisions:false,deadly_walls:false,..Default::default()},
+        &[(Point{x:8000.0,y:8000.0},0.0,6000,0.0),
+          (Point{x:8000.0,y:8100.0},0.0,24,0.0)],&[]).unwrap();
+    let mut straight=controller::ScriptedController::new(|_,s:SnakeView<'_>|controller::Steering {desired_angle:s.angle,rush:0.0});
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    effects::activate(effects::EffectKind::Frost,&mut w,1);
+    assert_eq!(w.snakes[0].frozen_ticks,75);
+    w.step_n(&mut straight,120);
+    ENABLED.with(|e|e.set(false));
+    assert_eq!(COUNT.with(Cell::get),0);
+    assert!(w.snakes[0].alive);
+    assert_eq!(w.snakes[0].len,6000);
+    assert_eq!(w.snakes[0].frozen_ticks,0);
+}

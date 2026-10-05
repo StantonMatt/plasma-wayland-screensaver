@@ -221,6 +221,7 @@ pub(crate) struct Snake {
     pub intent_flags: u32,
     pub effect_kind: u8,
     pub effect_ticks: u16,
+    pub frozen_ticks: u16,
     trail_start: usize,
     trail_len: usize,
     trail_decimated: bool,
@@ -489,7 +490,9 @@ impl World {
         // distance. Keep the legacy capacity plus the giant distance bound.
         // Include birth samples, four-point tail reserve and pruning slack.
         let radius = self.snakes.iter().fold(self.config.base_radius()*1.14*1.25, |r, s|r.max(s.base_radius*1.25));
-        let min_step = (52.0+self.config.speed*0.66)*0.86/(1.0+(EXACT_TRAIL_SEGMENTS-24) as f64*0.004)*STEP_SECONDS;
+        // Frost retains half-speed tick history without reallocating on toggles.
+        let min_step = (52.0+self.config.speed*0.66)*0.86/(1.0+(EXACT_TRAIL_SEGMENTS-24) as f64*0.004)*STEP_SECONDS
+            * if self.config.rules==RuleSet::V2 {0.5} else {1.0};
         let retained = self.snakes.iter().map(|s|s.trail_len+2).max().unwrap_or(2);
         let capacity = ((radius*1.18*(EXACT_TRAIL_SEGMENTS+6) as f64/min_step).ceil() as usize+EXACT_TRAIL_SEGMENTS+16).max(2*(MAX_SEGMENTS+6)+16).max(retained).next_power_of_two();
         if capacity!=self.trail_capacity {
@@ -638,6 +641,30 @@ impl World {
             f.target.y*=sy;
         }
     }
+    // A clear birth body can still point into a corner with no escape arc.
+    // In an adjacent-wall corner, reserve a full-rate circle for V2's newborn,
+    // including the fastest
+    // birth speed trait. Newborn growth is zero, so nutrition/paid bursts do
+    // not apply yet. This is spawn-only work; Classic keeps its
+    // historical candidate/RNG order and steady-state steering is unchanged.
+    fn spawn_has_turn_room(&self, p: Point, angle: f64, radius: f64, len: usize) -> bool {
+        if self.config.rules != RuleSet::V2 || !self.config.deadly_walls { return true; }
+        let speed=(52.0+self.config.speed*0.66)*1.14
+            /(1.0+len.saturating_sub(24) as f64*0.004);
+        let rate=2.05+(self.config.intelligence/100.0).clamp(0.0,1.0)*1.8+20.0/len.max(8) as f64;
+        let turn_radius=(speed/rate).max(Self::minimum_turn_radius(&Snake {radius,len,..Snake::default()}));
+        let reserve=turn_radius+radius*0.5+speed*STEP_SECONDS;
+        // The ordinary wall margin already admits single-wall turns. Only a
+        // corner can block both directions; do not tighten unrelated births.
+        if p.x.min(self.config.width-p.x)>2.0*turn_radius+reserve
+            || p.y.min(self.config.height-p.y)>2.0*turn_radius+reserve {return true;}
+        let (sin,cos)=angle.sin_cos();
+        [-1.0,1.0].into_iter().any(|side| {
+            let center=Point {x:p.x-side*sin*turn_radius,y:p.y+side*cos*turn_radius};
+            center.x>=reserve && center.x<=self.config.width-reserve
+                && center.y>=reserve && center.y<=self.config.height-reserve
+        })
+    }
     fn spawn_position(&mut self, radius: f64, len: usize) -> (Point, f64) {
         let g = self.config.geometry();
         let margin = (radius*5.0).max(18.0);
@@ -656,7 +683,7 @@ impl World {
                 y: margin+self.rng.random()*(g.height-margin*2.0).max(1.0)
             };
             let angle = self.rng.random()*TAU;
-            let mut closest = f64::MAX;
+            let mut closest = if self.spawn_has_turn_room(p,angle,radius,len) {f64::MAX} else {0.0};
             let samples = len.div_ceil(4).clamp(2, 7);
             for sample in 0..samples {
                 let d = radius*1.18*sample as f64*(len-1) as f64/(samples-1) as f64;
@@ -907,13 +934,13 @@ impl World {
         // Apply the floor only to the length penalty, before effects/nutrition.
         let penalty=if self.config.rules==RuleSet::V2 {penalty.min(1.0/0.40)} else {penalty};
         (52.0+self.config.speed*0.66)*s.traits.speed_bias*(1.0+s.rush+boost)/penalty
-            * effects::modifiers(s.effect_kind,s.effect_ticks).speed
+            * effects::modifiers(s.effect_kind,s.effect_ticks).speed * if s.frozen_ticks>0 {0.5} else {1.0}
     }
     fn minimum_turn_radius(s: &Snake) -> f64 {
         s.radius*LENGTH_FACTORS.get().expect("World::new initializes length factors").turn[s.len]
     }
     fn turn_rate(&self, s: &Snake) -> f64 {
-        (2.05+(self.config.intelligence/100.0).clamp(0.0, 1.0)*1.8+20.0/(s.len.max(8) as f64)).min(self.speed(s)/Self::minimum_turn_radius(s).max(1.0))
+        (2.05+(self.config.intelligence/100.0).clamp(0.0, 1.0)*1.8+20.0/(s.len.max(8) as f64)).min(self.speed(s)/if s.frozen_ticks>0 {0.5} else {1.0}/Self::minimum_turn_radius(s).max(1.0)) * if s.frozen_ticks>0 {0.6} else {1.0}
     }
     fn update_radius(s: &mut Snake) {
         s.radius = s.base_radius*(1.0+(s.len.saturating_sub(s.birth_len) as f64*0.0025).min(0.25));
@@ -1052,7 +1079,7 @@ impl World {
         if !s.alive { return if s.corpse_ticks > 0 { flags::CORPSE } else { 0 }; }
         s.intent_flags | if self.faces[id].strike && s.effect_kind==4 && s.effect_ticks>0 {flags::STRIKE} else {0} | effects::modifiers(s.effect_kind,s.effect_ticks).flags | if s.boost_ticks > 0 { flags::BOOSTING } else { 0 }
             | if s.cooldown_ticks > 0 { flags::COOLDOWN } else { 0 }
-            | if s.effect_kind == 5 && s.effect_ticks > 0 { flags::FROZEN } else { 0 }
+            | if s.frozen_ticks > 0 { flags::FROZEN } else { 0 }
             | if self.leader == Some(id) { flags::LEADER } else { 0 }
     }
     /// AI/user hooks; only intent bits are writable. Other flags belong to mechanics.
@@ -1062,7 +1089,7 @@ impl World {
     }
     pub fn boost_ready(&self, id: usize) -> bool {
         self.snakes.get(id).is_some_and(|s| s.alive && s.len >= 12 && s.boost_ticks == 0
-            && s.cooldown_ticks == 0 && !(s.effect_kind == 5 && s.effect_ticks > 0))
+            && s.cooldown_ticks == 0 && !(s.frozen_ticks > 0))
     }
     fn update_leader(&mut self, tick: u64) {
         let old = self.leader;
@@ -1085,7 +1112,7 @@ impl World {
     fn advance_boost(&mut self, i: usize, request: bool) {
         let s = &mut self.snakes[i];
         let effect = effects::modifiers(s.effect_kind,s.effect_ticks);
-        let frozen = s.effect_kind == 5 && s.effect_ticks > 0;
+        let frozen = s.frozen_ticks > 0;
         if frozen && s.boost_ticks > 0 { s.boost_ticks = 0; s.cooldown_ticks = effect.boost_cooldown; }
         else if s.boost_ticks == 1 { s.boost_ticks = 0; s.cooldown_ticks = effect.boost_cooldown; }
         else if s.boost_ticks > 1 { s.boost_ticks -= 1; }
