@@ -1,3 +1,15 @@
+plasma-visual-screensaver (0.18.0-1) resolute; urgency=medium
+
+  * Store up to three power-ups as gems on each snake's neck and use them
+    when it matters: Phase escapes traps, Surge wins races and cut-offs,
+    Frost freezes bunched rivals, Venom bites, and Magnet gathers nearby food.
+  * Expire stored items after a minute and drop them on death.
+  * Add the default-on "Snakes save power-ups for later" setting.
+  * Give Surge a clearer bow wave, slipstream and yellow contrail.
+  * Improve wall avoidance.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Tue, 06 Oct 2026 00:00:00 -0300
+
 plasma-visual-screensaver (0.17.1-1) resolute; urgency=medium
 
   * Stop the screensaver restarting repeatedly right after dismissal,
