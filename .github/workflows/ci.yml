@@ -48,7 +48,9 @@ jobs:
           if [ "${{ matrix.graphics-api }}" = vulkan ]; then
             # Reproduce the inherited GUI-thread loop seen on the real desktop.
             # Explicit experimental Vulkan startup must replace it with its threaded loop.
-            loop_args+=(--render-loop basic)
+            # Lavapipe on small runners delivers ~75-81% of frames even for healthy builds,
+            # so this job guards against stalls; CPU cost is gated by the paired benchmarks.
+            loop_args+=(--render-loop basic --min-frame-ratio 0.7)
           fi
           ./scripts/frame-timing.sh \
             --binary /usr/bin/plasma-visual-screensaver \

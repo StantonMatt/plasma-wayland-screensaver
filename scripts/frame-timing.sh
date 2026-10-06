@@ -85,7 +85,8 @@ def percentiles(values):
             "p99": percentile(.99), "max": round(values[-1], 4)}
 
 
-def summarize(directory, outputs, duration, rate, warmup, graphics_api=None, check=False, size="3440x1440"):
+def summarize(directory, outputs, duration, rate, warmup, graphics_api=None, check=False, size="3440x1440",
+              min_frame_ratio=.8):
     failures = []
     with (directory / "frames.csv").open() as stream:
         rows = list(csv.DictReader(stream))
@@ -157,8 +158,8 @@ def summarize(directory, outputs, duration, rate, warmup, graphics_api=None, che
                 expected_frames = expected_hz * (duration - warmup)
                 median = percentiles(intervals)["p50"]
                 expected_interval = 1000 / expected_hz
-                if len(selected) < .8 * expected_frames:
-                    failures.append(f"Window {window}: {len(selected)} frames < 80% of {expected_frames:.1f} expected")
+                if len(selected) < min_frame_ratio * expected_frames:
+                    failures.append(f"Window {window}: {len(selected)} frames < {min_frame_ratio:.0%} of {expected_frames:.1f} expected")
                 if abs(median / expected_interval - 1) > .25:
                     failures.append(f"Window {window}: median {median:.4f}ms differs >25% from {expected_interval:.4f}ms")
         cadence = {
@@ -223,7 +224,8 @@ parser.add_argument("--warmup", type=float, default=5, help="exclude initial sec
 parser.add_argument("--output-dir", type=Path, default=Path("frame-timing-results"))
 parser.add_argument("--graphics-api", choices=["opengl", "vulkan"], help="force PVS backend; fail if it falls back")
 parser.add_argument("--render-loop", choices=["basic", "threaded"], help="supply a Qt loop override (Vulkan should override basic)")
-parser.add_argument("--check", action="store_true", help="require >=80%% expected frames per window and median within 25%% of target")
+parser.add_argument("--check", action="store_true", help="require --min-frame-ratio of expected frames per window and median within 25%% of target")
+parser.add_argument("--min-frame-ratio", type=float, default=.8, help="minimum share of expected frames per window for --check (default 0.8)")
 parser.add_argument("--width", type=int, default=3440)
 parser.add_argument("--height", type=int, default=1440)
 parser.add_argument("--summarize-only", action="store_true", help="reanalyze existing runs in --output-dir without launching processes")
@@ -241,7 +243,7 @@ if args.summarize_only:
             previous = json.loads((directory / "summary.json").read_text()) if (directory / "summary.json").exists() else {}
             summarize(directory, outputs, previous.get("duration_requested_s", args.duration), rate, args.warmup,
                 args.graphics_api or previous.get("graphics_api_requested"), args.check,
-                previous.get("output_size", f"{args.width}x{args.height}"))
+                previous.get("output_size", f"{args.width}x{args.height}"), args.min_frame_ratio)
     sys.exit(0)
 binary = args.binary.resolve(strict=True)
 root.mkdir(parents=True, exist_ok=True)
@@ -323,5 +325,5 @@ MonitorBehavior=independent
             if result:
                 raise SystemExit(f"Isolated measurement blocked ({result}); inspect {directory}. No real-session fallback.")
         summarize(directory, outputs, args.duration, rate, args.warmup, args.graphics_api, args.check,
-            f"{args.width}x{args.height}")
+            f"{args.width}x{args.height}", args.min_frame_ratio)
 PY

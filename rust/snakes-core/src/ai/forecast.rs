@@ -89,7 +89,7 @@ impl Snapshot {
 #[derive(Clone, Copy)]
 pub(super) struct Timeline {
     scheduled:bool,
-    inventory_stashes:[Pickup;crate::MAX_ITEMS],stash_count:usize,inventory_counts:[u8;MAX_SNAKES],inventory_expiry:[[u16;3];MAX_SNAKES],inventory_expired:[u8;MAX_SNAKES],store:bool,inventory_release:[u16;MAX_SNAKES],windup_frost:[u16;MAX_SNAKES],
+    inventory_stashes:[Pickup;crate::MAX_ITEMS],stash_count:usize,inventory_counts:[u8;MAX_SNAKES],inventory_expiry:[[u16;3];MAX_SNAKES],inventory_expired:[u8;MAX_SNAKES],store:bool,inventory_release:[u16;MAX_SNAKES],windup_frost:[u16;MAX_SNAKES],windup_frost_mask:u16,
     initial:[Effect;MAX_SNAKES],
     pickups:[Pickup;EFFECT_EVENTS],
     count:usize,
@@ -110,7 +110,7 @@ pub(super) struct Timeline {
     surge:[u16;STEPS+1],
 }
 impl Default for Timeline {
-    fn default()->Self {Self {scheduled:false,inventory_stashes:[Pickup::default();crate::MAX_ITEMS],stash_count:0,inventory_counts:[0;MAX_SNAKES],inventory_expiry:[[0;3];MAX_SNAKES],inventory_expired:[0;MAX_SNAKES],store:false,inventory_release:[0;MAX_SNAKES],windup_frost:[0;MAX_SNAKES],initial:[Effect::default();MAX_SNAKES],pickups:[Pickup::default();EFFECT_EVENTS],count:0,pickup_mask:0,movement_mask:0,venom_possible:0,frost_empty:0,frost_hits:[0;MAX_SNAKES],frozen:[0;MAX_SNAKES],immunity:[0;MAX_SNAKES],novas:[Freeze::default();EFFECT_EVENTS],nova_count:0,guards:0,guard_targets:[0;MAX_SNAKES],sever_cut:[0;MAX_SNAKES],bite_step:[0;MAX_SNAKES],consumed_at:[0;MAX_SNAKES],phase:[0;STEPS+1],surge:[0;STEPS+1]}}
+    fn default()->Self {Self {scheduled:false,inventory_stashes:[Pickup::default();crate::MAX_ITEMS],stash_count:0,inventory_counts:[0;MAX_SNAKES],inventory_expiry:[[0;3];MAX_SNAKES],inventory_expired:[0;MAX_SNAKES],store:false,inventory_release:[0;MAX_SNAKES],windup_frost:[0;MAX_SNAKES],windup_frost_mask:0,initial:[Effect::default();MAX_SNAKES],pickups:[Pickup::default();EFFECT_EVENTS],count:0,pickup_mask:0,movement_mask:0,venom_possible:0,frost_empty:0,frost_hits:[0;MAX_SNAKES],frozen:[0;MAX_SNAKES],immunity:[0;MAX_SNAKES],novas:[Freeze::default();EFFECT_EVENTS],nova_count:0,guards:0,guard_targets:[0;MAX_SNAKES],sever_cut:[0;MAX_SNAKES],bite_step:[0;MAX_SNAKES],consumed_at:[0;MAX_SNAKES],phase:[0;STEPS+1],surge:[0;STEPS+1]}}
 }
 impl Timeline {
     pub fn new(w:&World)->Self {
@@ -308,7 +308,7 @@ impl Timeline {
     pub(super) fn schedule_use(&mut self,id:usize,kind:EffectKind,step:usize,slot:usize) {
         self.scheduled=true;
         self.inventory_release[id]=step as u16;self.inventory_expiry[id][slot]=u16::MAX;
-        if kind==EffectKind::Frost {self.windup_frost[id]=step as u16;}
+        if kind==EffectKind::Frost {self.windup_frost[id]=step as u16;self.windup_frost_mask|=1<<id;}
         else {self.activation(id,kind,step);}
     }
     pub(super) fn activation(&mut self,id:usize,kind:EffectKind,step:usize) {
@@ -514,8 +514,9 @@ impl Forecast {
         result
     }
     pub fn advance_windups(&mut self,w:&World,step:usize,positions:impl Fn(usize)->Point) {
-        if !self.effects.scheduled {return;}
-        for id in 0..w.snake_count() {
+        let mut pending=self.effects.windup_frost_mask;
+        while pending!=0 {
+            let id=pending.trailing_zeros() as usize;pending&=pending-1;
             if self.effects.windup_frost[id] as usize==step {
                 let alive=w.snakes().filter(|s|s.alive).fold(0,|bits,s|bits|(1<<s.id));
                 self.effects.nova(w,id,positions(id),step,alive,&positions);

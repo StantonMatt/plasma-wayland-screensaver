@@ -9,7 +9,7 @@ const OFFSETS:[f64;3]=[2.2,4.3,6.4];
 struct Motion {time:f64,origin:P,from:f64,kind:u8,active:bool}
 #[derive(Clone,Copy,Default)]
 struct Held {
-    generation:u32,stash:[Motion;3],slide:[Motion;3],fizzle:[Motion;3],
+    generation:u32,animating:bool,stash:[Motion;3],slide:[Motion;3],fizzle:[Motion;3],
     use_motion:Motion,use_slot:usize,activation:Motion,nova:Motion,nova_radius:f64,nova_duration:f64,
 }
 #[derive(Clone,Copy,Default)]
@@ -72,11 +72,17 @@ impl History {
             let h=&mut self.held[s.id as usize];
             if h.generation!=s.generation {*h=Held {generation:s.generation,..Held::default()};}
             if s.flags&flags::FROZEN==0 {h.nova.active=false;}
-            for m in &mut h.stash {if info.simulation_time-m.time>=0.37 {m.active=false;}}
-            for m in &mut h.slide {if info.simulation_time-m.time>=0.25 {m.active=false;}}
-            for m in &mut h.fizzle {if info.simulation_time-m.time>=0.25 {m.active=false;}}
+            if h.animating {
+                for m in &mut h.stash {if info.simulation_time-m.time>=0.37 {m.active=false;}}
+                for m in &mut h.slide {if info.simulation_time-m.time>=0.25 {m.active=false;}}
+                for m in &mut h.fizzle {if info.simulation_time-m.time>=0.25 {m.active=false;}}
+                h.animating=h.stash.iter().chain(h.slide.iter()).chain(h.fizzle.iter()).any(|m|m.active);
+            }
         }
         for e in events {
+            // Ordinary food/death/world events do not mutate inventory history.
+            // Reject them before searching and validating their snake records.
+            if !matches!(e.kind,2|3|5|13|14) {continue;}
             if e.tick>info.tick || cutoff.is_some_and(|t|e.tick<=t) || !coordinate32(e.x) || !coordinate32(e.y) {continue;}
             let Some(s)=snakes.iter().find(|s|s.id==e.snake_id && s.generation==e.generation && snake_valid(s)) else {continue;};
             let time=info.simulation_time-(info.tick-e.tick) as f64*crate::STEP_SECONDS;
@@ -93,12 +99,14 @@ impl History {
                     h.use_slot=slot;h.use_motion=Motion {time,from:OFFSETS[slot],kind:e.other_snake_id as u8,active:true,..Motion::default()};
                 },
                 14 if slot<3=>{
+                    h.animating=true;
                     h.slide[slot]=Motion::default();
                     h.stash[slot]=Motion {time,origin:P::new(e.x as f64,e.y as f64),kind:e.other_snake_id as u8,active:true,..Motion::default()};
                 },
                 2=>{
                     if e.other_snake_id!=5 {h.activation=Motion {time,kind:e.other_snake_id as u8,active:true,..Motion::default()};}
                     if h.use_motion.active && e.flags&crate::event_flags::HELD_ACTIVATION!=0 {
+                        h.animating=true;
                         let slot=h.use_slot;let slide_time=h.use_motion.time;
                         for j in slot..2 {h.stash[j]=h.stash[j+1];h.slide[j]=Motion {time:slide_time,from:OFFSETS[j+1],active:true,..Motion::default()};}
                         h.stash[2]=Motion::default();h.slide[2]=Motion::default();h.use_motion.active=false;
@@ -141,6 +149,7 @@ impl History {
             if h.generation!=s.generation {*h=Held {generation:s.generation,..Held::default()};}
             let slot=e.cut_index as usize;let time=info.simulation_time-(info.tick-e.tick) as f64*crate::STEP_SECONDS;
             let index=h.fizzle.iter().position(|m|!m.active || time-m.time>=8.0*crate::STEP_SECONDS).unwrap_or(slot);
+            h.animating=true;
             h.fizzle[index]=Motion {time,origin:P::new(e.x as f64,e.y as f64),kind:e.other_snake_id as u8,active:true,..Motion::default()};
             for j in slot..2 {h.stash[j]=h.stash[j+1];h.slide[j]=Motion {time,from:OFFSETS[j+1],active:true,..Motion::default()};}
             h.stash[2]=Motion::default();h.slide[2]=Motion::default();
@@ -173,9 +182,9 @@ impl History {
     }
     pub(super) fn has_transients(&self,s:&SnakeRecord)->bool {
         let h=&self.held[s.id as usize];
-        h.stash.iter().chain(h.fizzle.iter()).any(|m|m.active)
+        h.animating && h.stash.iter().chain(h.fizzle.iter()).any(|m|m.active)
     }
-    pub(super) fn has_fizzle(&self,s:&SnakeRecord)->bool {self.held[s.id as usize].fizzle.iter().any(|m|m.active)}
+    pub(super) fn has_fizzle(&self,s:&SnakeRecord)->bool {let h=&self.held[s.id as usize];h.animating && h.fizzle.iter().any(|m|m.active)}
     pub(super) fn phase_fade(&self,s:&SnakeRecord,info:&FrameInfo,p:&Params,calm:bool)->u8 {
         // Use the retained activation clock, independent of procedural motion.
         let m=self.held[s.id as usize].activation; // shared activation clock below
@@ -287,7 +296,7 @@ pub(super) fn shader_pips(h:&mut History,s:&SnakeRecord,points:&[P],r:f64,info:&
     // and viewport interpolation changes invalidate this cache correctly.
     let held=&h.held[s.id as usize];
     let resting=s.alive!=0 && s.flags&flags::CORPSE==0 && s.inv_windup==0
-        && !held.stash.iter().chain(held.slide.iter()).chain(held.fizzle.iter()).any(|m|m.active);
+        && !held.animating;
     let (pips,n)=if resting {
         let cache=&mut h.necks[s.id as usize];let len=points.len().min(9);
         if !cache.valid || cache.len!=len || cache.radius!=s.radius || cache.points[..len]!=points[..len] {

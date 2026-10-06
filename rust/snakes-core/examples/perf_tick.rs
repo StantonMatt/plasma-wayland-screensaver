@@ -38,6 +38,7 @@ fn main(){
  let ticks:usize=args.get(2).map(|x|x.parse().unwrap()).unwrap_or(if case=="desktop" {54000} else {9000});let seed:i32=args.get(3).map(|x|x.parse().unwrap()).unwrap_or(if case=="desktop" {1} else {73});
  let prof=args.iter().any(|s|s=="profile");let diagnostics=args.iter().any(|s|s=="trace");
  let mut cfg=Config {width:3440.,height:1440.,density:100.,trails:100.,intelligence:100.,self_collisions:true,seed,rules:RuleSet::V2,..Config::default()};
+ if case=="ci" {cfg.width=640.;cfg.height=360.;cfg.scale=100.;cfg.speed=100.;cfg.self_collisions=false;cfg.deadly_walls=true;}
  if case=="reference" || case=="reference-wide" {cfg.density=30.;cfg.scale=185.;cfg.speed=230.;}
  if case=="reference-wide" {cfg.width=7920.;}
  if case=="desktop" || case.starts_with("giant-") {cfg.width=7920.;cfg.density=80.;cfg.scale=200.;cfg.speed=300.;cfg.deadly_walls=true;cfg.palette_size=6;}

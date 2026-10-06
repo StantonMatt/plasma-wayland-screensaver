@@ -2,15 +2,41 @@
 //! Constant-cost wall reachability, independent of candidate intent/utility.
 use super::*;
 
+/// Discrete turning-circle geometry depends only on the movement bounds,
+/// not on candidate pose. Reuse it across the first/last admission checks.
+#[derive(Clone, Copy)]
+pub(super) struct Circle {
+    pub radius:f64,
+    pub travel:f64,
+    half_step:f64,
+    circle:f64,
+    normal:f64,
+}
+impl Circle {
+    pub fn new(radius:f64,travel:f64)->Self {
+        let half_step=travel/(2.0*radius.max(0.01));
+        let (sin,cos)=half_step.sin_cos();
+        let circle=if sin>1e-12 {travel/(2.0*sin)} else {radius};
+        Self {radius,travel,half_step,circle,normal:circle*cos}
+    }
+}
+
 /// A complete left/right circle inside the inset arena is a constructive
 /// indefinite wall exit. If neither fits, accept only a straight ray that
 /// reaches the interior where BOTH circles fit, without crossing a wall.
 /// Circles use exact rotate-then-move centres/radii; the arc cold path keeps
 /// a one-tick travel bound for its continuous approximation. Phase never disables deadly walls.
+#[cfg(test)]
 #[inline]
 pub(super) fn reachable(w:&World,p:Point,d:Point,radius:f64,travel:f64,body:f64)->bool {
+    if !w.config().deadly_walls {return true;}
+    reachable_circle(w,p,d,Circle::new(radius,travel),body)
+}
+
+#[inline]
+pub(super) fn reachable_circle(w:&World,p:Point,d:Point,circle:Circle,body:f64)->bool {
     let cfg=w.config();
-    if !cfg.deadly_walls {return true;}
+    let radius=circle.radius;let travel=circle.travel;
     let physical_band=body*0.5+2.0;
     let band=physical_band+travel;
     let wall=p.x.min(cfg.width-p.x).min(p.y).min(cfg.height-p.y);
@@ -19,12 +45,9 @@ pub(super) fn reachable(w:&World,p:Point,d:Point,radius:f64,travel:f64,body:f64)
     // Exact rotate-then-move circles. A continuous tangent circle's centre
     // drifts by fractions of a pixel per movement, so a padded tangent-circle
     // predicate is not invariant even while its real discrete turn stays safe.
-    let half_step=travel/(2.0*radius.max(0.01));
-    if half_step>=std::f64::consts::FRAC_PI_2 {return false;}
-    let (sin,cos)=half_step.sin_cos();
-    let circle=if sin>1e-12 {travel/(2.0*sin)} else {radius};
-    let normal=circle*cos;let shift=travel*0.5;
-    let reserve=circle+physical_band;
+    if circle.half_step>=std::f64::consts::FRAC_PI_2 {return false;}
+    let normal=circle.normal;let shift=travel*0.5;
+    let reserve=circle.circle+physical_band;
     for side in [-1.0,1.0] {
         let center=Point {x:p.x-shift*d.x-side*d.y*normal,y:p.y-shift*d.y+side*d.x*normal};
         if center.x>=reserve && center.x<=cfg.width-reserve

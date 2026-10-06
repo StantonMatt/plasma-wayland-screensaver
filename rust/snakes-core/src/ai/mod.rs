@@ -519,6 +519,7 @@ pub struct AiController {
     cache_epoch: u64,
     diagnostic_enabled: bool,
     profile_enabled: bool,
+    wall_circles:[Option<wall::Circle>;64],
     collision_effects:bool,
     profile: [u128;5],
     forecast_profile: [u128;5],
@@ -563,7 +564,7 @@ impl AiController {
             race_profile:[0;2],
             rival_bounds:[[TrailBounds::default();STEPS+1];MAX_SNAKES],rival_bounds_horizons:[0;MAX_SNAKES],
             #[cfg(feature="desktop-diag")] desktop:[DesktopObservation::default();MAX_SNAKES],
-            #[cfg(test)] reference_queries:false,spatial:Spatial::new(),motion_keys:[None;MAX_SNAKES],candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],rollout_projection:[0.0;STEPS+1],rival_necks:[[0;STEPS+1];MAX_SNAKES],neck_owner:MAX_SNAKES,neck_horizons:[0;MAX_SNAKES],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,collision_effects:false,profile:[0;5],forecast_profile:[0;5],strategy_profile:[0;4], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],policy_aggression:100,
+            #[cfg(test)] reference_queries:false,spatial:Spatial::new(),motion_keys:[None;MAX_SNAKES],candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],rollout_projection:[0.0;STEPS+1],rival_necks:[[0;STEPS+1];MAX_SNAKES],neck_owner:MAX_SNAKES,neck_horizons:[0;MAX_SNAKES],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,wall_circles:[None;64],collision_effects:false,profile:[0;5],forecast_profile:[0;5],strategy_profile:[0;4], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],policy_aggression:100,
             rivals:[Rival::default();MAX_SNAKES],
             #[cfg(test)]
             venom_searches:std::cell::Cell::new(0),opportunity_rivals:Box::new([Rival::default();MAX_SNAKES]),opportunity_mask:0,rival_limits:[[(0.0,0.0);STEPS+1];MAX_SNAKES], simulation_rivals:Some(Box::new([Rival::default();MAX_SNAKES])),item_forecast:forecast::Items::default(),initial_effects:forecast::Timeline::default(),effects:forecast::Timeline::default(),opportunities:forecast::Timeline::default(),look_deltas:[Point::default();MAX_SNAKES],capsule_etas:[[f64::INFINITY;MAX_SNAKES];crate::MAX_ITEMS+1],prism:None,food:[None;MAX_FOOD + crate::MAX_ITEMS+1],
@@ -1614,6 +1615,23 @@ impl AiController {
         }
             else {Self::boost_request(w,s,if attack.valid {attack.control(w.tick()).1} else if w.config().rules==crate::RuleSet::Classic || kind==0 || kind==1 || state.escape_boost {state.rush} else {0.0})}
     }
+    #[inline]
+    fn wall_reachable(&mut self,w:&World,p:Point,d:Point,radius:f64,travel:f64,body:f64)->bool {
+        if !w.config().deadly_walls {return true;}
+        // The common interior admission needs no circle geometry at all.
+        let wall=p.x.min(w.config().width-p.x).min(p.y).min(w.config().height-p.y);
+        let physical_band=body*0.5+2.0;
+        if wall<physical_band {return false;}
+        if wall>=2.0*radius+(physical_band+travel) {return true;}
+        let key=radius.to_bits()^travel.to_bits().rotate_left(29);
+        let index=(key.wrapping_mul(0x9e3779b97f4a7c15)>>58) as usize;
+        let circle=match self.wall_circles[index] {
+            Some(c) if c.radius==radius && c.travel==travel=>c,
+            _=>{let c=wall::Circle::new(radius,travel);self.wall_circles[index]=Some(c);c}
+        };
+        wall::reachable_circle(w,p,d,circle,body)
+    }
+
     /// A positive emergency prefix must leave one physical turn available.
     /// Check single-wall bands as well as corners: two independent axis
     /// escapes do not establish a shared turning circle.
@@ -1851,7 +1869,7 @@ impl AiController {
                     let (radius,speed_bound)=if w.config().rules==crate::RuleSet::V2 {
                         forecast.wall_limits(w,s.id as usize,rush,&motion,2)
                     } else {(speed/turn.max(0.01),speed)};
-                    c.wall_first_safe=wall::reachable(w,p,direction,radius,speed_bound*STEP_SECONDS,s.radius);
+                    c.wall_first_safe=self.wall_reachable(w,p,direction,radius,speed_bound*STEP_SECONDS,s.radius);
                 }
                 let radius=wall_radius;
                 let x_escape=radius*(1.0-direction.y.abs())+s.radius*0.5+2.0;
@@ -2018,7 +2036,7 @@ impl AiController {
         let (endpoint_radius,endpoint_speed)=if w.config().rules==crate::RuleSet::V2 {
             forecast.wall_limits(w,s.id as usize,rush,&motion,c.steps+1)
         } else {(endpoint_limits.0/endpoint_limits.1.max(0.01),endpoint_limits.0)};
-        c.wall_safe=(c.wall_first_safe || c.steps>0) && wall::reachable(w,c.path[c.steps],endpoint_direction,
+        c.wall_safe=(c.wall_first_safe || c.steps>0) && self.wall_reachable(w,c.path[c.steps],endpoint_direction,
             endpoint_radius,endpoint_speed*STEP_SECONDS,s.radius);
         if !c.wall_safe && c.wall_first_safe && c.steps>0 {
             // Back off one checked sweep before abandoning the whole prefix.
@@ -2027,7 +2045,7 @@ impl AiController {
             let delta=w.displacement(c.path[backed.saturating_sub(1)],c.path[backed]);
             let distance=(delta.x*delta.x+delta.y*delta.y).sqrt();
             let direction=Point{x:delta.x/distance.max(1e-12),y:delta.y/distance.max(1e-12)};
-            c.steps=if backed>0 && wall::reachable(w,c.path[backed],direction,
+            c.steps=if backed>0 && self.wall_reachable(w,c.path[backed],direction,
                 endpoint_radius,endpoint_speed*STEP_SECONDS,s.radius) {backed} else {1};
             let delta=w.displacement(c.path[c.steps-1],c.path[c.steps]);
             c.angle=delta.y.atan2(delta.x);
