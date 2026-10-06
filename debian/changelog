@@ -1,3 +1,11 @@
+plasma-visual-screensaver (0.17.1-1ppa1~resolute1) resolute; urgency=medium
+
+  * Stop the screensaver restarting repeatedly right after dismissal,
+    which could leave another app's window drawing stale frames on a monitor.
+  * Log activations and dismissals with their source and reason.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Mon, 05 Oct 2026 23:25:18 -0300
+
 plasma-visual-screensaver (0.17.0-1ppa1~resolute1) resolute; urgency=medium
 
   * Add Starfall meteor showers and feeding frenzies.

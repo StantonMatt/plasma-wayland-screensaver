@@ -20,6 +20,12 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.17.1" date="2026-10-05">
+      <description>
+        <p>Stops the screensaver restarting repeatedly right after dismissal, which could leave another app's window drawing stale frames on a monitor.</p>
+        <p>Logs activations and dismissals with their source and reason.</p>
+      </description>
+    </release>
     <release version="0.17.0" date="2026-10-05">
       <description>
         <p>Adds Starfall meteor showers and feeding frenzies.</p>
