@@ -158,7 +158,7 @@ fn zero_allocations_items_pickups_replacement_expiry_and_settings_off() {
 
 #[test]
 fn zero_allocations_with_all_r3_effects_simultaneously_active() {
-    let mut w=World::new(Config {rules:RuleSet::V2,width:3440.0,height:1440.0,
+    let mut w=World::new(Config {store_power_ups:false,rules:RuleSet::V2,width:3440.0,height:1440.0,
         density:100.0,trails:100.0,intelligence:100.0,self_collisions:true,
         deadly_walls:false,seed:73,..Config::default()}).unwrap();
     let mut ai=ai::AiController::new();
@@ -333,4 +333,23 @@ fn zero_allocations_starfall_meteors_landing_night_fades_and_ai() {
     ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
     assert!(meteors && stars && night,"all real scheduler paths must execute");
     assert_eq!(w.world_event.night,0.0);assert_eq!(w.world_event_stats().nightfalls,1);
+}
+
+#[test]
+fn zero_allocations_inventory_store_use_fizzle_and_drop() {
+    let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,width:4000.0,height:2000.0,density:0.0,
+        deadly_walls:false,..Default::default()},&[(Point{x:1500.0,y:1000.0},0.0,30,0.0)],&[]).unwrap();
+    let mut straight=controller::ScriptedController::new(|_,s:SnakeView<'_>|controller::Steering {desired_angle:s.angle,rush:0.0});
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    for kind in [effects::EffectKind::Surge,effects::EffectKind::Phase,effects::EffectKind::Frost] {
+        w.snakes[0].inventory=Inventory {kinds:[kind as u8,kind as u8,kind as u8],life:[1800,1,1800],count:3,
+            windup:1,windup_ticks:4,cooldown:30};
+        w.step_n(&mut straight,5);
+        w.snakes[0].inventory=Inventory {kinds:[kind as u8,0,0],life:[1800,0,0],count:1,..Default::default()};
+        w.items.clear();w.config.deadly_walls=true;
+        let body=[Point{x:3999.99,y:1000.0};30];w.diagnostic_body(0,&body,0.0).unwrap();
+        w.step(&mut straight);
+        w.snakes[0].alive=true;w.config.deadly_walls=false;
+    }
+    ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
 }

@@ -2,7 +2,7 @@
 use super::*;
 use crate::{Config, Segment, Traits};
 fn arena(wrap:bool) -> World {
-    let mut w=World::new(Config {aggression:50,width:1200.0,height:800.0,scale:70.0,density:0.0,
+    let mut w=World::new(Config {store_power_ups:false,aggression:50,width:1200.0,height:800.0,scale:70.0,density:0.0,
         self_collisions:true,deadly_walls:!wrap,intelligence:100.0,seed:73,..Config::default()}).unwrap();
     for s in &mut w.snakes {s.alive=false;s.len=0;s.respawn=1000.0;}
     w.food.clear();w
@@ -77,6 +77,7 @@ fn wrapped_safety_and_cache_charge_each_body_record_once() {
 }
 struct Selective {ai:AiController}
 impl Controller for Selective {
+    fn delegate(&self,id:u32)->Option<&dyn Controller> {if id==0 {Some(&self.ai)} else {None}}
     fn steer(&mut self,w:&World,s:SnakeView<'_>) -> Steering {
         if s.id==0 {self.ai.steer(w,s)} else {Steering{desired_angle:s.angle,rush:0.0}}
     }
@@ -128,7 +129,7 @@ fn safety_checks_toroidal_body_across_the_seam() {
 }
 #[test]
 fn same_seed_repeats_and_query_does_not_consume_world_randomness() {
-    let cfg=Config{width:1800.0,height:1000.0,self_collisions:true,..Config::default()};
+    let cfg=Config {store_power_ups:false,width:1800.0,height:1000.0,self_collisions:true,..Config::default()};
     let mut a=World::new(cfg).unwrap();let mut b=World::new(cfg).unwrap();
     let mut ca=AiController::new();let mut cb=AiController::new();
     let initial=a.rng_state();
@@ -147,7 +148,7 @@ fn same_seed_repeats_and_query_does_not_consume_world_randomness() {
 fn smallest_and_largest_valid_arenas_do_not_panic() {
     for width in [80.0,16384.0] {
         for deadly_walls in [false,true] {
-            let mut w=World::new(Config{width,height:80.0,deadly_walls,seed:991,
+            let mut w=World::new(Config {store_power_ups:false,width,height:80.0,deadly_walls,seed:991,
                 intelligence:0.0,self_collisions:true,density:100.0,..Config::default()}).unwrap();
             let mut ai=AiController::new();
             w.step_n(&mut ai,30);
@@ -199,7 +200,7 @@ fn continuation_honors_the_turn_then_straight_deadline() {
 
 #[test]
 fn diagnostic_snapshot_replays_mechanics_and_randomness_exactly() {
-    let mut a=World::new(Config {self_collisions:true,seed:20260814,..Config::default()}).unwrap();
+    let mut a=World::new(Config {store_power_ups:false,self_collisions:true,seed:20260814,..Config::default()}).unwrap();
     let mut ca=AiController::new();a.step_n(&mut ca,100);
     let mut b=a.diagnostic_snapshot();let mut cb=ca.clone();
     for _ in 0..100 {
@@ -282,7 +283,7 @@ fn sustained_turn_escape_interrupts_tail_recovery() {
 
 #[test]
 fn suspended_food_cannot_overwrite_escape_to_recovery_goal() {
-    let mut w=arena(false);w.reconfigure(Config {rules:crate::RuleSet::V2,..w.config()}).unwrap();
+    let mut w=arena(false);w.reconfigure(Config {store_power_ups:false,rules:crate::RuleSet::V2,..w.config()}).unwrap();
     line(&mut w,0,Point{x:500.0,y:400.0},0.0,24);
     food(&mut w,Point{x:500.0,y:650.0});
     let mut ai=AiController::new();ai.prepare(&w);let s=w.snake(0).unwrap();
@@ -303,7 +304,7 @@ fn suspended_food_cannot_overwrite_escape_to_recovery_goal() {
 
 #[test]
 fn diagnostics_and_profiling_do_not_change_decisions() {
-    let cfg=Config {aggression:50,width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,deadly_walls:true,self_collisions:true,seed:20260814,..Config::default()};
+    let cfg=Config {store_power_ups:false,aggression:50,width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,deadly_walls:true,self_collisions:true,seed:20260814,..Config::default()};
     let mut a=World::new(cfg).unwrap();let mut b=a.diagnostic_snapshot();
     let mut plain=AiController::new();let mut observed=AiController::new();
     observed.enable_diagnostics();observed.enable_profile();
@@ -470,7 +471,7 @@ fn generation_change_ends_hunts_and_death_starts_corpse_harvesting() {
 
 #[test]
 fn diagnostic_arena_validates_and_retains_the_dead_head_sweep() {
-    let cfg=Config {density:0.0,..Config::default()};
+    let cfg=Config {store_power_ups:false,density:0.0,..Config::default()};
     assert!(World::diagnostic_arena(cfg,&[(Point::default(),0.0,0,1.0)],&[]).is_err());
     let mut w=World::diagnostic_arena(cfg,&[(Point{x:400.0,y:400.0},0.0,32,1.0),
         (Point{x:417.0,y:400.0},std::f64::consts::PI,16,0.0)],&[]).unwrap();
@@ -539,7 +540,7 @@ fn sustained_turn_recovery_cancels_the_hunt_and_its_rush() {
 
 #[test]
 fn sluggish_giants_wait_for_a_reachable_cutoff_instead_of_chasing_fast_rivals() {
-    let w=World::diagnostic_arena(Config {aggression:50,width:3440.0,height:1440.0,deadly_walls:false,density:0.0,
+    let w=World::diagnostic_arena(Config {store_power_ups:false,aggression:50,width:3440.0,height:1440.0,deadly_walls:false,density:0.0,
         ..Config::default()},&[(Point{x:3200.0,y:400.0},0.0,1600,1.0),
         (Point{x:3200.0,y:600.0},0.0,340,1.0)],&[]).unwrap();
     let mut ai=AiController::new();ai.prepare(&w);
@@ -550,7 +551,7 @@ fn sluggish_giants_wait_for_a_reachable_cutoff_instead_of_chasing_fast_rivals() 
 
 #[test]
 fn staged_cutoff_uses_the_discrete_stage_speed_and_continues_after_the_switch() {
-    let mut w=World::diagnostic_arena(Config {aggression:50,width:1600.0,height:1000.0,density:0.0,deadly_walls:true,self_collisions:true,..Config::default()},
+    let mut w=World::diagnostic_arena(Config {store_power_ups:false,aggression:50,width:1600.0,height:1000.0,density:0.0,deadly_walls:true,self_collisions:true,..Config::default()},
         &[(Point{x:700.0,y:400.0},0.0,72,1.0),(Point{x:750.0,y:700.0},0.0,24,0.6)],&[]).unwrap();
     let attack=Attack {valid:true,side:1,prey:2,prey_generation:w.snake(1).unwrap().generation,point:Point{x:750.0,y:700.0},start:0,turn_at:8,end:48,approach:0.4,crossing:1.3,burst:1.0,crossing_rush:0.15,..Attack::default()};
     let mut ai=AiController::new();ai.prepare(&w);
@@ -569,7 +570,7 @@ fn staged_cutoff_uses_the_discrete_stage_speed_and_continues_after_the_switch() 
 
 #[test]
 fn cutoff_library_rejects_unreachable_geometry_and_keeps_at_most_two_paths() {
-    let w=World::diagnostic_arena(Config {aggression:50,width:3440.0,height:1440.0,density:0.0,..Config::default()},
+    let w=World::diagnostic_arena(Config {store_power_ups:false,aggression:50,width:3440.0,height:1440.0,density:0.0,..Config::default()},
         &[(Point{x:800.0,y:400.0},0.0,400,1.0),(Point{x:1400.0,y:650.0},0.0,24,0.6)],&[]).unwrap();
     let mut ai=AiController::new();ai.prepare(&w);
     assert!(ai.cutoffs(&w,w.snake(0).unwrap(),State {prey:2,..State::default()}).iter().all(|a|!a.valid));
@@ -594,7 +595,7 @@ fn spiral_tracks_radius_without_the_old_inward_equilibrium_and_obeys_pitch_curva
 
 #[test]
 fn pocket_rejects_open_space_and_releases_by_actual_travel() {
-    let w=World::diagnostic_arena(Config {aggression:50,width:1600.0,height:1000.0,density:0.0,deadly_walls:true,..Config::default()},
+    let w=World::diagnostic_arena(Config {store_power_ups:false,aggression:50,width:1600.0,height:1000.0,density:0.0,deadly_walls:true,..Config::default()},
         &[(Point{x:900.0,y:500.0},std::f64::consts::FRAC_PI_2,130,1.0),
           (Point{x:750.0,y:500.0},0.0,24,0.6)],&[]).unwrap();
     let mut ai=AiController::new();ai.prepare(&w);
@@ -621,7 +622,7 @@ fn opponent_response_delay_never_skips_immediate_body_or_wall_safety() {
 #[test]
 fn existing_wall_u_can_enter_one_legal_pitch_inside_its_arms() {
     let center=Point{x:875.0,y:195.0};let radius=180.0;let theta=-0.4;
-    let mut w=World::diagnostic_arena(Config {aggression:50,width:1600.0,height:1000.0,density:0.0,deadly_walls:true,intelligence:100.0,self_collisions:true,..Config::default()},
+    let mut w=World::diagnostic_arena(Config {store_power_ups:false,aggression:50,width:1600.0,height:1000.0,density:0.0,deadly_walls:true,intelligence:100.0,self_collisions:true,..Config::default()},
         &[(Point{x:1000.0,y:100.0},0.0,180,1.0),(center,-std::f64::consts::FRAC_PI_2,24,0.6)],&[]).unwrap();
     let mut body=Vec::new();
     for j in 0usize..180 {
@@ -643,7 +644,7 @@ fn existing_wall_u_can_enter_one_legal_pitch_inside_its_arms() {
 
 #[test]
 fn pending_response_survives_quota_phase_and_recovery_returns() {
-    let mut w=World::new(Config {aggression:50,width:1200.0,height:800.0,density:45.0,scale:70.0,deadly_walls:true,self_collisions:true,..Config::default()}).unwrap();
+    let mut w=World::new(Config {store_power_ups:false,aggression:50,width:1200.0,height:800.0,density:45.0,scale:70.0,deadly_walls:true,self_collisions:true,..Config::default()}).unwrap();
     // Eight slots / two strategy slots / two-tick response: slot 2's
     // strategy is odd, whereas the old consumed response stayed even.
     for id in 0..8 {line(&mut w,id,Point{x:300.0+id as f64*100.0,y:650.0},0.0,1);}
@@ -1096,7 +1097,7 @@ fn bounded_angle_fast_path_matches_general_remainder_bit_for_bit() {
 #[test]
 fn candidate_scratch_never_reads_a_previous_decisions_unused_path() {
     for rules in [crate::RuleSet::Classic,crate::RuleSet::V2] {
-    let cfg=Config {rules,width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,
+    let cfg=Config {store_power_ups:false,rules,width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,
         deadly_walls:false,self_collisions:true,seed:20260814,..Config::default()};
     let mut a=World::new(cfg).unwrap();let mut b=a.diagnostic_snapshot();
     let mut plain=AiController::new();let mut poisoned=AiController::new();
@@ -1118,7 +1119,7 @@ fn candidate_scratch_never_reads_a_previous_decisions_unused_path() {
 
 #[test]
 fn v2_requests_only_fixed_ready_boosts_and_exports_intent() {
-    let mut w=World::new(Config{rules:crate::RuleSet::V2,..Config::default()}).unwrap();
+    let mut w=World::new(Config {store_power_ups:false,rules:crate::RuleSet::V2,..Config::default()}).unwrap();
     let s=w.snake(0).unwrap();
     assert_eq!(AiController::boost_request(&w,s,0.25),0.0);
     assert_eq!(AiController::boost_request(&w,s,0.49),0.0);
@@ -1890,12 +1891,12 @@ fn phase_capsule_replacement_checks_the_pickup_movement_against_world() {
         let mut ai=AiController::new();ai.prepare(&w);
         let state=State {desired:0.0,turn_until:u64::MAX,..State::default()};
         let plan=ai.rollout(&w,w.snake(0).unwrap(),state,2,1);
-        assert_eq!(plan.steps==1,*kind==crate::effects::EffectKind::Phase,"wrap={wrap} kind={kind:?}");
-        assert_eq!(ai.candidate_mask(&w,0,&plan)==0,*kind==crate::effects::EffectKind::Phase);
+        assert_eq!(plan.steps==1,matches!(kind,crate::effects::EffectKind::Phase|crate::effects::EffectKind::Frost),"wrap={wrap} kind={kind:?}");
+        assert_eq!(ai.candidate_mask(&w,0,&plan)==0,matches!(kind,crate::effects::EffectKind::Phase|crate::effects::EffectKind::Frost));
         w.step(&mut crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering{desired_angle:s.angle,rush:0.0}));
         assert!(w.frame_events().any(|e|e.kind==crate::EventKind::Pickup && e.snake_id==0));
-        assert_eq!(w.snake(0).unwrap().alive,*kind==crate::effects::EffectKind::Phase,"World wrap={wrap} kind={kind:?}");
-        if *kind!=crate::effects::EffectKind::Phase {assert_eq!(w.last_death_reason(0),Some(crate::DeathReason::Body));}
+        assert_eq!(w.snake(0).unwrap().alive,matches!(kind,crate::effects::EffectKind::Phase|crate::effects::EffectKind::Frost),"World wrap={wrap} kind={kind:?}");
+        if !matches!(kind,crate::effects::EffectKind::Phase|crate::effects::EffectKind::Frost) {assert_eq!(w.last_death_reason(0),Some(crate::DeathReason::Body));}
     }}
 }
 
@@ -2145,7 +2146,7 @@ fn all_snake_effect_forecast_matches_seeded_world_step_oracle() {
     for seed in 1..=96u64 {
         let mut rng=seed.wrapping_mul(0x9e3779b97f4a7c15);
         let mut next=|| {rng^=rng<<13;rng^=rng>>7;rng^=rng<<17;rng};
-        let mut source=World::new(Config {aggression:50,width:6000.0,height:6000.0,scale:70.0,density:100.0,
+        let mut source=World::new(Config {store_power_ups:false,aggression:50,width:6000.0,height:6000.0,scale:70.0,density:100.0,
             seed:seed as i32,rules:crate::RuleSet::V2,self_collisions:false,deadly_walls:false,..Config::default()}).unwrap();
         source.config.density=0.0;source.food.clear();source.items.clear();
         for i in 0..source.config.food_count() {
@@ -2530,7 +2531,7 @@ fn opportunity_effects_distinguish_unavoidable_and_possible_pickups() {
 #[test]
 fn landing_delay_is_shared_by_world_contacts_opportunities_and_forecasts() {
     let pos=Point{x:500.0,y:400.0};
-    let mut w=World::diagnostic_arena(crate::Config {rules:crate::RuleSet::V2,density:0.0,self_collisions:false,..crate::Config::default()},
+    let mut w=World::diagnostic_arena(crate::Config {store_power_ups:false,rules:crate::RuleSet::V2,density:0.0,self_collisions:false,..crate::Config::default()},
         &[(pos,0.0,1,0.9)],&[]).unwrap();
     w.items.push(crate::Item{id:77,kind:crate::effects::EffectKind::Surge,position:pos,
         radius:12.0,life_ticks:780,pickable_from_tick:31,..crate::Item::default()});
@@ -2687,7 +2688,7 @@ fn tick_fast_paths_match_exact_queries_and_duplicate_tracking_rollouts() {
     for rules in [crate::RuleSet::Classic,crate::RuleSet::V2] {
         for deadly_walls in [false,true] {
             for reference_settings in [false,true] {
-                let cfg=Config {aggression:50,width:3440.0,height:1440.0,density:if reference_settings {30.0} else {100.0},
+                let cfg=Config {store_power_ups:false,aggression:50,width:3440.0,height:1440.0,density:if reference_settings {30.0} else {100.0},
                     trails:100.0,scale:if reference_settings {185.0} else {100.0},
                     speed:if reference_settings {230.0} else {100.0},intelligence:100.0,
                     self_collisions:true,seed:73,rules,deadly_walls,..Config::default()};
@@ -2716,7 +2717,7 @@ fn tick_fast_paths_match_exact_queries_and_duplicate_tracking_rollouts() {
 
 #[test]
 fn retained_motion_schedules_invalidate_on_physical_inputs() {
-    let mut w=World::diagnostic_arena(Config {rules:crate::RuleSet::V2,density:0.0,
+    let mut w=World::diagnostic_arena(Config {store_power_ups:false,rules:crate::RuleSet::V2,density:0.0,
         width:1600.0,height:1000.0,..Config::default()},
         &[(Point{x:800.0,y:500.0},0.0,180,0.5)],&[]).unwrap();
     let mut ai=AiController::new();
@@ -2767,7 +2768,7 @@ fn optional_length_limit_invalidates_retained_motion_schedule() {
 #[test]
 fn motion_cache_reuses_unavailable_boost_cooldowns_exactly() {
     for active in [false,true] {
-        let mut w=World::diagnostic_arena(Config {rules:crate::RuleSet::V2,density:0.0,
+        let mut w=World::diagnostic_arena(Config {store_power_ups:false,rules:crate::RuleSet::V2,density:0.0,
             width:1600.0,height:1000.0,..Config::default()},
             &[(Point{x:800.0,y:500.0},0.0,180,0.5)],&[]).unwrap();
         let mut ai=AiController::new();
@@ -2798,7 +2799,7 @@ fn motion_cache_reuses_unavailable_boost_cooldowns_exactly() {
     #[test]
     fn contested_target_ignores_a_respawned_rivals_previous_target() {
         let mut w=arena(false);
-        w.reconfigure(Config {rules:crate::RuleSet::V2,..w.config()}).unwrap();
+        w.reconfigure(Config {store_power_ups:false,rules:crate::RuleSet::V2,..w.config()}).unwrap();
         line(&mut w,0,Point{x:350.0,y:300.0},0.0,24);
         line(&mut w,1,Point{x:350.0,y:500.0},0.0,24);
         food(&mut w,Point{x:700.0,y:400.0});
@@ -2819,7 +2820,7 @@ fn motion_cache_reuses_unavailable_boost_cooldowns_exactly() {
 fn desktop_shared_queries_match_all_candidate_controls_and_scores() {
     // Exact reference keeps the original unpruned future-trail scans.
     for deadly_walls in [true,false] {
-        let cfg=Config {width:3440.0,height:1440.0,density:80.0,trails:100.0,
+        let cfg=Config {store_power_ups:false,width:3440.0,height:1440.0,density:80.0,trails:100.0,
             scale:200.0,speed:300.0,intelligence:100.0,aggression:100,
             self_collisions:true,deadly_walls,seed:1,rules:crate::RuleSet::V2,..Config::default()};
         let mut a=World::new(cfg).unwrap();a.resize(5360.0,1440.0).unwrap();a.resize(7920.0,1440.0).unwrap();
@@ -2846,7 +2847,7 @@ fn replayed_corner_inward_arc_keeps_physical_safety_prefix() {
     // movement 3, so a shallow counterclockwise turn won and hit the corner.
     // Reflect the measured birth body through all four arena corners.
     for mirror_x in [false,true] {for mirror_y in [false,true] {for frozen in [0,4,75] {
-        let cfg=Config {width:7920.0,height:1440.0,density:80.0,trails:100.0,
+        let cfg=Config {store_power_ups:false,width:7920.0,height:1440.0,density:80.0,trails:100.0,
             scale:200.0,speed:300.0,intelligence:100.0,aggression:100,
             rules:crate::RuleSet::V2,self_collisions:true,deadly_walls:true,
             world_events:false,power_ups:true,..Config::default()};
@@ -2872,6 +2873,7 @@ fn replayed_corner_inward_arc_keeps_physical_safety_prefix() {
         let mut state=State::default();state.desired=w.snakes[0].angle;
         let kind=if mirror_x^mirror_y {5} else {6};
         let candidate=ai.rollout(&w,w.snake(0).unwrap(),state,kind,NORMAL_STEPS);
+        assert!(candidate.wall_safe,"legal corner arc must retain an exit");
         assert_eq!(candidate.steps,NORMAL_STEPS,"mirrors={mirror_x}/{mirror_y} frozen={frozen}");
         // Rollouts receive the post-decrement steering observation. Restore
         // that decrement before driving the independent pre-step World clock.
@@ -2922,7 +2924,7 @@ fn replayed_single_wall_emergency_keeps_an_inward_turn_available() {
     ];
     for (head,angle,radius,speed,turn,wallward,inward,len) in captures {
         for mirror_x in [false,true] {for mirror_y in [false,true] {
-            let cfg=Config {width:7920.0,height:1440.0,rules:crate::RuleSet::V2,
+            let cfg=Config {store_power_ups:false,width:7920.0,height:1440.0,rules:crate::RuleSet::V2,
                 self_collisions:true,deadly_walls:true,world_events:true,..Default::default()};
             let point=|p:Point|Point {x:if mirror_x {cfg.width-p.x} else {p.x},
                 y:if mirror_y {cfg.height-p.y} else {p.y}};
@@ -2938,8 +2940,12 @@ fn replayed_single_wall_emergency_keeps_an_inward_turn_available() {
                     y:head.y+next.sin()*speed*STEP_SECONDS});c
             };
             let blocked=candidate(wallward);let escape=candidate(inward);
-            assert!(!ai.emergency_wall_turn_room(&w,w.snake(0).unwrap(),&blocked,true),
-                "wallward prefix spends its remaining turn: len={len} mirrors={mirror_x}/{mirror_y}");
+            let margin=|c:&Candidate| {
+                let travel=speed*STEP_SECONDS;let d=w.displacement(c.path[0],c.path[1]);
+                wall::margin(&w,c.path[1],Point{x:d.x/travel,y:d.y/travel},speed/turn,travel,radius)
+            };
+            assert!(margin(&blocked)<margin(&escape),
+                "inward prefix must preserve more wall room: len={len} mirrors={mirror_x}/{mirror_y}");
             assert!(ai.emergency_wall_turn_room(&w,w.snake(0).unwrap(),&escape,true),
                 "positive inward prefix retains a turn: len={len} mirrors={mirror_x}/{mirror_y}");
             // Check the retained exit against independent mechanics. Restore
@@ -3115,4 +3121,183 @@ fn advisory_night_motion_cache_follows_pending_onset_and_dawn_through_step() {
         let mut check=Check(AiController::new());
         for _ in 0..delay+780 {w.step(&mut check);}
     }
+}
+
+#[test]
+fn wall_invariant_replayed_inventory_emergencies_reject_the_fatal_turn() {
+    // Last recoverable decisions in the unmodified inventory F1 replays.
+    // At both ticks every candidate has <=1 body-safe step: the old conditional
+    // ranking stopped checking single-wall turn room and reversed outward.
+    for (head,angle,body,speed,turn) in [
+        (Point{x:2518.32779452611,y:1413.6972066639116},2.5223413436806585,20.668147510672732,238.58502640627339,3.1675540409613014),
+        (Point{x:4342.094567141436,y:1416.5420987514974},2.590759513781696,18.541537978123174,192.82557298817363,2.8116927833500203),
+    ] {
+        for mirror_x in [false,true] {for mirror_y in [false,true] {
+            let cfg=Config {width:7920.0,height:1440.0,deadly_walls:true,..Default::default()};
+            let w=World::diagnostic_arena(cfg,&[(Point{x:800.0,y:500.0},0.0,24,0.0)],&[]).unwrap();
+            let reflect=|p:Point|Point {x:if mirror_x {cfg.width-p.x} else {p.x},y:if mirror_y {cfg.height-p.y} else {p.y}};
+            let next=|side:f64| {
+                let a=angle+side*turn*STEP_SECONDS;
+                let d=Point {x:a.cos(),y:a.sin()};
+                (reflect(Point{x:head.x+d.x*speed*STEP_SECONDS,y:head.y+d.y*speed*STEP_SECONDS}),
+                    Point{x:if mirror_x {-d.x} else {d.x},y:if mirror_y {-d.y} else {d.y}})
+            };
+            let (p,d)=next(-1.0);
+            assert!(!wall::reachable(&w,p,d,speed/turn,speed*STEP_SECONDS,body));
+            let (p,d)=next(1.0);
+            assert!(wall::reachable(&w,p,d,speed/turn,speed*STEP_SECONDS,body));
+        }}
+    }
+}
+
+#[test]
+fn wall_invariant_sweep_has_an_independent_discrete_exit_witness() {
+    let cfg=Config {width:1600.0,height:1000.0,deadly_walls:true,..Default::default()};
+    let w=World::diagnostic_arena(cfg,&[(Point{x:800.0,y:500.0},0.0,24,0.0)],&[]).unwrap();
+    let mut accepted=0;let mut rejected=0;
+    for speed in [60.0,200.0,450.0] {for radius in [24.0,70.0,180.0] {
+        let travel=speed*STEP_SECONDS;let step=travel/radius;
+        let rotation=step.sin_cos();let body=20.0;
+        for x in [15.0,35.0,75.0,150.0,400.0] {for y in [15.0,35.0,75.0,150.0,400.0] {
+            for mx in [false,true] {for my in [false,true] {for h in 0..72 {
+                let a=h as f64*std::f64::consts::TAU/72.0;
+                let d=Point{x:a.cos(),y:a.sin()};let p=Point{x:if mx {cfg.width-x} else {x},y:if my {cfg.height-y} else {y}};
+                if !wall::reachable(&w,p,d,radius,travel,body) {rejected+=1;continue;}
+                accepted+=1;
+                // Independent rotate-then-move witness, with no production
+                // circle-centre/slab calculations. Body inset matches mechanics
+                // plus the ordinary 2px avoidance reserve.
+                let inside=|q:Point|q.x>=body*0.5+2.0 && q.x<=cfg.width-body*0.5-2.0
+                    && q.y>=body*0.5+2.0 && q.y<=cfg.height-body*0.5-2.0;
+                let orbit=[-1.0,1.0].into_iter().any(|side| {
+                    let mut q=p;let mut heading=d;
+                    for _ in 0..=(std::f64::consts::TAU/step).ceil() as usize {
+                        heading=Point{x:heading.x*rotation.1-heading.y*rotation.0*side,
+                            y:heading.x*rotation.0*side+heading.y*rotation.1};
+                        q.x+=heading.x*travel;q.y+=heading.y*travel;
+                        if !inside(q) {return false;}
+                    }
+                    true
+                });
+                let straight=|| {
+                    let mut q=p;let inset=2.0*radius+body*0.5+2.0;
+                    for _ in 0..=((cfg.width+cfg.height)/travel).ceil() as usize {
+                        if q.x>=inset && q.x<=cfg.width-inset && q.y>=inset && q.y<=cfg.height-inset {return true;}
+                        q.x+=d.x*travel;q.y+=d.y*travel;if !inside(q) {return false;}
+                    }
+                    false
+                };
+                let arc=|| {
+                    let target=(if p.y<cfg.height*0.5 {1.0_f64} else {-1.0}).atan2(if p.x<cfg.width*0.5 {1.0} else {-1.0});
+                    [-1.0,1.0].into_iter().any(|side| {
+                        let mut remaining=(side*(target-a)).rem_euclid(std::f64::consts::TAU);
+                        let mut angle=a;let mut q=p;
+                        for _ in 0..=(std::f64::consts::TAU/step).ceil() as usize {
+                            if remaining<=1e-10 {break;}
+                            let change=remaining.min(step);angle+=side*change;remaining-=change;
+                            q.x+=angle.cos()*travel;q.y+=angle.sin()*travel;
+                            if !inside(q) {return false;}
+                        }
+                        let inset=2.0*radius+body*0.5+2.0;
+                        for _ in 0..=((cfg.width+cfg.height)/travel).ceil() as usize {
+                            if q.x>=inset && q.x<=cfg.width-inset && q.y>=inset && q.y<=cfg.height-inset {return true;}
+                            q.x+=target.cos()*travel;q.y+=target.sin()*travel;
+                            if !inside(q) {return false;}
+                        }
+                        false
+                    })
+                };
+                assert!(orbit || straight() || arc(),"no exit p={p:?} heading={a} speed={speed} radius={radius}");
+            }}}
+        }}
+    }}
+    assert!(accepted>10000 && rejected>10000,"sweep must cover both classes: {accepted}/{rejected}");
+}
+
+#[test]
+fn wall_invariant_cached_motion_includes_thaw_expiry_and_dawn() {
+    for frozen in [0,4,75] {for effect in [0,1] {for night in [false,true] {for rush in [0.0,0.6] {
+        let mut w=World::diagnostic_arena(Config {rules:crate::RuleSet::V2,width:7920.0,height:1440.0,
+            speed:300.0,scale:200.0,deadly_walls:true,density:0.0,..Default::default()},
+            &[(Point{x:3000.0,y:700.0},0.0,74,0.0)],&[]).unwrap();
+        w.snakes[0].frozen_ticks=frozen;w.faces[0].frozen_ticks=frozen;
+        w.snakes[0].effect_kind=effect;w.snakes[0].effect_ticks=if effect==1 {4} else {0};
+        if night {
+            w.diagnostic_event_schedule(10000,1);
+            w.step(&mut crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering{desired_angle:s.angle,rush:0.0}));
+            w.tick=620;w.world_event.night=crate::world::events::night_intensity(620,1);
+        }
+        let m=Motion::forecast(&w,0,rush);
+        for j in 0..=200 {
+            let (speed,turn)=crate::effects::forecast_motion(&w,0,rush,j);
+            assert!(m.wall_radius+1e-9>=speed/turn.max(0.01),"frozen={frozen} effect={effect} night={night} rush={rush} j={j}");
+            let bound=m.wall_limits_from(j);
+            for future in [j,j+1,j+24,j+75,j+150] {
+                let (v,t)=crate::effects::forecast_motion(&w,0,rush,future);
+                assert!(bound.0+1e-9>=v/t.max(0.01) && bound.1+1e-9>=v,
+                    "suffix j={j} future={future} frozen={frozen} effect={effect} night={night} rush={rush}");
+            }
+
+        }
+    }}}}
+}
+
+#[test]
+fn wall_invariant_all_candidate_sources_and_use_forecasts_share_admission() {
+    let mut w=World::diagnostic_arena(Config {rules:crate::RuleSet::V2,width:7920.0,height:1440.0,
+        speed:300.0,scale:200.0,density:0.0,deadly_walls:true,self_collisions:false,
+        aggression:100,..Default::default()},&[(Point{x:7800.0,y:700.0},0.0,74,0.0)],&[]).unwrap();
+    w.snakes[0].inventory=crate::Inventory {kinds:[1,3,5],life:[1800;3],count:3,..Default::default()};
+    let mut ai=AiController::new();ai.prepare(&w);let s=w.snake(0).unwrap();
+    for slot in 0..=3 {for kind in 0..CANDIDATES {
+        let state=State {use_slot:slot,desired:0.0,goal:Point{x:8200.0,y:700.0},
+            track_goal:true,turn_until:u64::MAX,..Default::default()};
+        let c=ai.rollout(&w,s,state,kind,NORMAL_STEPS);
+        assert!(c.checked,"slot={slot} kind={kind}");
+        if c.steps>0 {assert!(c.wall_safe,"slot={slot} kind={kind}");}
+        if kind<=2 || kind==11 || kind==12 {assert!(c.steps<NORMAL_STEPS,"wallward goal must not certify a continuation: slot={slot} kind={kind}");}
+    }}
+    // A retained target cannot reuse a wall-unsafe proof between strategy slots.
+    ai.enable_diagnostics();ai.states[0]=State {generation:s.generation,desired:0.0,goal:Point{x:8200.0,y:700.0},
+        track_goal:true,turn_until:u64::MAX,commit_until:100,..Default::default()};
+    let _=ai.steer(&w,s);let d=ai.decision(0);let chosen=d.candidates[d.selected];
+    assert!(chosen.wall_first_safe && chosen.wall_safe);
+    assert!(!d.reused_plan);
+}
+
+#[test]
+fn wall_invariant_checked_exit_survives_conservative_corner_margin_drift() {
+    // A later F1 seed-73 birth (snake 2/gen6/tick25077). The continuous
+    // circle's padded boundary moves by fractions of a pixel during the real
+    // discrete inward arc. Rejecting that first-state approximation discarded
+    // a physically checked 72-step exit and reversed toward the corner.
+    let mut w=World::diagnostic_arena(Config {width:7920.0,height:1440.0,rules:crate::RuleSet::V2,
+        speed:300.0,scale:200.0,intelligence:100.0,aggression:100,deadly_walls:true,
+        self_collisions:true,density:0.0,..Default::default()},
+        &[(Point{x:123.09023641151234,y:1331.6530599372068},1.9446807902215797,16,0.0)],&[]).unwrap();
+    w.snakes[0].radius=20.48158499529585;w.snakes[0].base_radius=w.snakes[0].radius;
+    w.snakes[0].traits.speed_bias=240.46809460036457/250.0;
+    let mut ai=AiController::new();ai.prepare(&w);
+    let c=ai.rollout(&w,w.snake(0).unwrap(),State::default(),6,NORMAL_STEPS);
+    assert!(c.wall_first_safe,"exact discrete circles retain the physically available turn");
+    assert_eq!(c.steps,NORMAL_STEPS);assert!(c.wall_safe,"the checked exit must admit this control");
+    let mut driver=crate::controller::ScriptedController::new(|_,_:SnakeView<'_>|Steering {desired_angle:c.desired,rush:c.rush});
+    for step in 1..=NORMAL_STEPS {
+        w.step(&mut driver);assert!(w.snake(0).unwrap().alive,"step={step} death={:?}",w.last_death_reason(0));
+        assert!(w.distance_squared(c.path[step],w.snake(0).unwrap().segments[0].current)<1e-16);
+    }
+    assert_eq!(w.stats().wall_deaths,0);
+}
+
+#[test]
+fn wall_invariant_endpoint_releases_an_expired_burst_radius() {
+    let w=World::diagnostic_arena(Config {rules:crate::RuleSet::V2,width:7920.0,height:1440.0,
+        speed:300.0,scale:200.0,intelligence:100.0,deadly_walls:true,density:0.0,..Default::default()},
+        &[(Point{x:7000.0,y:400.0},0.0,43,0.0)],&[]).unwrap();
+    let m=Motion::forecast(&w,0,0.6);
+    let before=m.wall_limits_from(0);let after=m.wall_limits_from(24);
+    assert!(before.0>after.0*1.2 && before.1>after.1*1.5,"burst must expand the circle");
+    let p=Point{x:7000.0,y:after.0+30.0};let d=Point{x:0.0,y:-1.0};
+    assert!(!wall::reachable(&w,p,d,before.0,before.1*STEP_SECONDS,w.snakes[0].radius));
+    assert!(wall::reachable(&w,p,d,after.0,after.1*STEP_SECONDS,w.snakes[0].radius));
 }

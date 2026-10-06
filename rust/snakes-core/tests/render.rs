@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-use snakes_core::{ffi::*, flags};
+use snakes_core::{ffi::*, flags, event_flags};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 thread_local! {
@@ -1436,7 +1436,7 @@ fn active_body_effects_preserve_vertex_budget_and_expiry_clears_payload() {
     for kind in 1..=3 {
         s.effect_kind=kind;s.effect_ticks=90;
         let n=renderer.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
-        assert_eq!(n,baseline+if kind==2 {6} else {0});
+        assert_eq!(n,baseline+if kind==2 {6} else if kind==1 {18} else {0});
         for v in &out[..n] {
             if v.params[0]==0 {assert_eq!((v.params[1]>>2)&7,kind);}
             if v.params[0]==1 {assert_eq!(v.params[2]&flags::PHASED as u8,if kind==3 {32} else {0});}
@@ -1455,7 +1455,7 @@ fn active_body_effects_preserve_vertex_budget_and_expiry_clears_payload() {
 #[test]
 fn active_effect_wrap_bounds_match_independent_tiling_and_share_quad_cap() {
     let counts=|v:&[ShaderRenderVertex]| {
-        let mut counts=[0usize;16];for v in v {counts[v.params[0] as usize]+=1;}counts
+        let mut counts=[0usize;32];for v in v {counts[v.params[0] as usize]+=1;}counts
     };
     for (width,height,x,y) in [(640.0,360.0,630.0,350.0),(100.0,100.0,90.0,90.0),(10.0,10.0,5.0,5.0)] {
         for (sx,sy) in [(1.0,1.0),(2.0,0.5),(0.5,2.0)] {
@@ -1470,13 +1470,14 @@ fn active_effect_wrap_bounds_match_independent_tiling_and_share_quad_cap() {
                 let s=SnakeRecord{effect_kind:kind,effect_ticks:24,..snake()};
                 let n=renderer.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
                 assert!(n<=out.len());let actual=counts(&out[..n]);
-                let mut expected=[0usize;16];let mut tile=RenderParams{deadly_walls:1,..p};
+                let mut expected=[0usize;32];let mut tile=RenderParams{deadly_walls:1,..p};
                 for tx in -16..=16 {for ty in -16..=16 {
                     tile.offset_x=tx as f64*width*sx;tile.offset_y=ty as f64*height*sy;
                     let n=tiled.build_shader(&i,&[s],&b,&[],&[],&palette(),&tile,&mut out).vertex_count;
                     assert!(n<=out.len());
                     for (total,count) in expected.iter_mut().zip(counts(&out[..n])) {*total+=count;}
                 }}
+                expected[27]=expected[27].min(84);
                 expected[14]=expected[14].min(48);expected[15]=expected[15].min(48-expected[14]);
                 assert_eq!(actual,expected,"kind={kind}, arena={width}x{height}, scale={sx},{sy}");
             }
@@ -2113,7 +2114,7 @@ fn reduced_motion_snapshot_effects_keep_advancing_after_clock_freeze() {
             let quad:Vec<_>=vertices.iter().filter(|v|v.params[0]==16).collect();
             assert!((quad[1].x-quad[0].x-2.0*(s[0].radius as f32*1.3).max(12.5)).abs()<0.001);
         } else {assert!(bubble.is_none());}
-        let heads:Vec<_>=vertices.iter().filter(|v|v.params[0]==1).step_by(6).collect();
+        let heads:Vec<_>=vertices.iter().filter(|v|matches!(v.params[0],1|28)).step_by(6).collect();
         let jaw=|v:&ShaderRenderVertex|(v.params[3]>>6)|((v.params[2]&128)>>5);
         assert_eq!(jaw(heads[0]),if age<17 {7} else {0},"blep age {age}");
         let yawn=(std::f64::consts::PI*(age as f64/23.4).min(1.0)).sin();
@@ -2504,4 +2505,383 @@ fn event_sprites_are_bounded_allocation_free_wrap_and_calm_keeps_landing_lifetim
     // Both wrap copies contain the full streak/head envelope.
     p.deadly_walls=0;f.world_event.kind=0;let seam=FoodRecord {x:2.0,attraction_x:202.0,motion_origin_x:-198.0,..meteors[0]};
     r.reduced_motion=false;let wrapped=r.build_shader(&f,&[],&[],&[seam],&[],&palette(),&p,&mut output);assert!(wrapped.vertex_count>=18);
+}
+
+#[test]
+fn inventory_pips_follow_curves_keep_icons_upright_and_opaque_in_phase_night() {
+    let mut s=SnakeRecord {radius:18.0,segment_count:20,inv_kind:[2,4,5],inv_count:3,inv_life:[255,128,2],effect_kind:3,effect_ticks:90,..snake()};
+    let mut b=[SegmentRecord::default();20];
+    for (i,v) in b.iter_mut().enumerate() {let a=i as f64*0.14;*v=SegmentRecord{x:(700.0-150.0*a.sin()) as f32,y:(500.0+150.0*(1.0-a.cos())) as f32,previous_x:(700.0-150.0*a.sin()) as f32,previous_y:(500.0+150.0*(1.0-a.cos())) as f32};}
+    let mut i=info();i.ambient=0.28;let mut out=[ShaderRenderVertex::default();1024];
+    let mut r=RenderHandle::new();let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&params(),&mut out).vertex_count;
+    let pips:Vec<_>=out[..n].chunks_exact(6).filter(|v|v[0].params[0]==26).collect();assert_eq!(pips.len(),3);
+    let head=out[..n].iter().rposition(|v|v.params[0]==1).unwrap();assert!(out[head+1].params[0]==26);
+    for (slot,pip) in pips.iter().enumerate() {
+        assert_eq!(pip[0].params,[26,s.inv_kind[slot],s.inv_life[slot],0]);assert_eq!(pip[0].color.alpha,255);
+        assert_eq!(pip[0].y,pip[1].y);assert_eq!(pip[0].x,pip[2].x);
+        let mut left=[2.2,4.3,6.4][slot]*18.0;let mut expected=(0.0,0.0);
+        for edge in b.windows(2) {let dx=(edge[1].x-edge[0].x) as f64;let dy=(edge[1].y-edge[0].y) as f64;let length=dx.hypot(dy);if left<=length {expected=(edge[0].x as f64+dx*left/length,edge[0].y as f64+dy*left/length);break;}left-=length;}
+        assert!(((pip[0].x+pip[1].x) as f64*0.5-expected.0).abs()<0.001);
+        assert!(((pip[0].y+pip[2].y) as f64*0.5-expected.1).abs()<0.001);
+    }
+    s.flags=flags::FROZEN;s.effect_kind=0;let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&params(),&mut out).vertex_count;
+    assert!(out[..n].iter().filter(|v|v.params[0]==26).all(|v|v.color.alpha==255));
+}
+
+#[test]
+fn inventory_stash_use_compaction_fizzle_retry_and_calm_are_allocation_free() {
+    for calm in [false,true] {
+        let mut r=RenderHandle::new();r.reduced_motion=calm;let mut i=info();let mut p=params();let pal=palette();
+        let mut s=SnakeRecord {radius:18.0,segment_count:12,inv_kind:[3,1,5],inv_count:3,inv_life:[255;3],..snake()};
+        let b: [SegmentRecord;12]=std::array::from_fn(|j|SegmentRecord{x:700.0-j as f32*21.24,y:500.0,previous_x:700.0-j as f32*21.24,previous_y:500.0});
+        let mut out=[ShaderRenderVertex::default();1024];let mut retry=out;let mut fallback=[RenderVertex::default();8192];
+        let stash=EventRecord {tick:600,snake_id:0,generation:1,kind:14,other_snake_id:5,cut_index:2,x:740.0,y:500.0,..Default::default()};
+        COUNT.with(|c|c.set(Some(0)));
+        let n=r.build_shader(&i,&[s],&b,&[],&[stash],&pal,&p,&mut out).vertex_count;
+        let m=r.build_shader(&i,&[s],&b,&[],&[stash],&pal,&p,&mut retry).vertex_count;
+        assert_eq!(n,m);assert_eq!(&out[..n],&retry[..m]);assert!(!out[..n].iter().any(|v|v.params[0]==12));
+        assert!(out[..n].iter().any(|v|v.params[0]==13));
+        i.tick=615;i.simulation_time=20.5;p.presentation_time=i.simulation_time;
+        s.inv_windup=2;let use_event=EventRecord {tick:615,kind:13,other_snake_id:1,cut_index:1,duration_ticks:4,snake_id:0,generation:1,x:700.0,y:500.0,..Default::default()};
+        r.build_shader(&i,&[s],&b,&[],&[use_event],&pal,&p,&mut out);
+        i.tick=617;i.simulation_time=617.0/30.0;p.presentation_time=i.simulation_time;
+        let n=r.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+        let flight=out[..n].iter().filter(|v|v.params[0]==26 && v.params[3]>=128).count();assert_eq!(flight,6);
+        let last=out[..n].chunks_exact(6).filter(|v|v[0].params[0]==26).last().unwrap();assert_eq!(last[0].params[1],1);
+        i.tick=619;i.simulation_time=619.0/30.0;p.presentation_time=i.simulation_time;
+        s.inv_windup=0;s.inv_count=2;s.inv_kind=[3,5,0];s.inv_life=[255,255,0];s.effect_kind=1;s.effect_ticks=180;
+        let pickup=EventRecord {tick:619,kind:2,flags:event_flags::HELD_ACTIVATION,other_snake_id:1,snake_id:0,generation:1,x:700.0,y:500.0,..Default::default()};
+        let n=r.build_shader(&i,&[s],&b,&[],&[pickup],&pal,&p,&mut out).vertex_count;
+        assert_eq!(out[..n].iter().filter(|v|v.params[0]==26).count(),12);assert!(out[..n].iter().any(|v|v.params[0]==12));
+        assert!(out[..n].iter().any(|v|v.params[0]==0 && v.params[3]>0));
+        i.tick=630;i.simulation_time=21.0;p.presentation_time=i.simulation_time;
+        s.inv_kind=[5,0,0];s.inv_count=1;let fizzle=EventRecord {tick:630,kind:15,other_snake_id:3,cut_index:0,duration_ticks:8,snake_id:0,generation:1,x:660.4,y:500.0,..Default::default()};
+        let n=r.build_shader(&i,&[s],&b,&[],&[fizzle],&pal,&p,&mut out).vertex_count;
+        assert_eq!(out[..n].iter().filter(|v|v.params[0]==26).count(),12);
+        r.build(&i,&[s],&b,&[],&[fizzle],&pal,&p,&mut fallback);
+        i.tick=639;i.simulation_time=21.3;p.presentation_time=i.simulation_time;
+        let n=r.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+        assert_eq!(out[..n].iter().filter(|v|v.params[0]==26).count(),6);
+        assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+        s.generation+=1;s.inv_count=0;s.effect_kind=0;s.effect_ticks=0;
+        let n=r.build_shader(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+        assert!(!out[..n].iter().any(|v|v.params[0]==26));
+    }
+}
+
+#[test]
+fn inventory_item_bubbles_map_all_five_glyphs_and_palette_accents() {
+    let b=body();let s=snake();let mut out=[ShaderRenderVertex::default();256];
+    for pal in [palette(),[RenderColor {red:255,green:255,blue:255,alpha:255}],[RenderColor {red:255,green:200,blue:221,alpha:255}]] {
+        for glyph in 5..=9 {
+            let mut i=info();i.bubble_count=1;i.bubbles[0]=snakes_core::Bubble {snake_id:0,generation:1,glyph,age_ticks:12,..Default::default()};
+            let n=RenderHandle::new().build_shader(&i,&[s],&b,&[],&[],&pal,&params(),&mut out).vertex_count;
+            let bubble=out[..n].iter().find(|v|v.params[0]==16).unwrap();assert_eq!(bubble.params[1],glyph);
+            assert_ne!(bubble.color,pal[0]);assert_eq!(bubble.color.alpha,255);
+        }
+    }
+}
+
+#[test]
+fn inventory_surge_ribbons_and_gems_obey_global_vertex_caps() {
+    let mut r=RenderHandle::new();let b:[SegmentRecord;14*30]=std::array::from_fn(|j|SegmentRecord {x:500.0+(j/30) as f32*180.0-(j%30) as f32*9.44,y:300.0+(j/30) as f32*40.0,previous_x:500.0+(j/30) as f32*180.0-(j%30) as f32*9.44,previous_y:300.0+(j/30) as f32*40.0});
+    let s:[SnakeRecord;14]=std::array::from_fn(|j|SnakeRecord {id:j as u32,segment_offset:(j*30) as u32,segment_count:30,effect_kind:1,effect_ticks:180,inv_kind:[1,2,3],inv_life:[255;3],inv_count:3,flags:flags::BOOSTING,..snake()});
+    let mut out=[ShaderRenderVertex::default();4096];
+    COUNT.with(|c|c.set(Some(0)));
+    let n=r.build_shader(&info(),&s,&b,&[],&[],&palette(),&params(),&mut out).vertex_count;
+    assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+    assert_eq!(out[..n].iter().filter(|v|v.params[0]==26).count(),3*snakes_core::MAX_SNAKES*6);
+    assert!(out[..n].iter().filter(|v|v.params[0]==27).count()<=336);
+    assert_eq!(out[..n].iter().filter(|v|v.params[0]==28).count(),14*6);
+}
+
+#[test]
+fn inventory_magnet_opens_and_frost_waits_for_visual_front() {
+    let mut r=RenderHandle::new();let mut i=info();let mut p=params();let mut out=[ShaderRenderVertex::default();1024];
+    let mut s=[SnakeRecord {effect_kind:2,effect_ticks:180,..snake()},SnakeRecord {id:1,segment_offset:3,flags:flags::FROZEN,frozen_ticks:75,mood:8,..snake()}];
+    let b=[body()[0],body()[1],body()[2],SegmentRecord {x:300.0,y:200.0,previous_x:300.0,previous_y:200.0},SegmentRecord {x:292.0,y:200.0,previous_x:292.0,previous_y:200.0},SegmentRecord {x:284.0,y:200.0,previous_x:284.0,previous_y:200.0}];
+    let pickup=EventRecord {tick:600,kind:2,snake_id:0,generation:1,other_snake_id:2,x:200.0,y:200.0,..Default::default()};
+    let nova=EventRecord {tick:600,kind:3,snake_id:0,generation:1,other_snake_id:5,x:200.0,y:200.0,value:128.0,duration_ticks:21,..Default::default()};
+    let n=r.build_shader(&i,&s,&b,&[],&[pickup,nova],&palette(),&p,&mut out).vertex_count;
+    assert_eq!(out[..n].iter().find(|v|v.params[0]==15).unwrap().params[3],1);
+    assert!(out[..n].iter().filter(|v|v.params[0]==0).all(|v|v.params[1]&128==0));
+    i.tick=612;i.simulation_time=20.4;p.presentation_time=i.simulation_time;s[1].frozen_ticks=63;
+    let n=r.build_shader(&i,&s,&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert_eq!(out[..n].iter().find(|v|v.params[0]==15).unwrap().params[3],255);
+    assert!(out[..n].iter().any(|v|v.params[0]==0 && v.params[1]&128!=0));
+}
+
+#[test]
+fn inventory_classic_magnet_grows_from_head_and_ignores_invalid_owners() {
+    let mut r=RenderHandle::new();let mut i=info();let mut p=params();let b=body();let pal=palette();
+    let s=SnakeRecord {effect_kind:2,effect_ticks:180,..snake()};
+    let invalid=SnakeRecord {id:1,radius:f64::NAN,flags:flags::FROZEN,inv_count:3,..s};
+    let pickup=EventRecord {tick:600,kind:2,snake_id:0,generation:1,other_snake_id:2,x:200.0,y:200.0,..Default::default()};
+    let nova=EventRecord {tick:600,kind:3,snake_id:0,generation:1,x:200.0,y:200.0,value:128.0,duration_ticks:21,..Default::default()};
+    let mut out=[RenderVertex::default();8192];let mut shader=[ShaderRenderVertex::default();1024];
+    let n=r.build(&i,&[s,invalid],&b,&[],&[pickup,nova],&pal,&p,&mut out).vertex_count;
+    let reach=|vertices:&[RenderVertex]|vertices.iter().filter(|v|v.color.red==255 && v.color.green==95 && v.color.blue==210)
+        .map(|v|((v.x-200.0) as f64).hypot((v.y-200.0) as f64)).fold(0.0_f64,f64::max);
+    assert!(reach(&out[..n])<4.0*s.radius);
+    i.tick=612;i.simulation_time=20.4;p.presentation_time=i.simulation_time;
+    let n=r.build(&i,&[s,invalid],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+    assert!(reach(&out[..n])>8.0*s.radius);
+    assert!(r.build_shader(&i,&[s,invalid],&b,&[],&[],&pal,&p,&mut shader).vertex_count>0);
+}
+
+#[test]
+fn inventory_death_drops_grow_drift_and_resolve_compact_tail_history() {
+    let mut r=RenderHandle::new();let mut i=info();let mut p=params();let mut out=[ShaderRenderVertex::default();1024];
+    let s=SnakeRecord {alive:0,flags:flags::CORPSE,segment_count:12,radius:18.0,..snake()};
+    let b:[SegmentRecord;12]=std::array::from_fn(|j|SegmentRecord {x:700.0-j as f32*21.24,y:500.0,previous_x:700.0-j as f32*21.24,previous_y:500.0});
+    let item=ItemRecord {id:1,kind:1,state:1,x:660.4,y:554.0,age_ticks:0,life_ticks:300,..Default::default()};
+    let event=EventRecord {tick:600,kind:5,snake_id:0,generation:1,cut_index:0,other_snake_id:1,duration_ticks:15,x:item.x,y:item.y,..Default::default()};
+    let compact=SnakeRecord {segment_count:1,..s};let compact_p=RenderParams {scale_x:0.0,scale_y:0.0,..p};
+    r.build_shader(&i,&[compact],&[b[11]],&[],&[event],&palette(),&compact_p,&mut out);
+    r.set_items(&[item],37.8);
+    let n=r.build_shader(&i,&[s],&b,&[],&[event],&palette(),&p,&mut out).vertex_count;
+    let drop=out[..n].chunks_exact(6).find(|v|v[0].params[0]==11).unwrap();
+    assert!(((drop[0].y+drop[2].y)*0.5-500.0).abs()<0.001);
+    let start_width=drop[1].x-drop[0].x;
+    i.tick=611;i.simulation_time=611.0/30.0;p.presentation_time=i.simulation_time;
+    r.set_items(&[ItemRecord {age_ticks:11,..item}],37.8);
+    let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    let drop=out[..n].chunks_exact(6).find(|v|v[0].params[0]==11).unwrap();
+    assert!(((drop[0].y+drop[2].y)*0.5-item.y).abs()<0.001);
+    assert!(((drop[1].x-drop[0].x)/start_width-2.47).abs()<0.001);
+    // A new death can reuse the target and kind while old history survives.
+    i.tick=620;i.simulation_time=620.0/30.0;p.presentation_time=i.simulation_time;
+    let next=ItemRecord {id:2,age_ticks:0,..item};r.set_items(&[next],37.8);
+    let next_event=EventRecord {tick:620,generation:2,..event};
+    let next_snake=SnakeRecord {generation:2,..s};
+    let n=r.build_shader(&i,&[next_snake],&b,&[],&[next_event],&palette(),&p,&mut out).vertex_count;
+    let drop=out[..n].chunks_exact(6).find(|v|v[0].params[0]==11).unwrap();
+    assert!(((drop[0].y+drop[2].y)*0.5-500.0).abs()<0.001,"new drop must start at the new neck");
+    assert!((drop[1].x-drop[0].x-start_width).abs()<0.001,"new drop must restart at pip size");
+}
+
+#[test]
+fn inventory_phase_enters_over_three_ticks_and_frost_does_not_restart_fade() {
+    let mut r=RenderHandle::new();let mut i=info();let mut p=params();let b=body();let mut out=[ShaderRenderVertex::default();512];
+    let s=SnakeRecord {effect_kind:3,effect_ticks:120,..snake()};
+    let phase=EventRecord {tick:600,kind:2,snake_id:0,generation:1,other_snake_id:3,x:200.0,y:200.0,..Default::default()};
+    let n=r.build_shader(&i,&[s],&b,&[],&[phase],&palette(),&p,&mut out).vertex_count;
+    assert!(out[..n].iter().any(|v|v.params[0]==0 && (v.params[1]>>2)&7==6));
+    assert_eq!(out[..n].iter().find(|v|v.params[0]==29).unwrap().color.alpha,crate_taper_alpha(3));
+    i.tick=602;i.simulation_time=602.0/30.0;p.presentation_time=i.simulation_time;
+    let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    let head=out[..n].iter().find(|v|v.params[0]>=29).unwrap();
+    let progress=(head.params[0] as u16-29)*255/226;assert!((168..=171).contains(&progress));
+    assert_eq!(head.color.alpha,crate_taper_alpha(3));
+    i.tick=604;i.simulation_time=604.0/30.0;p.presentation_time=i.simulation_time;
+    let frost=EventRecord {tick:604,other_snake_id:5,..phase};
+    let n=r.build_shader(&i,&[s],&b,&[],&[frost],&palette(),&p,&mut out).vertex_count;
+    assert!(out[..n].iter().any(|v|v.params[0]==0 && (v.params[1]>>2)&7==3));
+    assert!(!out[..n].iter().any(|v|v.params[0]==29));
+}
+
+#[test]
+fn inventory_neck_cache_matches_fresh_geometry_after_same_tick_mutations() {
+    let mut r=RenderHandle::new();let mut s=SnakeRecord {radius:18.0,segment_count:12,inv_kind:[1,2,3],inv_count:3,inv_life:[255;3],..snake()};
+    let mut b:[SegmentRecord;12]=std::array::from_fn(|j|SegmentRecord {x:700.0-j as f32*21.24,y:500.0,previous_x:700.0-j as f32*21.24,previous_y:500.0});
+    let mut out=[ShaderRenderVertex::default();1024];let mut expected=out;let mut p=params();
+    for change in 0..5 {
+        match change {1=>b[2].y+=10.0,2=>{s.radius=16.0;s.inv_life[1]=12;},3=>{p.interpolation=0.75;s.inv_kind=[5,1,4];},4=>p.deadly_walls=0,_=>{}}
+        let n=r.build_shader(&info(),&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+        let m=RenderHandle::new().build_shader(&info(),&[s],&b,&[],&[],&palette(),&p,&mut expected).vertex_count;
+        assert_eq!(n,m);assert_eq!(&out[..n],&expected[..m]);
+    }
+}
+
+#[test]
+fn inventory_redraw_rainbow_cache_preserves_ice_and_classic_interleaving() {
+    let mut r=RenderHandle::new();let s=SnakeRecord {radius:18.0,segment_count:40,flags:flags::FROZEN,frozen_ticks:75,..snake()};
+    let b:[SegmentRecord;40]=std::array::from_fn(|j|SegmentRecord {x:1200.0-j as f32*21.24,y:500.0,previous_x:1200.0-j as f32*21.24,previous_y:500.0});
+    let event=EventRecord {tick:585,kind:10,snake_id:0,generation:1,duration_ticks:90,..Default::default()};
+    let mut out=[ShaderRenderVertex::default();2048];let mut expected=out;let mut fallback=[RenderVertex::default();12000];
+    let n=r.build_shader(&info(),&[s],&b,&[],&[event],&palette(),&params(),&mut expected).vertex_count;
+    assert!(expected[..n].iter().any(|v|v.params[0]==0 && v.color.red!=151));
+    for j in 0..3 {
+        if j==1 {r.build(&info(),&[s],&b,&[],&[event],&palette(),&params(),&mut fallback);}
+        let m=r.build_shader(&info(),&[s],&b,&[],&[event],&palette(),&params(),&mut out).vertex_count;
+        assert_eq!(n,m);assert_eq!(&out[..n],&expected[..m]);
+    }
+}
+
+fn crate_taper_alpha(n:usize)->u8 {
+    (snakes_core::shape::taper(1.0/(n-1) as f64)*255.0).round() as u8
+}
+
+#[test]
+fn inventory_full_touch_preserves_flight_and_later_compaction() {
+    for calm in [false,true] {
+        let mut r=RenderHandle::new();r.reduced_motion=calm;let mut i=info();let mut p=params();
+        let mut s=SnakeRecord {radius:18.0,segment_count:12,inv_count:3,inv_kind:[3,1,5],inv_life:[255;3],inv_windup:2,..snake()};
+        let b:[SegmentRecord;12]=std::array::from_fn(|j|SegmentRecord {x:700.0-j as f32*21.24,y:500.0,previous_x:700.0-j as f32*21.24,previous_y:500.0});
+        let mut out=[ShaderRenderVertex::default();1024];
+        let start=EventRecord {tick:600,kind:13,snake_id:0,generation:1,cut_index:1,duration_ticks:4,other_snake_id:1,..Default::default()};
+        r.build_shader(&i,&[s],&b,&[],&[start],&palette(),&p,&mut out);
+        i.tick+=1;i.simulation_time=i.tick as f64/30.0;p.presentation_time=i.simulation_time;
+        let touch=EventRecord {tick:i.tick,duration_ticks:0,other_snake_id:4,..start};
+        let pickup=EventRecord {kind:2,..touch};
+        let n=r.build_shader(&i,&[s],&b,&[],&[touch,pickup],&palette(),&p,&mut out).vertex_count;
+        assert_eq!(out[..n].iter().filter(|v|v.params[0]==26 && v.params[3]>=128).count(),6);
+        i.tick+=3;i.simulation_time=i.tick as f64/30.0;p.presentation_time=i.simulation_time;
+        s.inv_windup=0;s.inv_count=2;s.inv_kind=[3,5,0];
+        let held=EventRecord {tick:i.tick,other_snake_id:1,flags:event_flags::HELD_ACTIVATION,..pickup};
+        let n=r.build_shader(&i,&[s],&b,&[],&[held],&palette(),&p,&mut out).vertex_count;
+        let pip=out[..n].chunks_exact(6).find(|v|v[0].params[0]==26 && v[0].params[1]==5).unwrap();
+        let center=(pip[0].x+pip[1].x)*0.5;
+        assert!(center<700.0-4.3*18.0-0.01,"remaining gem must retain its closing-gap animation");
+    }
+}
+
+#[test]
+fn inventory_held_completion_and_same_kind_touch_compact_in_order_without_allocations() {
+    for calm in [false,true] {for kind in 1..=5 {
+        let mut r=RenderHandle::new();r.reduced_motion=calm;let mut i=info();let mut p=params();let pal=palette();
+        let mut s=SnakeRecord {radius:18.0,segment_count:12,inv_count:3,inv_kind:[3,kind,5],inv_life:[255;3],inv_windup:2,..snake()};
+        let b:[SegmentRecord;12]=std::array::from_fn(|j|SegmentRecord {x:700.0-j as f32*21.24,y:500.0,previous_x:700.0-j as f32*21.24,previous_y:500.0});
+        let mut out=[ShaderRenderVertex::default();1024];let mut retry=out;
+        let start=EventRecord {tick:600,kind:13,snake_id:0,generation:1,cut_index:1,duration_ticks:4,other_snake_id:kind as u32,..Default::default()};
+        COUNT.with(|c|c.set(Some(0)));
+        r.build_shader(&i,&[s],&b,&[],&[start],&pal,&p,&mut out);
+        i.tick+=4;i.simulation_time=i.tick as f64/30.0;p.presentation_time=i.simulation_time;
+        s.inv_windup=0;s.inv_kind=[3,5,2];
+        let held=EventRecord {tick:i.tick,kind:2,flags:event_flags::HELD_ACTIVATION,duration_ticks:0,..start};
+        let stash=EventRecord {kind:14,flags:0,cut_index:2,other_snake_id:2,x:740.0,y:500.0,..held};
+        let touch=EventRecord {kind:13,flags:0,cut_index:u16::MAX,..held};
+        let pickup=EventRecord {kind:2,..touch};let events=[held,stash,touch,pickup];
+        let n=r.build_shader(&i,&[s],&b,&[],&events,&pal,&p,&mut out).vertex_count;
+        let m=r.build_shader(&i,&[s],&b,&[],&events,&pal,&p,&mut retry).vertex_count;
+        assert_eq!(&out[..n],&retry[..m]);
+        let pip=out[..n].chunks_exact(6).find(|v|v[0].params[0]==26 && v[0].params[1]==5).unwrap();
+        let center=(pip[0].x+pip[1].x)*0.5;
+        assert!(center<700.0-4.3*18.0-0.01,"surviving gem must close the gap despite a later same-kind touch");
+        assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+    }}
+}
+
+#[test]
+fn inventory_stash_after_fizzle_resets_empty_slot_slide_in_calm() {
+    let mut r=RenderHandle::new();r.reduced_motion=true;let i=info();let p=params();
+    let s=SnakeRecord {radius:18.0,segment_count:12,inv_count:1,inv_kind:[2,0,0],inv_life:[255,0,0],..snake()};
+    let b:[SegmentRecord;12]=std::array::from_fn(|j|SegmentRecord {x:700.0-j as f32*21.24,y:500.0,previous_x:700.0-j as f32*21.24,previous_y:500.0});
+    let fizzle=EventRecord {tick:i.tick,kind:15,other_snake_id:3,snake_id:0,generation:1,x:660.4,y:500.0,duration_ticks:8,..Default::default()};
+    let stash=EventRecord {kind:14,other_snake_id:2,..fizzle};let mut out=[ShaderRenderVertex::default();1024];
+    let n=r.build_shader(&i,&[s],&b,&[],&[fizzle,stash],&palette(),&p,&mut out).vertex_count;
+    let pip=out[..n].chunks_exact(6).find(|v|v[0].params[0]==26 && v[0].params[1]==2).unwrap();
+    assert!(((pip[0].x+pip[1].x)*0.5-(700.0-2.2*18.0)).abs()<0.001);
+}
+
+#[test]
+fn inventory_same_tick_and_future_configuration_fizzles_survive_retries_and_empty_next_export() {
+    for calm in [false,true] {for future in [false,true] {
+        let mut r=RenderHandle::new();r.reduced_motion=calm;let mut i=info();let mut p=params();let mut s=snake();
+        s.inv_count=1;s.inv_kind=[3,0,0];s.inv_life=[255,0,0];let b=body();let mut out=[ShaderRenderVertex::default();512];let mut retry=out;
+        let stash=EventRecord {tick:i.tick,kind:14,snake_id:0,generation:1,other_snake_id:3,x:185.0,y:200.0,..Default::default()};
+        r.build_shader(&i,&[s],&b,&[],&[stash],&palette(),&p,&mut out);
+        s.inv_count=0;s.inv_kind=[0;3];let fizzle=EventRecord {kind:15,tick:i.tick+u64::from(future),duration_ticks:8,..stash};
+        let n=r.build_shader(&i,&[s],&b,&[],&[fizzle],&palette(),&p,&mut out).vertex_count;
+        let m=r.build_shader(&i,&[s],&b,&[],&[fizzle],&palette(),&p,&mut retry).vertex_count;
+        assert_eq!(n,m);assert_eq!(&out[..n],&retry[..m]);
+        if !future {assert_eq!(out[..n].iter().filter(|v|v.params[0]==26).count(),6);}
+        i.tick+=1;i.simulation_time=i.tick as f64/30.0;p.presentation_time=i.simulation_time;
+        let n=r.build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+        assert_eq!(out[..n].iter().filter(|v|v.params[0]==26).count(),6);
+        assert!(out[..n].iter().any(|v|v.params[0]==13));
+    }}
+}
+
+#[test]
+fn inventory_compact_history_resolves_nova_against_full_heads() {
+    let mut r=RenderHandle::new();let i=info();let p=params();let mut out=[ShaderRenderVertex::default();512];
+    let snakes:[SnakeRecord;3]=std::array::from_fn(|id|SnakeRecord {id:id as u32,segment_offset:id as u32*3,flags:if id==2 {flags::FROZEN} else {0},frozen_ticks:if id==2 {75} else {0},..snake()});
+    let b:[SegmentRecord;9]=std::array::from_fn(|j| {let x=[200.0,1000.0,1010.0][j/3]-(j%3) as f32*8.0;SegmentRecord {x,y:200.0,previous_x:x,previous_y:200.0}});
+    let compact:[SnakeRecord;3]=std::array::from_fn(|id|SnakeRecord {segment_offset:id as u32,segment_count:1,..snakes[id]});
+    let tails:[SegmentRecord;3]=std::array::from_fn(|id|b[id*3+2]);
+    let events:[EventRecord;2]=std::array::from_fn(|id|EventRecord {tick:i.tick,kind:3,snake_id:id as u32,generation:1,x:[200.0,1000.0][id],y:200.0,value:128.0,duration_ticks:21,..Default::default()});
+    let history=RenderParams {scale_x:0.0,scale_y:0.0,..p};
+    r.build_shader(&i,&compact,&tails,&[],&events,&palette(),&history,&mut []);
+    let n=r.build_shader(&i,&snakes,&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert!(out[..n].iter().any(|v|v.params[0]==0 && v.x>990.0 && v.params[1]&128!=0));
+}
+
+#[test]
+fn inventory_slipstream_budget_counts_visible_ribbons() {
+    let mut r=RenderHandle::new();let mut out=[ShaderRenderVertex::default();4096];
+    // Earlier heads are invisible, but their tails admit all four snakes.
+    let snakes:[SnakeRecord;5]=std::array::from_fn(|id|SnakeRecord {id:id as u32,segment_offset:id as u32*16,segment_count:16,effect_kind:1,effect_ticks:90,..snake()});
+    let b:[SegmentRecord;80]=std::array::from_fn(|j| {let id=j/16;let k=j%16;let x=if id==4 {500.0-k as f32*9.44} else if k==15 {100.0} else {-500.0-k as f32*9.44};SegmentRecord {x,y:200.0+id as f32*100.0,previous_x:x,previous_y:200.0+id as f32*100.0}});
+    let n=r.build_shader(&info(),&snakes,&b,&[],&[],&palette(),&params(),&mut out).vertex_count;
+    assert!(out[..n].iter().any(|v|v.params[0]==27 && v.x>350.0));
+}
+
+#[test]
+fn inventory_gulp_slipstream_wrap_and_viewport_bounds_cover_actual_extrusion() {
+    for wrap in [false,true] {
+        let mut i=info();i.world_height=500.0;let mut p=params();p.viewport_height=500.0;p.interpolation=1.0;p.deadly_walls=u32::from(!wrap);
+        let mut s=SnakeRecord {radius:18.0,segment_count:24,effect_kind:1,effect_ticks:90,..snake()};
+        // A full-strength feeding pulse centred on the head widens the normal.
+        s.bulges[0]=snakes_core::Bulge {start_tick:i.tick-3,duration_ticks:30,strength:1.0,..Default::default()};
+        let y=if wrap {2.2*18.0} else {-2.2*18.0};
+        let b:[SegmentRecord;24]=std::array::from_fn(|j|SegmentRecord {x:700.0-j as f32*21.24,y:y as f32,previous_x:700.0-j as f32*21.24,previous_y:y as f32});
+        let mut out=[ShaderRenderVertex::default();2048];
+        let n=RenderHandle::new().build_shader(&i,&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+        assert!(out[..n].iter().any(|v|v.params[0]==27 && if wrap {v.y>p.viewport_height as f32} else {v.y>0.0}),"feeding streak must survive edge culling / receive seam copy");
+    }
+}
+
+#[test]
+fn inventory_phase_fade_preserves_adult_head_neck_contour() {
+    let mut r=RenderHandle::new();let mut i=info();let mut p=params();
+    let s=SnakeRecord {radius:18.0,segment_count:24,effect_kind:3,effect_ticks:120,..snake()};
+    let b:[SegmentRecord;24]=std::array::from_fn(|j|SegmentRecord {x:700.0-j as f32*21.24,y:500.0,previous_x:700.0-j as f32*21.24,previous_y:500.0});
+    let event=EventRecord {tick:600,kind:2,snake_id:0,generation:1,other_snake_id:3,..Default::default()};
+    let mut out=[ShaderRenderVertex::default();1024];let expected=crate_taper_alpha(24);
+    let contour=|alpha:u8| {
+        let neck=alpha as f64/255.0/1.14;let x=(-0.9-0.05)/1.37_f64;
+        let spade=1.10*(1.0-x*x).max(0.0).sqrt();let k=0.15;let h=(0.5+0.5*(spade-neck)/k).clamp(0.0,1.0);
+        neck*(1.0-h)+spade*h+k*h*(1.0-h)
+    };
+    let reference=contour(expected);assert!((reference-0.8484).abs()<0.0001);
+    for tick in 600..=604 {
+        i.tick=tick;i.simulation_time=tick as f64/30.0;p.presentation_time=i.simulation_time;
+        let events=if tick==600 {&[event][..]} else {&[][..]};
+        let n=r.build_shader(&i,&[s],&b,&[],events,&palette(),&p,&mut out).vertex_count;
+        let head=out[..n].iter().find(|v|v.params[0]==1 || v.params[0]>=29).unwrap();
+        assert_eq!(head.color.alpha,expected);assert_eq!(contour(head.color.alpha),reference);
+    }
+    let vertex=include_str!("../../../src/shaders/snake.vert");let fragment=include_str!("../../../src/shaders/snake.frag");
+    assert!(vertex.contains("phaseFade=float(kind-29)/226.0"));
+    assert!(fragment.contains("float neck=base.a/hr"));
+    assert!(fragment.contains("phaseHead?mix(1.0,0.45,phaseFade)"));
+}
+
+#[test]
+fn inventory_retained_nova_cannot_claim_a_later_freeze() {
+    let mut r=RenderHandle::new();let mut i=info();let mut p=params();let mut out=[ShaderRenderVertex::default();512];
+    let mut snakes:[SnakeRecord;3]=std::array::from_fn(|id|SnakeRecord {id:id as u32,segment_offset:id as u32*3,..snake()});
+    let mut b:[SegmentRecord;9]=std::array::from_fn(|j| {let x=[200.0,330.0,330.0][j/3]-(j%3) as f32*8.0;SegmentRecord {x,y:200.0+(j/3) as f32*100.0,previous_x:x,previous_y:200.0+(j/3) as f32*100.0}});
+    let first=EventRecord {tick:600,kind:3,snake_id:0,generation:1,x:200.0,y:400.0,value:128.0,duration_ticks:21,..Default::default()};
+    r.build_shader(&i,&snakes,&b,&[],&[first],&palette(),&p,&mut out);
+    i.tick=603;i.simulation_time=603.0/30.0;p.presentation_time=i.simulation_time;
+    for seg in &mut b[6..] {seg.x-=4.0;seg.previous_x=seg.x;}
+    snakes[2].flags=flags::FROZEN;snakes[2].frozen_ticks=75;
+    let second=EventRecord {tick:603,snake_id:1,x:330.0,..first};
+    let n=r.build_shader(&i,&snakes,&b,&[],&[second],&palette(),&p,&mut out).vertex_count;
+    assert!(out[..n].iter().any(|v|v.params[0]==0 && v.y>380.0 && v.params[1]&128!=0));
+}
+
+#[test]
+fn inventory_pending_configuration_fizzle_does_not_advance_other_event_cutoff() {
+    let mut r=RenderHandle::new();let mut i=info();let mut p=params();let mut s=snake();let b=body();
+    let mut out=[ShaderRenderVertex::default();512];
+    let future=EventRecord {tick:601,kind:15,snake_id:0,generation:1,other_snake_id:3,duration_ticks:8,x:180.0,y:200.0,..Default::default()};
+    r.build_shader(&i,&[s],&b,&[],&[future],&palette(),&p,&mut out);
+    i.tick=601;i.simulation_time=601.0/30.0;p.presentation_time=i.simulation_time;
+    s.inv_count=1;s.inv_kind=[1,0,0];s.inv_life=[255,0,0];s.inv_windup=1;
+    let use_event=EventRecord {kind:13,other_snake_id:1,duration_ticks:4,..future};
+    let n=r.build_shader(&i,&[s],&b,&[],&[use_event],&palette(),&p,&mut out).vertex_count;
+    assert_eq!(out[..n].iter().filter(|v|v.params[0]==26 && v.params[3]>=128).count(),6);
 }

@@ -6,7 +6,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#define SNAKES_CORE_ABI_VERSION 3u
+#define SNAKES_CORE_ABI_VERSION 4u
 #define SNAKES_CORE_RULE_DEFAULT 0u /* V2 */
 #define SNAKES_CORE_RULE_CLASSIC 1u
 #define SNAKES_CORE_RULE_V2 2u
@@ -25,6 +25,7 @@ extern "C" {
 #define SNAKES_CORE_EVENT_KILL 0u
 #define SNAKES_CORE_EVENT_SEVER 1u
 #define SNAKES_CORE_EVENT_PICKUP 2u
+#define SNAKES_CORE_EVENT_HELD_ACTIVATION 1u /* event.flags: Pickup from held inventory, no field acquisition */
 #define SNAKES_CORE_EVENT_NOVA 3u
 #define SNAKES_CORE_EVENT_SUCCESSION 4u
 #define SNAKES_CORE_MAX_EVENTS 32u
@@ -41,13 +42,18 @@ extern "C" {
 #define SNAKES_CORE_EFFECT_PHASE 3u
 #define SNAKES_CORE_EFFECT_VENOM 4u
 #define SNAKES_CORE_EFFECT_FROST 5u
-#define SNAKES_CORE_ACTION_FLIP 1u
+#define SNAKES_CORE_INVENTORY_OFF 0x10000000u
+#define SNAKES_CORE_INVENTORY_SLOTS 3u
+#define SNAKES_CORE_INVENTORY_WINDUP_TICKS 4u
+#define SNAKES_CORE_EVENT_USE 13u
+#define SNAKES_CORE_EVENT_STASH 14u
+#define SNAKES_CORE_EVENT_FIZZLE 15u
 #define SNAKES_CORE_EFFECT_FLIP 6u
 #define SNAKES_CORE_EFFECT_WHIRLPOOL 7u
 #define SNAKES_CORE_ITEM_VORTEX 8u
 /* Config word at offset 76: bits 16..22 encode aggression+1 (1..101).
  * Zero selects default 100; 102..127 are invalid. Classic ignores aggression.
- * All other spare bits remain zero; ABI v3 config remains 80 bytes. */
+ * Bit 28 disables inventory (default on). All other spare bits remain zero; ABI v4 config remains 80 bytes. */
 #define SNAKES_CORE_AGGRESSION_SHIFT 16u
 #define SNAKES_CORE_AGGRESSION_MASK 0x007f0000u
 #define SNAKES_CORE_DEFAULT_AGGRESSION 100u
@@ -78,6 +84,11 @@ extern "C" {
 #define SNAKES_CORE_GLYPH_ANGER 2u
 #define SNAKES_CORE_GLYPH_SLEEP 3u
 #define SNAKES_CORE_GLYPH_HEART 4u
+#define SNAKES_CORE_GLYPH_SURGE 5u
+#define SNAKES_CORE_GLYPH_MAGNET 6u
+#define SNAKES_CORE_GLYPH_PHASE 7u
+#define SNAKES_CORE_GLYPH_VENOM 8u
+#define SNAKES_CORE_GLYPH_FROST 9u
 #define SNAKES_CORE_FOOD_PRISM_SEED 4u
 #define SNAKES_CORE_FOOD_METEOR 5u
 #define SNAKES_CORE_FOOD_STAR 6u
@@ -95,7 +106,7 @@ extern "C" {
 /* Config bit 31 disables power-ups; bit 30 disables world events. Both
  * default on (word zero). Bit 29 enables the V2 individual physical length
  * limit (1.5 x arena height); it defaults off and is ignored by Classic.
- * Bits16..22 encode aggression as documented above. All other reserved bits/fields must be zero. */
+ * Bit 28 disables inventory. Bits16..22 encode aggression as documented above. All other reserved bits/fields must be zero. */
 #define SNAKES_CORE_OK 0
 #define SNAKES_CORE_INVALID_ARGUMENT 1
 #define SNAKES_CORE_BUFFER_TOO_SMALL 2
@@ -111,12 +122,12 @@ typedef struct snakes_core_config {
     int32_t seed;
     uint32_t palette_size, self_collisions, deadly_walls;
     uint32_t rule_set;
-    union { uint32_t reserved; uint32_t power_ups; }; /* bits31/30 off,29 length on,16..22 aggression+1; zero defaults */
+    union { uint32_t reserved; uint32_t power_ups; }; /* bits31/30/28 off,29 length on,16..22 aggression+1; zero defaults */
 } snakes_core_config;
 typedef struct snakes_core_steering_input {
     uint32_t id, generation;
     double desired_angle, rush; /* Classic: rush in [0,1]; V2: rush>0 requests boost; generation 0 matches any */
-    uint32_t actions, reserved; /* action bit 0 requests held Flip; inert in step A; reserved zero */
+    uint32_t actions, reserved; /* 0 none, 1..3 held slot+1; reserved zero */
 } snakes_core_steering_input;
 /* Tick-based visual-only bulge: centre travels from origin_segment toward the
  * tail over duration_ticks; strength is fractional widening (0..0.35). Zero
@@ -165,6 +176,7 @@ typedef struct snakes_core_snake {
     uint32_t grudge_generation; /* prevents grudges following a respawn */
     uint64_t flip_tick; /* last in-place reversal; 0 before any Flip */
     snakes_core_bulge bulges[2]; /* fixed slots, inactive in step A */
+    uint8_t inv_kind[3], inv_count, inv_life[3], inv_windup;
 } snakes_core_snake;
 typedef struct snakes_core_segment { float x, y, previous_x, previous_y; } snakes_core_segment;
 typedef struct snakes_core_food {
@@ -201,7 +213,7 @@ typedef struct snakes_core_event {
     uint64_t tick;
     float x, y;
     uint32_t snake_id, other_snake_id, color_index;
-    uint8_t kind, reserved[3];
+    uint8_t kind, flags, reserved[2]; /* flags at byte 29: HELD_ACTIVATION for held Pickup only; other bits/reserved zero */
     uint16_t cut_index, duration_ticks; /* Sever's first removed segment; animation life */
     uint32_t generation, other_generation; /* actor/other identity, zero when unused */
     float value; /* Feast/VortexBurst nutrition, zero otherwise */
@@ -339,7 +351,11 @@ int32_t snakes_core_render_build(snakes_core_renderer *renderer,
 #endif
 SNAKES_CORE_ASSERT(sizeof(snakes_core_config) == 80);
 SNAKES_CORE_ASSERT(sizeof(snakes_core_steering_input) == 32);
-SNAKES_CORE_ASSERT(sizeof(snakes_core_snake) == 152);
+SNAKES_CORE_ASSERT(sizeof(snakes_core_snake) == 160);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, inv_kind) == 152);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, inv_count) == 155);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, inv_life) == 156);
+SNAKES_CORE_ASSERT(offsetof(snakes_core_snake, inv_windup) == 159);
 SNAKES_CORE_ASSERT(sizeof(snakes_core_segment) == 16);
 SNAKES_CORE_ASSERT(offsetof(snakes_core_steering_input, actions) == 24);
 SNAKES_CORE_ASSERT(sizeof(snakes_core_bulge) == 16);

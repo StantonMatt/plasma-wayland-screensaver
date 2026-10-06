@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! C ABI v3. Handles and buffers must be valid, aligned, nonoverlapping memory
+//! C ABI v4. Handles and buffers must be valid, aligned, nonoverlapping memory
 //! and calls on one handle must be serialized. Nulls, invalid numeric inputs,
 //! flags, IDs and insufficient capacities return status codes, without panic.
 use std::{ mem::{ align_of, size_of }, ptr };
@@ -8,12 +8,13 @@ use crate::controller::{ Controller, Steering };
 pub const OK: i32 = 0;
 pub const INVALID_ARGUMENT: i32 = 1;
 pub const BUFFER_TOO_SMALL: i32 = 2;
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 pub const AGGRESSION_SHIFT:u32 = 16;
 pub const AGGRESSION_MASK:u32 = 0x007f_0000;
 pub const DEFAULT_AGGRESSION:u8 = 100;
 pub const SNAKE_LENGTH_LIMIT:u32 = 0x2000_0000;
 pub const WORLD_EVENTS_OFF:u32 = 0x4000_0000;
+pub const INVENTORY_OFF:u32 = 0x1000_0000;
 pub const POWER_UPS_OFF: u32 = 0x8000_0000;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -34,7 +35,7 @@ pub struct CoreConfig {
 }
 impl CoreConfig {
     fn checked(self) -> Option<Config> {
-        if self.self_collisions>1 || self.deadly_walls>1 || self.rule_set>2 || self.reserved & !(POWER_UPS_OFF|WORLD_EVENTS_OFF|SNAKE_LENGTH_LIMIT|AGGRESSION_MASK)!=0 {
+        if self.self_collisions>1 || self.deadly_walls>1 || self.rule_set>2 || self.reserved & !(POWER_UPS_OFF|WORLD_EVENTS_OFF|SNAKE_LENGTH_LIMIT|INVENTORY_OFF|AGGRESSION_MASK)!=0 {
             return None;
         }
         let encoded=(self.reserved & AGGRESSION_MASK)>>AGGRESSION_SHIFT;
@@ -51,6 +52,7 @@ impl CoreConfig {
             palette_size: self.palette_size,
             self_collisions: self.self_collisions!=0,
             deadly_walls: self.deadly_walls!=0,
+            store_power_ups:self.reserved & INVENTORY_OFF == 0,
             power_ups: self.reserved & POWER_UPS_OFF == 0,
             world_events:self.reserved & WORLD_EVENTS_OFF == 0,
             snake_length_limit:self.reserved & SNAKE_LENGTH_LIMIT != 0,
@@ -75,7 +77,7 @@ impl From<Config> for CoreConfig {
             self_collisions: c.self_collisions as u32,
             deadly_walls: c.deadly_walls as u32,
             rule_set: if c.rules == crate::RuleSet::Classic { 1 } else { 2 },
-            reserved: (if c.power_ups {0} else {POWER_UPS_OFF}) | (if c.world_events {0} else {WORLD_EVENTS_OFF}) | (if c.snake_length_limit {SNAKE_LENGTH_LIMIT} else {0})
+            reserved: (if c.store_power_ups {0} else {INVENTORY_OFF}) | (if c.power_ups {0} else {POWER_UPS_OFF}) | (if c.world_events {0} else {WORLD_EVENTS_OFF}) | (if c.snake_length_limit {SNAKE_LENGTH_LIMIT} else {0})
                 | (if c.aggression==DEFAULT_AGGRESSION {0} else {(c.aggression as u32+1)<<AGGRESSION_SHIFT}),
         }
     }
@@ -114,6 +116,7 @@ pub struct SnakeRecord {
     pub thaw_immunity_ticks:u16,pub breath_ticks:u16,pub flip_grace_ticks:u16,pub happy_ticks:u16,
     pub grudge_snake_id:u32,pub grudge_ticks:u16,pub reserved:u16,pub grudge_generation:u32,
     pub flip_tick:u64,pub bulges:[crate::world::Bulge;2],
+    pub inv_kind:[u8;3],pub inv_count:u8,pub inv_life:[u8;3],pub inv_windup:u8,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -158,7 +161,7 @@ pub struct ItemRecord {
 pub struct EventRecord {
     pub tick: u64, pub x: f32, pub y: f32,
     pub snake_id: u32, pub other_snake_id: u32, pub color_index: u32,
-    pub kind: u8, pub reserved: [u8; 3],
+    pub kind: u8, pub flags:u8, pub reserved: [u8; 2],
     pub cut_index:u16,pub duration_ticks:u16,pub generation:u32,pub other_generation:u32,
     pub value:f32,pub release_tick:u64,
 }
@@ -208,14 +211,18 @@ struct InputController<'a> {
     inputs: &'a [Option<SteeringInput>;
     MAX_SNAKES],
     scripted: bool,
+    generations:[u32;MAX_SNAKES],
     ai: &'a mut crate::ai::AiController
 }
 impl Controller for InputController<'_> {
+    fn delegate(&self,_id:u32)->Option<&dyn Controller> {if self.scripted {None} else {Some(self.ai)}}
+    fn use_request(&self,id:u32)->u32 {if self.scripted {self.inputs[id as usize].filter(|i|i.generation==0 || i.generation==self.generations[id as usize]).map_or(0,|i|i.actions)} else {self.ai.use_request(id)}}
     fn face_intent(&self,id:u32)->crate::controller::FaceIntent {if self.scripted {crate::controller::FaceIntent::default()} else {self.ai.face_intent(id)}}
     fn intent_flags(&self, id: u32) -> Option<u32> {
         if self.scripted { Some(0) } else { self.ai.intent_flags(id) }
     }
     fn steer(&mut self, w: &World, s: crate::SnakeView<'_>) -> Steering {
+        self.generations[s.id as usize]=s.generation;
         if !self.scripted {
             return self.ai.steer(w, s);
         }
@@ -342,7 +349,7 @@ pub unsafe extern "C" fn snakes_core_set_steering(handle: *mut WorldHandle, inpu
         if i.id as usize>=h.world.snake_count() || !(Steering {
             desired_angle: i.desired_angle,
             rush: i.rush
-        }).is_valid() || i.actions & !1!=0 || i.reserved!=0 || inputs[i.id as usize].is_some() {
+        }).is_valid() || i.actions>3 || i.reserved!=0 || inputs[i.id as usize].is_some() {
             return INVALID_ARGUMENT;
         }
         inputs[i.id as usize] = Some(i);
@@ -364,6 +371,7 @@ pub unsafe extern "C" fn snakes_core_step(handle: *mut WorldHandle, ticks: u32) 
     let mut controller = InputController {
         inputs: &h.inputs,
         scripted: h.scripted,
+        generations:[0;MAX_SNAKES],
         ai: &mut h.ai
     };
     h.world.step_n(&mut controller, ticks);
@@ -435,7 +443,8 @@ pub unsafe extern "C" fn snakes_core_export_frame(handle: *const WorldHandle, sn
                 stump_ticks:s.face.stump_ticks,thaw_immunity_ticks:s.face.thaw_immunity_ticks,breath_ticks:s.face.breath_ticks,
                 flip_grace_ticks:s.face.flip_grace_ticks,happy_ticks:s.face.happy_ticks,grudge_snake_id:s.face.grudge_id,
                 grudge_ticks:s.face.grudge_ticks,grudge_generation:s.face.grudge_generation,flip_tick:s.face.flip_tick,
-                bulges:s.face.bulges,reserved:0
+                bulges:s.face.bulges,reserved:0,inv_kind:s.inventory.kinds,inv_count:s.inventory.count,
+                inv_life:s.inventory.life_bytes(),inv_windup:s.inventory.windup
             });
         }
         for seg in s.segments {
@@ -500,7 +509,7 @@ pub unsafe extern "C" fn snakes_core_export_extras(handle: *const WorldHandle,
             kind:item.kind as u8,reserved_byte:0,age_ticks:item.age_ticks,life_ticks:item.life_ticks,reserved:0,
             pickable_from_tick:item.pickable_from_tick,leader_snake_id:item.leader_snake_id,leader_eta:item.leader_eta,
             landing_ticks:item.pickable_from_tick.saturating_sub(w.tick()).min(u16::MAX as u64) as u16,
-            contender_count:item.contender_count,state:0,contender_ids:item.contender_ids,contender_etas:item.contender_etas,
+            contender_count:item.contender_count,state:item.dropped as u8,contender_ids:item.contender_ids,contender_etas:item.contender_etas,
             guard_snake_id:item.guard_snake_id,radius:item.radius as f32,captured_value:item.captured_value,
             charge_ticks:item.charge_ticks,owner_generation:item.owner_generation,owner_snake_id:item.owner_snake_id,reserved_v3:0,reserved_owner:0}); }
     }
@@ -508,7 +517,7 @@ pub unsafe extern "C" fn snakes_core_export_extras(handle: *const WorldHandle,
         unsafe { ptr::write(events.add(i), EventRecord { tick: e.tick,
             x: e.position.x as f32, y: e.position.y as f32, snake_id: e.snake_id,
             other_snake_id: e.other_snake_id, color_index: e.color_index,
-            kind: e.kind as u8, reserved: [0; 3],cut_index:e.cut_index,duration_ticks:e.duration_ticks,
+            kind: e.kind as u8, flags:e.flags, reserved: [0; 2],cut_index:e.cut_index,duration_ticks:e.duration_ticks,
             generation:e.generation,other_generation:e.other_generation,value:e.value,release_tick:e.release_tick }); }
     }
     OK
@@ -545,7 +554,11 @@ const _: () =  {
     assert!(size_of::<CoreConfig>()==80);
     assert!(align_of::<CoreConfig>()==8);
     assert!(size_of::<SteeringInput>()==32);
-    assert!(size_of::<SnakeRecord>()==152);
+    assert!(size_of::<SnakeRecord>()==160);
+    assert!(std::mem::offset_of!(SnakeRecord,inv_kind)==152);
+    assert!(std::mem::offset_of!(SnakeRecord,inv_count)==155);
+    assert!(std::mem::offset_of!(SnakeRecord,inv_life)==156);
+    assert!(std::mem::offset_of!(SnakeRecord,inv_windup)==159);
     assert!(size_of::<SegmentRecord>()==16);
     assert!(size_of::<FoodRecord>()==72);
     assert!(size_of::<FrameSizes>()==24);
@@ -564,6 +577,7 @@ const _: () =  {
     assert!(std::mem::offset_of!(FoodRecord,ripe_tick)==48);
     assert!(std::mem::offset_of!(ItemRecord,pickable_from_tick)==24);
     assert!(std::mem::offset_of!(ItemRecord,contender_ids)==44);
+    assert!(std::mem::offset_of!(EventRecord,flags)==29);
     assert!(std::mem::offset_of!(EventRecord,cut_index)==32);
     assert!(std::mem::offset_of!(FrameInfo,bubbles)==48);
     assert!(std::mem::offset_of!(FrameInfo,world_event)==88);
@@ -686,9 +700,9 @@ mod v2_tests {
     #[test]
     fn leader_hysteresis_round_trips_through_ffi() {
         unsafe {
-            let cfg=CoreConfig::from(Config{rules:RuleSet::V2,..Config::default()});
+            let cfg=CoreConfig::from(Config {rules:RuleSet::V2,..Config::default()});
             let mut handle=ptr::null_mut();assert_eq!(snakes_core_create(&cfg,&mut handle),OK);
-            (*handle).world=World::diagnostic_arena(Config{width:4096.0,height:1440.0,density:0.0,
+            (*handle).world=World::diagnostic_arena(Config {width:4096.0,height:1440.0,density:0.0,
                 rules:RuleSet::V2,deadly_walls:false,..Config::default()},
                 &[(Point{x:1500.0,y:400.0},0.0,30,1.0),(Point{x:3000.0,y:1000.0},0.0,29,1.0)],&[]).unwrap();
             let input=SteeringInput{id:0,generation:0,desired_angle:0.0,rush:0.0, actions:0,reserved:0};
@@ -717,7 +731,7 @@ mod v2_tests {
             let config=CoreConfig{rule_set:0,..CoreConfig::from(Config::default())};
             let mut handle=ptr::null_mut();assert_eq!(snakes_core_create(&config,&mut handle),OK);
             assert_eq!((*handle).world.config().rules,RuleSet::V2);
-            (*handle).world=World::diagnostic_arena(Config{width:4096.0,height:1440.0,density:0.0,
+            (*handle).world=World::diagnostic_arena(Config {width:4096.0,height:1440.0,density:0.0,
                 rules:RuleSet::V2,..Config::default()},
                 &[(Point{x:2000.0,y:700.0},0.0,30,1.0)],&[]).unwrap();
             let input=SteeringInput{id:0,generation:1,desired_angle:0.0,rush:0.01, actions:0,reserved:0};
@@ -756,6 +770,76 @@ mod v2_tests {
             assert_eq!(events[0].other_snake_id,u32::MAX);assert!(events[0].x>4096.0);
             assert_eq!(snakes_core_step(handle,16),OK);assert_eq!(snakes_core_get_frame_sizes(handle,&mut sizes),OK);assert_eq!(sizes.segments,30);
             assert_eq!(snakes_core_step(handle,1),OK);assert_eq!(snakes_core_get_frame_sizes(handle,&mut sizes),OK);assert_eq!(sizes.segments,0);
+            snakes_core_destroy(handle);
+        }
+    }
+}
+
+#[cfg(test)]
+mod inventory_tests {
+    use super::*;
+    #[test]
+    fn inventory_configuration_fizzles_export_at_the_current_render_boundary() {
+        for disable_power in [false,true] {for calm in [false,true] {
+            unsafe {
+                let cfg=Config {rules:crate::RuleSet::V2,width:4000.0,height:2000.0,density:0.0,deadly_walls:false,..Default::default()};
+                let mut handle=ptr::null_mut();assert_eq!(snakes_core_create(&CoreConfig::from(cfg),&mut handle),OK);
+                (*handle).world=World::diagnostic_arena(cfg,&[(crate::Point{x:1500.0,y:1000.0},0.0,30,0.0)],&[]).unwrap();
+                assert_eq!(snakes_core_step(handle,1),OK);
+                (&mut (*handle).world.snakes)[0].inventory=crate::Inventory {count:3,kinds:[3,1,5],life:[1800;3],..Default::default()};
+                let tick=(*handle).world.tick();let rng=(*handle).world.rng_state();
+                let cfg=if disable_power {Config {power_ups:false,..cfg}} else {Config {store_power_ups:false,..cfg}};
+                assert_eq!(snakes_core_reconfigure(handle,&CoreConfig::from(cfg)),OK);
+                let mut snakes=[SnakeRecord::default();MAX_SNAKES];let mut segments=vec![SegmentRecord::default();crate::MAX_SEGMENTS];
+                let mut food=[FoodRecord::default();crate::MAX_FOOD];let mut info=FrameInfo::default();let mut events=[EventRecord::default();crate::MAX_EVENTS];
+                assert_eq!(snakes_core_export_frame(handle,snakes.as_mut_ptr(),snakes.len(),segments.as_mut_ptr(),segments.len(),food.as_mut_ptr(),food.len(),&mut info),OK);
+                assert_eq!(snakes_core_export_extras(handle,ptr::null_mut(),0,events.as_mut_ptr(),events.len()),OK);
+                let count=(*handle).world.frame_events().len();let fizzles:Vec<_>=events[..count].iter().filter(|e|e.kind==crate::EventKind::Fizzle as u8).collect();
+                assert_eq!(fizzles.len(),3);assert!(fizzles.iter().all(|e|e.tick==info.tick));
+                assert_eq!(info.tick,tick);assert_eq!((*handle).world.rng_state(),rng);assert_eq!(snakes[0].inv_count,0);
+                let mut renderer=RenderHandle::new();renderer.reduced_motion=calm;
+                let p=RenderParams {viewport_width:cfg.width,viewport_height:cfg.height,scale_x:1.0,scale_y:1.0,
+                    presentation_time:info.simulation_time,..Default::default()};
+                let palette=[RenderColor {red:77,green:230,blue:255,alpha:255}];let mut vertices=vec![ShaderRenderVertex::default();8192];
+                let out=renderer.build_shader(&info,&snakes[..1],&segments[..snakes[0].segment_count as usize],&[],&events[..count],&palette,&p,&mut vertices);
+                assert_eq!(vertices[..out.vertex_count].iter().filter(|v|v.params[0]==26).count(),18,"three fizzle ghosts, calm={calm}");
+                assert_eq!(snakes_core_step(handle,1),OK);assert!(!(*handle).world.frame_events().any(|e|e.kind==crate::EventKind::Fizzle));
+                snakes_core_destroy(handle);
+            }
+        }}
+    }
+    #[test]
+    fn inventory_v4_config_actions_and_export() {
+        assert_eq!(ABI_VERSION,4);
+        for enabled in [false,true] {
+            let cfg=Config {store_power_ups:enabled,..Default::default()};
+            assert_eq!(CoreConfig::from(cfg).checked(),Some(cfg));
+        }
+        unsafe {
+            let cfg=CoreConfig::from(Config {rules:crate::RuleSet::V2,..Default::default()});
+            let mut handle=ptr::null_mut();assert_eq!(snakes_core_create(&cfg,&mut handle),OK);
+            let s=&mut (&mut (*handle).world.snakes)[0];
+            s.inventory=crate::Inventory {kinds:[3,2,3],life:[1800,75,1800],count:3,..Default::default()};
+            let generation=s.generation;
+            let mut input=SteeringInput {id:0,generation,desired_angle:0.0,rush:0.0,actions:4,reserved:0};
+            assert_eq!(snakes_core_set_steering(handle,&input,1),INVALID_ARGUMENT);
+            input.actions=2;assert_eq!(snakes_core_set_steering(handle,&input,1),OK);
+            assert_eq!(snakes_core_step(handle,1),OK);
+            let mut snakes=[SnakeRecord::default();MAX_SNAKES];
+            let mut segments=vec![SegmentRecord::default();crate::MAX_SNAKES*crate::MAX_SEGMENTS];
+            let mut food=[FoodRecord::default();crate::MAX_FOOD];let mut info=FrameInfo::default();
+            assert_eq!(snakes_core_export_frame(handle,snakes.as_mut_ptr(),snakes.len(),segments.as_mut_ptr(),segments.len(),food.as_mut_ptr(),food.len(),&mut info),OK);
+            assert_eq!(snakes[0].inv_kind,[3,2,3]);assert_eq!(snakes[0].inv_count,3);assert_eq!(snakes[0].inv_windup,2);
+            assert_eq!(snakes[0].inv_life,[255,126,255]);
+            assert!( (*handle).world.frame_events().any(|e|e.kind==crate::EventKind::Use && e.cut_index==1));
+            input.actions=0;assert_eq!(snakes_core_set_steering(handle,&input,1),OK);
+            assert_eq!(snakes_core_step(handle,4),OK);
+            let mut items=[ItemRecord::default();crate::MAX_ITEMS];let mut events=[EventRecord::default();crate::MAX_EVENTS];
+            assert_eq!(snakes_core_export_extras(handle,items.as_mut_ptr(),items.len(),events.as_mut_ptr(),events.len()),OK);
+            let held=events.iter().find(|e|e.kind==crate::EventKind::Pickup as u8 && e.snake_id==0).unwrap();
+            assert_eq!(held.flags,crate::event_flags::HELD_ACTIVATION);assert_eq!(held.cut_index,1);
+            assert_eq!(held.generation,generation);assert_eq!(held.other_snake_id,2);assert_eq!(held.reserved,[0;2]);
+            assert!(events.iter().filter(|e|e.kind!=crate::EventKind::Pickup as u8).all(|e|e.flags==0));
             snakes_core_destroy(handle);
         }
     }

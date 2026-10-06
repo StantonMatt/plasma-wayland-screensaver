@@ -24,7 +24,7 @@ impl EffectHook for Frost {
             w.snakes[id].boost_ticks=0;w.snakes[id].rush=0.0;
             w.faces[id].frozen_ticks=FROZEN_TICKS;w.faces[id].breath_ticks=FROZEN_TICKS;
         }
-        w.snakes[owner].effect_kind=0;w.snakes[owner].effect_ticks=0;
+
         w.push_event(FrameEvent {tick:w.tick+1,position:center,snake_id:owner as u32,
             generation:w.snakes[owner].generation,other_snake_id:EffectKind::Frost as u32,
             kind:EventKind::Nova,duration_ticks:NOVA_TICKS,value:(16.0*r) as f32,..Default::default()});
@@ -56,7 +56,7 @@ impl World {
 mod tests {
     use super::*;
     use crate::{Config,RuleSet,Item,flags};
-    fn arena()->World {World::diagnostic_arena(Config {rules:RuleSet::V2,width:1400.0,height:1000.0,density:0.0,
+    fn arena()->World {World::diagnostic_arena(Config {store_power_ups:false,rules:RuleSet::V2,width:1400.0,height:1000.0,density:0.0,
         self_collisions:false,deadly_walls:false,..Default::default()},&[(Point{x:500.0,y:500.0},0.0,24,0.0),
         (Point{x:600.0,y:550.0},0.0,48,0.0)],&[]).unwrap()}
     #[test]
@@ -92,7 +92,7 @@ mod tests {
         w.items.push(Item {kind:EffectKind::Frost,position:w.segments[0].current,life_ticks:750,radius:2.1*r,..Default::default()});
         w.snakes[1].alive=false;w.pickup_items();assert_eq!(w.items.len(),1);
         w.snakes[1].alive=true;w.faces[0].guarding=false;w.pickup_items();assert_eq!(w.snakes[1].frozen_ticks,75);
-        w.reconfigure(Config {power_ups:false,..w.config()}).unwrap();
+        w.reconfigure(Config {store_power_ups:false,power_ups:false,..w.config()}).unwrap();
         assert_eq!(w.snakes[1].frozen_ticks,0);assert_eq!(w.faces[1].breath_ticks,0);
     }
     #[test]

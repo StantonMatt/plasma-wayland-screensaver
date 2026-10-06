@@ -64,15 +64,22 @@ opens the latest GitHub release instead.
   with far fewer aimless escape loops; bigger snakes contest food and cut rivals
   off, while smaller snakes avoid losing head-on encounters; short boosts for cut-offs,
   escapes and food races cost tail segments dropped as edible pellets and
-  need time to cool down; glowing hexagon power-ups grant one effect at a
+  need time to cool down; snakes avoid walls more reliably. Glowing hexagon
+  power-ups grant one effect at a
   time: Surge gives free, back-to-back boosts and a faster snake for chained
   attacks, Magnet pulls in food from three times as far, and Phase lets snakes
-  slip through rivals' bodies until it wears off. Snakes seek them out to hunt,
+  slip through rivals' bodies until it wears off. Snakes store up to three
+  power-ups as gems on their neck and use them when it matters: Phase to
+  escape traps, Surge to win races and cut-offs, Frost when rivals bunch up,
+  Venom to bite, and Magnet near food. Stored items expire after a minute
+  and drop on death. The “Snakes save power-ups for later” setting is on by
+  default. Snakes seek power-ups out to hunt,
   scavenge and escape. Bolder, smarter snakes race hard for power-ups and
   contested food, boost to cut rivals off, and use power-ups offensively. They
   guard the next capsule and hold short grudges. A one-second landing
-  signal and contest arcs show the race. Crackling arcs, an orbiting magnet
-  ring and a translucent hologram show each effect. Prism seeds show a
+  signal and contest arcs show the race. Surge has a yellow bow wave,
+  slipstream ribbons and contrail; Magnet has an orbiting ring and Phase a
+  translucent hologram. Prism seeds show a
   three-second ripening timer; snakes circle them and race to pounce when ripe.
   The winner gulps a rainbow meal, with a bulge travelling down its body.
   Venom capsule holders hunt rivals and bite their bodies to sever their tails.

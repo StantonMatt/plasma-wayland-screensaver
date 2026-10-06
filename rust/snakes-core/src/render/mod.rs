@@ -7,6 +7,7 @@ mod prism;
 mod events;
 mod venom;
 mod frost;
+mod inventory;
 mod shader;
 pub(crate) mod items;
 pub use shader::ShaderVertex;
@@ -158,6 +159,7 @@ pub struct Renderer {
     #[cfg(test)]
     shader_culling:bool,
     venom:venom::History,
+    inventory:inventory::History,
     points: Vec<P>,
     mapped: Vec<P>,
     normals: Vec<P>,
@@ -171,6 +173,7 @@ pub struct Renderer {
     tapers: Vec<f64>,
     brightness: Vec<u8>,
     rainbow: Vec<Color>,
+    rainbow_sample: Option<shader::RainbowSample>,
     // Only mixed-colour waves need per-sample origins; retained, never allocated per frame.
     wave_origins: Vec<u8>,
     taper_lengths: [usize;MAX_SNAKES],
@@ -209,6 +212,7 @@ impl Renderer {
             #[cfg(test)]
             shader_culling:true,
             venom:venom::History::new(),
+            inventory:inventory::History::default(),
             points: vec![P::default();MAX_SEGMENTS],
             mapped: vec![P::default();MAX_SEGMENTS],
             normals: vec![P::default();MAX_SEGMENTS],
@@ -222,6 +226,7 @@ impl Renderer {
             tapers: vec![0.0;MAX_SNAKES*MAX_SEGMENTS],
             brightness: vec![0;MAX_SEGMENTS],
             rainbow: vec![Color::default();MAX_SEGMENTS],
+            rainbow_sample:None,
             wave_origins: vec![0;MAX_SEGMENTS],
             taper_lengths: [0;MAX_SNAKES],
             reduced_motion: false,
@@ -243,11 +248,13 @@ impl Renderer {
     }
     pub fn reset(&mut self) {
         self.venom.reset();
+        self.inventory=inventory::History::default();
         self.trails.fill(Trail::default());
         self.corpses.fill(Corpse::default());
         self.last_frame = None;
         self.event_tick = None;
         self.dense = false;
+        self.rainbow_sample=None;
         self.effects.fill(shader::Effect::default());
         self.effect_head=0;
         self.waves.fill([shader::Wave::default();2]);
@@ -262,18 +269,18 @@ impl Renderer {
             return;
         }
         // Advance the deduplication cutoff after shader_history consumes events.
-        if let Some(t) = events.iter().map(|e|e.tick).max() {
+        if let Some(t) = events.iter().filter(|e|e.tick<=info.tick).map(|e|e.tick).max() {
             self.event_tick = Some(self.event_tick.map_or(t, |old|old.max(t)));
         }
         for s in snakes {
             if !snake_valid(s) { continue; }
             let trail = &mut self.trails[s.id as usize];
-            if trail.generation != s.generation || (trail.len != 0 && (!moving(s) || s.flags & flags::BOOSTING == 0)) {
+            if trail.generation != s.generation || (trail.len != 0 && (!moving(s) || !inventory::trailing(s))) {
                 *trail = Trail {
                     generation: s.generation, ..Trail::default()
                 };
             }
-            if moving(s) && s.flags&flags::BOOSTING!=0 && s.segment_count>0 {
+            if moving(s) && inventory::trailing(s) && s.segment_count>0 {
                 let tail = segments[(s.segment_offset+s.segment_count-1) as usize];
                 trail.points[trail.head] = if segment_valid(&tail) { P::new(tail.x as f64, tail.y as f64) }
                     else { P::new(f64::NAN, f64::NAN) };
@@ -298,7 +305,10 @@ impl Renderer {
     }
     pub fn build(&mut self, info: &FrameInfo, snakes: &[SnakeRecord], segments: &[SegmentRecord], food: &[FoodRecord], events: &[EventRecord], palette: &[Color], p: &Params, output: &mut [Vertex]) -> Output {
         if !frame_valid(info,p) { return Output::default(); }
+        self.rainbow_sample=None; // Classic also writes the shared rainbow scratch.
         self.shader_history(info, snakes, segments, events);
+        self.inventory.resolve_drops(info,snakes,segments,&self.items[..self.item_count]);
+        self.inventory.resolve_novas(info,snakes,segments,p.deadly_walls!=0);
         self.dense = if self.dense {
             food.len()>=280
         } else {
@@ -415,7 +425,9 @@ impl Renderer {
                 }
             }
         }
-        for s in snakes {
+        for snapshot in snakes {
+            let visual=self.inventory.visual_snake(snapshot,info,p,segments,self.reduced_motion);
+            let s=&visual;
             let corpse = s.flags&flags::CORPSE!=0;
             let n = s.segment_count as usize;
             if !snake_valid(s) || (s.alive==0 && !corpse)||n<2 {
@@ -497,11 +509,10 @@ impl Renderer {
             };
             let (xs, ys) = copies(P::new(minx, miny), P::new(maxx, maxy), world_margin, arena, walls);
             let active_kind=if s.alive!=0 && !corpse && s.effect_ticks>0 {s.effect_kind} else {0};
-            let effect_time=if self.reduced_motion {0.0} else {p.presentation_time};
             let fade = if corpse {
                 (1.0-(event_time(info,p,self.reduced_motion)-self.corpses[s.id as usize].time).max(0.0)/0.55).clamp(0.0, 1.0)
             } else if active_kind==3 {
-                0.45+0.06*(effect_time*9.0).sin()
+                1.0-0.55*self.inventory.phase_fade(s,info,p,self.reduced_motion) as f64/255.0
             } else {
                 1.0
             };
@@ -512,7 +523,7 @@ impl Renderer {
             };
             let c=frost::ice(c,s.flags,palette);
             // The ring holds at most 14 edges; each gets every seam copy.
-            if interpolate && s.flags & flags::BOOSTING != 0 {
+            if interpolate && inventory::trailing(s) {
                 let trail = &self.trails[s.id as usize];
                 let mut previous: Option<P>=None;
                 for i in 0..trail.len {
@@ -533,7 +544,7 @@ impl Renderer {
                         for x in tx.first..=tx.last {
                             for y in ty.first..=ty.last {
                                 let shift = P::new(x as f64*tx.extent*sx, y as f64*ty.extent*sy);
-                                sink.segment(a+shift, b+shift, width, c.alpha((110.0 * (1.0 - age.max(0.0) / 0.5)).round() as u8));
+                                sink.segment(a+shift, b+shift, width, (if active_kind==1 {items::accent(1,palette)} else {c}).alpha((if active_kind==1 {if s.flags&flags::BOOSTING!=0 {140.0} else {89.0}} else {110.0} * (1.0 - age.max(0.0) / 0.5)).round() as u8));
                             }
                         }
                     }
@@ -662,6 +673,7 @@ impl Renderer {
                     }
                 }
             }
+            self.classic_pips(s,&self.points[..n],info,p,palette,&mut sink);
         }
         self.classic_orphans(info,p,palette,&mut sink);
         self.classic_items(info,p,palette,&mut sink);

@@ -3,11 +3,10 @@
 //! Run through heavy: this reconstructs 266174 ticks. --forced-exit tests a
 //! physical alternative after the identified respawn; it is not AI policy.
 use snakes_core::{ai::AiController,Config,World,RuleSet,SnakeView};
-use snakes_core::controller::{Controller,Steering,FaceIntent};
+use snakes_core::controller::{Controller,Steering};
 struct Observed {ai:AiController,forced:bool}
 impl Controller for Observed {
- fn face_intent(&self,id:u32)->FaceIntent {self.ai.face_intent(id)}
- fn intent_flags(&self,id:u32)->Option<u32> {self.ai.intent_flags(id)}
+    fn delegate(&self,_id:u32)->Option<&dyn Controller> {Some(&self.ai)}
  fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
   let advice=self.ai.steer(w,s);
   if self.forced && s.id==9 && s.generation==47 && w.tick()>=266157 {

@@ -5,7 +5,7 @@
 mod replay {
     use snakes_core::{
         ai::AiController,
-        controller::{Controller, FaceIntent, Steering},
+        controller::{Controller, Steering},
         *,
     };
     struct Observer {
@@ -14,12 +14,7 @@ mod replay {
         ids: Vec<u32>,
     }
     impl Controller for Observer {
-        fn face_intent(&self, id: u32) -> FaceIntent {
-            self.ai.face_intent(id)
-        }
-        fn intent_flags(&self, id: u32) -> Option<u32> {
-            self.ai.intent_flags(id)
-        }
+        fn delegate(&self,_id:u32)->Option<&dyn Controller> {Some(&self.ai)}
         fn steer(&mut self, w: &World, s: SnakeView<'_>) -> Steering {
             let out = self.ai.steer(w, s);
             if w.tick() >= self.from && self.ids.contains(&s.id) {

@@ -33,7 +33,7 @@ mod tests {
     use crate::effects::EffectKind;
 
     fn arena(wrap: bool) -> World {
-        let mut w = World::new(Config { rules: RuleSet::V2, deadly_walls: !wrap,
+        let mut w = World::new(Config {store_power_ups:false, rules: RuleSet::V2, deadly_walls: !wrap,
             density: 0.0, self_collisions: true, ..Config::default() }).unwrap();
         for s in &mut w.snakes { s.alive = false; s.len = 0; s.respawn = 1000.0; }
         w.food.clear(); w.items.clear();
@@ -113,7 +113,7 @@ mod tests {
             match mode {
                 0 => { w.items.push(Item { kind: EffectKind::Surge, position: w.segments[0].current,
                     life_ticks: 750, radius: 12.0, ..Item::default() }); w.pickup_items(); }
-                1 => { w.reconfigure(Config { power_ups: false, ..w.config() }).unwrap(); }
+                1 => { w.reconfigure(Config {store_power_ups:false, power_ups: false, ..w.config() }).unwrap(); }
                 _ => { w.snakes[0].dying = DeathReason::Wall; w.explode_snake(0); }
             }
             assert_ne!(w.snakes[0].effect_kind, EffectKind::Magnet as u8);

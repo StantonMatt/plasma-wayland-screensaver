@@ -13,5 +13,7 @@ pub(super) fn horizon(w:&World,s:SnakeView<'_>,ordinary:usize)->usize {
     let effect=super::forecast::Effect::observed(w,s);
     if effect.is(crate::effects::EffectKind::Phase) {
         ordinary.max((effect.ticks as usize+18).min(super::STEPS))
+    } else if s.inventory.windup!=0 && s.inventory.kinds[s.inventory.windup as usize-1]==crate::effects::EffectKind::Phase as u8 {
+        ordinary.max((s.inventory.windup_ticks as usize+1+crate::effects::EffectKind::Phase.duration() as usize+18).min(super::STEPS))
     } else {ordinary}
 }

@@ -12,6 +12,8 @@ mod target;
 mod race;
 mod events;
 mod forecast;
+mod inventory;
+mod wall;
 mod venom;
 pub(crate) mod frost;
 use attack::Attack;
@@ -61,6 +63,7 @@ struct VenomPlan {goal:Point,target:usize,generation:u32,index:usize,standoff:bo
 struct VenomHunt {best:Option<VenomPlan>,nearest:Option<VenomPlan>}
 #[derive(Clone, Copy, Default)]
 struct State {
+    use_slot:u8,
     generation: u32,
     #[cfg(feature="desktop-diag")]
     abandon: AbandonReason,
@@ -222,6 +225,8 @@ struct Candidate {
     kind: usize,
     checked: bool,
     tracks_goal: bool,
+    wall_safe: bool,
+    wall_first_safe: bool,
     desired: f64,
     turn_until: u64,
     exit_angle: f64,
@@ -246,7 +251,7 @@ impl Default for Rival {
     fn default()->Self {Self {alive:false,radius:0.0,len:0,speed:0.0,turn:0.0,growth_delay:0.0,release_rate:0.0,release_slowdown:1.0,angle:0.0,observed_turn:0.0,forecast_angle:0.0,direction:Point::default(),dynamic:false,path:[Point::default();STEPS+1],envelope:[0.0;STEPS+1],distance:[0.0;STEPS+1],escape:[Point::default();3]}}
 }
 impl Default for Candidate {
-    fn default()->Self {Self {body_len:0,effects:forecast::Snapshot::default(),kind:2,checked:false,tracks_goal:false,desired:0.0,turn_until:u64::MAX,exit_angle:0.0,angle:0.0,turn_exit:0.0,path:[Point::default();STEPS+1],steps:0,simulated_steps:0,venom_bite:0,score:0.0,venom_goal:None,clearance:0.0,capped:false,area:0,uncertain:false,attack:Attack::default(),replies:0,rush:0.0}}
+    fn default()->Self {Self {body_len:0,effects:forecast::Snapshot::default(),kind:2,checked:false,tracks_goal:false,wall_safe:false,wall_first_safe:false,desired:0.0,turn_until:u64::MAX,exit_angle:0.0,angle:0.0,turn_exit:0.0,path:[Point::default();STEPS+1],steps:0,simulated_steps:0,venom_bite:0,score:0.0,venom_goal:None,clearance:0.0,capped:false,area:0,uncertain:false,attack:Attack::default(),replies:0,rush:0.0}}
 }
 
 #[derive(Clone, Copy)]
@@ -263,8 +268,8 @@ impl NightMotion {
 
 /// Cached single-burst schedules; all steady-state storage belongs to the controller.
 #[derive(Clone, Copy)]
-struct Motion { night:Option<NightMotion>,radii:[f64;25],limits: [(f64,f64);25], max_speed:f64, max_curve:f64, frozen_speed:f64, final_len:usize, expiry:usize, expired_limits:(f64,f64),next_expiry:usize,next_limits:(f64,f64) }
-impl Default for Motion {fn default()->Self {Self {night:None,radii:[0.0;25],limits:[(0.0,0.0);25],max_speed:0.0,max_curve:0.0,frozen_speed:0.0,final_len:0,expiry:usize::MAX,expired_limits:(0.0,0.0),next_expiry:usize::MAX,next_limits:(0.0,0.0)}}}
+struct Motion { wall_radius:f64, wall_after24:[(f64,f64);3], wall_suffix:[(f64,f64);25], night:Option<NightMotion>,radii:[f64;25],limits: [(f64,f64);25], max_speed:f64, max_curve:f64, frozen_speed:f64, final_len:usize, expiry:usize, expired_limits:(f64,f64),next_expiry:usize,next_limits:(f64,f64) }
+impl Default for Motion {fn default()->Self {Self {wall_radius:0.0,wall_after24:[(0.0,0.0);3],wall_suffix:[(0.0,0.0);25],night:None,radii:[0.0;25],limits:[(0.0,0.0);25],max_speed:0.0,max_curve:0.0,frozen_speed:0.0,final_len:0,expiry:usize::MAX,expired_limits:(0.0,0.0),next_expiry:usize::MAX,next_limits:(0.0,0.0)}}}
 impl Motion {
     #[inline]
     fn at(&self,offset:usize)->(f64,f64) {
@@ -273,10 +278,17 @@ impl Motion {
         if let Some(night)=&self.night {return night.at(offset,stage);}
         match stage {2=>self.next_limits,1=>self.expired_limits,_=>self.limits[24]}
     }
+    #[inline]
+    fn wall_limits_from(&self,offset:usize)->(f64,f64) {
+        if offset<=24 && self.wall_suffix[offset].0>0.0 {return self.wall_suffix[offset];}
+        let (speed,turn)=self.at(offset);
+        let stage=if offset>=self.next_expiry {2} else if offset>=self.expiry {1} else {0};
+        (self.wall_after24[stage].0.max(speed/turn.max(0.01)),self.wall_after24[stage].1.max(speed))
+    }
     fn forecast(w:&World,id:usize,rush:f64)->Self {
         if w.config().rules==crate::RuleSet::Classic {
             let first=w.motion_limits(id,rush).unwrap();
-            return Self {radii:[w.snake(id).unwrap().radius;25],limits:[first;25],max_speed:first.0,max_curve:first.0*first.1,final_len:w.snakes[id].len,..Self::default()};
+            return Self {wall_radius:first.0/first.1.max(0.01),radii:[w.snake(id).unwrap().radius;25],limits:[first;25],max_speed:first.0,max_curve:first.0*first.1,final_len:w.snakes[id].len,..Self::default()};
         }
         let s=w.snake(id).unwrap();
         let first=crate::effects::forecast_motion(w,id,rush,0);
@@ -298,7 +310,7 @@ impl Motion {
                 crate::effects::forecast_daylight_motion(w,id,rush,if expiry==usize::MAX {24} else {expiry.max(24)}),
                 crate::effects::forecast_daylight_motion(w,id,rush,if next_expiry==usize::MAX {24} else {next_expiry.max(24)})]});
         let reserve_daylight=night.is_some() || w.world_event.night>0.0;
-        let mut m=Self {night,radii:[w.ai_forecast_radius(id,rush,0,None,None);25],limits:[first;25],max_speed:first.0,max_curve:first.0*first.1,frozen_speed,final_len:w.ai_forecast_len(id,rush,24,None,None),expiry,expired_limits,next_expiry,next_limits};
+        let mut m=Self {wall_radius:first.0/first.1.max(0.01),wall_after24:[(0.0,0.0);3],wall_suffix:[(first.0/first.1.max(0.01),first.0);25],night,radii:[w.ai_forecast_radius(id,rush,0,None,None);25],limits:[first;25],max_speed:first.0,max_curve:first.0*first.1,frozen_speed,final_len:w.ai_forecast_len(id,rush,24,None,None),expiry,expired_limits,next_expiry,next_limits};
         let mut daylight_speed=0.0_f64;
         let mut due=if boost_end>0 {cost*(25-boost_end).min(21)/21} else {0};
         for j in 1..=24 {
@@ -308,10 +320,15 @@ impl Motion {
             } else {m.limits[j-1]};
             m.radii[j]=if next_due!=due {w.ai_forecast_radius(id,rush,j,None,None)} else {m.radii[j-1]};
             due=next_due;
+            m.wall_suffix[j]=(m.limits[j].0/m.limits[j].1.max(0.01),m.limits[j].0);
+            m.wall_radius=m.wall_radius.max(m.limits[j].0/m.limits[j].1.max(0.01));
             m.max_speed=m.max_speed.max(m.limits[j].0);
             m.max_curve=m.max_curve.max(m.limits[j].0*m.limits[j].1);
             if reserve_daylight {
                 let (speed,turn,_)=crate::effects::forecast_daylight_motion(w,id,rush,j);
+                m.wall_suffix[j].0=m.wall_suffix[j].0.max(speed/turn.max(0.01));
+                m.wall_suffix[j].1=m.wall_suffix[j].1.max(speed);
+                m.wall_radius=m.wall_radius.max(speed/turn.max(0.01));
                 daylight_speed=daylight_speed.max(speed);m.max_curve=m.max_curve.max(speed*turn);
             }
         }
@@ -320,11 +337,13 @@ impl Motion {
             m.max_speed=m.max_speed.max(expired_limits.0);
             m.max_curve=m.max_curve.max(expired_limits.0*expired_limits.1);
         }
+        for (speed,turn) in [expired_limits,next_limits] {m.wall_radius=m.wall_radius.max(speed/turn.max(0.01));}
         // Bound speed and turn together, including a change of turn limiter
         // at dawn. Dividing observed curvature by one night factor is unsafe.
         if reserve_daylight {
             for offset in [0,24,if expiry==usize::MAX {24} else {expiry.max(24)},if next_expiry==usize::MAX {24} else {next_expiry.max(24)}] {
                 let (speed,turn,_)=crate::effects::forecast_daylight_motion(w,id,rush,offset);
+                m.wall_radius=m.wall_radius.max(speed/turn.max(0.01));
                 daylight_speed=daylight_speed.max(speed);m.max_curve=m.max_curve.max(speed*turn);
             }
             // Retain the existing conservative speed margin: besides query
@@ -332,6 +351,34 @@ impl Motion {
             // curvature bound does not require reducing that valid padding.
             let factor=1.0-0.1*w.world_event.night as f64;
             m.max_speed=(m.max_speed/factor).max(daylight_speed);
+        }
+        let offsets=[24,if expiry==usize::MAX {24} else {expiry.max(24)},if next_expiry==usize::MAX {24} else {next_expiry.max(24)}];
+        for (stage,limits) in [m.limits[24],expired_limits,next_limits].into_iter().enumerate() {
+            m.wall_after24[stage]=(limits.0/limits.1.max(0.01),limits.0);
+            if reserve_daylight {
+                let (speed,turn,_)=crate::effects::forecast_daylight_motion(w,id,rush,offsets[stage]);
+                m.wall_after24[stage].0=m.wall_after24[stage].0.max(speed/turn.max(0.01));
+                m.wall_after24[stage].1=m.wall_after24[stage].1.max(speed);
+            }
+        }
+        if next_expiry!=usize::MAX {
+            m.wall_after24[1].0=m.wall_after24[1].0.max(m.wall_after24[2].0);
+            m.wall_after24[1].1=m.wall_after24[1].1.max(m.wall_after24[2].1);
+        }
+        if expiry!=usize::MAX {
+            m.wall_after24[0].0=m.wall_after24[0].0.max(m.wall_after24[1].0);
+            m.wall_after24[0].1=m.wall_after24[0].1.max(m.wall_after24[1].1);
+        }
+        if reserve_daylight {
+            let (speed,turn,_)=crate::effects::forecast_daylight_motion(w,id,rush,0);
+            m.wall_suffix[0].0=m.wall_suffix[0].0.max(speed/turn.max(0.01));
+            m.wall_suffix[0].1=m.wall_suffix[0].1.max(speed);
+        }
+        let stage=if 24>=next_expiry {2} else if 24>=expiry {1} else {0};
+        let mut suffix=m.wall_after24[stage];
+        for j in (0..=24).rev() {
+            suffix.0=suffix.0.max(m.wall_suffix[j].0);suffix.1=suffix.1.max(m.wall_suffix[j].1);
+            m.wall_suffix[j]=suffix;
         }
         m
     }
@@ -394,6 +441,8 @@ impl TrailBounds {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CandidateDiagnostic {
     pub checked: bool,
+    pub wall_safe: bool,
+    pub wall_first_safe: bool,
     pub desired: f64,
     pub safe_ticks: usize,
     pub area: usize,
@@ -1526,7 +1575,7 @@ impl AiController {
         self.cached_body_blocked_phase_flags::<true>(w,s,a,b,time,padding,tests,phased,effects)
     }
     fn cached_body_blocked_phase_flags<const EFFECTS:bool>(&mut self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline)->(bool,f64,bool) {
-        if EFFECTS && effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) {
+        if effects.release_uncacheable() || (EFFECTS && effects.may_have(s.id as usize,crate::effects::EffectKind::Venom)) {
             return self.body_blocked_phase(w,s,a,b,time,padding,tests,phased,effects);
         }
         let hash=a.x.to_bits().wrapping_mul(0x9e3779b97f4a7c15)^a.y.to_bits().rotate_left(23)
@@ -1568,25 +1617,17 @@ impl AiController {
     /// A positive emergency prefix must leave one physical turn available.
     /// Check single-wall bands as well as corners: two independent axis
     /// escapes do not establish a shared turning circle.
+    #[cfg(test)]
     #[inline]
     fn emergency_wall_turn_room(&self,w:&World,s:SnakeView<'_>,c:&Candidate,immediate:bool)->bool {
+        let _=immediate;
         let id=s.id as usize;
         let motion=if c.rush>0.0 {&self.boosted_motion[id]} else {&self.motion[id]};
-        let (speed,turn)=motion.at(0);
-        let radius=speed/turn.max(0.01);
-        let reserve=radius+s.radius*0.5+speed*STEP_SECONDS+2.0;
-        let p=c.path[1];let cfg=w.config();
-        let near_x=p.x.min(cfg.width-p.x)<=2.0*radius+reserve;
-        let near_y=p.y.min(cfg.height-p.y)<=2.0*radius+reserve;
-        if !(near_x && near_y) && (!immediate || !(near_x || near_y)) {return true;}
-        let travel=(speed*STEP_SECONDS).max(0.01);
-        let direction=Point {x:(p.x-c.path[0].x)/travel,y:(p.y-c.path[0].y)/travel};
-        [-1.0,1.0].into_iter().any(|side| {
-            let center=Point {x:p.x-side*direction.y*radius,y:p.y+side*direction.x*radius};
-            center.x>=reserve && center.x<=cfg.width-reserve
-                && center.y>=reserve && center.y<=cfg.height-reserve
-        })
+        let (speed,turn)=motion.at(0);let travel=speed*STEP_SECONDS;
+        let p=c.path[1];let delta=w.displacement(c.path[0],p);
+        wall::reachable(w,p,Point {x:delta.x/travel,y:delta.y/travel},speed/turn.max(0.01),travel,s.radius)
     }
+
     fn rollout_into(&mut self,w:&World,s:SnakeView<'_>,mut state:State,kind:usize,horizon:usize,c:&mut Candidate) {
         let alternate=state.venom_target!=0 && (kind==7 || kind==8 || kind==12);
         if alternate {
@@ -1609,7 +1650,8 @@ impl AiController {
         // Ordinary candidates must not pay for capsules only a new burst reaches.
         let boosted=kind==12 || ((kind==0 || kind==1 || state.escape_boost) && state.rush>=0.5)
             || (proposed.valid && proposed.control(w.tick()).1>=0.5);
-        if self.item_forecast.reachable(s.id as usize,horizon,boosted) {self.rollout_simulation::<true,true>(w,s,state,kind,horizon,c,&mut rivals);}
+        if state.use_slot!=0 || self.initial_effects.has_scheduled() {self.rollout_simulation::<true,true>(w,s,state,kind,horizon,c,&mut rivals);}
+        else if self.item_forecast.reachable(s.id as usize,horizon,boosted) {self.rollout_simulation::<true,true>(w,s,state,kind,horizon,c,&mut rivals);}
         else if self.collision_effects {self.rollout_simulation::<false,true>(w,s,state,kind,horizon,c,&mut rivals);}
         else {self.rollout_simulation::<false,false>(w,s,state,kind,horizon,c,&mut rivals);}
         c.venom_goal=if alternate {Some(VenomPlan {goal:state.goal,target:state.venom_target,
@@ -1621,6 +1663,10 @@ impl AiController {
     /// World presentation can still carry the preceding tick's observation.
     fn intent_forecast<const ITEMS:bool>(&self,w:&World,s:SnakeView<'_>,state:State,horizon:usize,boosted:u16)->forecast::Forecast {
         let mut result=if ITEMS {forecast::Forecast::cached(w,self.initial_effects,&self.item_forecast,horizon,boosted)} else {forecast::Forecast::empty(self.effects)};
+        if state.use_slot!=0 {
+            let kind=crate::effects::EffectKind::from_byte(s.inventory.kinds[state.use_slot as usize-1]);
+            result.effects.schedule_use(s.id as usize,kind,5,state.use_slot as usize-1);
+        }
         result.effects.set_guard(s.id as usize,state.guarding,state.target & !target::ITEM_BIT);
         result
     }
@@ -1632,7 +1678,7 @@ impl AiController {
         let motion=if rush>0.0 {self.boosted_motion[s.id as usize]} else {self.motion[s.id as usize]};
         let (mut speed,mut turn)=if w.config().rules==crate::RuleSet::V2 {motion.at(0)} else {w.motion_limits(s.id as usize,rush).unwrap()};
         let mut forecast=self.intent_forecast::<ITEMS>(w,s,state,horizon,if rush>0.0 {1<<s.id} else {0});
-        let pickup_speed_scale=if ITEMS && forecast.reachable_surge(s.id as usize) {
+        let pickup_speed_scale=if EFFECTS && forecast.reachable_surge(s.id as usize) {
             crate::effects::modifiers(crate::effects::EffectKind::Surge as u8,1).speed
         } else {1.0};
         let maximum_speed=(if w.config().rules==crate::RuleSet::V2 {motion.max_speed} else if attack.valid {w.motion_limits(s.id as usize,attack.burst).unwrap().0} else {speed})*pickup_speed_scale;
@@ -1643,7 +1689,7 @@ impl AiController {
         // overwritten by this rollout; clearing the unused horizon for every
         // candidate used to stream hundreds of KB of zeros per snake/tick.
         c.body_len=if w.config().rules==crate::RuleSet::V2 {motion.final_len} else {s.segments.len()};
-        c.kind=kind;c.checked=false;c.tracks_goal=tracks_goal;c.desired=0.0;
+        c.kind=kind;c.checked=false;c.wall_safe=false;c.wall_first_safe=false;c.tracks_goal=tracks_goal;c.desired=0.0;
         c.turn_until=match kind {1|12=>state.turn_until,7|8=>w.tick()+16,9|10=>w.tick()+32,_=>u64::MAX};
         c.exit_angle=if kind==1 || kind==12 {state.exit_angle} else {0.0};
         c.angle=s.angle;c.turn_exit=0.0;c.steps=0;c.simulated_steps=0;c.score=0.0;c.clearance=200.0;
@@ -1667,7 +1713,7 @@ impl AiController {
         self.rollout_distance[0]=0.0;self.rollout_projection[0]=0.0;
         let mut checked=0;
         let mut self_bounds=TrailBounds::point(c.path[0]);let mut self_bounds_horizon=0;
-        let mut max_curve=if w.config().rules==crate::RuleSet::V2 {motion.max_curve} else if attack.valid {let limits=w.motion_limits(s.id as usize,attack.burst).unwrap();
+        let mut max_curve=if w.config().rules==crate::RuleSet::V2 {motion.max_curve*pickup_speed_scale.powi(2)} else if attack.valid {let limits=w.motion_limits(s.id as usize,attack.burst).unwrap();
             (limits.0*limits.1).max(crossing_limits.0*crossing_limits.1)} else {speed*turn};
 
         let mut previous_phase=EFFECTS && forecast.effects.phased(s.id as usize,1);let mut previous_bits=if EFFECTS {forecast.effects.phase_bits(1)} else {0};let mut previous_surge=if EFFECTS {forecast.effects.surge_bits(1)} else {0};let mut phase_start=0;
@@ -1678,7 +1724,7 @@ impl AiController {
             let ordinary=(speed+r.speed)*horizon as f64*STEP_SECONDS+(s.radius+r.radius)*3.0+20.0;
             let bound=if w.config().rules==crate::RuleSet::V2 {
                 let rival_motion=&self.motion[other];
-                let rival_scale=if ITEMS && forecast.reachable_surge(other) {1.6_f64} else {1.0};
+                let rival_scale=if EFFECTS && forecast.reachable_surge(other) {1.6_f64} else {1.0};
                 let curvature=(max_curve+rival_motion.max_curve*rival_scale.powi(2))*(4.0*STEP_SECONDS).powi(2)/8.0;
                 ordinary.max(spatial::query_radius((s.radius+r.radius)*0.82,r.radius*2.0+15.0+curvature,
                     1.6,(maximum_speed+rival_motion.max_speed*rival_scale)*horizon as f64*STEP_SECONDS))
@@ -1709,6 +1755,8 @@ impl AiController {
         } else {0};
         let wall_factor=1.10+0.15*aggression::bold(w);
         let mut wall_radius=speed/turn.max(0.01)*wall_factor;
+        let mut endpoint_direction=direction;
+        let mut endpoint_limits=(speed,turn);
         for j in 1..=horizon {
             let attack_control=attack.control(w.tick()+j as u64-1);
             if w.config().rules==crate::RuleSet::V2 {
@@ -1773,7 +1821,10 @@ impl AiController {
                 }
                 let changed=(1<<s.id) | rivals.iter().enumerate().fold(0,|mask,(id,r)|mask | if r.dynamic {1<<id} else {0});
                 forecast.advance_cached(w,j,|id|if id==s.id as usize {p} else {Self::forecast_rival(rivals,&self.rivals,id).path[j]},changed,&self.item_forecast,maximum_speed.max(self.max_forecast_speed*pickup_speed_scale)*4.0*STEP_SECONDS);
-            } else {forecast.sweep_needed=false;}
+            } else {
+                forecast.sweep_needed=false;
+                if EFFECTS {forecast.advance_windups(w,j,|id|if id==s.id as usize {p} else {Self::forecast_rival(rivals,&self.rivals,id).path[j]});}
+            }
             if changed_movement {Self::update_envelopes(w,rivals,&self.motion,&forecast,j,1<<s.id,Some((&self.effects,&self.rivals)));}
             if let Some(t)=participant_clock {self.forecast_profile[4]+=t.elapsed().as_nanos();}
             let movement_event=forecast.effects.movement_event(j);
@@ -1792,9 +1843,16 @@ impl AiController {
             c.checked=true;
             self.rollout_distance[j]=self.rollout_distance[j-1]+speed*STEP_SECONDS;
             let cfg=w.config();
+            if !cfg.deadly_walls {c.wall_first_safe=true;}
             if cfg.deadly_walls {
                 let wall=p.x.min(cfg.width-p.x).min(p.y).min(cfg.height-p.y);
                 c.clearance=c.clearance.min(wall);
+                if j==1 {
+                    let (radius,speed_bound)=if w.config().rules==crate::RuleSet::V2 {
+                        forecast.wall_limits(w,s.id as usize,rush,&motion,2)
+                    } else {(speed/turn.max(0.01),speed)};
+                    c.wall_first_safe=wall::reachable(w,p,direction,radius,speed_bound*STEP_SECONDS,s.radius);
+                }
                 let radius=wall_radius;
                 let x_escape=radius*(1.0-direction.y.abs())+s.radius*0.5+2.0;
                 let y_escape=radius*(1.0-direction.x.abs())+s.radius*0.5+2.0;
@@ -1807,6 +1865,7 @@ impl AiController {
                 let x_room=if direction.x>=0.0 {cfg.width-p.x} else {p.x};
                 let y_room=if direction.y>=0.0 {cfg.height-p.y} else {p.y};
                 if wall<s.radius*0.5+2.0 || ((delta.abs()<=step || j==horizon) && (x_room<x_escape || y_room<y_escape)) {break;}
+
             }
             let t=j as f64*STEP_SECONDS;
             // Sweep up to four exact 30 Hz steps with a curvature-error bound.
@@ -1948,7 +2007,31 @@ impl AiController {
                 }
             }
             if hit {break;}
-            if sweep {c.steps=j;}
+            if sweep {
+                c.steps=j;endpoint_direction=direction;
+                endpoint_limits=(speed,turn);
+            }
+        }
+        // One shared admission test for all sources, including retained and
+        // inventory-use rollouts. The failed movement's angle must not be
+        // mistaken for the last checked endpoint's heading.
+        let (endpoint_radius,endpoint_speed)=if w.config().rules==crate::RuleSet::V2 {
+            forecast.wall_limits(w,s.id as usize,rush,&motion,c.steps+1)
+        } else {(endpoint_limits.0/endpoint_limits.1.max(0.01),endpoint_limits.0)};
+        c.wall_safe=(c.wall_first_safe || c.steps>0) && wall::reachable(w,c.path[c.steps],endpoint_direction,
+            endpoint_radius,endpoint_speed*STEP_SECONDS,s.radius);
+        if !c.wall_safe && c.wall_first_safe && c.steps>0 {
+            // Back off one checked sweep before abandoning the whole prefix.
+            // This is still O(1), never a per-step reachability search.
+            let backed=c.steps.saturating_sub(4);
+            let delta=w.displacement(c.path[backed.saturating_sub(1)],c.path[backed]);
+            let distance=(delta.x*delta.x+delta.y*delta.y).sqrt();
+            let direction=Point{x:delta.x/distance.max(1e-12),y:delta.y/distance.max(1e-12)};
+            c.steps=if backed>0 && wall::reachable(w,c.path[backed],direction,
+                endpoint_radius,endpoint_speed*STEP_SECONDS,s.radius) {backed} else {1};
+            let delta=w.displacement(c.path[c.steps-1],c.path[c.steps]);
+            c.angle=delta.y.atan2(delta.x);
+            c.wall_safe=true;
         }
         c.venom_bite=forecast.effects.consumed_at[s.id as usize];
         c.effects=forecast.effects.snapshot();
@@ -2060,6 +2143,7 @@ fn state_item_slot(ai:&AiController,f:target::TargetFood)->usize {
     ai.food[MAX_FOOD..].iter().position(|entry|entry.is_some_and(|v|v.id==f.id)).unwrap_or(0)
 }
 impl Controller for AiController {
+    fn use_request(&self,id:u32)->u32 {self.states[id as usize].use_slot as u32}
     fn face_intent(&self,id:u32)->crate::controller::FaceIntent {
         let s=self.states[id as usize];
         crate::controller::FaceIntent {target_id:if s.target & target::ITEM_BIT!=0 {s.target & !target::ITEM_BIT} else if self.target_food(s).is_some_and(|f|matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed)) {s.target | target::ITEM_BIT} else {0},
@@ -2080,6 +2164,7 @@ impl Controller for AiController {
         let id=s.id as usize;
         let intelligence=(w.config().intelligence/100.0).clamp(0.0,1.0);
         let mut state=self.states[id];
+        state.use_slot=0;
         if state.generation!=s.generation {
             state=State {generation:s.generation,desired:s.angle,turn_until:u64::MAX,exit_angle:s.angle,last_angle:s.angle,
                 goal:w.canonical_point(Point{x:s.segments[0].current.x+s.angle.cos()*350.0,y:s.segments[0].current.y+s.angle.sin()*350.0}),
@@ -2235,7 +2320,7 @@ impl Controller for AiController {
         let head=s.segments[0].current;
         let wall_room=!w.config().deadly_walls || head.x.min(w.config().width-head.x).min(head.y).min(w.config().height-head.y)
             >self.rivals[id].speed/self.rivals[id].turn.max(0.01)*3.0+s.radius*3.0;
-        let reuse_plan=!strategic && wall_room && candidates[1].steps==horizon
+        let reuse_plan=!strategic && wall_room && candidates[1].wall_safe && candidates[1].steps==horizon
             && (candidates[1].venom_bite==0 || (!candidates[1].capped && candidates[1].steps>=candidates[1].venom_bite+VENOM_EXIT_STEPS))
             && (area>=need || w.tick()<state.commit_until);
         if !reuse_plan || self.diagnostic_enabled {
@@ -2311,24 +2396,6 @@ impl Controller for AiController {
             }
         }
         let safe=candidates.iter().filter(|c|c.steps==horizon).count();
-        // When every sampled continuation fails, a longer prefix must not
-        // purchase travel into a wall band with neither turn left.
-        // The per-axis wall reserve can choose a different escape direction
-        // for each wall; a shared circle checks that one turn clears all walls.
-        let mut wall_turn_room=[true;CANDIDATES];
-        if safe==0 && w.config().deadly_walls {
-            // A blocked prefix shorter than a half-turn cannot establish a
-            // wall exit. Preserve the next inward turn in that emergency;
-            // longer physically checked prefixes keep their body/area order.
-            // Coupled corners always check, including Classic controls.
-            let turn=self.motion[id].at(0).1;
-            let immediate=w.config().rules==crate::RuleSet::V2
-                && candidates.iter().all(|c|c.steps as f64*turn*STEP_SECONDS<std::f64::consts::PI);
-            for (index,c) in candidates.iter().enumerate() {
-                if !c.checked {continue;}
-                wall_turn_room[index]=self.emergency_wall_turn_room(w,s,c,immediate);
-            }
-        }
         let rollout_time=clock.map(|c|c.elapsed().as_nanos());
         if let Some(t)=rollout_time {self.profile[2]+=t-strategy_time.unwrap();}
         for index in 0..CANDIDATES {
@@ -2355,8 +2422,23 @@ impl Controller for AiController {
         let viability=|c:&Candidate|if c.steps==horizon && (c.venom_bite==0 || (!c.capped && c.steps>=c.venom_bite+VENOM_EXIT_STEPS)) {if c.area>=need || c.uncertain {2} else {1}} else {0};
         // A physical straight rollout always exists, even if every first step
         // collides. Never rank a pre-step tactical rejection as an escape.
-        let best=if reuse_plan {1} else {(0..CANDIDATES).filter(|i|candidates[*i].checked).max_by(|a,b|viability(&candidates[*a]).cmp(&viability(&candidates[*b]))
-            .then_with(||(wall_turn_room[*a] && candidates[*a].steps>0).cmp(&(wall_turn_room[*b] && candidates[*b].steps>0)))
+        let admitted=candidates.iter().any(|c|c.checked && c.wall_safe);
+        let first_exit=candidates.iter().any(|c|c.checked && c.wall_first_safe);
+        let mut wall_margin=[0.0;CANDIDATES];
+        if !admitted && !first_exit && w.config().deadly_walls {
+            for (index,c) in candidates.iter().enumerate().filter(|(_,c)|c.checked) {
+                let motion=if c.rush>0.0 {self.boosted_motion[id]} else {self.motion[id]};
+                let (speed,turn)=motion.at(0);
+                let delta=w.displacement(c.path[0],c.path[1]);let distance=(delta.x*delta.x+delta.y*delta.y).sqrt();
+                wall_margin[index]=wall::margin(w,c.path[1],Point{x:delta.x/distance.max(1e-12),y:delta.y/distance.max(1e-12)},
+                    motion.wall_radius.max(speed/turn.max(0.01)),motion.max_speed*STEP_SECONDS,s.radius);
+            }
+        }
+        // If no wall-reachable sampled control exists (e.g. an externally
+        // supplied impossible pose), retain the physical emergency fallback.
+        // Otherwise wall reachability is admission, before every utility rank.
+        let best=if reuse_plan {1} else {(0..CANDIDATES).filter(|i|candidates[*i].checked && (if admitted {candidates[*i].wall_safe} else {!first_exit || candidates[*i].wall_first_safe})).max_by(|a,b|wall_margin[*a].total_cmp(&wall_margin[*b])
+            .then_with(||viability(&candidates[*a]).cmp(&viability(&candidates[*b])))
             .then_with(||candidates[*a].steps.cmp(&candidates[*b].steps))
             .then_with(||if safe==0 {candidates[*a].area.cmp(&candidates[*b].area)} else {std::cmp::Ordering::Equal})
             .then_with(||if safe==0 {candidates[*a].clearance.total_cmp(&candidates[*b].clearance)} else {std::cmp::Ordering::Equal})
@@ -2365,7 +2447,7 @@ impl Controller for AiController {
                 let mut d=DecisionDiagnostic {generation:s.generation,selected:best,horizon,required_cells:need,length:s.segments.len(),goal:state.waypoint.unwrap_or(state.goal),reused_plan:reuse_plan,..Default::default()};
             for (i,c) in candidates.iter().enumerate() {
                 let turn_ticks=if c.turn_until!=u64::MAX {c.turn_until.saturating_sub(w.tick()) as usize} else {0};
-                d.candidates[i]=CandidateDiagnostic {checked:c.checked,desired:c.desired,safe_ticks:c.steps,area:c.area,area_capped:c.uncertain,
+                d.candidates[i]=CandidateDiagnostic {checked:c.checked,wall_safe:c.wall_safe,wall_first_safe:c.wall_first_safe,desired:c.desired,safe_ticks:c.steps,area:c.area,area_capped:c.uncertain,
                     turn_ticks,track_goal:c.tracks_goal,exit_angle:c.exit_angle,capped:c.capped,score:c.score,rush:c.rush,coil_center:state.coil_center,coil_radius:state.coil_radius,coil_sign:state.coil_sign,
                     coil_pitch:state.coil_pitch,coil_progress:state.coil_progress,
                     attack_replies:c.replies,attack_error:c.attack.error,attack_valid:c.attack.valid,
@@ -2378,7 +2460,7 @@ impl Controller for AiController {
         #[cfg(feature="desktop-diag")] {
             observation.selected=best as u8;observation.reused_plan=reuse_plan;
             observation.safe_ticks=candidates[best].steps;observation.horizon=horizon;
-            observation.continuation=candidates[best].steps==horizon && candidates[best].area>=need && !candidates[best].uncertain;
+            observation.continuation=candidates[best].wall_safe && candidates[best].steps==horizon && candidates[best].area>=need && !candidates[best].uncertain;
             observation.continuation_unresolved=candidates[best].uncertain;
             observation.any_first_step=if reuse_plan {candidates[1].steps>0} else {candidates.iter().any(|c|c.checked && c.steps>0)};
             observation.next_head=candidates[best].path[1];
@@ -2438,6 +2520,7 @@ impl Controller for AiController {
                 else if state.target!=0 {11} else {0};
             self.desktop[id]=observation;
         }
+        self.choose_inventory(w,s,&mut state,&candidates[best],horizon);
         self.states[id]=state;
         self.candidates=Some(candidates);
         if let Some(c)=clock {self.profile[4]+=c.elapsed().as_nanos();}

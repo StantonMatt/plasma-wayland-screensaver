@@ -7,10 +7,18 @@ pub(crate) fn valid_item(item: &ItemRecord) -> bool {
         && (1..=5).contains(&item.kind) && item.life_ticks<=780 && item.reserved==0
         && item.reserved_byte==0
 }
+#[inline]
 pub(super) fn accent(kind:u8,palette:&[Color])->Color {
-    let c=match kind {1=>Color::new(255,225,77,255),2=>Color::new(255,95,210,255),
-        3=>Color::new(169,139,255,255),4=>Color::new(157,255,58,255),_=>Color::new(189,243,255,255)};
-    tint(c,palette)
+    // Fixed item colours use exactly the same rounded tint as arbitrary
+    // colours, without repeating luminance/rounding for every carried gem.
+    const RGB:[[u8;3];5]=[[255,225,77],[255,95,210],[169,139,255],[157,255,58],[189,243,255]];
+    const MONO:[[u8;3];5]=[[225,221,203],[151,132,146],[156,152,166],[212,224,201],[227,234,235]];
+    const PASTEL:[[u8;3];5]=[[255,234,130],[255,143,224],[195,174,255],[186,255,117],[209,247,255]];
+    let table=match palette.first().map(|c|(c.red,c.green,c.blue)) {
+        Some((255,255,255))=>&MONO,Some((255,200,221))=>&PASTEL,_=>&RGB,
+    };
+    let [r,g,b]=table[if (1..=4).contains(&kind) {kind as usize-1} else {4}];
+    Color::new(r,g,b,255)
 }
 pub(super) fn tint(mut c:Color,palette:&[Color])->Color {
     let mono=palette.first().is_some_and(|c|c.red==255 && c.green==255 && c.blue==255);
@@ -34,7 +42,7 @@ impl Renderer {
         let map=|v:P|P::new(v.x*p.scale_x+p.offset_x,v.y*p.scale_y+p.offset_y);
         for item in &self.items[..self.item_count] {
             if !valid_item(item) {continue;}
-            let pos=P::new(item.x as f64,item.y as f64);let extent=self.item_radius*super::shader::bounds::CAPSULE;
+            let (pos,drop_scale)=self.inventory.drop_pose(item,info,p,self.reduced_motion);let extent=self.item_radius*super::shader::bounds::CAPSULE;
             let (xs,ys)=copies(pos,pos,P::new(extent*scale/p.scale_x,extent*scale/p.scale_y),arena,p.deadly_walls!=0);
             let extra=if self.reduced_motion {0.0} else {((p.presentation_time-info.simulation_time)/crate::STEP_SECONDS).max(0.0)};
             // High birth-byte range is reserved for the 30-tick incoming state.
@@ -42,7 +50,7 @@ impl Renderer {
                 else {((item.age_ticks as f64+extra).clamp(0.0,15.0)/15.0*127.0).round() as u8};
             let life=(item.life_ticks as f64/750.0*255.0).round() as u8;
             for x in xs.first..=xs.last {for y in ys.first..=ys.last {
-                sink.sprite(map(pos+P::new(x as f64*xs.extent,y as f64*ys.extent)),extent*scale,
+                sink.sprite(map(pos+P::new(x as f64*xs.extent,y as f64*ys.extent)),extent*scale*drop_scale,
                     accent(item.kind,palette),[11,item.kind,age,life]);
             }}
         }
@@ -53,7 +61,7 @@ impl Renderer {
         let time=if self.reduced_motion {0.0} else {p.presentation_time};
         for item in &self.items[..self.item_count] {
             if !valid_item(item) {continue;}
-            let pos=P::new(item.x as f64,item.y as f64);let r=self.item_radius*scale;
+            let (pos,drop_scale)=self.inventory.drop_pose(item,info,p,self.reduced_motion);let r=self.item_radius*scale*drop_scale;
             let fade=if item.life_ticks<90 {(0.65+0.35*(time*(18.0+24.0*(1.0-item.life_ticks as f64/90.0))).sin()).max(0.1)} else {1.0};
             let c=accent(item.kind,palette).fade(fade);
             // Enclose all emitted geometry, including pixel-minimum hex strokes.
@@ -139,7 +147,7 @@ impl Renderer {
                 continue;
             }
             let c=accent(e.color as u8,palette).fade((1.0-age)*0.8);
-            let radius=e.radius*scale*(if e.kind==12 {1.0+5.0*age} else {2.5*(1.0-age)});
+            let radius=e.radius*scale*(if self.reduced_motion {if e.kind==12 {3.5} else {1.5}} else if e.kind==12 {1.0+5.0*age} else {2.5*(1.0-age)});
             let width=(e.radius*scale*0.10).max(0.5);
             let extent=radius+width;
             let (xs,ys)=copies(e.p,e.p,P::new(extent/p.scale_x,extent/p.scale_y),arena,p.deadly_walls!=0);
@@ -180,6 +188,9 @@ impl Renderer {
             let extent=(r*10.1).max(r*9.0+width);
             let (xs,ys)=copies(head,head,P::new(extent/p.scale_x,extent/p.scale_y),arena,p.deadly_walls!=0);
             let c=accent(2,palette);
+            let opening=self.inventory.magnet_opening(s,info,p,self.reduced_motion) as f64/255.0;
+            let reach=r*9.0*(1.0-(1.0-opening).powi(3));
+            let dashed=opening>=0.6;
             for x in xs.first..=xs.last {for y in ys.first..=ys.last {
                 if budget.full() {continue;}
                 let v=head+P::new(x as f64*xs.extent,y as f64*ys.extent);
@@ -188,14 +199,14 @@ impl Renderer {
                 let before=sink.count;
                 for k in 0..18 {
                     let a=time*1.2+k as f64*std::f64::consts::TAU/18.0;
-                    let b=a+std::f64::consts::TAU/72.0;
-                    sink.segment(center+P::new(a.cos(),a.sin())*(r*9.0),center+P::new(b.cos(),b.sin())*(r*9.0),width,c.fade(0.4));
+                    let b=a+std::f64::consts::TAU/if dashed {72.0} else {18.0};
+                    sink.segment(center+P::new(a.cos(),a.sin())*reach,center+P::new(b.cos(),b.sin())*reach,width*(1.0+2.0*(1.0-opening)),c.fade(0.85-0.45*opening));
                 }
                 for k in 0..3 {
                     let a=time*1.2+k as f64*std::f64::consts::TAU/3.0;
-                    let spark=center+P::new(a.cos(),a.sin())*(r*9.0);
-                    sink.disc(spark,r*1.1,c.alpha(45),8);
-                    sink.disc(spark,r*0.2,c,6);
+                    let spark=center+P::new(a.cos(),a.sin())*reach;
+                    sink.disc(spark,r*1.1,c.alpha((45.0*opening).round() as u8),8);
+                    sink.disc(spark,r*0.2,c.fade(opening),6);
                 }
                 budget.emitted(before,sink.count);
             }}
@@ -204,7 +215,7 @@ impl Renderer {
     fn classic_ring(&self,center:P,r:f64,width:f64,c:Color,sink:&mut Sink<'_>) {
         for k in 0..12 {sink.segment(center+self.circles[12][k]*r,center+self.circles[12][k+1]*r,width,c);}
     }
-    fn classic_icon(&self,center:P,r:f64,kind:u8,c:Color,sink:&mut Sink<'_>) {
+    pub(super) fn classic_icon(&self,center:P,r:f64,kind:u8,c:Color,sink:&mut Sink<'_>) {
         let line=|sink:&mut Sink<'_>,a:P,b:P|sink.segment(center+a*r,center+b*r,r*0.14,c);
         match kind {
             1=>{let points=[P::new(0.3,-1.0),P::new(-0.7,0.1),P::new(0.15,0.1),P::new(-0.3,1.0)];for v in points.windows(2) {line(sink,v[0],v[1]);}},

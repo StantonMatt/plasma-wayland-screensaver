@@ -16,6 +16,16 @@ class SnakeSimulationTest final : public QObject
     Q_OBJECT
     static snakes_core_config defaults() { return {1280, 720, 50, 35, 100, 100, 75, 1, 6, 0, 1, SNAKES_CORE_RULE_DEFAULT, {0}}; }
 private Q_SLOTS:
+    void inventorySettingReachesCore()
+    {
+        QTemporaryDir dir;
+        Configuration settings(dir.filePath(QStringLiteral("inventoryrc")));
+        auto config = SnakeSimulation::configuration(settings, 1280, 720, 1);
+        QCOMPARE(config.reserved & SNAKES_CORE_INVENTORY_OFF, uint32_t{0});
+        settings.setSnakeStorePowerUps(false);
+        config = SnakeSimulation::configuration(settings, 1280, 720, 1);
+        QCOMPARE(config.reserved & SNAKES_CORE_INVENTORY_OFF, uint32_t{SNAKES_CORE_INVENTORY_OFF});
+    }
     void aggressionSettingsReachCoreWithoutRestartingWorld()
     {
         QTemporaryDir dir;

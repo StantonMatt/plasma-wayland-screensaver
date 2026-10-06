@@ -83,6 +83,7 @@ int Configuration::snakeIntelligence() const { return m_snakeIntelligence; }
 bool Configuration::snakeSelfCollisions() const { return m_snakeSelfCollisions; }
 bool Configuration::snakeLengthLimit() const { return m_snakeLengthLimit; }
 bool Configuration::snakePowerUps() const { return m_snakePowerUps; }
+bool Configuration::snakeStorePowerUps() const { return m_snakeStorePowerUps; }
 bool Configuration::snakeWorldEvents() const { return m_snakeWorldEvents; }
 bool Configuration::snakeDeadlyWalls() const { return m_snakeDeadlyWalls; }
 bool Configuration::showClock() const { return m_showClock; }
@@ -171,6 +172,7 @@ void Configuration::setSnakeIntelligence(int value)
 void Configuration::setSnakeSelfCollisions(bool value) { update(m_snakeSelfCollisions, value); }
 void Configuration::setSnakeLengthLimit(bool value) { update(m_snakeLengthLimit, value); }
 void Configuration::setSnakePowerUps(bool value) { update(m_snakePowerUps, value); }
+void Configuration::setSnakeStorePowerUps(bool value) { update(m_snakeStorePowerUps, value); }
 void Configuration::setSnakeWorldEvents(bool value) { update(m_snakeWorldEvents, value); }
 void Configuration::setSnakeDeadlyWalls(bool value) { update(m_snakeDeadlyWalls, value); }
 void Configuration::setShowClock(bool value) { update(m_showClock, value); }
@@ -287,6 +289,9 @@ void Configuration::apply(const QVariantMap &settings)
     if (settings.contains(QStringLiteral("snakeLengthLimit"))) {
         setSnakeLengthLimit(settings.value(QStringLiteral("snakeLengthLimit")).toBool());
     }
+    if (settings.contains(QStringLiteral("snakeStorePowerUps"))) {
+        setSnakeStorePowerUps(settings.value(QStringLiteral("snakeStorePowerUps")).toBool());
+    }
     if (settings.contains(QStringLiteral("snakePowerUps"))) {
         setSnakePowerUps(settings.value(QStringLiteral("snakePowerUps")).toBool());
     }
@@ -339,6 +344,7 @@ QVariantMap Configuration::defaults(const QString &page) const
         {QStringLiteral("snakeDeadlyWalls"), true},
         {QStringLiteral("snakeLengthLimit"), false},
         {QStringLiteral("snakePowerUps"), true},
+        {QStringLiteral("snakeStorePowerUps"), true},
         {QStringLiteral("snakeWorldEvents"), true},
         {QStringLiteral("showClock"), true},
         {QStringLiteral("clockMovement"), QStringLiteral("bounce")},
@@ -451,6 +457,7 @@ void Configuration::save()
     general.writeEntry("SnakeDeadlyWalls", m_snakeDeadlyWalls);
     general.writeEntry("SnakeLengthLimit", m_snakeLengthLimit);
     general.writeEntry("SnakePowerUps", m_snakePowerUps);
+    general.writeEntry("SnakeStorePowerUps", m_snakeStorePowerUps);
     general.writeEntry("SnakeWorldEvents", m_snakeWorldEvents);
     general.writeEntry("ShowClock", m_showClock);
     general.writeEntry("ClockMovement", m_clockMovement);

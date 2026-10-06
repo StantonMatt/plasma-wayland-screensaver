@@ -15,6 +15,7 @@ impl diagnostics::ScoreController for Competition {
     fn ai(&self)->Option<&AiController> {Some(&self.ai)}
 }
 impl Controller for Competition {
+    fn delegate(&self,id:u32)->Option<&dyn Controller> {if !self.limited || id as usize==self.attacker {Some(&self.ai)} else {None}}
     fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
         if !self.limited || s.id as usize==self.attacker {return self.ai.steer(w,s);}
         let id=s.id as usize;

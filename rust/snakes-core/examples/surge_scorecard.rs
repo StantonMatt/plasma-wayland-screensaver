@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Run through surge_scorecard.py to select only SURGE in an isolated crate.
-use snakes_core::{ai::AiController, Config, EventKind, RuleSet, World, MAX_SNAKES};
+#[allow(dead_code)]
+#[path="support/item_lifecycle.rs"] mod item_lifecycle;
+use snakes_core::{ai::AiController, Config, RuleSet, World, MAX_SNAKES};
 use std::time::Instant;
+use item_lifecycle::lifecycle;
 #[allow(dead_code)]
 #[path = "support/diagnostics.rs"] mod diagnostics;
 #[allow(dead_code)]
@@ -59,7 +62,7 @@ fn main() {
                     }
                 }
             }
-            for e in w.frame_events().filter(|e| e.tick == w.tick() && e.kind == EventKind::Pickup && e.other_snake_id == 1) {
+            for e in w.frame_events().filter(|e| e.tick == w.tick() && lifecycle(e).activation() && e.other_snake_id == 1) {
                 pickups += 1;
                 used[e.snake_id as usize] = false;
                 staged_bursts[e.snake_id as usize] = 0;

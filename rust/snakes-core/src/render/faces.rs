@@ -46,7 +46,7 @@ impl Renderer {
         let lifetime=if self.reduced_motion {27.0} else {45.0};
         let mut owners=0u32;
         for bubble in &info.bubbles[..(info.bubble_count as usize).min(3)] {
-            if bubble.glyph>4 || bubble.snake_id as usize>=MAX_SNAKES || owners&(1<<bubble.snake_id)!=0 {continue;}
+            if bubble.glyph>9 || bubble.snake_id as usize>=MAX_SNAKES || owners&(1<<bubble.snake_id)!=0 {continue;}
             let Some(s)=snakes.iter().find(|s|s.id==bubble.snake_id && s.generation==bubble.generation && s.alive!=0 && s.flags&flags::CORPSE==0 && s.segment_count>0 && snake_valid(s)) else {continue;};
             let age=(bubble.age_ticks as f64+extra).max(0.0);
             if age>=lifetime {continue;}
@@ -77,10 +77,10 @@ impl Renderer {
                 0=>self.items.get(s.target_item as usize).filter(|_|(s.target_item as usize)<self.item_count)
                     .map_or_else(||items::tint(Color::new(255,245,224,255),palette),|item|items::accent(item.kind,palette)),
                 1=>Color::new(183,205,222,255),2=>Color::new(255,105,55,255),
-                3=>Color::new(189,222,255,255),_=>Color::new(255,150,200,255),
+                3=>Color::new(189,222,255,255),5..=9=>items::accent(bubble.glyph-4,palette),_=>Color::new(255,150,200,255),
             };
             // Mood colours use greys on Mono; emote accents retain 12% chroma.
-            let c=if bubble.glyph==0 {c} else {items::tint(c,palette)};
+            let c=if bubble.glyph==0 || bubble.glyph>=5 {c} else {items::tint(c,palette)};
             sink.sprite(center,extent,c.fade(fade),[16,bubble.glyph,0,0]);
         }
     }

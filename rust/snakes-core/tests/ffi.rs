@@ -4,7 +4,7 @@ use snakes_core::{ Config, World };
 use snakes_core::ffi::*;
 #[test] fn ffi_round_trip_and_validation() {
     unsafe {
-        assert_eq!(snakes_core_abi_version(), 3);
+        assert_eq!(snakes_core_abi_version(), 4);
         let config = CoreConfig::from(Config {
             seed: 73,
             ..Config::default()
@@ -100,7 +100,7 @@ use snakes_core::ffi::*;
 }
 #[test] fn ffi_layout_sizes_and_offsets() {
     assert_eq!(std::mem::size_of::<CoreConfig>(), 80);
-    assert_eq!(std::mem::size_of::<SnakeRecord>(), 152);
+    assert_eq!(std::mem::size_of::<SnakeRecord>(), 160);
     assert_eq!(std::mem::size_of::<FoodRecord>(), 72);
     assert_eq!(std::mem::offset_of!(FoodRecord, color_index), 36);
 }
@@ -181,7 +181,7 @@ fn items_export_round_trip_failure_atomicity_and_disable() {
 }
 
 #[test]
-fn v3_defaults_reserved_effect_state_and_world_event_setting_round_trip() {
+fn v4_defaults_reserved_effect_state_and_world_event_setting_round_trip() {
     unsafe {
         let cfg=Config{rules:snakes_core::RuleSet::V2,world_events:false,power_ups:false,..Config::default()};
         let core=CoreConfig::from(cfg);assert_eq!(core.reserved,POWER_UPS_OFF|WORLD_EVENTS_OFF);
@@ -195,7 +195,7 @@ fn v3_defaults_reserved_effect_state_and_world_event_setting_round_trip() {
         assert!(snakes.iter().all(|s|s.mood==0 && s.face_flags & FACE_OBSERVED!=0),"V2 Calm is authoritative, including before the first tick");
         assert!(snakes.iter().all(|s|s.target_item==255 && s.grudge_snake_id==u32::MAX && s.bulges.iter().all(|b|b.duration_ticks==0)));
         let bad=CoreConfig{reserved:1,..core};assert_eq!(snakes_core_reconfigure(h,&bad),INVALID_ARGUMENT);
-        let input=SteeringInput{id:0,actions:2,..SteeringInput::default()};
+        let input=SteeringInput{id:0,actions:4,..SteeringInput::default()};
         assert_eq!(snakes_core_set_steering(h,&input,1),INVALID_ARGUMENT);
         let input=SteeringInput{id:0,actions:1,..SteeringInput::default()};
         assert_eq!(snakes_core_set_steering(h,&input,1),OK);

@@ -24,8 +24,13 @@ pub(super) struct Effect {
     pub(super) p: P, pub(super) time: f64, pub(super) radius: f64, pub(super) color: u32, pub(super) kind: u8, pub(super) active: bool,
     snake_id: u32, generation: u32, seed: u8, pub(super) duration_ticks:u16,
 }
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub(super) struct Wave { pub(super) time: f64, pub(super) active: bool, pub(super) kind: u8, pub(super) duration_ticks: u16 }
+
+// One shared rainbow scratch buffer; retain only the last completed colour
+// sample. A redraw at the same event age does not repeat exponentials/rounds.
+#[derive(Clone,Copy,PartialEq)]
+pub(super) struct RainbowSample {id:u32,n:usize,time:f64,calm:bool,base:Color,palette:Color,frozen:bool,waves:[Wave;2]}
 
 #[inline(always)]
 fn wave_flags(origin:u8)->u8 { ((origin&1)<<1)|((origin&6)<<3) }
@@ -53,7 +58,7 @@ impl SpriteSink<'_> {
         }
         self.count+=6;
     }
-    fn quad(&mut self, pts: [P;4], uv: [[f64;2];4], c: Color, params: [u8;4]) {
+    pub(super) fn quad(&mut self, pts: [P;4], uv: [[f64;2];4], c: Color, params: [u8;4]) {
         if !pts.iter().all(|v|v.finite()) { return; }
         let mut min=pts[0]; let mut max=min;
         for p in pts { min.x=min.x.min(p.x); min.y=min.y.min(p.y); max.x=max.x.max(p.x); max.y=max.y.max(p.y); }
@@ -177,13 +182,13 @@ impl SpriteSink<'_> {
         }
     }
 
-    fn contrail(&mut self, a:P, b:P, r:f64, u:[f64;2], c:Color) {
+    fn contrail(&mut self, a:P, b:P, r:f64, u:[f64;2], c:Color,strength:f64) {
         let d=b-a;let len=d.length();if len<0.001 { return; }
         let normal=P::new(-d.y,d.x)*(CONTRAIL*r/len);
         let pts=[a+normal*u[0],a-normal*u[0],b+normal*u[1],b-normal*u[1]];
         let width=CONTRAIL*r*u[0].max(u[1]);
         if !visible(a.x.min(b.x)-width,a.y.min(b.y)-width,(b.x-a.x).abs()+2.0*width,(b.y-a.y).abs()+2.0*width,self.view) { return; }
-        let colors=[c.fade(0.35*u[0]*u[0]),c.fade(0.35*u[1]*u[1])];
+        let colors=[c.fade(strength*u[0]*u[0]),c.fade(strength*u[1]*u[1])];
         self.push_quad([
             Self::make_vertex(pts[0],1.0,0.0,colors[0],[10,0,0,0]),
             Self::make_vertex(pts[1],-1.0,0.0,colors[0],[10,0,0,0]),
@@ -299,7 +304,7 @@ fn snake_on_screen(s:&SnakeRecord,body:&[SegmentRecord],trail:&Trail,p:&Params,s
         if moving(s) {outside &= planes(seg.previous_x as f64,seg.previous_y as f64);}
         if outside==0 {return true;}
     }
-    if moving(s) && s.flags&flags::BOOSTING!=0 {
+    if moving(s) && inventory::trailing(s) {
         for i in 0..trail.len {
             let point=trail.points[(trail.head+15-trail.len+i)%15];
             if point.finite() {outside &= planes(point.x,point.y);}
@@ -315,7 +320,20 @@ impl Renderer {
     }
     pub(super) fn shader_history(&mut self, info:&FrameInfo, snakes:&[SnakeRecord], segments:&[SegmentRecord], events:&[EventRecord]) {
         if self.last_frame.is_some_and(|(tick,g)|info.tick<tick || g!=info.geometry_generation) { self.reset(); }
-        if self.last_frame==Some((info.tick,info.geometry_generation)) { return; }
+        let same_frame=self.last_frame==Some((info.tick,info.geometry_generation));
+        let needs_fizzles=self.inventory.needs_fizzles(events);
+        if same_frame && !needs_fizzles {return;}
+        if needs_fizzles {
+            let fizzles=self.inventory.observe_fizzles(info,snakes,events,self.event_tick);
+            for e in fizzles.into_iter().flatten() {
+                let radius=snakes.iter().find(|s|s.id==e.snake_id).map_or(8.0,|s|s.radius);
+                self.effect(Effect {p:P::new(e.x as f64,e.y as f64),time:info.simulation_time-(info.tick-e.tick) as f64*crate::STEP_SECONDS,radius,
+                    color:e.other_snake_id,kind:13,active:true,snake_id:e.snake_id,generation:0,
+                    duration_ticks:if self.reduced_motion {5} else {8},seed:e.tick as u8});
+            }
+        }
+        if same_frame {return;}
+        self.inventory.observe(info,snakes,segments,events,self.event_tick);
         self.venom.observe(info,snakes,segments,events,self.event_tick);
         for s in snakes {
             let id=s.id as usize;
@@ -345,10 +363,10 @@ impl Renderer {
                     color:if e.kind==1 {0x80000004} else {e.color_index},kind:if e.kind==0 || e.kind==1 { 6 } else { 7 },active:true,
                     snake_id:e.snake_id,generation:0,duration_ticks:0,seed:(e.tick as u8).wrapping_add((e.snake_id as u8).wrapping_mul(13)) });
             }
-            if matches!(e.kind,2|6|7) {
+            if matches!(e.kind,2|6|7|14) {
                 self.effect(Effect {p:P::new(e.x as f64,e.y as f64),time,radius,
                     color:if e.kind==7 && e.other_snake_id==5 {0x80000005} else {e.other_snake_id},kind:if e.kind==2 {12} else if e.kind==7 && e.other_snake_id==5 {6} else {13},active:true,
-                    snake_id:e.snake_id,generation:0,duration_ticks:if e.kind==7 && e.other_snake_id==5 {e.duration_ticks} else {0},seed:e.tick as u8});
+                    snake_id:e.snake_id,generation:0,duration_ticks:if e.kind==7 && e.other_snake_id==5 {e.duration_ticks} else if e.kind==14 {9} else if e.kind==15 {if self.reduced_motion {5} else {8}} else {0},seed:e.tick as u8});
                 if e.kind==2 && (e.snake_id as usize)<MAX_SNAKES {
                     let waves=&mut self.waves[e.snake_id as usize];
                     waves[1]=waves[0];waves[0]=Wave {time,active:true,kind:e.other_snake_id as u8,..Wave::default()};
@@ -396,6 +414,8 @@ impl Renderer {
     pub fn build_shader(&mut self, info:&FrameInfo, snakes:&[SnakeRecord], segments:&[SegmentRecord], food:&[FoodRecord], events:&[EventRecord], palette:&[Color], p:&Params, output:&mut [ShaderVertex]) -> Output {
         if !frame_valid(info,p) { return Output::default(); }
         self.shader_history(info,snakes,segments,events);
+        self.inventory.resolve_drops(info,snakes,segments,&self.items[..self.item_count]);
+        self.inventory.resolve_novas(info,snakes,segments,p.deadly_walls!=0);
         if p.scale_x==0.0 || p.scale_y==0.0 { return Output::default(); }
         #[cfg(test)]
         let cull=self.shader_culling;
@@ -457,12 +477,15 @@ impl Renderer {
                 }}
             }
         }
-        for s in snakes {
+        let mut slipstreams=0;let mut pip_budget=0;
+        for snapshot in snakes {
+            let visual=self.inventory.visual_snake(snapshot,info,p,segments,self.reduced_motion);
+            let s=&visual;
             let n=s.segment_count as usize;let id=s.id as usize;let corpse=s.flags&flags::CORPSE!=0;
             if !snake_valid(s) || (s.alive==0&&!corpse) || n<2 { continue; }
             let body=&segments[s.segment_offset as usize..s.segment_offset as usize+n];
             // Wrapped copies and developer arrows keep their exact old walk.
-            if cull && walls && p.developer_mode==0 && !snake_on_screen(s,body,&self.trails[id],p,scale) {continue;}
+            if cull && walls && p.developer_mode==0 && !self.inventory.has_transients(s) && !snake_on_screen(s,body,&self.trails[id],p,scale) {continue;}
             let points=&mut self.points[..n];let mapped=&mut self.mapped[..n];
             if walls {
                 if moving(s) {
@@ -512,11 +535,20 @@ impl Renderer {
             if gulp {prism::widen(&mut self.normals[..n],gulp_centers);}
             let tier=if n<24 { 0 } else if n<100 { 1 } else if n<250 { 2 } else { 3 };
             let active_kind=if s.alive!=0 && !corpse && s.effect_ticks>0 {s.effect_kind&7} else {0};
+            let phase_progress=if active_kind==3 {self.inventory.phase_fade(s,info,p,self.reduced_motion)} else {255};
+            let body_kind=if phase_progress<255 {6} else {active_kind};
+            let phase_bits=wave_flags(((phase_progress as u16*7+127)/255) as u8);
             let flags=s.flags as u8;let c=frost::ice(color(s.color_index),s.flags,palette);
-            let rainbow=self.waves[id].iter().any(|w|w.active && w.kind==8)
-                && prism::rainbow(s,self.waves[id],info,p,self.reduced_motion,palette,color(s.color_index),&mut self.rainbow[..n]);
-            if rainbow && s.flags&flags::FROZEN!=0 {for c in &mut self.rainbow[..n] {*c=frost::ice(*c,s.flags,palette);}}
-            if moving(s) && s.flags&flags::BOOSTING!=0 {
+            let sample=RainbowSample {id:s.id,n,time:event_time(info,p,self.reduced_motion),calm:self.reduced_motion,
+                base:color(s.color_index),palette:palette.first().copied().unwrap_or_default(),frozen:s.flags&flags::FROZEN!=0,waves:self.waves[id]};
+            let rainbow=if s.alive==0 || corpse || !self.waves[id].iter().any(|w|w.active && w.kind==8) {false}
+                else if self.rainbow_sample==Some(sample) {true}
+                else {
+                    let active=prism::rainbow(s,self.waves[id],info,p,self.reduced_motion,palette,color(s.color_index),&mut self.rainbow[..n]);
+                    if active && sample.frozen {for c in &mut self.rainbow[..n] {*c=frost::ice(*c,s.flags,palette);}}
+                    self.rainbow_sample=if active {Some(sample)} else {None};active
+                };
+            if moving(s) && inventory::trailing(s) {
                 let trail=&self.trails[id];let mut prev:Option<(P,f64)>=None;
                 for i in 0..trail.len { let index=(trail.head+15-trail.len+i)%15;
                     let age=event_time(info,p,self.reduced_motion)-info.simulation_time+info.tick.saturating_sub(trail.ticks[index]) as f64*crate::STEP_SECONDS;
@@ -524,7 +556,7 @@ impl Renderer {
                     let u=1.0-age.max(0.0)/0.5;
                     if let Some((a,ua))=prev { let b=a+P::new(delta(a.x,pos.x,arena.x,walls),delta(a.y,pos.y,arena.y,walls));let w=CONTRAIL*r*ua.max(u);
                         let (xs,ys)=copies(P::new(a.x.min(b.x),a.y.min(b.y)),P::new(a.x.max(b.x),a.y.max(b.y)),P::new(w/sx,w/sy),arena,walls);
-                        for x in xs.first..=xs.last { for y in ys.first..=ys.last { let shift=P::new(x as f64*xs.extent*sx,y as f64*ys.extent*sy);sink.contrail(map(a)+shift,map(b)+shift,r,[ua,u],c.boost()); }}
+                        for x in xs.first..=xs.last { for y in ys.first..=ys.last { let shift=P::new(x as f64*xs.extent*sx,y as f64*ys.extent*sy);sink.contrail(map(a)+shift,map(b)+shift,r,[ua,u],if active_kind==1 {items::accent(1,palette)} else {c.boost()},if active_kind==1 && flags&1!=0 {0.55} else {0.35}); }}
                     }prev=Some((pos,u));
                 }
             }
@@ -547,8 +579,8 @@ impl Renderer {
                 if center<(n as f64+3.5) { waves[wave_count]=(center,0.5,7);wave_count+=1; }
             }
             let common_origin=waves[0].2;
-            let mixed=s.stump_ticks>0 || (wave_count==2 && waves[1].2!=common_origin) || (rainbow && wave_count>0);
-            let body_flags=(flags & !50)|if mixed || rainbow {0} else {wave_flags(common_origin)};
+            let mixed=phase_progress==255 && (s.stump_ticks>0 || (wave_count==2 && waves[1].2!=common_origin) || (rainbow && wave_count>0));
+            let body_flags=(flags & !50)|if phase_progress<255 {phase_bits} else if mixed || rainbow {0} else {wave_flags(common_origin)};
             self.brightness[..n].fill(0);
             if mixed {self.wave_origins[..n].fill(0);}
             for &(center,strength,kind) in &waves[..wave_count] {
@@ -578,7 +610,7 @@ impl Renderer {
             // Body envelope includes waves, breathing and taper quantization. Per-edge seam selection
             // bounds even multi-lap bodies, and normals are computed only once.
             if walls && !corpse {
-                let params=[0,tier|(active_kind<<2)|if s.flags&flags::FROZEN!=0 {128} else {0}|if white_crown { 64 } else { 0 },body_flags,0];
+                let params=[0,tier|(body_kind<<2)|if s.flags&flags::FROZEN!=0 {128} else {0}|if white_crown { 64 } else { 0 },body_flags,0];
                 if !rainbow && !gulp {
                     if mixed {
                         sink.live_ribbon::<true>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
@@ -611,7 +643,7 @@ impl Renderer {
                     let drift=normal*(local*r*CORPSE_DRIFT*if piece%2==0 { 1.0 } else { -1.0 });
                     ma=ma+drift;mb=mb+drift;an=an*(1.0-local*0.5);bn=bn*(1.0-local*0.5);
                 }
-                let mut params=[0,tier|(active_kind<<2)|if s.flags&flags::FROZEN!=0 {128} else {0}|if i<=3 { 32 } else { 0 }|if white_crown { 64 } else { 0 },body_flags,
+                let mut params=[0,tier|(body_kind<<2)|if s.flags&flags::FROZEN!=0 {128} else {0}|if i<=3 { 32 } else { 0 }|if white_crown { 64 } else { 0 },body_flags,
                     if corpse { (alpha*255.0).round() as u8 } else {self.brightness[i-1]}];
                 if !corpse && mixed {params[2]|=self.wave_origins[i-1];}
                 let cc=if corpse && age<0.08/0.55 { Color::new(255,255,255,c.alpha) } else if corpse { c.boost() } else { c };
@@ -651,7 +683,15 @@ impl Renderer {
                     sink.sprite(mapped[n-1]+P::new(x as f64*xs.extent*sx,y as f64*ys.extent*sy),extent,Color::new(255,255,255,a),[ACID_GLOW,0,0,0]);
                 }}
             }
-            if corpse { continue; }
+            if corpse {
+                inventory::shader_pips(&mut self.inventory,s,points,r,info,p,palette,self.reduced_motion,&mut pip_budget,&mut sink);
+                continue;
+            }
+            if active_kind==1 && slipstreams<4 {
+                let before=sink.count;
+                inventory::slipstream(s,points,mapped,&self.normals[..n],&self.valid[..n],widths,r,gulp,info,p,palette,&mut sink);
+                slipstreams+=usize::from(sink.count>before);
+            }
             let angle=if moving(s) {
                 self.shader_previous_angles[id]+head_angle_delta(s.angle-self.shader_previous_angles[id])*p.interpolation
             } else { s.angle };
@@ -662,8 +702,8 @@ impl Renderer {
             if len<0.001 { continue; }let forward=forward/len;let side=P::new(-forward.y,forward.x);
             let hr=r*if tier==0 { 1.24 } else { 1.14 };
             let boosting=s.flags&flags::BOOSTING!=0;
-            let back=if boosting { HEAD_BOOST_BACK } else { HEAD_BACK };
-            let half_width=if boosting { HEAD_BOOST_SIDE } else { HEAD_SIDE };
+            let back=if boosting || active_kind==1 { HEAD_BOOST_BACK } else { HEAD_BACK };
+            let half_width=if boosting || active_kind==1 { HEAD_BOOST_SIDE } else { HEAD_SIDE };
             let half_length=(HEAD_FRONT+back)*0.5;let offset=(HEAD_FRONT-back)*0.5;
             // UV stores head units: x forward, y across; tongue included in this quad.
             let a=forward*(hr*half_length);let b=side*(hr*half_width);let center=map(head)+forward*(hr*offset);
@@ -679,13 +719,14 @@ impl Renderer {
             let look=quantize(s.pupil_x,0.18)|(quantize(s.pupil_y,0.35)<<3)|((jaw&3)<<6);
             let flare=self.waves[id].iter().any(|w|w.active && (0.0..0.5*motion_scale).contains(&(event_time(info,p,self.reduced_motion)-w.time)));
             let head_flags=(flags & 65) | (mood<<1) | ((jaw&4)<<5) | if active_kind==3 {flags::PHASED as u8} else {0};
-            let params=[if active_kind==4 {if s.flags&flags::STRIKE!=0 {24} else {23}} else {1},tier|(intensity<<2)|if white_crown {64} else {0}|if flare {128} else {0},head_flags,look];
+            let params=[if active_kind==4 {if s.flags&flags::STRIKE!=0 {24} else {23}} else if active_kind==1 {28} else if phase_progress<255 {29+((phase_progress as u16*226+127)/255) as u8} else {1},tier|(intensity<<2)|if white_crown {64} else {0}|if flare {128} else {0},head_flags,look];
             let margin=P::new(hr*(HEAD_FRONT*HEAD_FRONT+half_width*half_width).sqrt()/sx,hr*(HEAD_FRONT*HEAD_FRONT+half_width*half_width).sqrt()/sy);let (xs,ys)=copies(head,head,margin,arena,walls);
             for x in xs.first..=xs.last { for y in ys.first..=ys.last {
                 let shift=P::new(x as f64*xs.extent*sx,y as f64*ys.extent*sy);
                 sink.quad([center-a-b+shift,center+a-b+shift,center-a+b+shift,center+a+b+shift],
                     [[-back,-half_width],[HEAD_FRONT,-half_width],[-back,half_width],[HEAD_FRONT,half_width]],c.alpha(taper_bytes[1]),params);
             }}
+            inventory::shader_pips(&mut self.inventory,s,points,r,info,p,palette,self.reduced_motion,&mut pip_budget,&mut sink);
             if p.developer_mode!=0 {
                 // Steering can reach beyond the head envelope (including the
                 // minimum-length arrow in tiny arenas). Select its own copies
@@ -754,7 +795,7 @@ impl Renderer {
                 if effect_budget.full() {continue;}
                 let before=sink.count;
                 sink.effect_sprite(map(head+P::new(x as f64*xs.extent,y as f64*ys.extent)),r,MAGNET,
-                    items::accent(2,palette),[15,2,0,0]);
+                    items::accent(2,palette),[15,2,0,self.inventory.magnet_opening(s,info,p,self.reduced_motion)]);
                 effect_budget.emitted(before,sink.count);
             }}
         }
@@ -808,6 +849,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn resting_inventory_rejects_offscreen_giant_before_geometry_preparation() {
+        let mut r=Renderer::new();
+        let s=SnakeRecord {id:0,generation:1,alive:1,radius:18.0,segment_count:6000,inv_count:3,inv_kind:[1,2,3],inv_life:[255;3],..Default::default()};
+        let body=vec![SegmentRecord {x:5000.0,y:3000.0,previous_x:4990.0,previous_y:3000.0};6000];
+        let info=FrameInfo {tick:600,simulation_time:20.0,world_width:8000.0,world_height:4000.0,..Default::default()};
+        let p=Params {viewport_width:1000.0,viewport_height:1000.0,scale_x:1.0,scale_y:1.0,interpolation:1.0,presentation_time:20.0,deadly_walls:1,..Default::default()};
+        let marker=P::new(-99.0,-98.0);r.points.fill(marker);r.mapped.fill(marker);r.normals.fill(marker);r.brightness.fill(77);
+        assert_eq!(r.build_shader(&info,&[s],&body,&[],&[],&[],&p,&mut []).vertex_count,0);
+        assert!(r.points.iter().all(|&v|v==marker));assert!(r.mapped.iter().all(|&v|v==marker));
+        assert!(r.normals.iter().all(|&v|v==marker));assert!(r.brightness.iter().all(|&v|v==77));
+        // Stash flight from a visible origin still admits the offscreen body.
+        let event=EventRecord {tick:601,kind:14,snake_id:0,generation:1,other_snake_id:1,x:100.0,y:100.0,..Default::default()};
+        let info=FrameInfo {tick:601,simulation_time:601.0/30.0,..info};let p=Params {presentation_time:info.simulation_time,..p};
+        let mut output=[ShaderVertex::default();64];
+        let n=r.build_shader(&info,&[s],&body,&[],&[event],&[],&p,&mut output).vertex_count;
+        assert!(output[..n].iter().any(|v|v.params[0]==26));assert_ne!(r.points[0],marker);
     }
 
     #[test]

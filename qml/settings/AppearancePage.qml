@@ -206,9 +206,21 @@ Kirigami.ScrollablePage {
             QQC2.CheckBox {
                 Kirigami.FormData.label: qsTr("Rules:")
                 visible: page.visual === "snakes"
+                id: powerUpsBox
                 text: qsTr("Power-ups")
                 checked: page.config.snakePowerUps
                 onToggled: page.settings.write("snakePowerUps", checked)
+            }
+            RowLayout {
+                visible: page.visual === "snakes"
+                Item { Layout.preferredWidth: powerUpsBox.indicator.width + powerUpsBox.spacing }
+                QQC2.CheckBox {
+                    objectName: "snakeStorePowerUpsBox"
+                    text: qsTr("Snakes save power-ups for later")
+                    enabled: powerUpsBox.checked
+                    checked: page.config.snakeStorePowerUps
+                    onToggled: page.settings.write("snakeStorePowerUps", checked)
+                }
             }
             QQC2.CheckBox {
                 visible: page.visual === "snakes" && Catalog.snakeWorldEventsAvailable

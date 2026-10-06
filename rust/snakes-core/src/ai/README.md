@@ -1131,8 +1131,9 @@ candidate still competes against ordinary controls under physical safety checks.
 Active Magnet increases food-density preference and avoids starting unrelated
 hunts. Phase valuation prefers trapped states and nearby larger rivals; its
 existing otherwise-lethal crossing and first-tangible-sweep safety logic remains.
-Activation is immediate, with no inventory: preserving an effect means avoiding
-premature replacement during its current window, not delaying activation.
+With storage disabled, activation is immediate: preserving an effect means
+avoiding premature replacement during its current window. The default-on
+inventory rules below supersede that legacy policy.
 
 Production uses existing fixed scratch/grid/rival rows. No mechanics, spawning,
 forecast code, dependencies, C ABI, renderer or C++ files changed.
@@ -1697,19 +1698,35 @@ Burst payment cutoffs also preserve the candidate's physical body length:
 Nova cancellation and Surge forgiveness cannot erase unpaid segments from
 future deposited-self occupancy or reply barriers.
 
-Wall-turn reserves apply after a sampled control settles and at its horizon
-endpoint. A rate-limited turn checks its actual arc against the wall on every
-movement instead: applying the inflated reserve halfway through an inward arc
-can truncate a physically safe escape and favor a shallow turn into a corner.
-When no candidate completes the horizon, emergency ranking first preserves a
-positive safety prefix with one turning circle that clears the arena walls.
-Coupled corners always check: separate per-axis escapes can require opposite
-turns and cannot establish that corner continuation. V2 also checks single-wall
-bands when every sampled prefix is shorter than one physical half-turn. This
-prevents repeated emergency reversals from spending the last inward turn while
-preserving the body/area ordering of longer checked prefixes. The bounded
-first-step check uses the cached candidate motion and stack storage; ordinary
-complete-horizon ranking and Classic single-wall behavior are unchanged.
+Deadly-wall reachability is a shared candidate admission invariant, independent
+of strategy, utility, rollout length and retained-plan cadence. The last body-checked endpoint must preserve a constructive wall
+exit: one complete turning circle inside all four inset walls, or a checked
+straight/constant-radius inward arc followed by a straight exit into an interior
+where both circles fit. A body-checked rollout ending in that reachable set is also an immediate
+checked exit, even when the conservative circle bound at the first movement
+rejects a legal inward arc. Arc endpoints and cardinal extrema are checked together;
+independent per-axis escapes cannot certify a corner. Phase never bypasses walls.
+The circles use the exact rotate-then-move centre shift and discrete radius,
+with the half-head-radius/2px wall band. Continuous arc proofs retain one tick
+of motion as a discretisation bound. Motion caches bound turning
+radius through boost payments, expiry, Frost thaw and Nightfall/dawn.
+Suffix envelopes discard completed bursts/effects at the endpoint; endpoint
+pickups and inventory wind-up use their next movement's actual limits too.
+
+This replaces conditional emergency wall ranking. The existing conservative
+settled-control turnaround reserve remains an ordinary forecast bound; it no
+longer decides whether a wall exit is admissible. All direct, retained, routing/escape, attack, race, field and inventory
+use controls pass the same rollout gate. An unsafe distant endpoint backs off one checked sweep, or retreats
+to its body-checked, wall-reachable first movement and cannot certify a full
+continuation or admit inventory use. Admission precedes body/area/utility
+ranking; retained controls cannot skip it. If an externally supplied pose has
+no wall-reachable sampled control, emergency ordering maximises the coupled discrete-circle wall margin before
+body-prefix utility: the invariant does not prove recovery from impossible initial poses,
+unknown future pickups or body-enclosed traps. The helper is constant cost,
+uses no heap and only evaluates two bounded arcs on the near-wall cold path.
+When all geometric certificates are exhausted, the signed coupled-circle
+margin preserves inward recovery before body-prefix utility.
+
 Starfall's field priority is 7.5 strategic units (135 after the existing prism
 normalization), preserving crowd participation with the safer emergency routing.
 
@@ -1718,3 +1735,31 @@ The 0.17.0 advisory fixes keep Nightfall's changing motion throughout the
 bound daylight speed and turn together. After those corrections, field
 priority was rebalanced from 8 to 7.5 to preserve the three-seed non-contest
 death gate while retaining at least four arrivals per shower on average.
+
+## Power-up inventory (0.18.0, ABI v4)
+
+Storage defaults on and leaves Classic unchanged. Free inventory slots make
+capsules valuable without replacing an active effect; full inventories give
+capsules zero race value. Tick clocks and all forecasts use fixed storage.
+The controller returns held-slot selection through `use_request`; the C ABI
+uses steering `actions=slot+1`. Accepted requests have a four-tick wind-up and
+30-tick spacing. Phase remains corporeal throughout wind-up; forecasts include
+activation, replacement, effect expiry, free Surge burst payments, and Frost
+victim motion at the activation endpoint. Held Frost preserves the active effect.
+
+Ordinary use decisions run every three ticks, staggered by snake ID. Imminent
+collision/Trapped Phase checks run each tick. Phase is saved for escape or a
+blocked offensive route; Surge is used for closing hunters, dangerous pockets,
+contested arrivals and cutoffs; Frost for clustered eligible rivals or a
+closing hunter; Venom for a behind-the-rear approach with a checked continuation;
+Magnet for a food-rich or contested patch. Final-150-tick items gain priority,
+with context-limited fallbacks for Venom/Frost and no open-space Phase fallback.
+Offensive uses scale with aggression. A proposed use must complete the current
+physical safety horizon, including wind-up and any required post-bite exit,
+and recheck endpoint space with the changed effect. Phase use extends the
+proof through its first tangible movements rather than stopping while ghosted.
+
+`desktop_diag` writes `.inventory.csv`: per-kind stores, activations, fizzles,
+drops and situation counts. Its stdout also reports trapped Phase activations,
+one-second same-generation survival and deaths with unused held Phase. These
+are diagnostic observations, not proofs of a causal rescue or guaranteed safety.

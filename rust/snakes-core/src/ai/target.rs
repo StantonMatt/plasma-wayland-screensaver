@@ -53,11 +53,11 @@ impl Contact {
         let item = f.id & ITEM_BIT != 0;
         let ordinary = s.radius * if item { 1.3 } else { 3.0 } + f.size;
         let magnet = if !item {s.radius * effects::modifiers(effects::EffectKind::Magnet as u8,1).food_reach + f.size} else {ordinary};
-        Self { kind:f.kind,zone:f.id==super::events::ID,ordinary, magnet, effects:track,item,alive:s.alive,guarding:s.face.guarding,ready_step:if item || f.kind==crate::FoodKind::PrismSeed {f.motion_ticks as usize} else {0},
+        Self { kind:f.kind,zone:f.id==super::events::ID,ordinary, magnet, effects:track,item,alive:s.alive,guarding:s.face.guarding && !track.store,ready_step:if item || f.kind==crate::FoodKind::PrismSeed {f.motion_ticks as usize} else {0},
             claimed: !item && f.vacuum_owner == s.id as i32,
             available: f.kind!=crate::FoodKind::Meteor && (item || f.vacuum_owner < 0 || f.vacuum_owner == s.id as i32) }
     }
-    pub(super) fn with_guard(mut self,guarding:bool)->Self {self.guarding=guarding;self}
+    pub(super) fn with_guard(mut self,guarding:bool)->Self {self.guarding=guarding && !self.effects.store;self}
     #[inline]
     pub(super) fn reach(self, step: usize) -> f64 {
         self.reach_with(self.effects.before(step))
@@ -141,6 +141,12 @@ impl super::AiController {
     /// bodies, scratch storage or RNG are needed.
     pub(super) fn capsule_value(&self,w:&World,s:SnakeView<'_>,item:&crate::Item,eta:f64)->f64 {
         use effects::EffectKind;
+        if w.config().store_power_ups {
+            if s.inventory.count>=3 {return 0.0;}
+            // Storage preserves the active effect and makes every kind useful.
+            let duplicates=s.inventory.kinds.iter().filter(|&&k|k==item.kind as u8).count();
+            return (145.0-duplicates as f64*25.0)/(1.0+eta*0.03);
+        }
         let id=s.id as usize;
         let density=self.spatial.cluster_weight(self.spatial.key(item.position)).min(12.0);
         let mut useful=0.0_f64;
@@ -190,7 +196,7 @@ mod tests {
     use super::*;
     use crate::{ai::{AiController,State}, controller::Controller, Config, Item, RuleSet};
     fn arena()->World {
-        let mut w=World::diagnostic_arena(Config {width:1600.0,height:1000.0,
+        let mut w=World::diagnostic_arena(Config {store_power_ups:false,width:1600.0,height:1000.0,
             density:0.0,intelligence:100.0,rules:RuleSet::V2,self_collisions:true,
             deadly_walls:true,..Config::default()},
             &[(Point{x:400.0,y:400.0},0.0,48,0.9)],&[Point{x:550.0,y:400.0}]).unwrap();
@@ -240,7 +246,7 @@ mod tests {
     }
     #[test]
     fn capsule_race_compares_turn_aware_arrivals_and_rejects_a_losing_rush() {
-        let mut w=World::diagnostic_arena(Config {width:1600.0,height:1000.0,density:0.0,
+        let mut w=World::diagnostic_arena(Config {store_power_ups:false,width:1600.0,height:1000.0,density:0.0,
             rules:RuleSet::V2,self_collisions:true,..Config::default()},&[
             (Point{x:710.0,y:400.0},0.0,24,0.9),
             (Point{x:710.0,y:425.0},0.0,24,0.9)],&[]).unwrap();
@@ -254,7 +260,7 @@ mod tests {
     }
     #[test]
     fn larger_capsule_contender_can_block_an_approaching_rival() {
-        let mut w=World::diagnostic_arena(Config {width:1600.0,height:1000.0,density:0.0,
+        let mut w=World::diagnostic_arena(Config {store_power_ups:false,width:1600.0,height:1000.0,density:0.0,
             rules:RuleSet::V2,intelligence:100.0,self_collisions:true,..Config::default()},&[
             (Point{x:800.0,y:495.0},std::f64::consts::FRAC_PI_2,72,0.9),
             (Point{x:870.0,y:525.0},std::f64::consts::PI,24,0.9)],&[]).unwrap();
@@ -273,7 +279,7 @@ mod tests {
     }
     #[test]
     fn a_capsule_does_not_inherit_the_previous_hunts_steering_goal() {
-        let mut w=World::diagnostic_arena(Config {width:1600.0,height:1000.0,density:0.0,
+        let mut w=World::diagnostic_arena(Config {store_power_ups:false,width:1600.0,height:1000.0,density:0.0,
             rules:RuleSet::V2,intelligence:100.0,self_collisions:true,..Config::default()},&[
             (Point{x:800.0,y:450.0},std::f64::consts::FRAC_PI_2,72,0.9),
             (Point{x:1070.0,y:525.0},std::f64::consts::PI,24,0.9)],&[]).unwrap();
