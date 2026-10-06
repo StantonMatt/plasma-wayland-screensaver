@@ -4,6 +4,8 @@
 #include "animationstate.h"
 
 #include <QObject>
+#include <QElapsedTimer>
+#include <QSet>
 #include <QHash>
 #include <QPointer>
 #include <QRect>
@@ -29,11 +31,13 @@ public:
     bool show();
     void hide();
     bool isVisible() const;
+    bool inputGraceActive() const;
     void setDeveloperMode(bool enabled);
 
 Q_SIGNALS:
     void inputDetected();
     void overlayUnavailable();
+    void teardownCompleted();
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -52,6 +56,7 @@ private:
     void advanceSnakeSimulation(QScreen *screen, qint64 presentationNanoseconds);
     void retireView(QQuickView *view);
     void reclaimReleasedMemory();
+    void finishTeardown();
     bool isDismissEvent(const QEvent *event) const;
 
     Configuration *m_configuration;
@@ -68,6 +73,9 @@ private:
     QScreen *m_ballArenaScreen = nullptr;
     qint64 m_animationEpochMs = 0;
     int m_pendingViewDeletions = 0;
+    QElapsedTimer m_inputGraceTimer;
+    QSet<QQuickView *> m_mappingViews;
+    bool m_teardownPending = false;
     bool m_visible = false;
     bool m_sharedAnimationActive = false;
     bool m_developerMode = false;

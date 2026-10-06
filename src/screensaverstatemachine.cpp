@@ -27,6 +27,10 @@ void ScreensaverStateMachine::idleTimeoutReached()
 
 void ScreensaverStateMachine::previewRequested()
 {
+    if (m_state == State::Dismissing) {
+        m_previewPending = true;
+        return;
+    }
     if (m_state != State::Waiting) {
         return;
     }
@@ -44,22 +48,32 @@ void ScreensaverStateMachine::activationSucceeded()
 void ScreensaverStateMachine::activationFailed()
 {
     if (m_state == State::Activating) {
-        setState(State::Waiting);
+        activityDetected();
     }
 }
 
 void ScreensaverStateMachine::activityDetected()
 {
-    if (m_state == State::Waiting) {
+    if (m_state == State::Waiting || m_state == State::Dismissing) {
         return;
     }
-    setState(State::Waiting);
+    setState(State::Dismissing);
     Q_EMIT dismissalRequested();
 }
 
 void ScreensaverStateMachine::stop()
 {
+    m_previewPending = false;
     activityDetected();
+}
+
+void ScreensaverStateMachine::teardownCompleted()
+{
+    if (m_state != State::Dismissing) return;
+    const bool preview = m_previewPending;
+    m_previewPending = false;
+    setState(State::Waiting);
+    if (preview) previewRequested();
 }
 
 void ScreensaverStateMachine::setState(State state)

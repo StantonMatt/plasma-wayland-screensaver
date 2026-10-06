@@ -211,7 +211,9 @@ target_link_libraries(test-applicationcontroller PRIVATE GraphicsBackend SnakeMa
     LayerShellQt::Interface SnakesCore::snakes_core)
 add_test(NAME application-controller COMMAND test-applicationcontroller
     settingsQmlDependenciesAreAvailable reportsRealInhibitorFailureOnlyForPreview exposesReactiveMonitorCount
-    settingsWindowLoadsFromResources mapsTechnicalInhibitorErrors busyPreviewReportsFailure updateCenterReportsDestination)
+    settingsWindowLoadsFromResources mapsTechnicalInhibitorErrors busyPreviewReportsFailure updateCenterReportsDestination
+    logsActivationSourceAndDismissalReason dismissalGatesIdleAndPreview freshIdleIntervalResetsOnResume freshIntervalAloneDoesNotActivate mappingResumeDoesNotDismiss
+    pendingResumeRearmIsInvalidated teardownReconcilesIdleConfiguration)
 add_test(NAME application-controller-no-screens COMMAND test-applicationcontroller
     -platform "offscreen:configfile=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/offscreen-no-screens.json"
     noUsableScreenReportsPreviewFailure)

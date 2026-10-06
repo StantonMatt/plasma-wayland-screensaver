@@ -56,6 +56,8 @@ private Q_SLOTS:
     void scheduleIdleTimeout();
 
 private:
+    void requestDismissal(const char *reason);
+
     Configuration m_configuration;
     IdleMonitor m_idleMonitor;
     Inhibitor m_inhibitor;
@@ -64,5 +66,7 @@ private:
     std::unique_ptr<QQmlApplicationEngine> m_settingsEngine;
     bool m_activationIsPreview = false;
     bool m_debugPreviewPending = false;
-    bool m_waitForIdleResumeOnDismissal = false;
+    bool m_requireFreshIdleInterval = false;
+    bool m_quitting = false;
+    const char *m_dismissalReason = "activity";
 };

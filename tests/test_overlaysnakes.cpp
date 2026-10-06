@@ -5,6 +5,8 @@
 #include "configuration.h"
 #include "presentationclock.h"
 #include <QGuiApplication>
+#include <QMouseEvent>
+#include <QKeyEvent>
 #include <QQuickView>
 #include <QQmlExpression>
 #include <QQmlContext>
@@ -17,6 +19,77 @@ class OverlaySnakesTest final : public QObject
 {
     Q_OBJECT
 private Q_SLOTS:
+    void mappingMotionHasGraceButDeliberateInputDismisses()
+    {
+        QTemporaryDir dir;
+        Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
+        settings.setVisualModule(QStringLiteral("none"));
+        OverlayManager manager(&settings);
+        QVERIFY(manager.show());
+        QSignalSpy input(&manager, &OverlayManager::inputDetected);
+        auto *view = manager.m_views.value(QGuiApplication::primaryScreen());
+        QVERIFY(view);
+        QMouseEvent motion(QEvent::MouseMove, QPointF(20, 20), QPointF(20, 20),
+                           Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        QVERIFY(manager.inputGraceActive());
+        QVERIFY(!manager.eventFilter(view, &motion));
+        QCOMPARE(input.count(), 0);
+        QKeyEvent key(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QVERIFY(manager.eventFilter(view, &key));
+        QCOMPARE(input.count(), 1);
+        QTRY_VERIFY(view->isExposed());
+        // Exercise the final output's asynchronous mapping completion.
+        manager.m_mappingViews.insert(view);
+        QEvent expose(QEvent::Expose);
+        manager.eventFilter(view, &expose);
+        QVERIFY(manager.m_mappingViews.isEmpty());
+        QVERIFY(manager.inputGraceActive());
+        manager.eventFilter(view, &motion);
+        QCOMPARE(input.count(), 1);
+        QTRY_VERIFY(!manager.inputGraceActive());
+        QVERIFY(manager.eventFilter(view, &motion));
+        QCOMPARE(input.count(), 2);
+        QSignalSpy teardown(&manager, &OverlayManager::teardownCompleted);
+        manager.hide();
+        QVERIFY(manager.m_pendingViewDeletions > 0);
+        QVERIFY(!manager.show());
+        QCOMPARE(teardown.count(), 0);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCOMPARE(manager.m_pendingViewDeletions, 0);
+        QCOMPARE(teardown.count(), 0);
+        QTRY_COMPARE(teardown.count(), 1);
+        QVERIFY(manager.show());
+        manager.hide();
+        QTRY_COMPARE(teardown.count(), 2);
+    }
+
+    void teardownWaitsForEveryRetiredView()
+    {
+        QTemporaryDir dir;
+        Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
+        settings.setVisualModule(QStringLiteral("none"));
+        OverlayManager manager(&settings);
+        QVERIFY(manager.show());
+        auto *view = manager.m_views.value(QGuiApplication::primaryScreen());
+        QVERIFY(view);
+        // Include a view already retired by output removal, in addition to the
+        // output still visible when dismissal starts. All are native offscreen.
+        auto *removedView = new QQuickView;
+        removedView->create();
+        manager.retireView(removedView);
+        QSignalSpy teardown(&manager, &OverlayManager::teardownCompleted);
+        manager.hide();
+        QCOMPARE(manager.m_pendingViewDeletions, 2);
+        QCoreApplication::sendPostedEvents(removedView, QEvent::DeferredDelete);
+        QCOMPARE(manager.m_pendingViewDeletions, 1);
+        QCoreApplication::processEvents();
+        QCOMPARE(teardown.count(), 0);
+        QVERIFY(!manager.show());
+        QCoreApplication::sendPostedEvents(view, QEvent::DeferredDelete);
+        QCOMPARE(manager.m_pendingViewDeletions, 0);
+        QTRY_COMPARE(teardown.count(), 1);
+    }
+
     void reducedMotionPausesSnakes_data()
     {
         QTest::addColumn<QString>("behavior");
