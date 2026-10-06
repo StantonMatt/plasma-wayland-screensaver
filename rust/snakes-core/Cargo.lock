@@ -4,4 +4,4 @@ version = 4
 
 [[package]]
 name = "snakes-core"
-version = "0.17.1"
+version = "0.18.0"

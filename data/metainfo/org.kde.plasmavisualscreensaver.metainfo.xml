@@ -20,6 +20,13 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.18.0" date="2026-10-06">
+      <description>
+        <p>Snakes store up to three power-ups as gems on their neck and use them when it matters: Phase to escape traps, Surge to win races and cut-offs, Frost when rivals bunch up, Venom to bite, and Magnet near food.</p>
+        <p>Stored items expire after a minute and drop on death. Adds the default-on “Snakes save power-ups for later” setting.</p>
+        <p>Gives Surge a clearer bow wave, slipstream and yellow contrail, and improves wall avoidance.</p>
+      </description>
+    </release>
     <release version="0.17.1" date="2026-10-05">
       <description>
         <p>Stops the screensaver restarting repeatedly right after dismissal, which could leave another app's window drawing stale frames on a monitor.</p>
