@@ -9,6 +9,7 @@
 #include <QCommandLineParser>
 #include <QDBusConnection>
 #include <QDBusInterface>
+#include <QDebug>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QTimer>
@@ -92,10 +93,25 @@ int main(int argc, char *argv[])
         if (!valid || duration <= 0 || duration > std::numeric_limits<int>::max()) return 1;
         Configuration configuration;
         OverlayManager overlays(&configuration);
-        QObject::connect(&app, &QCoreApplication::aboutToQuit, &overlays, &OverlayManager::hide);
-        QObject::connect(&overlays, &OverlayManager::overlayUnavailable, &app, &QCoreApplication::quit);
-        if (!overlays.show()) return 1;
-        QTimer::singleShot(int(duration), &app, &QCoreApplication::quit);
+        const char *dismissalReason = "quit";
+        QObject::connect(&app, &QCoreApplication::aboutToQuit, &overlays, [&] {
+            qInfo().noquote() << QStringLiteral("Dismissing screensaver (reason: %1)")
+                                    .arg(QString::fromLatin1(dismissalReason));
+            overlays.hide();
+        });
+        QObject::connect(&overlays, &OverlayManager::overlayUnavailable, &app, [&] {
+            dismissalReason = "output change";
+            app.quit();
+        });
+        qInfo() << "Activating screensaver (source: preview)";
+        if (!overlays.show()) {
+            qInfo() << "Dismissing screensaver (reason: activation failure)";
+            return 1;
+        }
+        QTimer::singleShot(int(duration), &app, [&] {
+            dismissalReason = "preview end";
+            app.quit();
+        });
         return app.exec();
     }
 

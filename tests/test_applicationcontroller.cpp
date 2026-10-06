@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "applicationcontroller.h"
+#include <KIdleTime>
 #include <QDesktopServices>
 #include <QFile>
 #include <QGuiApplication>
@@ -18,6 +19,25 @@ class ApplicationControllerTest final : public QObject
     Q_OBJECT
     QUrl m_openedRelease;
     int m_releaseCount = 0;
+
+    static void observeResumeWatching(IdleMonitor &monitor, bool &watching, int &armCount)
+    {
+        const auto setWatching = monitor.m_setResumeWatching;
+        monitor.m_setResumeWatching = [setWatching, &watching, &armCount](bool enabled) {
+            setWatching(enabled);
+            watching = enabled;
+            if (enabled) ++armCount;
+        };
+    }
+
+    static void backendResume(IdleMonitor &monitor)
+    {
+        Q_EMIT KIdleTime::instance()->resumingFromIdle();
+        // Mirror KIdleTime's private handler: cancellation happens after all
+        // direct resume subscribers return. The probe observes the real calls,
+        // even though the offscreen platform has no poller to deliver resumes.
+        monitor.m_setResumeWatching(false);
+    }
 public Q_SLOTS:
     void captureReleasePage(const QUrl &url)
     {
@@ -47,8 +67,9 @@ private Q_SLOTS:
         QVERIFY(!controller.screensaverActive());
         Q_EMIT controller.m_inhibitor.failed(QStringLiteral("stale response"));
         QCOMPARE(failed.count(), 1);
+        QTRY_COMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Waiting);
         controller.m_stateMachine.idleTimeoutReached();
-        QTRY_VERIFY(!controller.screensaverActive());
+        QTRY_COMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Waiting);
         QCOMPARE(failed.count(), 1);
         controller.Preview();
         QTRY_COMPARE(failed.count(), 2);
@@ -108,6 +129,248 @@ private Q_SLOTS:
         QCOMPARE(failed.constFirst().constFirst().toString(), QStringLiteral("The screensaver is already running."));
         QCOMPARE(controller.m_stateMachine.state(), state);
         QVERIFY(!controller.m_debugPreviewPending);
+    }
+
+    void logsActivationSourceAndDismissalReason_data()
+    {
+        QTest::addColumn<bool>("preview");
+        QTest::addColumn<QString>("reason");
+        QTest::newRow("preview-input") << true << QStringLiteral("input");
+        QTest::newRow("idle-input") << false << QStringLiteral("input");
+        QTest::newRow("output-change") << false << QStringLiteral("output change");
+        QTest::newRow("resume") << false << QStringLiteral("idle resume");
+        QTest::newRow("quit") << true << QStringLiteral("quit");
+        QTest::newRow("failure") << true << QStringLiteral("activation failure");
+    }
+
+    void logsActivationSourceAndDismissalReason()
+    {
+        QFETCH(bool, preview);
+        QFETCH(QString, reason);
+        ApplicationController controller;
+        // Keep the real activation wiring and logging. No desktop inhibition
+        // is available on this test's private, nonexistent session bus.
+        disconnect(&controller.m_inhibitor, &Inhibitor::failed, &controller, nullptr);
+        QTest::ignoreMessage(QtInfoMsg, preview ? "Activating screensaver (source: preview)"
+                                               : "Activating screensaver (source: idle)");
+        if (preview) controller.Preview();
+        else controller.m_stateMachine.idleTimeoutReached();
+        QCOMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Activating);
+        if (reason != QStringLiteral("activation failure")) {
+            controller.finishActivation();
+        }
+        const QByteArray message = QStringLiteral("Dismissing screensaver (reason: %1)").arg(reason).toUtf8();
+        QTest::ignoreMessage(QtInfoMsg, message.constData());
+        if (reason == QStringLiteral("input")) Q_EMIT controller.m_overlays.inputDetected();
+        else if (reason == QStringLiteral("output change")) Q_EMIT controller.m_overlays.overlayUnavailable();
+        else if (reason == QStringLiteral("idle resume")) controller.requestDismissal("idle resume");
+        else if (reason == QStringLiteral("quit")) controller.requestDismissal("quit");
+        else controller.failActivation(QStringLiteral("test failure"), QStringLiteral("test failure"));
+        QCOMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Dismissing);
+        QTRY_COMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Waiting);
+        controller.m_idleMonitor.stop();
+    }
+
+    void dismissalGatesIdleAndPreview_data()
+    {
+        QTest::addColumn<bool>("preview");
+        QTest::addColumn<bool>("debug");
+        QTest::newRow("idle") << false << false;
+        QTest::newRow("preview") << true << false;
+        QTest::newRow("debug-preview") << true << true;
+    }
+
+    void dismissalGatesIdleAndPreview()
+    {
+        QFETCH(bool, preview);
+        QFETCH(bool, debug);
+        ApplicationController controller;
+        disconnect(&controller.m_stateMachine, &ScreensaverStateMachine::activationRequested,
+                   &controller, &ApplicationController::activate);
+        QSignalSpy activation(&controller.m_stateMachine, &ScreensaverStateMachine::activationRequested);
+        QSignalSpy teardown(&controller.m_overlays, &OverlayManager::teardownCompleted);
+        controller.Preview();
+        controller.finishActivation(); // Real QQuickView, on CTest's offscreen platform.
+        QCOMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Active);
+        Q_EMIT controller.m_overlays.inputDetected();
+        QCOMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Dismissing);
+        QCOMPARE(teardown.count(), 0);
+        QVERIFY(!controller.m_overlays.show()); // Also guarded at the surface owner.
+        // Shorten only the local timer, preserving the configured interval so
+        // teardown's scheduling reconciliation leaves this deadline intact.
+        controller.m_idleMonitor.m_freshIntervalTimer.start(100);
+        // Offscreen has no KIdleTime poller. Seed only its token, then inject
+        // backend signals through the production connection and timer gate.
+        const int id = 42;
+        controller.m_idleMonitor.m_timeoutId = id;
+        Q_EMIT KIdleTime::instance()->timeoutReached(id, 100); // Already-idle/stale notification.
+        Q_EMIT controller.m_idleMonitor.idleTimeoutReached(); // Dropped while Dismissing.
+        if (preview) {
+            if (debug) controller.PreviewDebug();
+            else controller.Preview();
+        }
+        QCOMPARE(activation.count(), 1);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QCOMPARE(teardown.count(), 0); // Completion is after the destructor unwinds.
+        QTRY_COMPARE(teardown.count(), 1);
+        if (preview) {
+            QCOMPARE(activation.count(), 2);
+            QVERIFY(activation.last().first().toBool());
+            QCOMPARE(controller.m_debugPreviewPending, debug);
+        } else {
+            QCOMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Waiting);
+            QCOMPARE(activation.count(), 1);
+            Q_EMIT KIdleTime::instance()->timeoutReached(id, 100);
+            QCOMPARE(activation.count(), 1);
+            QTRY_COMPARE(activation.count(), 2);
+            QVERIFY(!activation.last().first().toBool());
+        }
+        controller.m_idleMonitor.stop();
+    }
+
+    void freshIdleIntervalResetsOnResume()
+    {
+        bool watching = false;
+        int armCount = 0;
+        IdleMonitor monitor;
+        observeResumeWatching(monitor, watching, armCount);
+        QSignalSpy idle(&monitor, &IdleMonitor::idleTimeoutReached);
+        monitor.start(160, true);
+        const int id = 42;
+        monitor.m_timeoutId = id; // No poller exists on the offscreen platform.
+        Q_EMIT KIdleTime::instance()->timeoutReached(id, 160);
+        QCOMPARE(idle.count(), 0);
+        QTest::qWait(100);
+        QVERIFY(watching);
+        const int previousArmCount = armCount;
+        backendResume(monitor);
+        QVERIFY(!watching);
+        QTRY_VERIFY(watching);
+        QCOMPARE(armCount, previousArmCount + 1);
+        Q_EMIT KIdleTime::instance()->timeoutReached(id, 160);
+        QTest::qWait(100); // Original deadline passed, resumed deadline has not.
+        QCOMPARE(idle.count(), 0);
+        QTRY_COMPARE(idle.count(), 1);
+        monitor.watchForResume(); // Cancel any old timeout and local timer.
+        Q_EMIT KIdleTime::instance()->timeoutReached(id, 160);
+        QCOMPARE(idle.count(), 1);
+    }
+
+    void pendingResumeRearmIsInvalidated_data()
+    {
+        QTest::addColumn<int>("restartInterval");
+        QTest::addColumn<bool>("fresh");
+        QTest::newRow("stop") << -1 << false;
+        QTest::newRow("start-normal") << 2000 << false;
+        QTest::newRow("start-fresh") << 2000 << true;
+    }
+
+    void pendingResumeRearmIsInvalidated()
+    {
+        QFETCH(int, restartInterval);
+        QFETCH(bool, fresh);
+        bool watching = false;
+        int armCount = 0;
+        IdleMonitor monitor;
+        observeResumeWatching(monitor, watching, armCount);
+        monitor.start(1000, true);
+        QTRY_VERIFY(watching);
+        const int previousArmCount = armCount;
+        backendResume(monitor);
+        QVERIFY(!watching);
+        if (restartInterval < 0) monitor.stop();
+        else monitor.start(restartInterval, fresh);
+        QCoreApplication::sendPostedEvents(&monitor, QEvent::MetaCall);
+        QCOMPARE(watching, fresh);
+        // Only the newest fresh start may arm, never the pending old rearm.
+        QCOMPARE(armCount, previousArmCount + (fresh ? 1 : 0));
+        QCOMPARE(monitor.m_timeoutMilliseconds, restartInterval);
+    }
+
+    void teardownReconcilesIdleConfiguration_data()
+    {
+        QTest::addColumn<int>("newMinutes");
+        QTest::newRow("changed-interval") << 3;
+        QTest::newRow("unchanged-interval") << 1;
+    }
+
+    void teardownReconcilesIdleConfiguration()
+    {
+        QFETCH(int, newMinutes);
+        ApplicationController controller;
+        disconnect(&controller.m_stateMachine, &ScreensaverStateMachine::activationRequested,
+                   &controller, &ApplicationController::activate);
+        controller.m_configuration.setIdleMinutes(1);
+        controller.Preview();
+        controller.m_stateMachine.activationSucceeded();
+        controller.requestDismissal("input");
+        QCOMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Dismissing);
+        QCOMPARE(controller.m_idleMonitor.m_freshIntervalTimer.interval(), 60000);
+        const auto timerId = controller.m_idleMonitor.m_freshIntervalTimer.id();
+        controller.m_idleMonitor.m_timeoutId = 42;
+        Q_EMIT KIdleTime::instance()->timeoutReached(42, 60000);
+        controller.m_configuration.setIdleMinutes(newMinutes);
+        controller.m_configuration.save();
+        QCOMPARE(controller.m_idleMonitor.m_timeoutMilliseconds, 60000);
+        Q_EMIT controller.m_overlays.teardownCompleted();
+        QCOMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Waiting);
+        QCOMPARE(controller.m_idleMonitor.m_timeoutMilliseconds, newMinutes * 60000);
+        QCOMPARE(controller.m_idleMonitor.m_freshIntervalTimer.interval(), newMinutes * 60000);
+        QVERIFY(controller.m_idleMonitor.m_freshInterval);
+        QVERIFY(controller.m_idleMonitor.m_freshIntervalTimer.isActive());
+        QVERIFY(controller.m_requireFreshIdleInterval);
+        if (newMinutes == 1) {
+            QCOMPARE(controller.m_idleMonitor.m_freshIntervalTimer.id(), timerId);
+            QVERIFY(controller.m_idleMonitor.m_backendIdle);
+        } else {
+            QVERIFY(controller.m_idleMonitor.m_freshIntervalTimer.id() != timerId);
+            QVERIFY(!controller.m_idleMonitor.m_backendIdle);
+        }
+    }
+
+    void freshIntervalAloneDoesNotActivate()
+    {
+        IdleMonitor monitor;
+        QSignalSpy idle(&monitor, &IdleMonitor::idleTimeoutReached);
+        monitor.start(40, true);
+        const int id = 42;
+        monitor.m_timeoutId = id; // No poller exists on the offscreen platform.
+        QTest::qWait(80);
+        QCOMPARE(idle.count(), 0);
+        Q_EMIT KIdleTime::instance()->timeoutReached(id, 40);
+        QCOMPARE(idle.count(), 1);
+        monitor.stop();
+        Q_EMIT KIdleTime::instance()->timeoutReached(id, 40);
+        QCOMPARE(idle.count(), 1);
+    }
+
+    void mappingResumeDoesNotDismiss()
+    {
+        bool watching = false;
+        int armCount = 0;
+        ApplicationController controller;
+        observeResumeWatching(controller.m_idleMonitor, watching, armCount);
+        disconnect(&controller.m_stateMachine, &ScreensaverStateMachine::activationRequested,
+                   &controller, &ApplicationController::activate);
+        controller.Preview();
+        controller.finishActivation();
+        QVERIFY(controller.m_overlays.inputGraceActive());
+        controller.m_idleMonitor.watchForResume();
+        QTRY_VERIFY(watching);
+        backendResume(controller.m_idleMonitor);
+        QVERIFY(!watching);
+        QCOMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Active);
+        QTRY_VERIFY(watching);
+        // A later compositor-only resume still dismisses after mapping grace.
+        QTRY_VERIFY(!controller.m_overlays.inputGraceActive());
+        backendResume(controller.m_idleMonitor);
+        QVERIFY(!watching);
+        QCOMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Dismissing);
+        QTRY_COMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Waiting);
+        // Dismissal's start(..., true), called within the resume dispatch, also
+        // arms after the backend cancellation and retains the fresh interval.
+        QTRY_VERIFY(watching);
+        QVERIFY(controller.m_idleMonitor.m_freshInterval);
     }
 
     void updateCenterReportsDestination_data()
@@ -176,6 +439,7 @@ private Q_SLOTS:
         QCOMPARE(failed.count(), 1);
         QCOMPARE(failed.constFirst().constFirst().toString(), QStringLiteral("The display couldn't be prepared."));
         QVERIFY(!controller.screensaverActive());
+        QTRY_COMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Waiting);
         controller.m_stateMachine.idleTimeoutReached();
         controller.finishActivation();
         QCOMPARE(failed.count(), 1);

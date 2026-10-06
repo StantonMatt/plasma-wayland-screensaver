@@ -23,8 +23,14 @@ private Q_SLOTS:
         machine.activationSucceeded();
         QCOMPARE(machine.state(), ScreensaverStateMachine::State::Active);
         machine.activityDetected();
-        QCOMPARE(machine.state(), ScreensaverStateMachine::State::Waiting);
+        QCOMPARE(machine.state(), ScreensaverStateMachine::State::Dismissing);
         QCOMPARE(dismissal.count(), 1);
+        machine.idleTimeoutReached();
+        machine.activityDetected();
+        QCOMPARE(activation.count(), 1);
+        QCOMPARE(dismissal.count(), 1);
+        machine.teardownCompleted();
+        QCOMPARE(machine.state(), ScreensaverStateMachine::State::Waiting);
     }
 
     void previewAndFailure()
@@ -35,7 +41,42 @@ private Q_SLOTS:
         QCOMPARE(activation.count(), 1);
         QCOMPARE(activation.first().first().toBool(), true);
         machine.activationFailed();
+        QCOMPARE(machine.state(), ScreensaverStateMachine::State::Dismissing);
+        machine.teardownCompleted();
         QCOMPARE(machine.state(), ScreensaverStateMachine::State::Waiting);
+    }
+
+    void defersPreviewUntilTeardownCompletes()
+    {
+        ScreensaverStateMachine machine;
+        QSignalSpy activation(&machine, &ScreensaverStateMachine::activationRequested);
+        machine.previewRequested();
+        machine.activationSucceeded();
+        machine.activityDetected();
+        machine.previewRequested();
+        machine.previewRequested(); // Coalesce repeated explicit requests.
+        machine.idleTimeoutReached();
+        QCOMPARE(activation.count(), 1);
+        QCOMPARE(machine.state(), ScreensaverStateMachine::State::Dismissing);
+        machine.teardownCompleted();
+        QCOMPARE(activation.count(), 2);
+        QVERIFY(activation.last().first().toBool());
+        QCOMPARE(machine.state(), ScreensaverStateMachine::State::Activating);
+        machine.teardownCompleted(); // Stale completion cannot re-activate.
+        QCOMPARE(activation.count(), 2);
+    }
+
+    void stopCancelsDeferredPreview()
+    {
+        ScreensaverStateMachine machine;
+        QSignalSpy activation(&machine, &ScreensaverStateMachine::activationRequested);
+        machine.previewRequested();
+        machine.activityDetected();
+        machine.previewRequested();
+        machine.stop();
+        machine.teardownCompleted();
+        QCOMPARE(machine.state(), ScreensaverStateMachine::State::Waiting);
+        QCOMPARE(activation.count(), 1);
     }
 
     void ignoresDuplicateTriggers()

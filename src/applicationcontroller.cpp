@@ -24,19 +24,31 @@ ApplicationController::ApplicationController(QObject *parent)
             &m_stateMachine, &ScreensaverStateMachine::idleTimeoutReached);
     connect(&m_idleMonitor, &IdleMonitor::activityResumed, this, [this] {
         if (m_stateMachine.isActive()) {
-            m_waitForIdleResumeOnDismissal = false;
-            m_stateMachine.activityDetected();
+            // Surface mapping can produce a compositor resume without user input.
+            if (m_overlays.inputGraceActive()) {
+                m_idleMonitor.watchForResume();
+                return;
+            }
+            requestDismissal("idle resume");
         } else {
             scheduleIdleTimeout();
         }
     });
     connect(&m_overlays, &OverlayManager::inputDetected, this, [this] {
-        m_waitForIdleResumeOnDismissal = true;
-        m_stateMachine.activityDetected();
+        requestDismissal("input");
     });
     connect(&m_overlays, &OverlayManager::overlayUnavailable, this, [this] {
-        m_waitForIdleResumeOnDismissal = false;
-        m_stateMachine.activityDetected();
+        requestDismissal("output change");
+    });
+    connect(&m_overlays, &OverlayManager::teardownCompleted, this, [this] {
+        m_stateMachine.teardownCompleted();
+        // Reconcile settings saved during Dismissing without restarting an
+        // unchanged interval, then reconsider any idle notification dropped
+        // during a long teardown. Preview takes precedence.
+        if (m_stateMachine.state() == ScreensaverStateMachine::State::Waiting && !m_quitting) {
+            scheduleIdleTimeout();
+            m_idleMonitor.checkIdleTimeout();
+        }
     });
     connect(&m_inhibitor, &Inhibitor::acquired,
             this, &ApplicationController::finishActivation);
@@ -52,9 +64,10 @@ ApplicationController::ApplicationController(QObject *parent)
     connect(&m_configuration, &Configuration::saved,
             this, &ApplicationController::scheduleIdleTimeout);
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this] {
+        m_quitting = true;
+        requestDismissal("quit");
+        m_stateMachine.stop();
         m_idleMonitor.stop();
-        m_overlays.hide();
-        m_inhibitor.release();
     });
 }
 
@@ -120,6 +133,7 @@ void ApplicationController::ShowSettings()
 
 void ApplicationController::Preview()
 {
+    if (m_quitting) return;
     if (m_stateMachine.isActive()) {
         qWarning() << "Preview requested while the screensaver is starting or running";
         Q_EMIT previewFailed(tr("The screensaver is already running."));
@@ -131,6 +145,7 @@ void ApplicationController::Preview()
 
 void ApplicationController::PreviewDebug()
 {
+    if (m_quitting) return;
     if (m_stateMachine.isActive()) {
         qWarning() << "Debug preview requested while the screensaver is starting or running";
         Q_EMIT previewFailed(tr("The screensaver is already running."));
@@ -142,7 +157,10 @@ void ApplicationController::PreviewDebug()
 
 void ApplicationController::Quit()
 {
+    m_quitting = true;
+    requestDismissal("quit");
     m_stateMachine.stop();
+    m_idleMonitor.stop();
     // Defer destruction when invoked by the QML button so the current signal
     // handler can unwind before its engine and window disappear. Destroying the
     // settings window also prevents its hide-on-close handler from vetoing quit.
@@ -178,6 +196,8 @@ QString ApplicationController::openUpdateCenter() const
 
 void ApplicationController::activate(bool preview)
 {
+    qInfo().noquote() << QStringLiteral("Activating screensaver (source: %1)")
+                            .arg(preview ? QStringLiteral("preview") : QStringLiteral("idle"));
     m_activationIsPreview = preview;
     m_overlays.setDeveloperMode(preview && m_debugPreviewPending);
     m_debugPreviewPending = false;
@@ -209,33 +229,37 @@ void ApplicationController::failActivation(const QString &error, const QString &
     qWarning().noquote() << "Screensaver activation failed:" << error;
     const bool preview = m_activationIsPreview;
     m_activationIsPreview = false;
+    m_dismissalReason = "activation failure";
     m_stateMachine.activationFailed();
     if (preview) Q_EMIT previewFailed(userReason);
-    // Do not spin while the current idle interval remains above the threshold.
-    // KIdleTime's already-armed resume notification starts a fresh interval.
+}
+
+void ApplicationController::requestDismissal(const char *reason)
+{
+    if (!m_stateMachine.isActive()) return;
+    m_dismissalReason = reason;
+    m_stateMachine.activityDetected();
 }
 
 void ApplicationController::dismiss()
 {
+    qInfo().noquote() << QStringLiteral("Dismissing screensaver (reason: %1)")
+                            .arg(QString::fromLatin1(m_dismissalReason));
     m_activationIsPreview = false;
-    m_overlays.hide();
-    m_inhibitor.release();
-    if (m_waitForIdleResumeOnDismissal) {
-        m_waitForIdleResumeOnDismissal = false;
-        // Qt can deliver the overlay input before KIdleTime's Wayland backend
-        // observes it. Preserve the resume watch and let activityResumed arm
-        // the next timeout after the compositor has reset its idle clock.
-        m_idleMonitor.clearTimeoutWhileWaitingForResume();
-    } else {
-        scheduleIdleTimeout();
+    m_requireFreshIdleInterval = true;
+    if (!m_quitting) {
+        constexpr int millisecondsPerMinute = 60 * 1000;
+        m_idleMonitor.start(m_configuration.idleMinutes() * millisecondsPerMinute, true);
     }
+    m_inhibitor.release();
+    m_overlays.hide();
 }
 
 void ApplicationController::scheduleIdleTimeout()
 {
-    if (m_stateMachine.state() != ScreensaverStateMachine::State::Waiting) {
+    if (m_quitting || m_stateMachine.state() != ScreensaverStateMachine::State::Waiting) {
         return;
     }
     constexpr int millisecondsPerMinute = 60 * 1000;
-    m_idleMonitor.start(m_configuration.idleMinutes() * millisecondsPerMinute);
+    m_idleMonitor.start(m_configuration.idleMinutes() * millisecondsPerMinute, m_requireFreshIdleInterval);
 }

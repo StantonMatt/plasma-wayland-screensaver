@@ -8,7 +8,7 @@ class ScreensaverStateMachine final : public QObject
     Q_OBJECT
 
 public:
-    enum class State { Waiting, Activating, Active };
+    enum class State { Waiting, Activating, Active, Dismissing };
     Q_ENUM(State)
 
     explicit ScreensaverStateMachine(QObject *parent = nullptr);
@@ -23,6 +23,7 @@ public Q_SLOTS:
     void activationFailed();
     void activityDetected();
     void stop();
+    void teardownCompleted();
 
 Q_SIGNALS:
     void activationRequested(bool preview);
@@ -31,5 +32,6 @@ Q_SIGNALS:
 
 private:
     void setState(State state);
+    bool m_previewPending = false;
     State m_state = State::Waiting;
 };

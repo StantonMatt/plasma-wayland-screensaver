@@ -66,7 +66,11 @@ bool OverlayManager::show()
         return true;
     }
 
+    if (m_teardownPending || m_pendingViewDeletions != 0) return false;
+
     m_visible = true;
+    m_inputGraceTimer.start();
+    qApp->installEventFilter(this);
     m_animationEpochMs = QDateTime::currentMSecsSinceEpoch();
     updateAnimationState();
     const QList<QScreen *> screens = QGuiApplication::screens();
@@ -77,19 +81,15 @@ bool OverlayManager::show()
         hide();
         return false;
     }
-    // Install after the surfaces are created so window-mapping events cannot be
-    // mistaken for user activity. Real input queued during creation is still
-    // delivered after this synchronous method returns.
-    qApp->installEventFilter(this);
     return true;
 }
 
 void OverlayManager::hide()
 {
-    if (!m_visible && m_views.isEmpty()) {
-        return;
-    }
+    if (m_teardownPending) return;
+    m_teardownPending = true;
     m_visible = false;
+    m_mappingViews.clear();
     m_animationState.stop();
     m_ballArenaScreen = nullptr;
     m_sharedAnimationActive = false;
@@ -107,11 +107,29 @@ void OverlayManager::hide()
     for (QQuickView *view : views) {
         retireView(view);
     }
+    if (m_pendingViewDeletions == 0) {
+        QTimer::singleShot(0, this, &OverlayManager::finishTeardown);
+    }
 }
 
 bool OverlayManager::isVisible() const
 {
     return m_visible;
+}
+
+bool OverlayManager::inputGraceActive() const
+{
+    constexpr int mappingGraceMilliseconds = 500;
+    return m_visible && (!m_mappingViews.isEmpty()
+        || (m_inputGraceTimer.isValid() && m_inputGraceTimer.elapsed() < mappingGraceMilliseconds));
+}
+
+void OverlayManager::finishTeardown()
+{
+    if (!m_teardownPending || m_visible || m_pendingViewDeletions != 0) return;
+    m_teardownPending = false;
+    reclaimReleasedMemory();
+    Q_EMIT teardownCompleted();
 }
 
 void OverlayManager::setDeveloperMode(bool enabled)
@@ -264,6 +282,7 @@ bool OverlayManager::addScreen(QScreen *screen)
     connect(view, &QWindow::heightChanged, this, viewportChanged);
     connect(view, &QWindow::xChanged, this, viewportChanged);
     connect(view, &QWindow::yChanged, this, viewportChanged);
+    m_mappingViews.insert(view);
     view->show();
     updateAllViewGeometry();
     return true;
@@ -282,6 +301,7 @@ void OverlayManager::removeScreen(QScreen *screen)
     QQuickView *view = m_views.take(screen);
     m_screenGeometries.remove(screen);
     if (view) {
+        m_mappingViews.remove(view);
         retireView(view);
     }
     if (m_visible && m_views.isEmpty()) {
@@ -315,7 +335,7 @@ void OverlayManager::retireView(QQuickView *view)
         if (m_pendingViewDeletions == 0 && !m_visible) {
             // Run after QQuickView's destructor has joined its Canvas/render
             // workers. Those workers use separate glibc allocation arenas.
-            QTimer::singleShot(0, this, &OverlayManager::reclaimReleasedMemory);
+            QTimer::singleShot(0, this, &OverlayManager::finishTeardown);
         }
     });
     view->deleteLater();
@@ -530,8 +550,18 @@ void OverlayManager::updateViewGeometry(QScreen *screen)
 
 bool OverlayManager::eventFilter(QObject *watched, QEvent *event)
 {
-    Q_UNUSED(watched)
+    if (m_visible && event->type() == QEvent::Expose) {
+        auto *view = qobject_cast<QQuickView *>(watched);
+        if (view && view->isExposed() && m_mappingViews.remove(view)) {
+            // Wayland mapping finishes asynchronously, after show() returns.
+            m_inputGraceTimer.start();
+        }
+    }
     if (m_visible && isDismissEvent(event)) {
+        // Mapping can synthesize pointer/tablet motion. Deliberate key/button,
+        // wheel and touch input remains responsive even during the grace period.
+        if (inputGraceActive() && (event->type() == QEvent::MouseMove
+                                  || event->type() == QEvent::TabletMove)) return false;
         Q_EMIT inputDetected();
         return true;
     }
