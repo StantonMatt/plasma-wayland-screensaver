@@ -29,8 +29,7 @@ impl<C> Observed<C> {
     pub fn begin(&mut self) { self.tactics.fill(Tactics::default()); }
 }
 impl<C: ScoreController> Controller for Observed<C> {
-    fn face_intent(&self,id:u32)->snakes_core::controller::FaceIntent {self.inner.face_intent(id)}
-    fn intent_flags(&self, id: u32) -> Option<u32> { self.inner.intent_flags(id) }
+    fn delegate(&self,_id:u32)->Option<&dyn Controller> {Some(&self.inner)}
     fn steer(&mut self, w: &World, s: SnakeView<'_>) -> Steering {
         let result = self.inner.steer(w, s);
         if let Some(ai) = self.inner.ai() { self.tactics[s.id as usize] = Tactics::observe(ai, s); }
@@ -159,6 +158,7 @@ mod tests {
         struct WallPrey(AiController);
         impl ScoreController for WallPrey {fn ai(&self)->Option<&AiController> {Some(&self.0)}}
         impl Controller for WallPrey {
+            fn delegate(&self,id:u32)->Option<&dyn Controller> {if id==0 {Some(&self.0)} else {None}}
             fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
                 if s.id==0 {self.0.steer(w,s)} else {Steering {desired_angle:0.0,rush:1.0}}
             }
@@ -198,19 +198,45 @@ mod tests {
 }
 
 #[cfg(test)]
-mod face_forwarding_tests {
+mod forwarding_tests {
     use super::*;
     #[test]
-    fn observation_wrapper_preserves_production_face_intent() {
+    fn observation_wrapper_preserves_all_production_hooks() {
         struct Policy;
         impl ScoreController for Policy {fn ai(&self)->Option<&AiController> {None}}
         impl Controller for Policy {
             fn steer(&mut self,_:&World,s:SnakeView<'_>)->Steering {Steering{desired_angle:s.angle,rush:0.0}}
+            fn use_request(&self,_:u32)->u32 {2}
+            fn intent_flags(&self,_:u32)->Option<u32> {Some(123)}
             fn face_intent(&self,_:u32)->snakes_core::controller::FaceIntent {
                 snakes_core::controller::FaceIntent{target_id:77,prey:2,has_target:true,..Default::default()}
             }
         }
         let observed=Observed::new(Policy);let face=observed.face_intent(0);
         assert_eq!(face.target_id,77);assert_eq!(face.prey,2);assert!(face.has_target);
+        assert_eq!(observed.intent_flags(0),Some(123));
+        assert_eq!(observed.use_request(0),2);
+        let nested=Observed::new(observed);
+        assert_eq!(nested.use_request(3),2);assert_eq!(nested.intent_flags(3),Some(123));
+        assert_eq!(nested.face_intent(3).target_id,77);
     }
+    #[test]
+    fn observation_wrapper_matches_inventory_enabled_production_steps() {
+        let cfg=snakes_core::Config {rules:snakes_core::RuleSet::V2,store_power_ups:true,width:3440.0,height:1440.0,density:100.0,trails:100.0,intelligence:100.0,seed:73,..Default::default()};
+        let mut raw=World::new(cfg).unwrap();let mut observed=World::new(cfg).unwrap();
+        let mut ai=AiController::new();let mut wrapper=Observed::new(AiController::new());let mut uses=0;
+        for _ in 0..3600 {
+            raw.step(&mut ai);wrapper.begin();observed.step(&mut wrapper);
+            assert_eq!(raw.rng_state(),observed.rng_state());
+            assert_eq!(raw.frame_events().len(),observed.frame_events().len());
+            for (a,b) in raw.frame_events().zip(observed.frame_events()) {assert_eq!(format!("{a:?}"),format!("{b:?}"));}
+            for (a,b) in raw.snakes().zip(observed.snakes()) {
+                assert_eq!(a.segments,b.segments);assert_eq!(format!("{:?}",a.inventory),format!("{:?}",b.inventory));
+                assert_eq!(a.flags,b.flags);assert_eq!(format!("{:?}",a.face),format!("{:?}",b.face));
+            }
+            uses+=raw.frame_events().filter(|e|e.kind==snakes_core::EventKind::Use && e.duration_ticks>0).count();
+        }
+        assert!(uses>0,"fixture must execute actual production inventory requests");
+    }
+
 }

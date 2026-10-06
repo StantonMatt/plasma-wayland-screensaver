@@ -9,7 +9,7 @@ pub const MAX_CONTENDERS:usize=2;
 pub enum Mood {#[default] Calm, Sleepy, Hunting, Scared, Angry, Happy, Trapped, Dizzy, Frozen}
 #[repr(u8)]
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
-pub enum Glyph {#[default] Alert, Question, Anger, Sleep, Heart}
+pub enum Glyph {#[default] Alert, Question, Anger, Sleep, Heart, Surge, Magnet, Phase, Venom, Frost}
 #[repr(C)]
 #[derive(Clone,Copy,Debug,Default,PartialEq)]
 pub struct Bulge {pub start_tick:u64,pub duration_ticks:u16,pub origin_segment:u16,pub strength:f32}
@@ -66,7 +66,7 @@ impl World {
         }
     }
     pub(super) fn emit_bubble(&mut self,id:usize,glyph:Glyph) {
-        let forced=matches!(glyph,Glyph::Anger|Glyph::Heart);
+        let forced=matches!(glyph,Glyph::Anger|Glyph::Heart|Glyph::Surge|Glyph::Magnet|Glyph::Phase|Glyph::Venom|Glyph::Frost);
         if !forced && self.faces[id].bubble_cooldown>0 {return;}
         let own=self.bubbles().iter().position(|b|b.snake_id==id as u32);
         // Forced emotions replace the owner's bubble, or the oldest global
@@ -200,7 +200,7 @@ impl World {
 mod tests {
     use super::*;
     fn arena()->World {
-        World::diagnostic_arena(Config {rules:RuleSet::V2,density:9.0,self_collisions:false,..Config::default()},
+        World::diagnostic_arena(Config {store_power_ups:false,rules:RuleSet::V2,density:9.0,self_collisions:false,..Config::default()},
             &[(Point{x:400.0,y:300.0},0.0,48,0.9),(Point{x:460.0,y:300.0},0.0,24,0.9),
               (Point{x:500.0,y:350.0},0.0,24,0.9),(Point{x:540.0,y:350.0},0.0,24,0.9)],&[]).unwrap()
     }

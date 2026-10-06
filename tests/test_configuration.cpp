@@ -38,6 +38,7 @@ private Q_SLOTS:
         QCOMPARE(config.snakeDeadlyWalls(), true);
         QCOMPARE(config.snakeLengthLimit(), false);
         QCOMPARE(config.snakePowerUps(), true);
+        QCOMPARE(config.snakeStorePowerUps(), true);
         QCOMPARE(config.snakeWorldEvents(), true);
         QCOMPARE(config.clockMovement(), QStringLiteral("bounce"));
         QCOMPARE(config.clockSpeed(), QStringLiteral("normal"));
@@ -105,6 +106,7 @@ private Q_SLOTS:
             config.setSnakeDeadlyWalls(false);
             config.setSnakeLengthLimit(true);
             config.setSnakePowerUps(false);
+            config.setSnakeStorePowerUps(false);
             config.setSnakeWorldEvents(false);
             config.setShowClock(false);
             config.setClockMovement(QStringLiteral("center"));
@@ -134,6 +136,7 @@ private Q_SLOTS:
         QCOMPARE(loaded.snakeDeadlyWalls(), false);
         QCOMPARE(loaded.snakeLengthLimit(), true);
         QCOMPARE(loaded.snakePowerUps(), false);
+        QCOMPARE(loaded.snakeStorePowerUps(), false);
         QCOMPARE(loaded.snakeWorldEvents(), false);
         QCOMPARE(loaded.showClock(), false);
         QCOMPARE(loaded.clockMovement(), QStringLiteral("center"));
@@ -163,6 +166,7 @@ private Q_SLOTS:
             {QStringLiteral("snakeDeadlyWalls"), false},
             {QStringLiteral("snakeLengthLimit"), true},
             {QStringLiteral("snakePowerUps"), false},
+            {QStringLiteral("snakeStorePowerUps"), false},
             {QStringLiteral("snakeWorldEvents"), false},
             {QStringLiteral("showClock"), false},
             {QStringLiteral("clockSpeed"), QStringLiteral("fast")},
@@ -183,6 +187,7 @@ private Q_SLOTS:
         QCOMPARE(config.snakeDeadlyWalls(), false);
         QCOMPARE(config.snakeLengthLimit(), true);
         QCOMPARE(config.snakePowerUps(), false);
+        QCOMPARE(config.snakeStorePowerUps(), false);
         QCOMPARE(config.snakeWorldEvents(), false);
         QCOMPARE(config.showClock(), false);
         QCOMPARE(config.clockSpeed(), QStringLiteral("fast"));

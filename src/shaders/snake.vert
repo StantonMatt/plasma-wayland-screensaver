@@ -9,6 +9,7 @@ layout(location=2) out vec4 packed;
 layout(location=3) out vec2 screenPosition;
 layout(location=4) out float ribbonLimit;
 layout(location=5) out vec3 waveLight;
+layout(location=6) out float phaseFade;
 layout(std140,binding=0) uniform buf { mat4 matrix; float opacity; float time; vec2 light; float animationTime; float motionScale; float paletteMode; float ambient; } ub;
 // Decode origins at vertices, then interpolate premultiplied light. Decoding
 // interpolated bit fields would mix unrelated flags at replacement wave joins.
@@ -21,17 +22,22 @@ vec3 waveAccent(int k) {
 }
 void main() {
     ribbonLimit=abs(uv.x); screenPosition=position; coord=uv; base=color; packed=params*255.0;
-    waveLight=vec3(0);
-    if(int(packed.x+0.5)==0) {
+    waveLight=vec3(0);phaseFade=1.0;
+    // Phase head kinds 29..255 carry fade independently of taper alpha.
+    int kind=int(packed.x+0.5);
+    if(kind>=29) phaseFade=float(kind-29)/226.0;
+    if(kind==0) {
         int flags=int(packed.z+0.5);
         int origin=((flags>>1)&1)|((flags>>3)&6);
+        bool phaseEntering=((int(packed.y+0.5)>>2)&7)==6;
+        if(phaseEntering) phaseFade=float(origin)/7.0;
         packed.z=float(flags&~50);
         if((flags&128)==0 && packed.w>0.0) {
             vec3 c=mix(color.rgb,vec3(1),max(0.0,0.30-dot(color.rgb,vec3(0.2126,0.7152,0.0722)))*1.1);
             vec3 gold=vec3(1.0,0.847,0.29);
             if((int(packed.y+0.5)&64)!=0) gold=mix(gold,vec3(1),0.85);
             // origin 0 with light: the vertex's own colour (Feast rainbow), barely whitened.
-            vec3 accent=origin>=1 && origin<=5?waveAccent(origin):origin==7?gold:mix(c,vec3(1),origin==0?0.2:0.75);
+            vec3 accent=phaseEntering?waveAccent(3):origin>=1 && origin<=5?waveAccent(origin):origin==7?gold:mix(c,vec3(1),origin==0?0.2:0.75);
             waveLight=accent*(packed.w/255.0);
         }
     }

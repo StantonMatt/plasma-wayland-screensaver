@@ -36,7 +36,7 @@ impl Controller for SeekItem {
 fn phase_first_ai_decision_through_expiry_allocates_nothing() {
     // Acquire a real spawned item through public mechanics; no diagnostic
     // mutation or global spawning policy is needed in this integration test.
-    let mut w = World::diagnostic_arena(Config { rules: RuleSet::V2,
+    let mut w = World::diagnostic_arena(Config { store_power_ups: false, rules: RuleSet::V2,
         deadly_walls: false, self_collisions: false, density: 0.0,
         ..Config::default() }, &[(Point { x: 450.0, y: 450.0 }, 0.0, 24, 0.0)], &[]).unwrap();
     let mut seek = SeekItem;

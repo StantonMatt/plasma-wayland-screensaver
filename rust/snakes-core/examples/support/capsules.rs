@@ -1,20 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Observer work is outside the timed simulation. Targets are sampled at each
 //! actual control call, so deaths cannot erase a contested objective. Spawn
-//! ETA is the unobstructed, turn-aware estimate from pre-movement live heads.
+//! ETA uses live heads before movement for natural spawns, after death for drops.
 //! Magnet extra-reach attribution compares post-movement heads to the original
 //! stationary Spark position, before the first pull moves the food inward.
 use snakes_core::{EventKind, FoodKind, Point, World, MAX_FOOD, MAX_SNAKES, STEP_SECONDS};
 use super::accounting::{Tactics,EFFECT_KIND_COUNT};
 use snakes_core::effects::EffectKind;
+use super::item_lifecycle::{lifecycle,replaces_effect,ItemLifecycle};
 struct Capsule {
     id:u64, kind:u8, position:Point, spawned:u64, eta:f64,
-    targeted:u16, max_contest:usize, contest_ticks:u64, outcome:Option<Option<u32>>, elapsed:f64,
+    targeted:u16, target_generations:[u32;MAX_SNAKES], targeters:usize, max_contest:usize, contest_ticks:u64, outcome:Option<Option<(u32,u32)>>, elapsed:f64,
+}
+impl Capsule {
+    fn target(&mut self,id:usize,generation:u32) {
+        self.targeted|=1<<id;
+        if self.target_generations[id]!=generation {self.targeters+=1;self.target_generations[id]=generation;}
+    }
 }
 #[derive(Clone,Copy,Default)]
 struct Episode {generation:u32,kind:u8,used:bool,extended:bool}
 #[derive(Clone,Copy,Default)]
 struct SpawnSnake {generation:u32,alive:bool,head:Point,angle:f64,radius:f64,speed:f64,turn:f64}
+impl SpawnSnake {
+    fn capture(w:&World,s:snakes_core::SnakeView<'_>)->Self {
+        let (speed,turn)=w.motion_limits(s.id as usize,0.0).unwrap();
+        Self {generation:s.generation,alive:s.alive,head:s.segments.first().map_or(Point::default(),|b|b.current),angle:s.angle,radius:s.radius,speed,turn}
+    }
+}
 #[derive(Clone,Copy)]
 struct FoodProbe {id:u64,position:Point,size:f64,unclaimed:bool,scavenging:bool,stationary:bool}
 #[derive(Default)]
@@ -31,8 +44,7 @@ impl Capsules {
             let id=snake.id as usize;
             self.old_effects[id]=(snake.effect_kind,snake.effect_ticks);
             self.old_boosts[id]=snake.boost_ticks;
-            let (speed,turn)=w.motion_limits(id,0.0).unwrap();
-            self.snakes[id]=SpawnSnake {generation:snake.generation,alive:snake.alive,head:snake.segments.first().map_or(Point::default(),|s|s.current),angle:snake.angle,radius:snake.radius,speed,turn};
+            self.snakes[id]=SpawnSnake::capture(w,snake);
         }
         self.foods.clear();
         for f in w.foods() {
@@ -71,12 +83,18 @@ impl Capsules {
     }
     pub fn after(&mut self,w:&World,tactics:&[Tactics;MAX_SNAKES]) {
         for event in w.frame_events().filter(|e|e.kind==EventKind::ItemSpawn) {
-            let item=w.items().find(|i|i.position==event.position && i.kind as u32==event.other_snake_id);
-            // Pickup can happen on the spawn movement. The monotonic ID can be
-            // recovered from the preceding spawn even if no item survives.
-            let id=item.map_or_else(||self.records.last().map_or(1,|r|r.id+1),|i|i.id);
-            let radius=item.map_or(w.config().base_radius()*2.1,|i|i.radius);
-            let eta=self.snakes.iter().filter(|s|s.alive).map(|s| {
+            // Spawned field items and death drops have landing delays, so
+            // every spawn still has a live ID at this endpoint. Match each ID
+            // once, even if two drop positions/kinds coincide.
+            let item=w.items().find(|i|i.position==event.position && i.kind as u32==event.other_snake_id
+                && !self.records.iter().any(|r|r.id==i.id)).expect("spawn must retain its landing item");
+            let id=item.id;let radius=item.radius;
+            // Drops appear after movement/collisions: the dead donor cannot
+            // be their nearest live collector. Natural spawns precede movement.
+            let spawn_snakes=if lifecycle(event)==ItemLifecycle::Drop {
+                std::array::from_fn(|id|w.snake(id).filter(|s|s.alive).map_or(SpawnSnake::default(),|s|SpawnSnake::capture(w,s)))
+            } else {self.snakes};
+            let eta=spawn_snakes.iter().filter(|s|s.alive).map(|s| {
                 let d=w.displacement(s.head,event.position);
                 let distance=(d.x*d.x+d.y*d.y).sqrt();
                 let bearing=snakes_core::normalize_angle(d.y.atan2(d.x)-s.angle).abs();
@@ -86,12 +104,12 @@ impl Capsules {
                     +if bearing>1.2 && distance<2.0*radius_turn {radius_turn*(bearing-1.2)/s.speed.max(1.0)} else {0.0}
             }).fold(f64::INFINITY,f64::min);
             self.records.push(Capsule {id,kind:event.other_snake_id as u8,position:event.position,
-                spawned:w.tick(),eta,targeted:0,max_contest:0,contest_ticks:0,outcome:None,elapsed:0.0});
+                spawned:w.tick(),eta,targeted:0,target_generations:[0;MAX_SNAKES],targeters:0,max_contest:0,contest_ticks:0,outcome:None,elapsed:0.0});
         }
         for r in self.records.iter_mut().filter(|r|r.outcome.is_none()) {
             let mut count=0;
             for (id,t) in tactics.iter().enumerate() {
-                if t.target==(r.id|(1<<63)) {r.targeted|=1<<id;count+=1;}
+                if self.snakes[id].alive && self.snakes[id].generation==t.generation && t.target==(r.id|(1<<63)) {r.target(id,t.generation);count+=1;}
             }
             r.max_contest=r.max_contest.max(count);
             r.contest_ticks+=u64::from(count>1);
@@ -107,7 +125,7 @@ impl Capsules {
         for (food,id,generation,_,_) in w.consumption_events() {
             if w.snake(id as usize).is_some_and(|s|s.generation==generation) {self.observe_magnet(w,food,id as usize,tactics,true);}
         }
-        for s in w.snakes().filter(|s|s.alive && s.effect_ticks>0) {
+        for s in w.snakes() {
             let id=s.id as usize;
             if self.snakes[id].generation==s.generation && self.old_effects[id].0==1 && self.old_effects[id].1>1 && tactics[id].generation==s.generation {
                 let approaching=tactics[id].prey.is_some_and(|prey| {
@@ -137,23 +155,29 @@ impl Capsules {
         }
     }
     fn observe_event(&mut self,w:&World,event:&snakes_core::FrameEvent) {
-        if matches!(event.kind,EventKind::Pickup|EventKind::ItemExpiry) {
+        let acquisition=lifecycle(event).acquisition();
+        if acquisition || event.kind==EventKind::ItemExpiry {
             // Frame events carry positions/kinds, not item IDs. Resolve
             // only against live records; item placement keeps them apart.
             if let Some(r)=self.records.iter_mut().find(|r|r.outcome.is_none() && r.kind==event.other_snake_id as u8 && r.position==event.position) {
-                r.outcome=Some(if event.kind==EventKind::Pickup {Some(event.snake_id)} else {None});
+                r.outcome=Some(if acquisition {Some((event.snake_id,event.generation))} else {None});
+                if acquisition {self.pickups[event.other_snake_id as usize]+=1;}
                 r.elapsed=(w.tick()-r.spawned) as f64*STEP_SECONDS;
             }
         }
-        if event.kind==EventKind::Pickup {
+        if replaces_effect(event) {
             let id=event.snake_id as usize;let kind=event.other_snake_id as u8;
-            self.pickups[kind as usize]+=1;
-            self.episodes[id]=Episode {generation:w.snake(id).unwrap().generation,kind,..Episode::default()};
+            // Activation starts an effect episode; a held use is not another acquisition.
+            self.episodes[id]=Episode {generation:event.generation,kind,..Episode::default()};
             self.staged[id]=false;self.bursts[id]=0;
         }
         if event.kind==EventKind::EffectExpiry && event.other_snake_id==3 {
             self.phase_expiries+=1;
-            self.clear_phase+=u64::from(w.snake(event.snake_id as usize).is_some_and(|s|s.alive));
+            self.clear_phase+=u64::from(w.snake(event.snake_id as usize).is_some_and(|s|s.alive && s.generation==event.generation));
+        }
+        if event.kind==EventKind::EffectExpiry {
+            let id=event.snake_id as usize;let e=self.episodes[id];
+            if e.generation==event.generation && e.kind as u32==event.other_snake_id {self.episodes[id]=Episode::default();}
         }
         if event.kind==EventKind::Sever {
             self.use_episode(event.other_snake_id as usize,EffectKind::Venom as u8,event.other_generation);
@@ -172,7 +196,7 @@ impl Capsules {
         println!("capsules controller={label} seed={} iq={} walls={} spawned={} picked={picked} expired={expired} pending={pending} targeted={targeted} contested={contested} median_s={median:.3} surge_pickups={} surge_used={} magnet_pickups={} magnet_used={} phase_pickups={} phase_used={} phase_expiries={} phase_clear={} venom_pickups={} venom_used={} surge_staged={} surge_chained={} magnet_extended={}",cfg.seed,cfg.intelligence,if cfg.deadly_walls {"deadly"} else {"wrap"},self.records.len(),self.pickups[1],self.used[1],self.pickups[2],self.used[2],self.pickups[3],self.used[3],self.phase_expiries,self.clear_phase,self.pickups[EffectKind::Venom as usize],self.used[EffectKind::Venom as usize],self.surge_staged,self.surge_chained,self.magnet_extended);
         if trace {
             for r in &self.records {
-                println!("capsule id={} kind={} spawn_tick={} nearest_eta_s={:.3} targeted={} targeters={} max_contest={} contest_ticks={} outcome={} pickup_s={:.3}",r.id,r.kind,r.spawned,r.eta,r.targeted!=0,r.targeted.count_ones(),r.max_contest,r.contest_ticks,match r.outcome {Some(Some(id))=>format!("snake:{id}"),Some(None)=>"expired".into(),None=>"pending".into()},if matches!(r.outcome,Some(Some(_))) {r.elapsed} else {f64::NAN});
+                println!("capsule id={} kind={} spawn_tick={} nearest_eta_s={:.3} targeted={} targeters={} max_contest={} contest_ticks={} outcome={} pickup_s={:.3}",r.id,r.kind,r.spawned,r.eta,r.targeted!=0,r.targeters,r.max_contest,r.contest_ticks,match r.outcome {Some(Some((id,generation)))=>format!("snake:{id}/generation:{generation}"),Some(None)=>"expired".into(),None=>"pending".into()},if matches!(r.outcome,Some(Some(_))) {r.elapsed} else {f64::NAN});
             }
         }
     }
@@ -194,6 +218,74 @@ mod tests {
         (w,c,tactics)
     }
     #[test]
+    fn capsule_targeters_count_distinct_lives_in_a_reused_slot() {
+        let mut r=Capsule {id:1,kind:3,position:Point::default(),spawned:0,eta:0.0,
+            targeted:0,target_generations:[0;MAX_SNAKES],targeters:0,max_contest:0,contest_ticks:0,outcome:None,elapsed:0.0};
+        r.target(0,7);r.target(0,7);assert_eq!(r.targeters,1);
+        r.target(0,8);r.target(1,7);assert_eq!(r.targeters,3);
+        assert_eq!(r.targeted,3,"slot mask remains useful for the historical trace");
+    }
+    #[test]
+    fn death_drop_keeps_its_real_id_and_excludes_the_dead_donor_from_eta() {
+        use snakes_core::controller::{Controller,Steering};
+        struct Collector;
+        impl Controller for Collector {
+            fn steer(&mut self,w:&World,s:snakes_core::SnakeView<'_>)->Steering {
+                let angle=if s.inventory.count>0 {0.0} else {w.items().next().map_or(s.angle+0.12,|i| {let d=w.displacement(s.segments[0].current,i.position);d.y.atan2(d.x)})};
+                Steering {desired_angle:angle,rush:0.0}
+            }
+        }
+        let mut w=World::diagnostic_arena(snakes_core::Config {rules:snakes_core::RuleSet::V2,
+            width:1600.0,height:1000.0,density:0.0,deadly_walls:true,self_collisions:false,world_events:false,seed:73,..Default::default()},
+            &[(Point{x:800.0,y:500.0},0.0,30,0.0)],&[]).unwrap();
+        let mut c=Capsules::new();
+        for _ in 0..5000 {
+            c.before(&w);w.step(&mut Collector);c.after(&w,&[Tactics::default();MAX_SNAKES]);
+            if !w.snake(0).unwrap().alive {break;}
+        }
+        assert!(!w.snake(0).unwrap().alive);
+        let item=w.items().find(|i|i.dropped).expect("fixture must drop held inventory");
+        let record=c.records.iter().find(|r|r.id==item.id).unwrap();
+        assert!(record.eta.is_infinite(),"no live collector remains after the donor dies");
+        assert!(record.outcome.is_none());assert_eq!(record.kind,item.kind as u8);
+    }
+    #[test]
+    fn frost_preserves_effect_episode_and_surge_burst_accounting() {
+        for kind in 1..=4 {for held in [false,true] {
+            let (w,mut c,_)=observer();let generation=w.snake(0).unwrap().generation;
+            c.episodes[0]=Episode {generation,kind,extended:true,..Default::default()};
+            c.staged[0]=true;c.bursts[0]=1;
+            let frost=snakes_core::FrameEvent {kind:EventKind::Pickup,generation,other_snake_id:5,
+                flags:if held {snakes_core::event_flags::HELD_ACTIVATION} else {0},..Default::default()};
+            c.observe_event(&w,&frost);
+            assert_eq!((c.episodes[0].kind,c.episodes[0].generation,c.episodes[0].extended,c.staged[0],c.bursts[0]),(kind,generation,true,true,1));
+            c.use_episode(0,kind,generation);c.observe_event(&w,&frost);c.use_episode(0,kind,generation);
+            assert_eq!(c.used[kind as usize],1,"Frost neither loses nor duplicates use");
+            c.observe_event(&w,&snakes_core::FrameEvent {kind:EventKind::EffectExpiry,other_snake_id:kind as u32,..frost});
+            assert_eq!(c.episodes[0].kind,0);
+        }}
+    }
+    #[test]
+    fn inventory_stash_is_one_acquisition_and_held_use_only_starts_an_episode() {
+        let (w,mut c,_)=observer();let generation=w.snake(0).unwrap().generation;
+        let position=Point{x:400.0,y:300.0};
+        for id in [1,2] {
+            c.records.push(Capsule {id,kind:1,position,spawned:w.tick(),eta:0.0,
+                targeted:0,target_generations:[0;MAX_SNAKES],targeters:0,max_contest:0,contest_ticks:0,outcome:None,elapsed:0.0});
+        }
+        let stash=snakes_core::FrameEvent {kind:EventKind::Stash,other_snake_id:1,position,snake_id:0,generation,..Default::default()};
+        c.observe_event(&w,&stash);
+        assert_eq!(c.pickups[1],1);assert_eq!(c.records[0].outcome,Some(Some((0,generation))));
+        assert_eq!(c.episodes[0].kind,2,"stashing must preserve the active effect episode");
+        let use_event=snakes_core::FrameEvent {kind:EventKind::Pickup,flags:snakes_core::event_flags::HELD_ACTIVATION,..stash};
+        c.observe_event(&w,&use_event);
+        assert_eq!(c.pickups[1],1);assert_eq!(c.records[1].outcome,None,"held use cannot consume a colocated field record");
+        assert_eq!(c.episodes[0].kind,1);assert_eq!(c.episodes[0].generation,generation);
+        c.observe_event(&w,&snakes_core::FrameEvent {kind:EventKind::Pickup,flags:0,..stash});
+        assert_eq!(c.pickups[1],2);assert_eq!(c.records[1].outcome,Some(Some((0,generation))));
+        c.report("test",w.config(),false);
+    }
+    #[test]
     fn every_effect_kind_resolves_and_counts_pickups_including_venom() {
         let (w,mut c,_)=observer();
         for raw in 1..EFFECT_KIND_COUNT {
@@ -201,12 +293,12 @@ mod tests {
             assert_eq!(kind as usize,raw);
             let position=Point{x:raw as f64,y:100.0};
             c.records.push(Capsule {id:raw as u64,kind:kind as u8,position,spawned:w.tick(),eta:0.0,
-                targeted:0,max_contest:0,contest_ticks:0,outcome:None,elapsed:0.0});
+                targeted:0,target_generations:[0;MAX_SNAKES],targeters:0,max_contest:0,contest_ticks:0,outcome:None,elapsed:0.0});
             c.observe_event(&w,&snakes_core::FrameEvent {kind:EventKind::Pickup,other_snake_id:kind as u32,
-                position,snake_id:0,..Default::default()});
+                position,snake_id:0,generation:w.snake(0).unwrap().generation,..Default::default()});
             assert_eq!(c.pickups[raw],1);
-            assert_eq!(c.records.last().unwrap().outcome,Some(Some(0)));
-            assert_eq!(c.episodes[0].kind,kind as u8);
+            assert_eq!(c.records.last().unwrap().outcome,Some(Some((0,w.snake(0).unwrap().generation))));
+            assert_eq!(c.episodes[0].kind,if kind==EffectKind::Frost {EffectKind::Venom as u8} else {kind as u8});
         }
         for &kind in snakes_core::effects::ENABLED_KINDS {assert!((kind as usize)<EFFECT_KIND_COUNT);}
         c.report("test",w.config(),false); // Includes the resolved-total invariant.
@@ -215,7 +307,7 @@ mod tests {
     fn venom_use_is_attributed_once_to_the_biter_episode_and_generation() {
         let (w,mut c,_)=observer();let generation=w.snake(0).unwrap().generation;
         let pickup=snakes_core::FrameEvent {kind:EventKind::Pickup,other_snake_id:EffectKind::Venom as u32,
-            snake_id:0,..Default::default()};
+            snake_id:0,generation,..Default::default()};
         c.observe_event(&w,&pickup);
         let mut sever=snakes_core::FrameEvent {kind:EventKind::Sever,snake_id:1,other_snake_id:0,
             other_generation:generation+1,..Default::default()};

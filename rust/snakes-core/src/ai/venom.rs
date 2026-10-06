@@ -283,7 +283,7 @@ mod tests {
     fn narrow_local_hunt_visits_wrapped_cells_once_before_its_record_cap() {
         for one_row in [false,true] {
             let mut w=crate::world::venom::tests::fixture(300,200);
-            w.reconfigure(crate::Config {width:480.0,height:80.0,deadly_walls:false,..w.config()}).unwrap();
+            w.reconfigure(crate::Config {store_power_ups:false,width:480.0,height:80.0,deadly_walls:false,..w.config()}).unwrap();
             let mut ai=AiController::new();ai.prepare(&w);
             // Also exercise the supported one-row grid directly. Valid Config
             // geometry gives three rows, where band three repeats the centre.
@@ -487,7 +487,7 @@ mod tests {
         let mut w=crate::world::venom::tests::hunt_fixture();
         // This duel asserts the original personality policy. Full-aggression
         // defenders can counter-hunt instead of exposing the same rear body.
-        w.reconfigure(crate::Config {speed,aggression:50,..w.config()}).unwrap();
+        w.reconfigure(crate::Config {store_power_ups:false,speed,aggression:50,..w.config()}).unwrap();
         let mut ai=AiController::new();let mut bitten=false;let mut exit_until=0;
         for _ in 0..240 {
             w.step(&mut ai);
@@ -502,16 +502,14 @@ mod tests {
     fn aggressive_venom_close_intercept_keeps_an_exit_at_real_speed() {
         struct Attacker {ai:AiController}
         impl Controller for Attacker {
+            fn delegate(&self,id:u32)->Option<&dyn Controller> {if id==0 {Some(&self.ai)} else {None}}
             fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
                 if s.id==0 {self.ai.steer(w,s)} else {Steering {desired_angle:s.angle,rush:0.0}}
-            }
-            fn face_intent(&self,id:u32)->crate::controller::FaceIntent {
-                if id==0 {self.ai.face_intent(id)} else {crate::controller::FaceIntent::default()}
             }
         }
         for speed in [100.0,230.0] {
             let mut w=crate::world::venom::tests::hunt_fixture();
-            w.reconfigure(crate::Config {speed,aggression:100,..w.config()}).unwrap();
+            w.reconfigure(crate::Config {store_power_ups:false,speed,aggression:100,..w.config()}).unwrap();
             // Place the holder within a short checked intercept of the rear
             // half, still outside contact. This tests the offensive strike
             // and exit rather than whether a distant chase wins admission.

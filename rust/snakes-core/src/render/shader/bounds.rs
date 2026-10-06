@@ -99,11 +99,20 @@ mod tests {
         let spark_extent = spark_end + (0.012 + aa) * value("BOUNDS_EFFECT_UNITS");
         assert!(IMPACT >= spark_extent);
         assert!(RING >= 6.0 + (0.012 + aa) * value("BOUNDS_EFFECT_UNITS"));
+        // Magnet opening moves reach from 0 to 9r and narrows its stroke
+        // from .24 to .08r. Its slight intermediate overshoot still
+        // fits the existing 10.1r spark envelope.
+        assert!(SHADER.contains("reach=9.0*(1.0-pow(1.0-opening,3.0))"));
+        for step in 0..=1000 {
+            let opening=step as f64/1000.0;
+            let reach=9.0*(1.0-(1.0-opening).powi(3));
+            let stroke=0.08*(1.0+2.0*(1.0-opening));
+            assert!(MAGNET >= reach+stroke+aa);
+        }
         // Magnet reach 9r plus the compact 1.1r spark halo; angular dashes
         // have no extra radial support. Rim/scan lights remain inside BODY.
-        for expression in ["mask(abs(radius-9.0)-0.08)", "falloff(spark/1.1)",
-            "vec2(cos(a),sin(a))*9.0", "1.05+0.35*hash",
-            "vec2(b,(edge+1.0)*SEG),0.6*pixelR)",
+        for expression in ["mask(abs(radius-reach)-0.08*(1.0+2.0*(1.0-opening)))", "falloff(spark/1.1)",
+            "vec2(cos(a),sin(a))*reach", "glow+=itemAccent(1)*halo*0.06",
             "abs(abs(across)-1.2)-0.06", "scan=coverage("] {
             assert!(SHADER.contains(expression), "rederive active support: {expression}");
         }
@@ -120,8 +129,8 @@ mod tests {
         assert!(CAPSULE >= 1.0+(0.035+aa)/0.8660254);
         assert!(RING >= 6.0+0.08+aa);
         assert!(MAGNET >= (9.0+0.08+aa).max(9.0+1.1));
-        // Arc centres remain <=1.4w. Their 1.2px stroke and derivative AA
-        // are compacted by the existing ribbon edgeFade even at tiny radii.
+        // The active body halo and Phase outline are compacted by the
+        // existing ribbon edgeFade even at tiny radii.
         assert!(BODY >= 1.4*breath*(1.0+0.5/255.0/0.22));
         // Body derivative AA and curvature are compacted by edgeFade above.
         assert!(SHADER.contains("fragColor=composite(rgb,alpha,glow,over,corpse?packed.w/255.0:activeFade)*edgeFade"));

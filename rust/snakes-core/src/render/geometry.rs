@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use super::{Color, Vertex};
 use std::ops::{Add, Sub, Mul, Div};
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct P {
     pub x: f64,
     pub y: f64

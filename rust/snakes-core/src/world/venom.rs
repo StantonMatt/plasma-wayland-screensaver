@@ -40,7 +40,7 @@ impl World {
         f.grudge_id=biter as u32;f.grudge_generation=self.snakes[biter].generation;f.grudge_ticks=150;
         self.emit_bubble(victim,Glyph::Anger);
         self.push_event(FrameEvent {tick:endpoint,position:self.segments[victim*MAX_SEGMENTS+cut].current,
-            snake_id:victim as u32,other_snake_id:biter as u32,color_index:s.color,kind:EventKind::Sever,
+            snake_id:victim as u32,other_snake_id:biter as u32,color_index:s.color,kind:EventKind::Sever,flags:0,
             cut_index:cut as u16,duration_ticks:WRIGGLE_TICKS,generation:s.generation,
             other_generation:self.snakes[biter].generation,value:len as f32,release_tick:endpoint+WRIGGLE_TICKS as u64});
     }
@@ -88,7 +88,7 @@ pub(crate) mod tests {
     use super::*;
     pub(crate) fn resolve_contacts(w:&mut World) {w.mark_collisions();}
     pub(crate) fn fixture(len:usize,cut:usize)->World {
-        let mut w=World::diagnostic_arena(Config {width:12000.0,height:4000.0,rules:RuleSet::V2,
+        let mut w=World::diagnostic_arena(Config {store_power_ups:false,width:12000.0,height:4000.0,rules:RuleSet::V2,
             self_collisions:false,deadly_walls:true,..Config::default()},
             &[(Point{x:4000.0,y:1000.0},0.0,20,0.0),(Point{x:11500.0,y:1000.0},0.0,len,0.0)],&[]).unwrap();
         w.snakes[0].effect_kind=4;w.snakes[0].effect_ticks=240;
@@ -100,7 +100,7 @@ pub(crate) mod tests {
     pub(crate) fn hunt_fixture()->World {
         // Keep this pursuit fixture's ambient replenishment RNG stable;
         // event-enabled hunts are exercised by the event soak.
-        let mut w=World::diagnostic_arena(Config {width:2000.0,height:1200.0,
+        let mut w=World::diagnostic_arena(Config {store_power_ups:false,width:2000.0,height:1200.0,
             density:0.0,seed:73,intelligence:100.0,rules:crate::RuleSet::V2,world_events:false,
             self_collisions:true,deadly_walls:true,..Config::default()},&[
                 (Point{x:800.0,y:750.0},-std::f64::consts::FRAC_PI_2,20,0.3),
@@ -301,7 +301,7 @@ pub(crate) mod tests {
     #[test]
     fn strike_and_powerups_off_preserve_detached_food() {
         let mut w=fixture(80,62);assert!(w.strike_ready(0));
-        w.mark_collisions();w.reconfigure(Config {power_ups:false,..w.config()}).unwrap();
+        w.mark_collisions();w.reconfigure(Config {store_power_ups:false,power_ups:false,..w.config()}).unwrap();
         assert!(w.snakes().all(|s|s.effect_ticks==0));assert!(!w.strike_ready(0));
         w.tick=33;w.release_detached();assert!(w.food.iter().any(|f|f.kind==FoodKind::Shard));
     }

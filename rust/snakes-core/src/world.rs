@@ -3,6 +3,8 @@ mod query;
 mod broad_phase;
 pub mod effects;
 mod items;
+mod inventory;
+pub use inventory::{Inventory, INVENTORY_SLOTS, INVENTORY_WINDUP_TICKS};
 mod presentation;
 mod prism;
 pub(crate) mod events;
@@ -54,12 +56,17 @@ pub mod flags {
 pub enum FoodKind { #[default] Spark, Shard, Pellet, Prism, PrismSeed, Meteor, Star }
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum EventKind { #[default] Kill, Sever, Pickup, Nova, Succession, ItemSpawn, ItemExpiry, EffectExpiry, Emote, Flip, Feast, VortexBurst, WorldEvent }
+pub enum EventKind { #[default] Kill, Sever, Pickup, Nova, Succession, ItemSpawn, ItemExpiry, EffectExpiry, Emote, Flip, Feast, VortexBurst, WorldEvent, Use, Stash, Fizzle }
+/// Source flags shared by Rust events and the C ABI event byte at offset 29.
+pub mod event_flags {
+    /// Pickup completes a held use; no field capsule was consumed.
+    pub const HELD_ACTIVATION:u8=1;
+}
 pub const MAX_EVENTS: usize = 32;
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct FrameEvent {
     pub tick: u64, pub position: Point, pub snake_id: u32,
-    pub other_snake_id: u32, pub color_index: u32, pub kind: EventKind,
+    pub other_snake_id: u32, pub color_index: u32, pub kind: EventKind, pub flags:u8,
     pub cut_index:u16,pub duration_ticks:u16,pub generation:u32,pub other_generation:u32,pub value:f32,pub release_tick:u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -77,6 +84,7 @@ pub struct Config {
     pub deadly_walls: bool,
     pub rules: RuleSet,
     pub power_ups: bool,
+    pub store_power_ups: bool,
     pub world_events: bool,
     pub snake_length_limit: bool,
     /// V2 willingness to contest prizes and commit to checked attacks (0..100).
@@ -98,6 +106,7 @@ impl Default for Config {
             deadly_walls: true,
             rules: RuleSet::Classic,
             power_ups: true,
+            store_power_ups: true,
             world_events: true,
             snake_length_limit: false,
             aggression: 100,
@@ -223,6 +232,7 @@ pub(crate) struct Snake {
     pub effect_kind: u8,
     pub effect_ticks: u16,
     pub frozen_ticks: u16,
+    pub inventory: Inventory,
     trail_start: usize,
     trail_len: usize,
     trail_decimated: bool,
@@ -243,6 +253,7 @@ pub struct SnakeView<'a> {
     pub effect_ticks: u16,
     pub boost_ticks: u8,
     pub cooldown_ticks: u8,
+    pub inventory: Inventory,
     pub face: &'a FaceState,
     pub segments: &'a [Segment],
 }
@@ -456,6 +467,7 @@ impl World {
             effect_ticks: s.effect_ticks,
             boost_ticks: s.boost_ticks,
             cooldown_ticks: s.cooldown_ticks,
+            inventory:s.inventory,
             face:&self.faces[id],
             segments: &self.segments[id*MAX_SEGMENTS..id*MAX_SEGMENTS+s.len]
         })
@@ -576,6 +588,7 @@ impl World {
         self.config = config;
         if !self.items_enabled() { self.clear_items_and_effects(); }
         else if !old.power_ups { self.reset_item_timer(); self.reset_prism_timer(); }
+        if old.store_power_ups && !config.store_power_ups {self.fizzle_inventories();}
         self.scale_geometry(old.width, old.height);
         if !self.events_enabled() {self.clear_world_events();}
         else if !old.world_events {self.reset_events();}
@@ -1037,6 +1050,7 @@ impl World {
                 }
                 if self.config.rules==RuleSet::V2 {
                     self.set_face_intent(i,controller.face_intent(i as u32));
+                    self.request_inventory_use(i,controller.use_request(i as u32));
                 }
             }
         }
@@ -1573,6 +1587,7 @@ impl World {
         }
     }
     fn explode_snake(&mut self, i: usize) -> usize {
+        self.drop_inventory(i);
         let kind=effects::EffectKind::from_byte(self.snakes[i].effect_kind);
         if kind!=effects::EffectKind::None {
             effects::end(kind,self,i,effects::EndReason::Died);

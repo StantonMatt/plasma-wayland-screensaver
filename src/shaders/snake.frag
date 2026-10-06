@@ -7,6 +7,7 @@ layout(location=2) in vec4 packed;
 layout(location=3) in vec2 screenPosition;
 layout(location=4) in float ribbonLimit;
 layout(location=5) in vec3 waveLight;
+layout(location=6) in float phaseFade;
 layout(location=0) out vec4 fragColor;
 layout(binding=1) uniform sampler2D iconAtlas;
 layout(std140,binding=0) uniform buf { mat4 matrix; float opacity; float time; vec2 light; float animationTime; float motionScale; float paletteMode; float ambient; } ub;
@@ -44,7 +45,7 @@ float coverage(float d,float aa) { return 1.0-smoothstep(-aa,aa,d); }
 float mask(float d) {
     float aa=max(fwidth(d),0.008);
     int kind=int(packed.x+0.5);
-    if(kind==23 || kind==24) kind=1;
+    if(kind==23 || kind==24 || kind==28 || kind>=29) kind=1;
     // Body support is compacted at its actual ribbon edge. Keep its original
     // pixel AA; the sprite ceilings retain pixel AA at normal rendered sizes.
     if(kind==0) return coverage(d,aa);
@@ -111,8 +112,8 @@ float hexagon(vec2 p,float r) {
 }
 void main() {
     int kind=int(packed.x+0.5), tier=int(packed.y+0.5)&3, flags=int(packed.z+0.5);
-    bool venomHead=kind==23 || kind==24, strikeHead=kind==24;
-    if(venomHead) kind=1;
+    bool venomHead=kind==23 || kind==24, strikeHead=kind==24, surgeHead=kind==28, phaseHead=kind>=29;
+    if(venomHead || surgeHead || phaseHead) kind=1;
     bool boosting=(flags&1)!=0, hunting=(flags&4)!=0, trapped=(flags&8)!=0, leader=(flags&64)!=0;
     int mood=kind==1?(flags>>1)&15:0;
     if(kind==1) {hunting=mood==2;trapped=mood==6;}
@@ -190,7 +191,8 @@ void main() {
         float d=min(circle,tail);
         float aa=fwidth(d);
         float fill=coverage(d,aa),rim=coverage(abs(d)-max(0.042,0.75*aa),aa);
-        float glyph=atlasMask(7+int(packed.y+0.5),p-vec2(0,-0.10),0.61);
+        int glyphCode=int(packed.y+0.5);
+        float glyph=atlasMask(glyphCode>=5?glyphCode-5:7+glyphCode,p-vec2(0,-0.10),glyphCode>=5?0.66:0.61);
         vec3 rgb=mix(vec3(0.025,0.035,0.055),base.rgb,max(rim*0.85,glyph));
         fragColor=vec4(rgb*fill,fill)*base.a*ub.opacity;return;
     }
@@ -217,7 +219,7 @@ void main() {
     }
     if(kind==18) {
         // Nova (coord in nova radii): a crisp white-ice front with a cold wake,
-        // 18 tapering needles (prototype) and an inner glow bounded by the front.
+        // 18 tapering needles (inventory) and an inner glow bounded by the front.
         float age=packed.w/255.0,fade=1.0-age;
         float radius=0.08+0.88*(1.0-fade*fade*fade);
         float r=length(coord),d=r-radius;
@@ -246,7 +248,7 @@ void main() {
     }
     if(kind==12 || kind==13 || kind==14) {
         float age=packed.w/255.0;float r=length(coord);vec3 accent=base.rgb;
-        float radius=kind==12?1.0+5.0*(1.0-pow(1.0-age,2.0)):kind==14?2.0:2.5*(1.0-age);
+        float radius=kind==14?2.0:ub.motionScale!=1.0?(kind==12?3.5:1.5):kind==12?1.0+5.0*age:2.5*(1.0-age);
         float ring=mask(abs(r-radius)-0.08)*(kind==14?1.0:1.0-age)*0.8;
         vec3 glow=accent*ring;
         if(kind==12) glow+=white*mask(abs(r-radius*0.65)-0.055)*(1.0-age)*0.85;
@@ -257,15 +259,66 @@ void main() {
         // One head-centred quad, in body radii. The reach stays exactly 9r.
         float radius=length(coord);
         float angle=atan(coord.y,coord.x)-t*1.2;
-        float dash=step(0.75,fract(angle*9.0/3.141593));
-        float ring=mask(abs(radius-9.0)-0.08)*dash*0.4;
+        float openW=packed.w/255.0;float opening=(packed.w<0.5||packed.w>254.5)?1.0:openW;
+        float reach=9.0*(1.0-pow(1.0-opening,3.0));
+        float dash=mix(1.0,step(0.75,fract(angle*9.0/3.141593)),smoothstep(0.6,1.0,opening));
+        float ring=mask(abs(radius-reach)-0.08*(1.0+2.0*(1.0-opening)))*dash*mix(0.85,0.4,opening);
         vec3 glow=base.rgb*ring;
         for(int k=0;k<3;k++) {
             float a=t*1.2+float(k)*2.094395;
-            float spark=length(coord-vec2(cos(a),sin(a))*9.0);
-            glow+=base.rgb*falloff(spark/1.1)*0.9;
+            float spark=length(coord-vec2(cos(a),sin(a))*reach);
+            glow+=base.rgb*falloff(spark/1.1)*0.9*opening;
         }
         fragColor=vec4(min(glow,vec3(0.9))*base.a*ub.opacity,0);return;
+    }
+
+    if(kind==27) {
+        // Surge slipstream (inventory): a ribbon over the first ~10 r of the body.
+        // coord.x = +-1 at 2.0 local half-widths, coord.y = radii behind the head point.
+        // byte w = streak length (0..255 -> 0..14 r): 10 r cruising, 14 r while boosting.
+        float y=coord.y;
+        float x=abs(coord.x)*2.0;
+        float pxx=max(fwidth(x),0.0001);
+        float L=packed.w/255.0*14.0;
+        float env=smoothstep(-0.3,0.9,y)*(1.0-smoothstep(L*0.30,L,y));
+        float flowT=ub.motionScale==1.0?t*9.0:0.0;
+        float shimmer=1.0+0.22*sin((y+flowT)*1.3);
+        float lineA=coverage(abs(x-1.42)-pxx*(0.55+0.5*(1.0-y/max(L,0.01))),pxx)*env*shimmer;
+        float lineB=coverage(abs(x-1.82)-pxx*0.45,pxx)*env*smoothstep(1.2,3.0,y)*0.55*shimmer;
+        float haze=falloff(abs(x-1.42)/0.5)*env*0.10;
+        vec3 col=mix(base.rgb,white,0.30);
+        fragColor=vec4(col*(lineA+lineB+haze)*base.a*ub.opacity,0);return;
+    }
+    if(kind==26) {
+        // Inventory pip (inventory). Screen-aligned quad, half-extent 2.0 pip radii.
+        // p is in pip units: hexagon circumradius 1 (flat top), keyline to 1.19.
+        vec2 p=coord*2.0;
+        int item=int(packed.y+0.5)&7;
+        float life=packed.z/255.0;                 // 1 = fresh; <1 drains the rim clockwise
+        float anim=packed.w/255.0;                 // 0 rest; 1..127 stash pop; 128..255 use flight
+        float flight=packed.w>127.5?(packed.w-128.0)/127.0:0.0;
+        vec3 accent=base.rgb;
+        float px=max(fwidth(p.x),0.0001);
+        float key=coverage(hexagon(p,0.866+0.165),px);
+        float h=hexagon(p,0.866);
+        float gem=coverage(h,px);
+        float rimBand=coverage(abs(h+0.09)-0.09,px)*gem;
+        float filled=1.0;
+        if(life<0.998) {
+            float ang=mod(atan(p.x+0.000001,-p.y)+6.283185,6.283185)/6.283185;
+            filled=step(1.0-life,ang);
+        }
+
+        vec3 fill=mix(vec3(0.02353,0.02745,0.05490),accent,0.12);
+        vec3 rgb=mix(vec3(0.00784,0.01176,0.02353),fill,gem);
+        vec3 rimColor=mix(mix(accent,white,0.15),vec3(0.16,0.17,0.2),1.0-filled);
+        rgb=mix(rgb,rimColor,rimBand);
+        float icon=atlasMask(item-1,p,0.80)*gem;
+        vec3 iconColor=mix(accent,white,0.40)*(0.6+0.4*smoothstep(0.0,0.6,life));
+        rgb=mix(rgb,iconColor,icon);
+        rgb=mix(rgb,white,flight*0.6*max(rimBand,icon));
+        vec3 glow=accent*falloff(length(p)/2.0)*(0.30+0.30*flight)*(0.55+0.45*life);
+        fragColor=composite(rgb,key,min(glow,vec3(0.9)),vec3(0),base.a);return;
     }
     if(kind==0) {
         // uv.x = +-taper at each vertex, colour alpha = taper. acrossR is the true signed
@@ -323,27 +376,10 @@ void main() {
         }
         float activeFade=1.0;
         if(!corpse && effectKind==1) {
-            // Prototype: a 30% chance every two segments, three edges long,
-            // 18 Hz reseeding, and a 1.2 screen-pixel stroke at 85% brightness.
-            // Two candidates cover overlapping arcs without extra vertices.
-            float frame=floor(t*18.0);
-            float pixelR=max(length(vec2(dFdx(acrossR),dFdy(acrossR))),0.0001);
-            float arc=0.0;
-            for(int k=0;k<2;k++) {
-                float start=floor((coord.y-1.0)/2.0)*2.0+1.0-float(k)*2.0;
-                float local=coord.y-start;
-                float seed=frame*13.0+start+base.r*71.0;
-                float side=hash(frame+start*3.0)>0.5?1.0:-1.0;
-                float edge=clamp(floor(local),0.0,2.0);
-                float a=(1.05+0.35*hash(frame*7.0+start+edge*2.0))*side*w;
-                float b=(1.05+0.35*hash(frame*7.0+start+(edge+1.0)*2.0))*side*w;
-                float distance=line(vec2(acrossR,local*SEG),vec2(a,edge*SEG),
-                                    vec2(b,(edge+1.0)*SEG),0.6*pixelR);
-                float stroke=coverage(distance,max(fwidth(distance),pixelR*0.5));
-                stroke*=step(hash(seed),0.30)*step(1.0,start)*step(0.0,local)*step(local,3.0);
-                arc=max(arc,stroke);
-            }
-            over+=mix(itemAccent(1),white,0.4)*arc*0.85;
+            // Surge (inventory design): the crackle is gone. The body only gains a faint
+            // yellow halo; speed is told by the slipstream ribbon (kind 27), the yellow bow
+            // wave on the head (kind 28) and the yellow contrail behind the tail.
+            glow+=itemAccent(1)*halo*0.06;
         } else if(!corpse && effectKind==4) {
             // Acid spine: an opaque 0.15w stripe (about 2.5 px at 1080p) with a soft halo;
             // venom pulses flow toward the fangs (~1 Hz, +-20% on the stripe only; still in Calm).
@@ -353,8 +389,8 @@ void main() {
             float flow=ub.motionScale==1.0?0.8+0.2*sin(coord.y*0.9-t*6.0):0.9;
             tube=mix(tube,acid*flow,spine*0.9);
             over+=acid*falloff(abs(acrossR)/(0.6*w))*0.22*body;
-        } else if(!corpse && effectKind==3) {
-            activeFade=0.45+0.06*sin(t*9.0);
+        } else if(!corpse && (effectKind==3 || effectKind==6)) {
+            activeFade=effectKind==6?mix(1.0,0.45,phaseFade):0.45;
             float dash=step(0.55,fract(coord.y*SEG/1.1-t*2.0));
             float outline=coverage(abs(abs(across)-1.2)-0.06,aaA)*dash;
             float scan=coverage(abs(mod(coord.y+t*14.0,5.0)-2.5)*SEG-0.125,aaA)*body;
@@ -539,7 +575,7 @@ void main() {
                                :sdTriangle(q,vec2(0.98,0.18),vec2(1.02,0.44),tip)-0.06;
             float fang=mask(fd);
             rgb=mix(rgb,mix(acid,white,0.75),fang);alpha=max(alpha,fang);
-            // Two venom beads bud from the fang tips and drift forward (prototype), 0.9 Hz.
+            // Two venom beads bud from the fang tips and drift forward (inventory), 0.9 Hz.
             for(int k=0;k<2;k++) {
                 float qd=moving?fract(t*0.9+seed*0.37+float(k)*0.5):0.5;
                 vec2 bead=vec2(tip.x+0.05+0.25*qd,(k==0?1.0:-1.0)*(tip.y+0.04));
@@ -576,7 +612,7 @@ void main() {
             }
             glow+=moodAccent(vec3(0.9,0.965,1))*puff*(1.0-smoothstep(0.55,1.0,q))*0.85*intensity;
         }
-        if(boosting) {
+        if(boosting || surgeHead) {
             // bow wave, two strokes fitted to the prototype beziers; needs the widened boost quad.
             float y=abs(p.y);
             float f1=p.x-(1.95-0.70*y*y);
@@ -585,9 +621,10 @@ void main() {
             float f2=p.x-(0.286+2.352*y-1.238*y*y);
             float s2=abs(f2)/sqrt(1.0+pow(2.352-2.476*y,2.0));
             float b2=mask(s2-0.08)*step(1.0,y)*step(y,2.4);
-            glow+=mix(c,white,0.55)*b1*0.6+c*b2*0.3;
+            if(surgeHead) { vec3 sa=itemAccent(1);float k=boosting?1.0:0.7;glow+=mix(sa,white,0.50)*b1*1.0*k+mix(sa,white,0.25)*b2*0.85*k; }
+            else glow+=mix(c,white,0.55)*b1*0.6+c*b2*0.3;
         }
-        fragColor=composite(rgb,alpha,glow,over,(flags&32)!=0?0.45+0.06*sin(t*9.0):1.0);return;
+        fragColor=composite(rgb,alpha,glow,over,phaseHead?mix(1.0,0.45,phaseFade):(flags&32)!=0?0.45:1.0);return;
     }
     if(kind==25) {
         // Venom stump / severed-end glow: prototype radial glow, additive.

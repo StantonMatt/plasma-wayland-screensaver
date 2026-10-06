@@ -831,3 +831,54 @@ and age in simulation time (Nova 0.7 s, crack 0.5 s), including Calm.
 The 12-byte fallback uses a whitened ice ring/spikes and longer outward crack
 strokes with the same cubic expansion. Frozen snakes crawl and interpolate;
 Calm suppresses shiver and breath, retaining static crystals and glints.
+
+## Inventory (ABI v4, release 0.18)
+
+`inventory.rs` retains three motions per snake and three capsule drop origins;
+no frame/tick heap storage is added. Pips (kind 26) use screen-aligned 0.85r hex
+sprites at neck arc distances 2.2r/4.3r/6.4r. Their bytes are item kind, rim life,
+and flight progress (128..255); alpha remains opaque through Phase/Night/Frost.
+Each snake emits its pips immediately after its head. A 42-visible-copy cap
+(three slots times MAX_SNAKES) bounds held, flying and fizzling gems, including
+seams. All 14 snakes can display their three slots away from wrap seams; seam
+copies share the budget. The S6 inventory chaos ceiling is 10,236 vertices.
+
+Stash/Use/Fizzle event clocks preserve stream-order slot compaction and age on
+simulation time in Calm. Store flight shrinks from 2.47x over .22s; the settle
+pop is absent in Calm. Wind-up follows the neck to .35r ahead of the head over
+four ticks, and draws last among its own pips. Stash/fizzle use collapsing kind
+13 rings; activation still uses the existing kind 12 ring and body wave. Item
+bubbles pass ABI glyphs 5..9 directly to kind 16, mapping to atlas tiles 0..4.
+Death capsules interpolate from their neck slot to the authoritative drop
+position and grow over .12s. A compact tail-only history defers origin recovery
+until a full corpse snapshot is available.
+
+Surge uses kind 28 on the existing widened head quad, four bounded kind 27
+slipstream ribbons (up to 14 edges each), and the existing tail history ring
+while cruising as well as boosting. Contrails are Surge yellow at .35/.55;
+the 18 Hz crackle is removed. Slipstream shimmer is +/-22% at about 1.9 Hz and
+freezes in Calm. Magnet's kind-15 byte w is opening progress (1..255), with 255
+also used for full reach in Calm. Nova front delivery delays victim icing only
+in presentation; simulation freeze remains immediate.
+
+Phase enters over .1s using body effect code 6 and head kinds 29..255, without
+extra vertices or a vertex ABI change. The kind byte carries head fade while
+alpha retains the neck taper. During entry the body origin bits encode a
+3-bit fade (interpolant location 6); the wave keeps its Phase accent. The head
+uses the same fade interpolant, decoded independently from the taper. Normal Phase retains code 3.
+Classic fallback keeps opaque hex gems and procedural icons, including flights,
+fizzle/compaction and drops, using the existing triangle sink without allocation.
+
+Neck position and rainbow colour caches compare their actual inputs. A changed
+neck point/radius or event age/palette/wave invalidates them; Classic rendering
+invalidates shared rainbow scratch. Buffer retries and unchanged redraws reuse
+samples without repeating square roots or colour exponentials.
+
+Inventory history distinguishes zero-duration touch Use from held completion.
+Stash clears the destination slide clock, and configuration Fizzles have a bounded
+independent event key/queue so same-tick retries and a cleared next export retain
+their animation. Compact tail-only Nova history defers victim attribution until
+full head coordinates are available. Resting inventory uses the existing body
+broadphase; only stash/fizzle transients require admission outside that envelope.
+Surge budgets count visible ribbons and seam/cull margins bound the widened
+normals, including the maximum 35% feeding pulse.

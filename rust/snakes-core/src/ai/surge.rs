@@ -40,7 +40,7 @@ mod tests {
     use std::f64::consts::{PI, FRAC_PI_2};
 
     fn duel(surged: bool) -> World {
-        let mut w = World::diagnostic_arena(Config {aggression:50, width: 1600.0, height: 1000.0,
+        let mut w = World::diagnostic_arena(Config {store_power_ups:false,aggression:50, width: 1600.0, height: 1000.0,
             density: 0.0, trails: 0.0, scale: 70.0, seed: 73, intelligence: 100.0,
             rules: RuleSet::V2, self_collisions: true, deadly_walls: true,
             ..Config::default() }, &[

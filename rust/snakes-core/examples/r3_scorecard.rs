@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Paired R3 ecosystem scorecard. Run through r3_scorecard.py under heavy.
+#[allow(dead_code)]
+#[path="support/item_lifecycle.rs"] mod item_lifecycle;
 use snakes_core::{ai::AiController, Config, EventKind, RuleSet, World, MAX_SNAKES};
 use std::time::Instant;
+use item_lifecycle::{lifecycle,EffectEpisode};
 #[path="support/phase_contact.rs"] mod phase_contact;
 #[allow(dead_code)]
 #[path = "support/diagnostics.rs"] mod diagnostics;
@@ -45,9 +48,10 @@ fn main() {
         let mut times = Vec::with_capacity(minutes * 1800);
         let mut before = [(0u32, 0u8, 0u16, 0u8); MAX_SNAKES];
         let mut used = [false; MAX_SNAKES];
-        let mut episode_used = [false; MAX_SNAKES];
+        let mut episodes = [EffectEpisode::default(); MAX_SNAKES];
         let mut food_ids = [0u64; snakes_core::MAX_FOOD];
         let mut magnet_before = [false; MAX_SNAKES];
+        let mut kind_acquired = [0usize;EFFECT_KIND_COUNT];
         let mut kind_pickups = [0usize;EFFECT_KIND_COUNT]; let mut kind_used = [0usize;EFFECT_KIND_COUNT];
         let mut staged_bursts = [0usize; MAX_SNAKES];
         let mut pickups = 0;
@@ -77,7 +81,7 @@ fn main() {
                     // dead/respawning slots retain their last decision record.
                     if ai.tactics[s.id as usize].generation != before[s.id as usize].0
                         || d.generation != before[s.id as usize].0 || d.reused_plan { continue; }
-                    let effect=before[s.id as usize].1 as usize;
+                    let effect=if before[s.id as usize].2>1 {before[s.id as usize].1 as usize} else {0};
                     let row = &mut attacks[effect];
                     for k in [7, 8] {
                         let c = d.candidates[k];
@@ -100,34 +104,22 @@ fn main() {
                     }
                 }
             }
-            for (food_id,id,_,_,_) in w.consumption_events() {
+            for (food_id,id,generation,_,_) in w.consumption_events() {
                 let id=id as usize;
-                if magnet_before[id] && food_ids.contains(&food_id) && !episode_used[id] {kind_used[2]+=1;episode_used[id]=true;}
+                if magnet_before[id] && before[id].0==generation && food_ids.contains(&food_id) && episodes[id].use_once(2,generation) {kind_used[2]+=1;}
             }
-            for s in w.snakes().filter(|s|s.alive && s.effect_ticks>0) {
-                let id=s.id as usize;
-                if episode_used[id] || before[id].0!=s.generation || before[id].1!=s.effect_kind || before[id].2<=1
-                    || w.frame_events().any(|e|e.kind==EventKind::Pickup && e.snake_id==s.id) {continue;}
-                let intended=match s.effect_kind {
-                    1=>ai.tactics[id].generation==s.generation && ai.tactics[id].staged,
-                    2=>ai.inner.debug(id).is_some_and(|d|d.flags&8==0 && d.target_count>0 && food_ids.contains(&d.target_food_ids[0])),
-                    3=>phase_contact::otherwise_lethal(&w,s),
+            // Steering and feeding precede inventory/touch activation. Their
+            // benefit belongs to the pre-activation episode, even on replacement.
+            for s in w.snakes() {
+                let id=s.id as usize;let (generation,kind,ticks,_)=before[id];
+                if generation!=s.generation || ticks<=1 {continue;}
+                let intended=match kind {
+                    1=>ai.tactics[id].generation==generation && ai.tactics[id].staged,
+                    2=>ai.tactics[id].generation==generation && ai.inner.debug(id).is_some_and(|d|d.generation==generation && d.flags&8==0 && d.target_count>0 && food_ids.contains(&d.target_food_ids[0])),
                     _=>false,
                 };
-                if intended {kind_used[s.effect_kind as usize]+=1;episode_used[id]=true;}
+                if intended && episodes[id].use_once(kind,generation) {kind_used[kind as usize]+=1;}
             }
-            // Preserve event order: a newly picked Venom may bite this tick.
-            for e in w.frame_events() {match e.kind {
-                EventKind::Pickup=>{
-                    let kind=e.other_snake_id as usize;
-                    kind_pickups[kind]+=1;all_pickups+=1;episode_used[e.snake_id as usize]=false;
-                },
-                EventKind::Sever=>{
-                    let id=e.other_snake_id as usize;
-                    if !episode_used[id] {kind_used[snakes_core::effects::EffectKind::Venom as usize]+=1;episode_used[id]=true;}
-                },
-                _=>{},
-            }}
             for event in w.collision_events() {
                 combat.record(event, &ai.tactics);
                 if event.reason == snakes_core::DeathReason::SelfHit {
@@ -152,10 +144,18 @@ fn main() {
                     }
                 }
             }
-            for e in w.frame_events().filter(|e| e.tick == w.tick() && e.kind == EventKind::Pickup && e.other_snake_id == 1) {
-                pickups += 1;
-                used[e.snake_id as usize] = false;
-                staged_bursts[e.snake_id as usize] = 0;
+            // Activations precede bites; Frost preserves ongoing episodes.
+            for e in w.frame_events() {
+                let stage=lifecycle(e);let kind=e.other_snake_id as usize;let id=e.snake_id as usize;
+                if stage.acquisition() {kind_acquired[kind]+=1;}
+                if stage.activation() {kind_pickups[kind]+=1;all_pickups+=1;}
+                if id<MAX_SNAKES {episodes[id].observe(e);}
+                if stage.activation() && kind==1 {pickups+=1;used[id]=false;staged_bursts[id]=0;}
+                if e.kind==EventKind::Sever && episodes[e.other_snake_id as usize].use_once(4,e.other_generation) {kind_used[4]+=1;}
+            }
+            // Phase protects collisions after activation, including this tick.
+            for s in w.snakes().filter(|s|s.alive && s.effect_kind==3 && s.effect_ticks>0) {
+                if phase_contact::otherwise_lethal(&w,s) && episodes[s.id as usize].use_once(3,s.generation) {kind_used[3]+=1;}
             }
         }
         assert_eq!(kind_pickups.iter().sum::<usize>(),all_pickups);
@@ -167,7 +167,7 @@ fn main() {
         println!("combat_diagnostics seed={seed} iq={intelligence} walls={deadly_walls} hunting_kills={} staged_kills={} hunting_deaths={} staged_deaths={} ambiguous={}",
             combat.hunting_kills, combat.staged_kills, combat.attack_deaths, combat.staged_deaths, combat.ambiguous_kills);
         for k in 1..EFFECT_KIND_COUNT {effect_pickups[k]+=kind_pickups[k];effect_used[k]+=kind_used[k];}
-        println!("effect_metrics seed={seed} iq={intelligence} walls={deadly_walls} pickups={kind_pickups:?} used={kind_used:?}");
+        println!("effect_metrics seed={seed} iq={intelligence} walls={deadly_walls} acquired={kind_acquired:?} activations={kind_pickups:?} used={kind_used:?}");
         if ai.inner.profile()[4]>0 {println!("ai_profile_ns {:?}",ai.inner.profile());println!("ai_forecast_profile_ns {:?}",ai.inner.forecast_profile());}
         let mean = times.iter().sum::<f64>() / times.len() as f64;
         times.sort_unstable_by(f64::total_cmp);

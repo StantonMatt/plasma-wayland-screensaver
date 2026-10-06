@@ -9,6 +9,21 @@ timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 log_file="${results_dir}/snakes-native-${timestamp}.log"
 renderer_csv="${results_dir}/snakes-renderer-${timestamp}.csv"
 
+# Run only the production-AI workload, with scorecard positional arguments,
+# e.g. --ai-only 1 73 100 deadly for a short inventory smoke benchmark.
+production_ai() {
+    RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc CARGO_HOME="${build_dir}/cargo-home" \
+    CARGO_TARGET_DIR="${build_dir}/cargo-target/Release" CARGO_NET_OFFLINE=true \
+        /usr/bin/cargo run --frozen --offline --release \
+        --manifest-path "${project_root}/rust/snakes-core/Cargo.toml" \
+        --example ai_scorecard -- --ai-only "$@" | tee -a "${log_file}"
+}
+if [[ ${1:-} == --ai-only ]]; then
+    shift
+    production_ai "$@"
+    exit
+fi
+
 cmake -S "${project_root}" -B "${build_dir}" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 cmake --build "${build_dir}" --target test-snakerenderer --parallel "$(nproc)"
@@ -21,11 +36,7 @@ CARGO_TARGET_DIR="${build_dir}/cargo-target/Release" CARGO_NET_OFFLINE=true \
 
 # The production screensaver steers with AiController; measure it on the
 # same long-run workload so AI planning costs stay visible.
-RUSTC=/usr/bin/rustc RUSTDOC=/usr/bin/rustdoc CARGO_HOME="${build_dir}/cargo-home" \
-CARGO_TARGET_DIR="${build_dir}/cargo-target/Release" CARGO_NET_OFFLINE=true \
-    /usr/bin/cargo run --frozen --offline --release \
-    --manifest-path "${project_root}/rust/snakes-core/Cargo.toml" \
-    --example ai_scorecard -- --ai-only | tee -a "${log_file}"
+production_ai
 
 printf 'run,geometry_ms_per_frame,sync_ms_per_step\n' > "${renderer_csv}"
 for run in 1 2 3; do

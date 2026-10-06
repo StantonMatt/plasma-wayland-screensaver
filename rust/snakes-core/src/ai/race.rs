@@ -108,6 +108,7 @@ impl AiController {
         })
     }
     pub(super) fn guard_capsule(&self,w:&World,s:SnakeView<'_>,state:&mut State) {
+        if w.config().store_power_ups && s.inventory.count<3 {state.guarding=false;return;}
         let Some(f)=self.target_food(*state).filter(|f|f.id & target::ITEM_BIT!=0 && f.id!=events::ID) else {state.guarding=false;return;};
         let (speed,turn)=self.motion[s.id as usize].at(0);
         let radius=(6.0*s.radius).max(speed/turn*1.15);
@@ -126,7 +127,7 @@ mod tests {
     #[test]
     fn fast_large_seed_orbit_uses_turn_radius_and_approach_handedness() {
         for direction in [-1.0,1.0] {
-            let mut w=World::diagnostic_arena(crate::Config {aggression:50,width:3440.0,height:1440.0,
+            let mut w=World::diagnostic_arena(crate::Config {store_power_ups:false,aggression:50,width:3440.0,height:1440.0,
                 density:0.0,scale:185.0,speed:230.0,rules:crate::RuleSet::V2,
                 intelligence:100.0,self_collisions:true,deadly_walls:true,
                 ..crate::Config::default()},&[
@@ -156,7 +157,7 @@ mod tests {
         }
     }
     fn arena()->(World,AiController,State) {
-        let mut w=World::diagnostic_arena(crate::Config {aggression:50,width:1600.0,height:1000.0,density:0.0,speed:50.0,
+        let mut w=World::diagnostic_arena(crate::Config {store_power_ups:false,aggression:50,width:1600.0,height:1000.0,density:0.0,speed:50.0,
             rules:crate::RuleSet::V2,self_collisions:true,intelligence:100.0,..crate::Config::default()},&[
             (Point{x:400.0,y:400.0},0.0,48,0.9),(Point{x:420.0,y:500.0},0.0,48,0.9)],&[]).unwrap();
         w.items.push(crate::Item {id:77,kind:crate::effects::EffectKind::Surge,position:Point{x:460.0,y:400.0},
@@ -309,7 +310,7 @@ mod tests {
 
     #[test]
     fn controller_keeps_guard_orbit_until_release_without_circle_recovery() {
-        let mut w=World::diagnostic_arena(crate::Config {aggression:50,width:1600.0,height:1000.0,density:0.0,
+        let mut w=World::diagnostic_arena(crate::Config {store_power_ups:false,aggression:50,width:1600.0,height:1000.0,density:0.0,
             speed:50.0,rules:crate::RuleSet::V2,self_collisions:true,intelligence:100.0,
             ..crate::Config::default()},&[(Point{x:460.0,y:400.0},std::f64::consts::FRAC_PI_2,8,0.9)],&[]).unwrap();
         w.items.push(crate::Item {id:77,kind:crate::effects::EffectKind::Surge,position:Point{x:400.0,y:400.0},
@@ -381,7 +382,7 @@ mod prism_tests {
     use super::*;
     #[test]
     fn controller_vultures_then_feasts_without_early_pickup_or_circle_recovery() {
-        let mut w=World::diagnostic_arena(crate::Config {aggression:50,width:1600.0,height:1000.0,density:0.0,
+        let mut w=World::diagnostic_arena(crate::Config {store_power_ups:false,aggression:50,width:1600.0,height:1000.0,density:0.0,
             speed:50.0,rules:crate::RuleSet::V2,self_collisions:true,intelligence:100.0,
             ..crate::Config::default()},&[(Point{x:460.0,y:400.0},std::f64::consts::FRAC_PI_2,8,0.9)],&[]).unwrap();
         w.food.push(crate::world::Food {id:88,kind:crate::FoodKind::PrismSeed,
@@ -409,7 +410,7 @@ mod prism_tests {
     }
     #[test]
     fn seed_ready_clock_matches_completed_frame_and_post_decrement_observations() {
-        let mut w=World::diagnostic_arena(crate::Config {aggression:50,rules:crate::RuleSet::V2,density:0.0,..crate::Config::default()},
+        let mut w=World::diagnostic_arena(crate::Config {store_power_ups:false,aggression:50,rules:crate::RuleSet::V2,density:0.0,..crate::Config::default()},
             &[(Point{x:400.0,y:300.0},0.0,24,0.9)],&[]).unwrap();
         w.tick=1;
         w.food.push(crate::world::Food {id:88,kind:crate::FoodKind::PrismSeed,p:Point{x:400.0,y:300.0},
@@ -423,7 +424,7 @@ mod prism_tests {
     }
     #[test]
     fn seed_contact_waits_for_ripe_across_forecasts_and_overlap_shortlisting() {
-        let mut w=World::diagnostic_arena(crate::Config {aggression:50,rules:crate::RuleSet::V2,density:0.0,speed:50.0,self_collisions:false,..crate::Config::default()},
+        let mut w=World::diagnostic_arena(crate::Config {store_power_ups:false,aggression:50,rules:crate::RuleSet::V2,density:0.0,speed:50.0,self_collisions:false,..crate::Config::default()},
             &[(Point{x:400.0,y:300.0},0.0,24,0.9)],&[]).unwrap();
         let r=w.snakes[0].radius;
         w.food.push(crate::world::Food {id:88,p:Point{x:400.0+5.5*r,y:300.0},kind:crate::FoodKind::PrismSeed,

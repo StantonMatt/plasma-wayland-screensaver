@@ -41,7 +41,7 @@ pub(crate) mod tests {
     }
 
     fn arena(walls: bool, self_collisions: bool, len: usize) -> World {
-        let mut w = World::diagnostic_arena(Config { width: 4000.0, height: 2000.0,
+        let mut w = World::diagnostic_arena(Config {store_power_ups:false, width: 4000.0, height: 2000.0,
             rules: RuleSet::V2, deadly_walls: walls, self_collisions,
             ..Config::default() }, &[(Point { x: 1000.0, y: 1000.0 }, 0.0, len, 0.1)], &[]).unwrap();
         w.item_timer = u16::MAX;
@@ -148,7 +148,7 @@ pub(crate) mod tests {
                 w.items.push(Item { id: 1000, position: w.segments[0].current,
                     kind: EffectKind::Magnet, life_ticks: 750, radius: 10.0, ..Item::default() });
                 w.pickup_items();
-            } else if end == 1 { w.reconfigure(Config { power_ups: false, ..w.config() }).unwrap(); }
+            } else if end == 1 { w.reconfigure(Config {store_power_ups:false, power_ups: false, ..w.config() }).unwrap(); }
             else { w.snakes[0].dying = DeathReason::Wall; w.explode_snake(0); }
             if end < 2 {
                 assert_eq!(w.motion_limits(0, 0.0).unwrap().0, ordinary * 1.6);

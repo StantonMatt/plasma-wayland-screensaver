@@ -6,6 +6,7 @@
 use super::*;
 use crate::effects::EffectKind;
 use std::cell::Cell;
+pub(super) const EFFECT_EVENTS:usize=crate::MAX_ITEMS+MAX_SNAKES;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Effect { pub kind: u8, pub ticks: u16 }
@@ -22,20 +23,19 @@ impl Effect {
 }
 /// A small copy for target scoring; no controller borrow in rollout loops.
 #[derive(Clone, Copy, Default)]
-pub(super) struct Track {initial:Effect,pickups:[Effect;crate::MAX_ITEMS],steps:[u16;crate::MAX_ITEMS],count:u8}
+pub(super) struct Track {pub store:bool,initial:Effect,pickups:[Effect;crate::MAX_ITEMS+1],steps:[u16;crate::MAX_ITEMS+1],count:u8}
 impl Track {
     #[cfg(test)]
-    pub fn observed(w:&World,s:SnakeView<'_>)->Self {Self {initial:Effect::observed(w,s),..Self::default()}}
+    pub fn observed(w:&World,s:SnakeView<'_>)->Self {Self {store:w.config().store_power_ups,initial:Effect::observed(w,s),..Self::default()}}
     pub fn before(&self,step:usize)->Effect {
-        for i in (0..self.count as usize).rev() {
-            let at=self.steps[i] as usize;
-            if at<step {return self.pickups[i].after(step-at);}
+        if let Some(i)=(0..self.count as usize).filter(|&i|(self.steps[i] as usize)<step).max_by_key(|&i|self.steps[i]) {
+            return self.pickups[i].after(step-self.steps[i] as usize);
         }
         self.initial.after(step.saturating_sub(1))
     }
 }
 #[derive(Clone, Copy, Default)]
-struct Pickup {step:u16,id:u8,effect:Effect}
+struct Pickup {step:u16,id:u8,order:u8,effect:Effect}
 #[derive(Clone,Copy,Default)]
 struct Freeze {step:u16,mask:u16}
 // Release deadlines use the observed conservative speed floor. A Nova can
@@ -54,8 +54,8 @@ fn release_clock(novas:&[Freeze],id:usize,time:f64,slowdown:f64)->f64 {
 /// rollout owns those masks; endpoint queries reconstruct their fourteen bits.
 #[derive(Clone, Copy, Default)]
 pub(super) struct Snapshot {
-    initial:[Effect;MAX_SNAKES],pickups:[Pickup;crate::MAX_ITEMS],count:usize,
-    novas:[Freeze;crate::MAX_ITEMS],nova_count:usize,
+    initial:[Effect;MAX_SNAKES],pickups:[Pickup;EFFECT_EVENTS],count:usize,
+    novas:[Freeze;EFFECT_EVENTS],nova_count:usize,
 }
 impl Snapshot {
     pub fn body_time(&self,id:usize,time:f64,r:&Rival)->f64 {
@@ -76,9 +76,7 @@ impl Snapshot {
     }
     pub fn at(&self,id:usize,step:usize)->Effect {
         let step=step.max(1);
-        for p in self.pickups[..self.count].iter().rev() {
-            if p.id as usize==id && (p.step as usize)<=step {return p.effect.after(step-p.step as usize);}
-        }
+        if let Some(p)=self.pickups[..self.count].iter().filter(|p|p.id as usize==id && p.step as usize<=step).max_by_key(|p|p.step) {return p.effect.after(step-p.step as usize);}
         self.initial[id].after(step-1)
     }
     pub fn mask(&self,w:&World,id:usize,step:usize)->u16 {
@@ -90,8 +88,10 @@ impl Snapshot {
 }
 #[derive(Clone, Copy)]
 pub(super) struct Timeline {
+    scheduled:bool,
+    inventory_stashes:[Pickup;crate::MAX_ITEMS],stash_count:usize,inventory_counts:[u8;MAX_SNAKES],inventory_expiry:[[u16;3];MAX_SNAKES],inventory_expired:[u8;MAX_SNAKES],store:bool,inventory_release:[u16;MAX_SNAKES],windup_frost:[u16;MAX_SNAKES],
     initial:[Effect;MAX_SNAKES],
-    pickups:[Pickup;crate::MAX_ITEMS],
+    pickups:[Pickup;EFFECT_EVENTS],
     count:usize,
     pickup_mask:u16,
     movement_mask:u16,
@@ -100,7 +100,7 @@ pub(super) struct Timeline {
     pub(super) frost_hits:[u8;MAX_SNAKES],
     frozen:[u16;MAX_SNAKES],
     immunity:[u16;MAX_SNAKES],
-    novas:[Freeze;crate::MAX_ITEMS],nova_count:usize,
+    novas:[Freeze;EFFECT_EVENTS],nova_count:usize,
     guards:u16,
     guard_targets:[u64;MAX_SNAKES],
     pub sever_cut:[usize;MAX_SNAKES],
@@ -110,7 +110,7 @@ pub(super) struct Timeline {
     surge:[u16;STEPS+1],
 }
 impl Default for Timeline {
-    fn default()->Self {Self {initial:[Effect::default();MAX_SNAKES],pickups:[Pickup::default();crate::MAX_ITEMS],count:0,pickup_mask:0,movement_mask:0,venom_possible:0,frost_empty:0,frost_hits:[0;MAX_SNAKES],frozen:[0;MAX_SNAKES],immunity:[0;MAX_SNAKES],novas:[Freeze::default();crate::MAX_ITEMS],nova_count:0,guards:0,guard_targets:[0;MAX_SNAKES],sever_cut:[0;MAX_SNAKES],bite_step:[0;MAX_SNAKES],consumed_at:[0;MAX_SNAKES],phase:[0;STEPS+1],surge:[0;STEPS+1]}}
+    fn default()->Self {Self {scheduled:false,inventory_stashes:[Pickup::default();crate::MAX_ITEMS],stash_count:0,inventory_counts:[0;MAX_SNAKES],inventory_expiry:[[0;3];MAX_SNAKES],inventory_expired:[0;MAX_SNAKES],store:false,inventory_release:[0;MAX_SNAKES],windup_frost:[0;MAX_SNAKES],initial:[Effect::default();MAX_SNAKES],pickups:[Pickup::default();EFFECT_EVENTS],count:0,pickup_mask:0,movement_mask:0,venom_possible:0,frost_empty:0,frost_hits:[0;MAX_SNAKES],frozen:[0;MAX_SNAKES],immunity:[0;MAX_SNAKES],novas:[Freeze::default();EFFECT_EVENTS],nova_count:0,guards:0,guard_targets:[0;MAX_SNAKES],sever_cut:[0;MAX_SNAKES],bite_step:[0;MAX_SNAKES],consumed_at:[0;MAX_SNAKES],phase:[0;STEPS+1],surge:[0;STEPS+1]}}
 }
 impl Timeline {
     pub fn new(w:&World)->Self {
@@ -124,6 +124,15 @@ impl Timeline {
                 else if e.is(EffectKind::Surge) {&mut result.surge} else {continue;};
             for mask in &mut masks[1..=e.ticks.min(STEPS as u16) as usize] {*mask|=1<<id;}
         }
+        result.store=w.config().store_power_ups;
+        for s in w.snakes().filter(|s|s.alive) {
+            let id=s.id as usize;result.inventory_counts[id]=s.inventory.count;result.inventory_expiry[id]=s.inventory.life;
+            if s.inventory.windup!=0 && s.inventory.life[s.inventory.windup as usize-1]>s.inventory.windup_ticks as u16 {
+                let slot=s.inventory.windup as usize-1;
+                result.schedule_use(id,EffectKind::from_byte(s.inventory.kinds[slot]),s.inventory.windup_ticks as usize+1,slot);
+
+            }
+        }
         result.phase[0]=result.phase[1];result.surge[0]=result.surge[1];result
     }
     /// Strategy values observed effects and unavoidable movement-one pickups.
@@ -132,7 +141,7 @@ impl Timeline {
     pub fn opportunities(w:&World,initial:Self,motions:&[Motion;MAX_SNAKES],boosted:&[Motion;MAX_SNAKES])->Self {
         let mut result=initial;
         if w.config().rules!=crate::RuleSet::V2 || !w.config().power_ups {return result;}
-        for item in w.items() {
+        for (order,item) in w.items().enumerate() {
             if !item.pickup_eligible(w.tick()+1,0,true,false,0) {continue;}
             for s in w.snakes().filter(|s|s.alive) {
                 let id=s.id as usize;
@@ -149,8 +158,8 @@ impl Timeline {
                     certain&=distance+error<=reach;
                 }
                 if possible {
-                    if certain {result.pickup(id,*item,1);
-                        if item.kind==EffectKind::Frost {
+                    if certain {let active=result.pickup(id,*item,1,order);
+                        if active && item.kind==EffectKind::Frost {
                             let positions=|other:usize| {let r=w.snake(other).unwrap();let (v,_)=motions[other].at(0);let h=r.segments[0].current;w.canonical_point(Point{x:h.x+r.angle.cos()*v*STEP_SECONDS,y:h.y+r.angle.sin()*v*STEP_SECONDS})};
                             let alive=w.snakes().filter(|r|r.alive).fold(0,|m,r|m|(1<<r.id));
                             result.nova(w,id,positions(id),1,alive,positions);
@@ -166,11 +175,13 @@ impl Timeline {
     }
     pub fn snapshot(&self)->Snapshot {Snapshot {initial:self.initial,pickups:self.pickups,count:self.count,novas:self.novas,nova_count:self.nova_count}}
     pub fn release_clock(&self,id:usize,time:f64,slowdown:f64)->f64 {release_clock(&self.novas[..self.nova_count],id,time,slowdown)}
+    pub fn release_uncacheable(&self)->bool {self.nova_count>crate::MAX_ITEMS}
     pub fn release_key(&self)->[u32;crate::MAX_ITEMS] {
+        if self.nova_count==0 {return [0;crate::MAX_ITEMS];}
         std::array::from_fn(|i|if i<self.nova_count {(self.novas[i].step as u32)<<16|self.novas[i].mask as u32} else {0})
     }
     pub fn track(&self,id:usize)->Track {
-        let mut result=Track {initial:self.initial[id],..Track::default()};
+        let mut result=Track {store:self.store,initial:self.initial[id],..Track::default()};
         for pickup in &self.pickups[..self.count] {
             if pickup.id as usize==id {let i=result.count as usize;result.pickups[i]=pickup.effect;result.steps[i]=pickup.step as u16;result.count+=1;}
         }
@@ -183,8 +194,9 @@ impl Timeline {
         if kind==EffectKind::Venom {return self.venom_possible&(1<<id)!=0;}
         self.initial[id].is(kind) || self.pickups[..self.count].iter().any(|p|p.id as usize==id && p.effect.is(kind))
     }
+    pub fn has_scheduled(&self)->bool {self.scheduled}
     pub fn collision_effects(&self)->bool {
-        self.venom_possible!=0
+        self.windup_frost.iter().any(|&t|t>0) || self.venom_possible!=0
             || self.initial.iter().any(|e|e.is(EffectKind::Phase) || e.is(EffectKind::Surge))
             || self.pickups[..self.count].iter().any(|p|p.effect.is(EffectKind::Phase) || p.effect.is(EffectKind::Surge))
     }
@@ -196,7 +208,7 @@ impl Timeline {
     fn surge_pickup_before(&self,id:usize,step:usize)->Option<usize> {
         // The first Surge already forgives the entire outstanding payment;
         // later replacements/refreshes cannot restore that debt.
-        self.pickups[..self.count].iter().find(|p|p.id as usize==id && (p.step as usize)<step && p.effect.is(EffectKind::Surge)).map(|p|p.step as usize)
+        self.pickups[..self.count].iter().filter(|p|p.id as usize==id && (p.step as usize)<step && p.effect.is(EffectKind::Surge)).min_by_key(|p|p.step).map(|p|p.step as usize)
     }
     pub fn same_movement(&self,other:&Self,id:usize,step:usize)->bool {
         let a=self.before(id,step);let b=other.before(id,step);
@@ -208,10 +220,9 @@ impl Timeline {
     #[inline]
     pub fn at(&self,id:usize,step:usize)->Effect {
         let step=step.max(1);
-        for pickup in self.pickups[..self.count].iter().rev() {
-            if pickup.id as usize==id && (pickup.step as usize)<=step {
-                if self.consumed_at[id]>=pickup.step as usize && self.consumed_at[id]<=step {return Effect::default();}
-                return pickup.effect.after(step-pickup.step as usize);}
+        if let Some(pickup)=self.pickups[..self.count].iter().filter(|p|p.id as usize==id && p.step as usize<=step).max_by_key(|p|p.step) {
+            if self.consumed_at[id]>=pickup.step as usize && self.consumed_at[id]<=step {return Effect::default();}
+            return pickup.effect.after(step-pickup.step as usize);
         }
         if self.consumed_at[id]>0 && self.consumed_at[id]<=step {return Effect::default();}
         self.initial[id].after(step-1)
@@ -252,11 +263,11 @@ impl Timeline {
     }
     #[inline]
     fn pickup_eligible(&self,item:&crate::Item,tick:u64,step:usize,id:usize,alive:bool)->bool {
-        let guarding=self.guards&(1<<id)!=0;
+        let guarding=self.guards&(1<<id)!=0 && !self.store;
         item.pickup_eligible(tick+step as u64,step-1,alive,guarding,
             if guarding {self.at(id,step).ticks} else {0})
     }
-    pub(super) fn pickup(&mut self,id:usize,item:crate::Item,step:usize) {
+    pub(super) fn pickup(&mut self,id:usize,item:crate::Item,step:usize,order:usize)->bool {
         // Mechanics clears every guard committed to a capsule when it is
         // consumed, before considering the next capsule in item order.
         let mut guards=self.guards;
@@ -264,17 +275,56 @@ impl Timeline {
             let other=guards.trailing_zeros() as usize;guards&=guards-1;
             if self.guard_targets[other]==item.id {self.guards&=!(1<<other);}
         }
-        let kind=item.kind;
+        for slot in 0..3 {
+            let life=self.inventory_expiry[id][slot];
+            if life>0 && (life as usize)<step && self.inventory_expired[id]&(1<<slot)==0 {
+                self.inventory_counts[id]=self.inventory_counts[id].saturating_sub(1);self.inventory_expired[id]|=1<<slot;
+            }
+        }
+        if self.inventory_release[id]!=0 && self.inventory_release[id] as usize<=step && self.inventory_expired[id]&8==0 {
+            self.inventory_counts[id]=self.inventory_counts[id].saturating_sub(1);
+            // Bit 3 marks the completed use; retain its deadline for pure capacity queries.
+            self.inventory_expired[id]|=8;
+        }
+        if self.store && self.inventory_counts[id]<3 {
+            self.inventory_counts[id]+=1;
+            self.inventory_stashes[self.stash_count]=Pickup {step:step as u16,id:id as u8,order:order as u8,..Default::default()};self.stash_count+=1;
+            return false;
+        }
+        self.activation(id,item.kind,step);true
+    }
+    /// Capacity immediately before an arrival, including shelf expiry,
+    /// pending use and earlier forecast acquisitions in (step, item-order) order.
+    /// The queried capsule itself and later same-movement stashes are excluded.
+    pub fn stores_at(&self,w:&World,id:usize,step:usize,order:usize)->bool {
+        if !self.store {return false;}
+        let inv=w.snake(id).unwrap().inventory;
+        let expired=self.inventory_expiry[id][..inv.count as usize].iter().filter(|&&life|(life as usize)<step).count();
+        let used=usize::from(self.inventory_release[id]!=0 && self.inventory_release[id] as usize<=step
+            || inv.windup!=0 && inv.life[inv.windup as usize-1]>inv.windup_ticks as u16 && inv.windup_ticks as usize+1<=step);
+        let stashed=self.inventory_stashes[..self.stash_count].iter().filter(|p|p.id as usize==id && p.order as usize!=order && (p.step as usize,p.order as usize)<(step,order)).count();
+        (inv.count as usize).saturating_sub(expired+used)+stashed<3
+    }
+    pub(super) fn schedule_use(&mut self,id:usize,kind:EffectKind,step:usize,slot:usize) {
+        self.scheduled=true;
+        self.inventory_release[id]=step as u16;self.inventory_expiry[id][slot]=u16::MAX;
+        if kind==EffectKind::Frost {self.windup_frost[id]=step as u16;}
+        else {self.activation(id,kind,step);}
+    }
+    pub(super) fn activation(&mut self,id:usize,kind:EffectKind,step:usize) {
+        if kind==EffectKind::Frost {return;}
+
         if kind==EffectKind::Venom {self.venom_possible|=1<<id;}
         let effect=if kind==EffectKind::Frost {Effect::default()} else {Effect {kind:kind as u8,ticks:kind.duration()}};
-        self.pickups[self.count]=Pickup {id:id as u8,effect,step:step as u16};self.count+=1;self.pickup_mask|=1<<id;
+        self.pickups[self.count]=Pickup {id:id as u8,effect,step:step as u16,..Default::default()};self.count+=1;self.pickup_mask|=1<<id;
         let initial=self.initial[id];
         if kind==EffectKind::Surge || crate::effects::modifiers(initial.kind,initial.ticks).speed!=1.0 {self.movement_mask|=1<<id;}
         for j in step..=STEPS {
             self.phase[j]&=!(1<<id);self.surge[j]&=!(1<<id);
-            if j-step<effect.ticks as usize {
-                if kind==EffectKind::Phase {self.phase[j]|=1<<id;}
-                if kind==EffectKind::Surge {self.surge[j]|=1<<id;}
+            let active=self.at(id,j);
+            if active.ticks>0 {
+                if active.kind==EffectKind::Phase as u8 {self.phase[j]|=1<<id;}
+                if active.kind==EffectKind::Surge as u8 {self.surge[j]|=1<<id;}
             }
         }
     }
@@ -353,14 +403,18 @@ impl Items {
     pub fn prepare(w:&World,motions:&[Motion;MAX_SNAKES],boosted:&[Motion;MAX_SNAKES])->Self {
         let mut result=Self::default();
         if w.config().rules!=crate::RuleSet::V2 || !w.config().power_ups || w.items().next().is_none() {return result;}
-        let scale=if w.items().any(|i|i.kind==EffectKind::Surge) {
-            crate::effects::modifiers(EffectKind::Surge as u8,1).speed
-        } else {1.0};
+        let field_surge=w.items().any(|i|i.kind==EffectKind::Surge);
+        let surge_scale=crate::effects::modifiers(EffectKind::Surge as u8,1).speed;
         for s in w.snakes().filter(|s|s.alive) {result.alive|=1<<s.id;result.radii[s.id as usize]=s.radius;}
         for (i,item) in w.items().enumerate() {
             result.items[i]=*item;result.pending|=1<<i;
             for s in w.snakes().filter(|s|s.alive) {
                 let id=s.id as usize;
+                // Include proposed uses as well as the already-pending wind-up.
+                // These shared bounds serve every alternative control.
+                let inventory_surge=w.config().store_power_ups && (0..s.inventory.count as usize)
+                    .any(|slot|s.inventory.kinds[slot]==EffectKind::Surge as u8 && s.inventory.life[slot]>s.inventory.windup_ticks as u16);
+                let scale=if field_surge || inventory_surge {surge_scale} else {1.0};
                 let distance=w.distance_squared(s.segments[0].current,item.position).sqrt();
                 let travel=(distance-1.3*s.radius-item.radius).max(0.0);
                 for (mode,motion) in [&motions[id],&boosted[id]].into_iter().enumerate() {
@@ -414,8 +468,8 @@ impl Items {
 }
 
 #[derive(Clone, Copy)]
-struct MotionValue {key:u16,surge:usize,rush:f64,limits:(f64,f64)}
-impl MotionValue {const EMPTY:Self=Self {key:u16::MAX,surge:usize::MAX,rush:0.0,limits:(0.0,0.0)};}
+struct MotionValue {key:u32,surge:usize,rush:f64,limits:(f64,f64)}
+impl MotionValue {const EMPTY:Self=Self {key:u32::MAX,surge:usize::MAX,rush:0.0,limits:(0.0,0.0)};}
 
 pub(super) struct Forecast {
     pub effects:Timeline,
@@ -459,14 +513,25 @@ impl Forecast {
         }
         result
     }
+    pub fn advance_windups(&mut self,w:&World,step:usize,positions:impl Fn(usize)->Point) {
+        if !self.effects.scheduled {return;}
+        for id in 0..w.snake_count() {
+            if self.effects.windup_frost[id] as usize==step {
+                let alive=w.snakes().filter(|s|s.alive).fold(0,|bits,s|bits|(1<<s.id));
+                self.effects.nova(w,id,positions(id),step,alive,&positions);
+                self.movement_changed|=self.effects.movement_bits();
+            }
+        }
+    }
     pub fn movement_changed(&self)->u16 {self.movement_changed}
     pub fn reachable_surge(&self,id:usize)->bool {
-        self.items.iter().enumerate().any(|(i,item)|self.pending&(1<<i)!=0 && self.owners[i]&(1<<id)!=0 && item.kind==EffectKind::Surge)
+        self.effects.pickups[..self.effects.count].iter().any(|p|p.id as usize==id && p.effect.is(EffectKind::Surge)) || self.items.iter().enumerate().any(|(i,item)|self.pending&(1<<i)!=0 && self.owners[i]&(1<<id)!=0 && item.kind==EffectKind::Surge)
     }
     /// Cached ordinary rival contests; changed participants remain exact.
     #[inline]
     pub fn advance_cached(&mut self,w:&World,step:usize,positions:impl Fn(usize)->Point,changed:u16,items:&Items,reserve:f64) {
         self.sweep_needed=false;
+        self.advance_windups(w,step,&positions);
         if self.pending==0 {return;}
         self.advance_cached_items(w,step,positions,changed,items,reserve);
     }
@@ -501,8 +566,8 @@ impl Forecast {
                 self.movement_changed|=items.pickup_movement[i];
             }
             if winner!=MAX_SNAKES {
-                self.effects.pickup(winner,item,step);
-                if item.kind==EffectKind::Frost {self.effects.nova(w,winner,positions(winner),step,self.alive,&positions);self.movement_changed|=self.effects.movement_bits()|items.pickup_movement[i];}
+                let active=self.effects.pickup(winner,item,step,i);
+                if active && item.kind==EffectKind::Frost {self.effects.nova(w,winner,positions(winner),step,self.alive,&positions);self.movement_changed|=self.effects.movement_bits()|items.pickup_movement[i];}
                 self.pickup_steps[i]=step as u16;self.pickup_owners[i]=winner as u8;
                 if winner!=expected || step!=expected_step {
                     let affected=(1<<winner) | if expected<MAX_SNAKES {1<<expected} else {0};
@@ -541,7 +606,7 @@ impl Forecast {
     pub fn body_len(&self,w:&World,id:usize,rush:f64,step:usize)->usize {
         w.ai_forecast_len(id,rush,24,self.effects.surge_pickup_before(id,step+1),self.effects.freeze_step(id,step+1))
     }
-    pub fn has_items(&self)->bool {self.pending!=0}
+    pub fn has_items(&self)->bool {self.pending!=0 || self.effects.has_scheduled()}
     pub fn set_radius(&mut self,id:usize,radius:f64) {self.radii[id]=radius;}
     pub fn set_radii(&mut self,radius:impl Fn(usize)->f64) {
         if self.pending==0 {return;}
@@ -554,6 +619,7 @@ impl Forecast {
     #[inline]
     pub fn advance(&mut self,w:&World,step:usize,positions:impl Fn(usize)->Point,reserve:f64) {
         self.sweep_needed=false;
+        self.advance_windups(w,step,&positions);
         if self.pending==0 {return;}
         self.advance_items(w,step,positions,reserve);
     }
@@ -573,8 +639,8 @@ impl Forecast {
                 let distance=w.distance_squared(positions(id),item.position);
                 if item.kind==EffectKind::Phase && reserve>0.0 && distance<=(reach+reserve).powi(2) {self.sweep_needed=true;}
                 if distance>reach*reach {continue;}
-                self.effects.pickup(id,item,step);
-                if item.kind==EffectKind::Frost {self.effects.nova(w,id,positions(id),step,self.alive,&positions);self.movement_changed|=self.effects.movement_bits();}
+                let active=self.effects.pickup(id,item,step,i);
+                if active && item.kind==EffectKind::Frost {self.effects.nova(w,id,positions(id),step,self.alive,&positions);self.movement_changed|=self.effects.movement_bits();}
                 self.pickup_steps[i]=step as u16;self.pickup_owners[i]=id as u8;self.pending&=!(1<<i);break;
             }
         }
@@ -603,6 +669,46 @@ impl Forecast {
         if !self.effects.has_pickup(id) {return motion.at(step-1);}
         self.motion_after_pickup(w,id,rush,motion,step)
     }
+    /// The endpoint needs only remaining movement stages. An expired burst's
+    /// turning radius must not reject the ordinary-speed wall exit after it.
+    #[inline]
+    pub fn wall_limits(&self,w:&World,id:usize,rush:f64,motion:&Motion,step:usize)->(f64,f64) {
+        let mut bound=motion.wall_limits_from(step.saturating_sub(1));
+        if self.effects.has_pickup(id) {
+            let thaw=step+self.effects.frozen_at(id,step) as usize;
+            let expiry=step+self.effects.before(id,step).ticks as usize;
+            // Motion is piecewise between payment, activation, expiry, thaw
+            // and Nightfall boundaries. Include both ends of every future
+            // stage: dawn may raise speed while a scheduled Surge is active.
+            let mut sample=|future:usize| {
+                if future<step {return;}
+                let (speed,turn)=self.motion(w,id,rush,motion,future);
+                bound.0=bound.0.max(speed/turn.max(0.01));bound.1=bound.1.max(speed);
+            };
+            for future in [step,thaw,expiry,25] {sample(future);}
+            for p in self.effects.pickups[..self.effects.count].iter().filter(|p|p.id as usize==id) {
+                let start=p.step as usize+1;
+                let end=p.step as usize+p.effect.ticks as usize;
+                for future in [start,end,end+1] {sample(future);}
+            }
+            for n in self.effects.novas[..self.effects.nova_count].iter().filter(|n|n.mask&(1<<id)!=0) {
+                for future in [n.step as usize+1,n.step as usize+crate::effects::frost::FROZEN_TICKS as usize] {sample(future);}
+            }
+            // Ordinary daylight stages are already reserved by Motion.
+            // Only sample Nightfall boundaries overlapping changed effects;
+            // reconstructing motion for Nightfall thousands of ticks away
+            // cannot improve this bound and evicts the useful motion cache.
+            let changed_end=self.effects.pickups[..self.effects.count].iter().filter(|p|p.id as usize==id)
+                .map(|p|p.step as usize+p.effect.ticks as usize+1).max().unwrap_or(step).max(thaw);
+            if let Some(start)=w.forecast_night_start() {
+                for tick in [start,start+90,start+crate::world::events::NIGHT_LIFE-90,start+crate::world::events::NIGHT_LIFE] {
+                    let future=tick.saturating_sub(w.tick()) as usize;
+                    if future<=changed_end {sample(future);}
+                }
+            }
+        }
+        bound
+    }
     // Keep replacement's state reconstruction off the ordinary cached path.
     // A different snake's pickup cannot change this snake's motion or radius.
     #[inline(never)]
@@ -619,7 +725,7 @@ impl Forecast {
         else {
             // After the single burst ends, only effect speed transitions can
             // change motion. Counter decrements alone do not change limits.
-            let key=(step-1).min(if night_changes {255} else {24}) as u16 | ((if effect.ticks>0 {effect.kind} else {0}) as u16)<<8 | if frozen>0 {0x8000} else {0};
+            let key=(step-1).min(if night_changes {u16::MAX as usize} else {24}) as u32 | ((if effect.ticks>0 {effect.kind} else {0}) as u32)<<16 | if frozen>0 {0x8000_0000} else {0};
             let surge_step=surge.unwrap_or(usize::MAX);
             let cached=self.motion_cache[id].get();
             if cached.key==key && cached.surge==surge_step && cached.rush==rush {return cached.limits;}
@@ -638,7 +744,7 @@ mod review_tests {
     #[test]
     fn remote_nova_victim_rollouts_match_world_step() {
         for burst in [false,true] {for kind in [EffectKind::None,EffectKind::Surge,EffectKind::Phase] {
-            let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,density:0.0,
+            let mut w=World::diagnostic_arena(Config {store_power_ups:false,rules:RuleSet::V2,density:0.0,
                 speed:0.0,scale:200.0,width:10000.0,height:4000.0,self_collisions:false,
                 deadly_walls:false,..Default::default()},
                 &[(Point{x:6000.0,y:2000.0},0.0,24,0.0),(Point{x:6000.0,y:2270.0},0.0,800,0.0)],&[]).unwrap();
@@ -689,7 +795,7 @@ mod review_tests {
 
     #[test]
     fn nova_keeps_existing_tail_and_spatial_occupancy_through_world_step() {
-        let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,density:0.0,
+        let mut w=World::diagnostic_arena(Config {store_power_ups:false,rules:RuleSet::V2,density:0.0,
             speed:100.0,scale:200.0,width:4000.0,height:2000.0,self_collisions:false,
             deadly_walls:false,..Default::default()},
             &[(Point{x:2000.0,y:1100.0},0.0,1,0.0),(Point{x:2000.0,y:1000.0},0.0,64,0.0)],&[]).unwrap();
@@ -727,7 +833,7 @@ mod review_tests {
     fn skipped_pickups_invalidate_shared_motion_through_world_step() {
         for initial in [EffectKind::None,EffectKind::Surge] {
             for kind in [EffectKind::Frost,EffectKind::Surge,EffectKind::Phase,EffectKind::Magnet,EffectKind::Venom] {
-                let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,density:0.0,
+                let mut w=World::diagnostic_arena(Config {store_power_ups:false,rules:RuleSet::V2,density:0.0,
                     width:4000.0,height:2000.0,self_collisions:false,..Default::default()},
                     &[(Point{x:1500.0,y:1000.0},0.0,24,0.0),(Point{x:1500.0,y:1050.0},0.0,24,0.0)],&[]).unwrap();
                 w.snakes[0].effect_kind=initial as u8;w.snakes[0].effect_ticks=initial.duration();
@@ -782,7 +888,7 @@ mod review_tests {
                 Steering {desired_angle:s.angle,rush:0.0}
             }
         }
-        let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,density:0.0,
+        let mut w=World::diagnostic_arena(Config {store_power_ups:false,rules:RuleSet::V2,density:0.0,
             width:4000.0,height:2000.0,self_collisions:false,..Default::default()},
             &[(Point{x:1500.0,y:1000.0},0.0,24,0.0),(Point{x:1500.0,y:1050.0},0.0,24,0.0)],&[]).unwrap();
         w.snakes[1].frozen_ticks=2;w.faces[1].frozen_ticks=2;
@@ -801,7 +907,7 @@ mod review_tests {
     fn later_pickups_preserve_freeze_cutoff_and_radius_through_world_step() {
         for (freeze,surge) in [(1,10),(10,1),(5,5)] {
             for kind in [EffectKind::Surge,EffectKind::Phase,EffectKind::Magnet,EffectKind::Venom] {
-                let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,density:0.0,
+                let mut w=World::diagnostic_arena(Config {store_power_ups:false,rules:RuleSet::V2,density:0.0,
                     width:8000.0,height:4000.0,self_collisions:false,deadly_walls:false,..Default::default()},
                     &[(Point{x:3000.0,y:2000.0},0.0,24,0.0),(Point{x:3000.0,y:2050.0},0.0,400,0.0)],&[]).unwrap();
                 w.snakes[1].birth_len=390;w.snakes[1].radius=w.snakes[1].base_radius*1.025;
@@ -817,12 +923,12 @@ mod review_tests {
                     let positions=|id:usize|w.segments[id*MAX_SEGMENTS].current;
                     if step==freeze {
                         assert_eq!(w.snakes[1].frozen_ticks,75);
-                        forecast.effects.pickup(0,Item {id:42,kind:EffectKind::Frost,..Default::default()},step);
+                        forecast.effects.pickup(0,Item {id:42,kind:EffectKind::Frost,..Default::default()},step,0);
                         forecast.effects.nova(&original,0,positions(0),step,3,positions);
                     }
                     if step==surge {
                         assert_eq!(w.snakes[1].effect_kind,kind as u8);
-                        forecast.effects.pickup(1,Item {id:43,kind,..Default::default()},step);
+                        forecast.effects.pickup(1,Item {id:43,kind,..Default::default()},step,0);
                     }
                     if step!=freeze && step!=surge {
                         assert_eq!(forecast.motion(&original,1,0.6,&motion,step),w.motion_limits(1,0.0).unwrap(),
@@ -833,5 +939,40 @@ mod review_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod inventory_order_tests {
+    use super::*;
+    use crate::Config;
+    #[test]
+    fn capacity_queries_match_pickup_order_expiry_and_completed_use() {
+        let mut w=World::diagnostic_arena(Config {density:0.0,store_power_ups:true,rules:crate::RuleSet::V2,..Default::default()},
+            &[(Point{x:800.0,y:500.0},0.0,24,0.0)],&[]).unwrap();
+        w.snakes[0].inventory=crate::Inventory {count:2,kinds:[1,2,0],life:[1800,1800,0],..Default::default()};
+        let first=crate::Item {id:41,kind:EffectKind::Magnet,..Default::default()};
+        let second=crate::Item {id:42,kind:EffectKind::Frost,..Default::default()};
+        for step in [1,5] {
+            let mut timeline=Timeline::new(&w);
+            assert!(!timeline.pickup(0,first,step,0));
+            assert!(timeline.stores_at(&w,0,step,0),"target must not count its own stash");
+            assert!(timeline.stores_at(&w,0,step+1,0),"target identity survives an arrival estimate change");
+            assert!(!timeline.stores_at(&w,0,step,1),"earlier same-step stash fills the last slot");
+            assert!(timeline.pickup(0,second,step,1));
+        }
+        w.snakes[0].inventory.count=3;w.snakes[0].inventory.kinds[2]=3;w.snakes[0].inventory.life[2]=4;
+        let mut timeline=Timeline::new(&w);
+        assert!(!timeline.stores_at(&w,0,4,0));
+        assert!(timeline.stores_at(&w,0,5,0));
+        assert!(!timeline.pickup(0,first,5,0));
+        assert!(!timeline.stores_at(&w,0,5,1));
+        w.snakes[0].inventory.life[2]=1800;
+        let mut timeline=Timeline::new(&w);timeline.schedule_use(0,EffectKind::Surge,5,0);
+        assert!(!timeline.stores_at(&w,0,4,0));assert!(timeline.stores_at(&w,0,5,0));
+        assert!(!timeline.pickup(0,first,5,0));
+        assert!(!timeline.stores_at(&w,0,5,1));
+        assert!(timeline.stores_at(&w,0,5,0),"completed proposed use must stay in query history");
+        assert!(timeline.pickup(0,second,5,1),"use releases one slot, never one per capsule");
     }
 }

@@ -3,8 +3,11 @@
 //! Flags: --ai-only, --diagnostics (observer replay), --profile (AI phase timing).
 //! Contest metrics are physical near-food races (two heads within 160 pixels),
 //! not cooperative AI claims. Kill attribution uses exact mechanics events.
+#[allow(dead_code)]
+#[path="support/item_lifecycle.rs"] mod item_lifecycle;
 use snakes_core::{ai::AiController, controller::{BaselineController}, Config, DeathReason, Point, World, MAX_SNAKES, STEP_SECONDS, normalize_angle};
 use std::time::Instant;
+use item_lifecycle::{lifecycle,EffectEpisode};
 #[path="support/diagnostics.rs"] mod diagnostics;
 use diagnostics::{ScoreController,Diagnostics};
 #[allow(dead_code)]
@@ -14,7 +17,7 @@ use accounting::{Observed,CombatTotals};
 struct Before {alive:bool,head:Point,angle:f64,generation:u32}
 #[derive(Clone,Copy,Debug,Default)]
 #[allow(dead_code)]
-struct TraceSnake {head:Point,angle:f64,rush:f64,prey:Option<usize>,side:i8,stage:u8,exit:Point}
+struct TraceSnake {generation:u32,head:Point,angle:f64,rush:f64,prey:Option<usize>,side:i8,stage:u8,exit:Point}
 fn percentile(v:&[f64],p:f64)->f64 {v[((v.len()-1) as f64*p) as usize]}
 fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagnostic:bool,trace:bool) {
     let mut controller=Observed::new(controller);
@@ -29,7 +32,7 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
     let mut sign=[0i8;MAX_SNAKES];let mut sign_tick=[0usize;MAX_SNAKES];
     let mut signed_turn=[0.0f64;MAX_SNAKES];let mut abs_turn=[0.0f64;MAX_SNAKES];
     let mut circle_origin=[Point::default();MAX_SNAKES];let mut circle_nutrition=[0.0;MAX_SNAKES];
-    let mut pickups=0usize; let mut magnet_ticks=0usize; let mut scavenging_ticks=0usize; let mut scavenging_eaten=0usize; let mut magnet_episodes=[false;MAX_SNAKES]; let mut used_episodes=0usize;
+    let mut pickups=0usize; let mut magnet_ticks=0usize; let mut scavenging_ticks=0usize; let mut scavenging_eaten=0usize; let mut magnet_episodes=[EffectEpisode::default();MAX_SNAKES]; let mut used_episodes=0usize;
     let mut hunting_ticks=0usize;let mut coil_ticks=0usize;let mut rush_ticks=0usize;
     let mut circle_ticks=0usize;let mut live_ticks=0usize;let mut sum_length=0u64;let mut max_length=0usize;
     let mut heading_origin=[0.0f64;MAX_SNAKES];
@@ -42,7 +45,7 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
         if trace && tick%6==0 {
             for s in w.snakes().filter(|s|s.alive) {
                 let id=s.id as usize;let ai=controller.ai().unwrap();let d=ai.competition_debug(id).unwrap();let debug=ai.debug(id).unwrap();
-                history[tick/6%16][id]=TraceSnake {head:s.segments[0].current,angle:s.angle,rush:w.observed_rush(id).unwrap(),prey:d.prey,side:d.attack_side,stage:d.attack_stage,
+                history[tick/6%16][id]=TraceSnake {generation:s.generation,head:s.segments[0].current,angle:s.angle,rush:w.observed_rush(id).unwrap(),prey:d.prey,side:d.attack_side,stage:d.attack_stage,
                     exit:debug.path[debug.path_count.saturating_sub(1) as usize]};
             }
         }
@@ -53,9 +56,9 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
         for s in w.snakes().filter(|s|s.alive && s.effect_kind==2 && s.effect_ticks>1) {
             let id=s.id as usize;magnet_before[id]=true;magnet_ticks+=1;
             if let Some(debug)=controller.ai().and_then(|ai|ai.debug(id)) {
-                if debug.flags & 8 == 0 && debug.target_count>0 && scavenging_ids.iter().zip(scavenging_food).any(|(&id,food)|food && id==debug.target_food_ids[0]) {
+                if debug.generation==s.generation && debug.flags & 8 == 0 && debug.target_count>0 && scavenging_ids.iter().zip(scavenging_food).any(|(&id,food)|food && id==debug.target_food_ids[0]) {
                     scavenging_ticks+=1;
-                    if !magnet_episodes[id] {magnet_episodes[id]=true;used_episodes+=1;}
+                    if magnet_episodes[id].use_once(2,s.generation) {used_episodes+=1;}
                 }
             }
         }
@@ -63,15 +66,19 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
         if let Some(d)=&mut diagnostics {d.before(tick,&w,&controller);}
         let start=Instant::now();w.step(&mut controller);times.push(start.elapsed().as_secs_f64()*1000.0);
         if let Some(d)=&mut diagnostics {d.after(tick,&controller);}
-        for event in w.frame_events().filter(|e|e.kind==snakes_core::EventKind::Pickup && e.other_snake_id==2) {pickups+=1;magnet_episodes[event.snake_id as usize]=false;}
-        for (food_id,e,_,position,_) in w.consumption_events() {
-            if magnet_before[e as usize] && scavenging_ids.iter().zip(scavenging_food).any(|(&id,food)|food && id==food_id) {
+        for (food_id,e,generation,position,_) in w.consumption_events() {
+            if before[e as usize].generation==generation && magnet_before[e as usize] && scavenging_ids.iter().zip(scavenging_food).any(|(&id,food)|food && id==food_id) {
                 scavenging_eaten+=1;
-                if !magnet_episodes[e as usize] {magnet_episodes[e as usize]=true;used_episodes+=1;}
+                if magnet_episodes[e as usize].use_once(2,generation) {used_episodes+=1;}
             }
             eaten+=1;
             let challengers=(0..w.snake_count()).filter(|i|*i!=e as usize && before[*i].alive && w.distance_squared(before[*i].head,position)<160.0*160.0).count();
             if challengers>0 {contests+=1;contests_lost+=challengers as u64;}
+        }
+        // Feeding used the old effect; only now start activation episodes.
+        for event in w.frame_events() {
+            if lifecycle(event).activation() && event.other_snake_id==2 {pickups+=1;}
+            if (event.snake_id as usize)<MAX_SNAKES {magnet_episodes[event.snake_id as usize].observe(event);}
         }
         for event in w.collision_events() {
             combat.record(event,&controller.tactics);

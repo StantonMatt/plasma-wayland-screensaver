@@ -21,7 +21,7 @@ mod tests {
     use crate::{ai::AiController, controller::{Controller, ScriptedController, Steering}, Config, DeathReason, Item, RuleSet, Segment, MAX_SEGMENTS};
 
     fn arena(wrap: bool, self_collisions: bool) -> World {
-        World::diagnostic_arena(Config { rules: RuleSet::V2, width: 1200.0, height: 900.0,
+        World::diagnostic_arena(Config {store_power_ups:false, rules: RuleSet::V2, width: 1200.0, height: 900.0,
             density: 0.0, deadly_walls: !wrap, self_collisions, ..Config::default() },
             &[(Point { x: 450.0, y: 450.0 }, 0.0, 24, 0.0),
               (Point { x: 800.0, y: 700.0 }, 0.0, 80, 0.0)], &[]).unwrap()
@@ -128,7 +128,7 @@ mod tests {
         assert_eq!(w.snakes[0].effect_kind, EffectKind::Magnet as u8);
         assert_eq!(w.snake(0).unwrap().flags & flags::PHASED, 0);
         activate(&mut w, 0, 120);
-        w.reconfigure(Config { power_ups: false, ..w.config() }).unwrap();
+        w.reconfigure(Config {store_power_ups:false, power_ups: false, ..w.config() }).unwrap();
         assert_eq!(w.snakes[0].effect_ticks, 0);
         assert_eq!(w.snake(0).unwrap().flags & flags::PHASED, 0);
     }

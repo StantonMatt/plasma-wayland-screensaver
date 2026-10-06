@@ -87,6 +87,7 @@ impl Diagnostics {
 struct Probe { ai:AiController,id:usize,generation:u32,desired:f64,exit_angle:f64,turn_ticks:usize,track_goal:bool,goal:snakes_core::Point,rush:f64,coil_center:snakes_core::Point,coil_radius:f64,coil_sign:f64,coil_pitch:f64,coil_progress:f64,coil_last_angle:Option<f64>,
     attack_valid:bool,attack_turn_ticks:usize,attack_crossing:f64,attack_crossing_rush:f64,total:usize,remaining:usize }
 impl Controller for Probe {
+    fn delegate(&self,_id:u32)->Option<&dyn Controller> {Some(&self.ai)}
     fn steer(&mut self,w:&World,s:SnakeView<'_>) -> Steering {
         let steering=self.ai.steer(w,s);
         if s.id as usize==self.id && s.generation==self.generation && self.remaining>0 {

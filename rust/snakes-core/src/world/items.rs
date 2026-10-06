@@ -29,6 +29,7 @@ pub struct Item {
     pub captured_value:f32,
     pub owner_generation:u32,
     pub owner_snake_id:u32,
+    pub dropped:bool,
 }
 impl Item {
     pub(crate) const GUARD_RELEASE_TICKS:u16=30;
@@ -60,15 +61,16 @@ impl World {
     pub(super) fn item_event(&mut self, item: Item, kind: EventKind, snake_id: u32) {
         // other_snake_id is the effect kind for item events, never a rival ID.
         self.push_event(FrameEvent {tick:self.tick.wrapping_add(1),position:item.position,
-            snake_id,other_snake_id:item.kind as u32,color_index:0,kind,..FrameEvent::default()});
+            snake_id,generation:self.snakes.get(snake_id as usize).map_or(0,|s|s.generation),other_snake_id:item.kind as u32,color_index:0,kind,..FrameEvent::default()});
     }
     pub(super) fn clear_items_and_effects(&mut self) {
+        self.event_count=0; // Clear stale effects before publishing inventory fizzles.
+        self.fizzle_inventories();
         self.items.clear();
         self.food.retain(|f| !matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed));
         self.prism_timer=0;
         for face in &mut self.faces {face.bulges=[Bulge::default();2];}
         self.item_timer = 0;
-        self.event_count = 0; // No stale pickup/effect event after disabling.
         for id in 0..self.snakes.len() {
             self.snakes[id].frozen_ticks=0;
             self.faces[id].frozen_ticks=0;self.faces[id].thaw_immunity_ticks=0;self.faces[id].breath_ticks=0;
@@ -91,6 +93,7 @@ impl World {
                 self.item_event(item,EventKind::EffectExpiry,id as u32);
             } else { effects::tick(kind,self,id); }
         }
+        self.advance_inventory();
         let mut i=0;
         while i<self.items.len() {
             self.items[i].age_ticks += 1;
@@ -205,6 +208,7 @@ impl World {
         self.item_event(item,EventKind::ItemSpawn,u32::MAX);
     }
     pub(super) fn pickup_items(&mut self) {
+        self.activate_inventory();
         if self.items.is_empty() { return; }
         let g = self.config.geometry();
         let head_sweeps = self.head_sweeps();
@@ -213,7 +217,7 @@ impl World {
             let item=self.items[i];
             if !item.pickup_eligible(self.tick+1,0,true,false,0) {i+=1;continue;}
             let owner=self.snakes.iter().enumerate().find(|(id,s)| {
-                if !item.pickup_eligible(self.tick+1,0,s.alive,self.faces[*id].guarding,s.effect_ticks) {return false;}
+                if !item.pickup_eligible(self.tick+1,0,s.alive,self.faces[*id].guarding && !self.config.store_power_ups,s.effect_ticks) {return false;}
                 let reach = 1.3*s.radius+item.radius;
                 let search = Self::sweep_search_radius(reach, head_sweeps[*id]);
                 let d = g.delta(item.position, self.segments[id*MAX_SEGMENTS].current);
@@ -224,13 +228,17 @@ impl World {
             if let Some(id)=owner {
                 self.resolve_denial(item,id);
                 self.faces[id].happy_ticks=45;
-                let old=EffectKind::from_byte(self.snakes[id].effect_kind);
-                if old!=EffectKind::None {effects::end(old,self,id,EndReason::Replaced);}
-                self.snakes[id].effect_kind=item.kind as u8;
-                self.snakes[id].effect_ticks=item.kind.duration();
-                effects::activate(item.kind,self,id);
                 self.items.remove(i);
-                self.item_event(item,EventKind::Pickup,id as u32);
+                if self.config.store_power_ups && self.snakes[id].inventory.count<3 {
+                    let slot=self.snakes[id].inventory.count as usize;
+                    let inv=&mut self.snakes[id].inventory;
+                    inv.kinds[slot]=item.kind as u8;inv.life[slot]=1800;inv.count+=1;
+                    self.inventory_event(id,slot,item.kind,EventKind::Stash,item.position,0);
+                } else {
+                    if self.config.store_power_ups {self.inventory_event(id,usize::MAX,item.kind,EventKind::Use,item.position,0);}
+                    self.activate_item(id,item.kind);
+                    self.item_event(item,EventKind::Pickup,id as u32);
+                }
             } else {i+=1;}
         }
     }

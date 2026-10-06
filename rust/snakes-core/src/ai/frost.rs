@@ -93,11 +93,12 @@ impl AiController {
             let own_step=crate::effects::forecast_step(own);
             let (speed,turn)=self.motion[s.id as usize].at(0);
             let gap=(speed/turn.max(0.01)+1.3*s.radius+2.1*r+2.0*r).max(8.0*r);
-            let useful=self.frost_value_at(w,s,item.position,own)>0.0;
+            let stores=w.config().store_power_ups && self.opportunities.stores_at(w,s.id as usize,own_step,slot);
+            let useful=stores || self.frost_value_at(w,s,item.position,own)>0.0;
             // Do not spend an instant offensive capsule on an empty Nova.
             // Keep a small approach gap until a susceptible rival arrives;
             // its next observation can immediately reopen the race.
-            if distance<gap && item.pickup_eligible(w.tick()+1,0,true,s.face.guarding,s.effect_ticks) && !useful {
+            if distance<gap && item.pickup_eligible(w.tick()+1,0,true,s.face.guarding && !w.config().store_power_ups,s.effect_ticks) && !useful {
                 let d=w.displacement(item.position,head);let a=if distance>0.01 {d.y.atan2(d.x)} else {s.angle};
                 state.suspend_objective();state.set_target(0);state.prey=0;
                 state.clear_coil(s.angle);state.clear_attacks(s.angle);
@@ -112,14 +113,15 @@ impl AiController {
                 let eta=self.target_arrival(w,other,food);
                 if !eta.is_finite() || eta>=own {return false;}
                 let step=crate::effects::forecast_step(eta);
-                item.pickup_eligible(w.tick()+step as u64,step-1,true,other.face.guarding,
+                ! (w.config().store_power_ups && self.opportunities.stores_at(w,other.id as usize,step,slot))
+                    && item.pickup_eligible(w.tick()+step as u64,step-1,true,other.face.guarding && !w.config().store_power_ups,
                     other.effect_ticks.saturating_sub((step-1).min(u16::MAX as usize) as u16))
             });
             if !danger {
                 // Near a useful Nova, acquire the actual capsule objective.
                 // This is an offensive approach, evaluated by ordinary safety
                 // rollouts, rather than an incidental overlap while hunting.
-                if distance<gap && useful && item.pickup_eligible(w.tick()+own_step as u64,own_step-1,true,s.face.guarding,
+                if distance<gap && useful && item.pickup_eligible(w.tick()+own_step as u64,own_step-1,true,s.face.guarding && !w.config().store_power_ups,
                     s.effect_ticks.saturating_sub((own_step-1).min(u16::MAX as usize) as u16)) {
                     let target=item.id|target::ITEM_BIT;
                     if state.target!=target {state.suspend_objective();}
@@ -165,11 +167,11 @@ impl AiController {
 mod tests {
     use super::*;
     use crate::{Config,RuleSet,Item,effects::EffectKind};
-    fn arena()->World {World::diagnostic_arena(Config {width:1600.0,height:1000.0,density:0.0,
+    fn arena()->World {World::diagnostic_arena(Config {store_power_ups:false,width:1600.0,height:1000.0,density:0.0,
         speed:300.0,scale:200.0,intelligence:100.0,rules:RuleSet::V2,self_collisions:false,..Default::default()},
         &[(Point{x:450.0,y:400.0},0.0,64,1.0),(Point{x:600.0,y:480.0},-std::f64::consts::FRAC_PI_2,24,0.0)],&[]).unwrap()}
     fn refresh_arena()->World {
-        let config=Config {density:27.0,..arena().config()};
+        let config=Config {store_power_ups:false,density:27.0,..arena().config()};
         let mut w=World::diagnostic_arena(config,&[
             (Point{x:450.0,y:400.0},0.0,64,1.0),(Point{x:600.0,y:480.0},-std::f64::consts::FRAC_PI_2,24,0.0),
             (Point{x:1000.0,y:800.0},0.0,24,0.0),(Point{x:1100.0,y:800.0},0.0,24,0.0),
@@ -191,6 +193,7 @@ mod tests {
             turn_until:u64::MAX,best_distance:f64::MAX,..Default::default()};
         struct CheckRefresh {ai:AiController}
         impl Controller for CheckRefresh {
+            fn delegate(&self,_id:u32)->Option<&dyn Controller> {Some(&self.ai)}
             fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
                 if s.id==0 {
                     self.ai.prepare(w);
@@ -342,7 +345,7 @@ mod tests {
             w.snakes[1].effect_kind=kind as u8;w.snakes[1].effect_ticks=kind.duration();w.snakes[1].boost_ticks=24;w.snakes[1].rush=0.6;
             let item=Item {kind:EffectKind::Frost,position:w.segments[0].current,life_ticks:750,radius:40.0,..Default::default()};
             let mut effects=forecast::Timeline::new(&w);
-            effects.pickup(0,item,1);effects.nova(&w,0,w.segments[0].current,1,3,|id|w.segments[id*MAX_SEGMENTS].current);
+            effects.pickup(0,item,1,0);effects.nova(&w,0,w.segments[0].current,1,3,|id|w.segments[id*MAX_SEGMENTS].current);
             let motion=Motion::forecast(&w,1,0.0);let f=forecast::Forecast::empty(effects);
             let before=f.motion(&w,1,0.0,&motion,1);
             let source=w.diagnostic_snapshot();
@@ -396,7 +399,7 @@ mod tests {
     fn frozen_prey_duels_report_cutoff_success() {
         let mut kills=[0;2];let mut cuts=[0;2];let mut plans=[0;2];let runs=24;
         for frozen in [false,true] {for n in 0..runs {
-            let mut w=World::diagnostic_arena(Config {width:1600.0,height:1000.0,density:0.0,
+            let mut w=World::diagnostic_arena(Config {store_power_ups:false,width:1600.0,height:1000.0,density:0.0,
                 scale:70.0,speed:100.0,intelligence:100.0,self_collisions:true,
                 rules:RuleSet::V2,aggression:100,..Config::default()}, &[
                 (Point{x:400.0,y:400.0},0.0,72,0.1),
@@ -430,4 +433,46 @@ mod tests {
         assert!(plans[1]>0,"frozen prey must reach the staged cutoff planner");
         assert!(cuts[1]>cuts[0],"freezing must create a successful body cutoff in this duel set");
     }
+    #[test]
+    fn frost_storage_tactics_match_world_acquisition() {
+        for (rival_full,earlier_capsule) in [(false,false),(true,false),(true,true),(false,true)] {
+            let mut w=arena();w.config.store_power_ups=true;
+            w.segments[crate::MAX_SEGMENTS].current=Point{x:500.0,y:500.0};
+            if rival_full || earlier_capsule {w.snakes[1].inventory=crate::Inventory {count:if earlier_capsule {2} else {3},kinds:[3;3],life:[1800;3],..Default::default()};}
+            let other_capsule=Item {id:41,kind:EffectKind::Magnet,position:Point{x:500.0,y:500.0},radius:37.8,life_ticks:750,..Default::default()};
+            if earlier_capsule && rival_full {w.items.push(other_capsule);}
+            w.items.push(Item {id:42,kind:EffectKind::Frost,position:Point{x:500.0,y:500.0},radius:37.8,life_ticks:750,..Default::default()});
+            if earlier_capsule && !rival_full {w.items.push(other_capsule);}
+            struct Observe {ai:AiController,full:bool,checked:bool}
+            impl Controller for Observe {
+                fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
+                    if s.id==0 {
+                        self.ai.prepare(w);let mut state=State::default();
+                        assert!(self.ai.frost_tactics(w,s,&mut state));
+                        if self.full {assert!(state.dodge_until>w.tick());}
+                        else {assert_eq!(state.dodge_until,0);assert_eq!(state.target,42|target::ITEM_BIT);}
+                        self.checked=true;
+                    }
+                    Steering {desired_angle:s.angle,rush:0.0}
+                }
+            }
+            let mut c=Observe {ai:AiController::new(),full:rival_full,checked:false};w.step(&mut c);
+            assert!(c.checked);assert_eq!(w.snakes[0].frozen_ticks>0,rival_full);
+            assert_eq!(w.snakes[1].inventory.count,if rival_full || earlier_capsule {3} else {1});
+        }
+        // Empty offensive Nova is still a useful stored acquisition with no rivals.
+        let mut w=arena();w.config.store_power_ups=true;w.snakes[1].alive=false;
+        w.items.push(Item {id:43,kind:EffectKind::Frost,position:Point{x:490.0,y:400.0},radius:37.8,life_ticks:750,..Default::default()});
+        struct Acquire {ai:AiController}
+        impl Controller for Acquire {
+            fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
+                self.ai.prepare(w);let mut state=State::default();
+                assert!(self.ai.frost_tactics(w,s,&mut state));assert_eq!(state.target,43|target::ITEM_BIT);assert_eq!(state.dodge_until,0);
+                Steering {desired_angle:0.0,rush:0.0}
+            }
+        }
+        w.step(&mut Acquire {ai:AiController::new()});assert_eq!(w.snakes[0].inventory.kinds[0],5);
+        assert_eq!(w.snakes[0].effect_ticks,0);
+    }
+
 }

@@ -14,8 +14,14 @@ impl Steering {
 pub struct FaceIntent {pub target_id:u64,pub prey:u32,pub guarding:bool,pub has_target:bool,pub look:Point}
 impl Default for FaceIntent {fn default()->Self {Self {target_id:0,prey:u32::MAX,guarding:false,has_target:false,look:Point::default()}}}
 pub trait Controller {
-    fn face_intent(&self, _id:u32)->FaceIntent {FaceIntent::default()}
-    fn intent_flags(&self, _id: u32) -> Option<u32> { None }
+    /// Wrappers select their steering policy here so every default observation
+    /// hook forwards together. New hooks must use this same delegation path;
+    /// leaf policies return None and keep the neutral defaults. No allocation.
+    fn delegate(&self, _id:u32)->Option<&dyn Controller> {None}
+    /// 0: none, 1..3: choose the held slot.
+    fn use_request(&self, id:u32)->u32 {self.delegate(id).map_or(0,|c|c.use_request(id))}
+    fn face_intent(&self, id:u32)->FaceIntent {self.delegate(id).map_or_else(FaceIntent::default,|c|c.face_intent(id))}
+    fn intent_flags(&self, id: u32) -> Option<u32> { self.delegate(id).and_then(|c|c.intent_flags(id)) }
     fn steer(&mut self, world: &World, snake: SnakeView<'_>) -> Steering;
 }
 /// Deterministic function of tick and snake. The closure may keep its own

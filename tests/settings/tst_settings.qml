@@ -82,6 +82,24 @@ TestCase {
         wait(0)
     }
 
+    function test_inventorySetting() {
+        win.write("visualModule", "snakes")
+        const appearance = page("appearance")
+        const power = find(it => it.text === "Power-ups" && it.visible, appearance)
+        const inventory = find(it => it.objectName === "snakeStorePowerUpsBox" && it.visible, appearance)
+        compare(inventory.checked, true)
+        compare(inventory.enabled, true)
+        reveal(inventory, appearance)
+        mouseClick(inventory)
+        compare(testConfig.snakeStorePowerUps, false)
+        win.write("snakePowerUps", false)
+        compare(inventory.enabled, false)
+        win.write("snakePowerUps", true)
+        compare(inventory.enabled, true)
+        compare(inventory.checked, false)
+        verify(inventory.mapToItem(appearance, 0, 0).x > power.mapToItem(appearance, 0, 0).x)
+    }
+
     function test_instantApplyBatchesSaves() {
         win.write("animationSpeed", 120)
         win.write("animationSpeed", 130)

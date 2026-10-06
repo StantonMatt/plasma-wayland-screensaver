@@ -41,6 +41,7 @@ snakes_core_config SnakeSimulation::configuration(const Configuration &settings,
             std::bit_cast<qint32>(seed), 6, uint32_t(settings.snakeSelfCollisions()),
             uint32_t(settings.snakeDeadlyWalls()), SNAKES_CORE_RULE_DEFAULT,
             {(settings.snakePowerUps() ? SNAKES_CORE_POWER_UPS_ON : SNAKES_CORE_POWER_UPS_OFF)
+                | (settings.snakeStorePowerUps() ? 0u : SNAKES_CORE_INVENTORY_OFF)
                 | (settings.snakeWorldEvents() ? 0u : SNAKES_CORE_WORLD_EVENTS_OFF)
                 | (settings.snakeLengthLimit() ? SNAKES_CORE_SNAKE_LENGTH_LIMIT : 0u)
                 | (settings.snakeAggression() == SNAKES_CORE_DEFAULT_AGGRESSION ? 0u

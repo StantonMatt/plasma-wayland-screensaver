@@ -3,8 +3,11 @@
 //! Flags: --ai-only, --diagnostics (observer replay), --profile (AI phase timing).
 //! Contest metrics are physical near-food races (two heads within 160 pixels),
 //! not cooperative AI claims. Kill attribution uses exact mechanics events.
+#[allow(dead_code)]
+#[path="support/item_lifecycle.rs"] mod item_lifecycle;
 use snakes_core::{ai::AiController, controller::{BaselineController}, Config, DeathReason, Point, World, MAX_SNAKES, STEP_SECONDS, normalize_angle};
 use std::time::Instant;
+use item_lifecycle::{lifecycle,ItemLifecycle,EffectEpisode};
 #[path="support/phase_contact.rs"] mod phase_contact;
 #[path="support/capsules.rs"] mod capsules;
 #[path="support/diagnostics.rs"] mod diagnostics;
@@ -17,7 +20,7 @@ use accounting::{Observed,CombatTotals};
 struct Before {alive:bool,head:Point,angle:f64,generation:u32,flags:u32}
 #[derive(Clone,Copy,Debug,Default)]
 #[allow(dead_code)]
-struct TraceSnake {head:Point,angle:f64,rush:f64,prey:Option<usize>,side:i8,stage:u8,exit:Point}
+struct TraceSnake {generation:u32,head:Point,angle:f64,rush:f64,prey:Option<usize>,side:i8,stage:u8,exit:Point}
 fn percentile(v:&[f64],p:f64)->f64 {v[((v.len()-1) as f64*p) as usize]}
 fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagnostic:bool,trace:bool) {
     let mut controller=Observed::new(controller);
@@ -37,9 +40,10 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
     let mut heading_origin=[0.0f64;MAX_SNAKES];
     // Observations live outside the timed tick. An intended Phase use means an
     // actual otherwise-lethal body/head contact survived while intangible.
+    let mut inventory_requests=0u64;let mut held_activations=0u64;
     let mut pickups=0u64; let mut phase_pickups=0u64; let mut trapped_phase_pickups=0u64;
     let mut phase_used=0u64; let mut phase_expiries=0u64; let mut phase_clear_expiries=0u64;
-    let mut phase_contact_ticks=0u64; let mut used=[false;MAX_SNAKES];
+    let mut phase_contact_ticks=0u64; let mut phase_episodes=[EffectEpisode::default();MAX_SNAKES];
     let mut capsules=capsules::Capsules::new();
     let mut prisms=prisms::Prisms::default();
     let motion_trace=std::env::args().any(|s|s=="--prism-motion-trace");
@@ -54,7 +58,7 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
         if trace && tick%6==0 {
             for s in w.snakes().filter(|s|s.alive) {
                 let id=s.id as usize;let ai=controller.ai().unwrap();let d=ai.competition_debug(id).unwrap();let debug=ai.debug(id).unwrap();
-                history[tick/6%16][id]=TraceSnake {head:s.segments[0].current,angle:s.angle,rush:w.observed_rush(id).unwrap(),prey:d.prey,side:d.attack_side,stage:d.attack_stage,
+                history[tick/6%16][id]=TraceSnake {generation:s.generation,head:s.segments[0].current,angle:s.angle,rush:w.observed_rush(id).unwrap(),prey:d.prey,side:d.attack_side,stage:d.attack_stage,
                     exit:debug.path[debug.path_count.saturating_sub(1) as usize]};
             }
         }
@@ -74,23 +78,26 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
         }
         if let Some(d)=&mut diagnostics {d.after(tick,&controller);}
         for event in w.frame_events() {
+            inventory_requests+=u64::from(lifecycle(event)==ItemLifecycle::HeldRequest);
+            held_activations+=u64::from(lifecycle(event)==ItemLifecycle::HeldActivation);
+            if lifecycle(event).acquisition() {pickups+=1;}
+            if (event.snake_id as usize)<MAX_SNAKES {phase_episodes[event.snake_id as usize].observe(event);}
             if event.kind==snakes_core::EventKind::Pickup {
-                pickups+=1;
                 if event.other_snake_id==snakes_core::effects::EffectKind::Phase as u32 {
                     phase_pickups+=1;
-                    let id=event.snake_id as usize; used[id]=false;
-                    trapped_phase_pickups+=u64::from(before[id].flags & snakes_core::flags::TRAPPED!=0);
+                    let id=event.snake_id as usize;
+                    trapped_phase_pickups+=u64::from(before[id].generation==event.generation && before[id].flags & snakes_core::flags::TRAPPED!=0);
                 }
             }
             if event.kind==snakes_core::EventKind::EffectExpiry && event.other_snake_id==snakes_core::effects::EffectKind::Phase as u32 {
                 phase_expiries+=1;
-                phase_clear_expiries+=u64::from(w.snake(event.snake_id as usize).is_some_and(|s|s.alive));
+                phase_clear_expiries+=u64::from(w.snake(event.snake_id as usize).is_some_and(|s|s.alive && s.generation==event.generation));
             }
         }
         for s in w.snakes().filter(|s|s.alive && s.flags & snakes_core::flags::PHASED!=0) {
             let id=s.id as usize;
             let contact=phase_contact::otherwise_lethal(&w,s);
-            if contact {phase_contact_ticks+=1;if !used[id] {phase_used+=1;used[id]=true;}}
+            if contact {phase_contact_ticks+=1;if phase_episodes[id].use_once(3,s.generation) {phase_used+=1;}}
         }
         for (_,e,_,position,_) in w.consumption_events() {
             eaten+=1;
@@ -145,6 +152,7 @@ fn run<C:ScoreController>(label:&str,cfg:Config,minutes:usize,controller:C,diagn
     let CombatTotals {deaths,opponent_kills,ambiguous_kills,bigger_kills,smaller_kills,hunting_kills,staged_kills,attack_deaths,staged_deaths}=combat;
     let avg=times.iter().sum::<f64>()/ticks as f64;times.sort_unstable_by(f64::total_cmp);
     let snake_minutes=live_ticks as f64*STEP_SECONDS/60.0;
+    println!("inventory requests={inventory_requests} held_activations={held_activations}");
     println!("items pickups={pickups} pickups/min={:.3} phase_pickups={phase_pickups} trapped_phase_pickups={trapped_phase_pickups} phase_used={phase_used} phase_contact_ticks={phase_contact_ticks} phase_expiries={phase_expiries} phase_clear_expiries={phase_clear_expiries}",pickups as f64/minutes as f64);
     println!("{label} seed={} intelligence={} walls={} minutes={minutes} deaths={} wall={} body={} self={} head_lost={} head_tie={} deaths/snake_min={:.4} food/min={:.2} contests_won={contests} contests_lost={contests_lost} opponent_kills={opponent_kills} bigger_kills={bigger_kills} smaller_kills={smaller_kills} ambiguous_kills={ambiguous_kills} hunting_kills={hunting_kills} staged_kills={staged_kills} attack_deaths={attack_deaths} staged_deaths={staged_deaths} reversals/snake_min={:.2} oscillations/snake_min={:.2} circling_snake_s={:.2} mean_len={:.2} max_len={max_length} ms_avg={avg:.4} ms_p50={:.4} ms_p95={:.4} ms_p99={:.4} ms_max={:.4} hunting_snake_s={:.2} coil_snake_s={:.2} rush_snake_s={:.2}",
         cfg.seed,cfg.intelligence,if cfg.deadly_walls {"deadly"} else {"wrap"},w.stats().deaths,deaths[0],deaths[1],deaths[2],deaths[3],deaths[4],w.stats().deaths as f64/snake_minutes,eaten as f64/minutes as f64,reversals as f64/snake_minutes,oscillations as f64/snake_minutes,circle_ticks as f64*STEP_SECONDS,sum_length as f64/live_ticks as f64,percentile(&times,0.50),percentile(&times,0.95),percentile(&times,0.99),times.last().unwrap(),hunting_ticks as f64*STEP_SECONDS,coil_ticks as f64*STEP_SECONDS,rush_ticks as f64*STEP_SECONDS);

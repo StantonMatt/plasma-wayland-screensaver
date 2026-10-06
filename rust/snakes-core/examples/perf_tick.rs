@@ -1,18 +1,36 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Pinned paired benchmark and exact simulation/controller replay fingerprint.
-use snakes_core::{ai::AiController,controller::{Controller,Steering,FaceIntent},Config,World,RuleSet,Point,SnakeView};
+use snakes_core::{ai::AiController,controller::{Controller,Steering},Config,World,RuleSet,Point,SnakeView};
 use std::time::Instant;
 #[path="support/long_fixtures.rs"] mod long_fixtures;
 struct Observed {ai:AiController,hash:u64,diagnostics:bool,replay:bool}
 fn hash(h:&mut u64,x:u64){*h=h.rotate_left(7)^x.wrapping_mul(0x9e3779b97f4a7c15);}
 impl Controller for Observed {
- fn face_intent(&self,id:u32)->FaceIntent{self.ai.face_intent(id)}
- fn intent_flags(&self,id:u32)->Option<u32>{self.ai.intent_flags(id)}
+    fn delegate(&self,_id:u32)->Option<&dyn Controller> {Some(&self.ai)}
+ fn use_request(&self,id:u32)->u32 {if self.replay {0} else {self.ai.use_request(id)}}
  fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
   let id=s.id;let result=self.ai.steer(w,s);
-  hash(&mut self.hash,result.desired_angle.to_bits());hash(&mut self.hash,result.rush.to_bits());
+  hash(&mut self.hash,s.generation as u64);hash(&mut self.hash,result.desired_angle.to_bits());hash(&mut self.hash,result.rush.to_bits());
+  hash(&mut self.hash,if self.replay {0} else {self.ai.use_request(id)} as u64);
   if self.diagnostics {for b in format!("{:?}",self.ai.decision(id as usize)).bytes(){hash(&mut self.hash,b as u64);}}
   if self.replay {snakes_core::controller::BaselineController.steer(w,w.snake(id as usize).unwrap())} else {result}
+ }
+}
+fn hash_inventory(h:&mut u64,inventory:snakes_core::Inventory) {
+ for kind in inventory.kinds {hash(h,kind as u64);}for life in inventory.life {hash(h,life as u64);}
+ for clock in [inventory.count,inventory.windup,inventory.windup_ticks,inventory.cooldown] {hash(h,clock as u64);}
+}
+#[cfg(test)]
+mod tests {
+ use super::*;
+ #[test]
+ fn fingerprint_covers_every_inventory_slot_and_clock() {
+  let initial=snakes_core::Inventory::default();let mut base=0;hash_inventory(&mut base,initial);
+  for field in 0..10 {
+   let mut changed=initial;
+   match field {0..=2=>changed.kinds[field]=1,3..=5=>changed.life[field-3]=1,6=>changed.count=1,7=>changed.windup=1,8=>changed.windup_ticks=1,_=>changed.cooldown=1}
+   let mut h=0;hash_inventory(&mut h,changed);assert_ne!(h,base,"field {field}");
+  }
  }
 }
 fn main(){
@@ -54,6 +72,8 @@ fn main(){
   }
   let t=Instant::now();w.step(&mut ai);times.push(t.elapsed().as_secs_f64()*1e6);
   for s in w.snakes(){hash(&mut world_hash,s.generation as u64);hash(&mut world_hash,s.angle.to_bits());hash(&mut world_hash,s.desired_angle.to_bits());hash(&mut world_hash,s.flags as u64);hash(&mut world_hash,s.effect_kind as u64);hash(&mut world_hash,s.effect_ticks as u64);hash(&mut world_hash,s.segments.len() as u64);for p in s.segments {hash(&mut world_hash,p.current.x.to_bits());hash(&mut world_hash,p.current.y.to_bits());}}
+  for s in w.snakes() {hash_inventory(&mut world_hash,s.inventory);}
+  for item in w.items() {hash(&mut world_hash,item.id);hash(&mut world_hash,item.kind as u64);hash(&mut world_hash,item.position.x.to_bits());hash(&mut world_hash,item.position.y.to_bits());hash(&mut world_hash,item.age_ticks as u64);hash(&mut world_hash,item.life_ticks as u64);hash(&mut world_hash,item.pickable_from_tick);hash(&mut world_hash,u64::from(item.dropped));}
   for f in w.foods(){hash(&mut world_hash,f.id);hash(&mut world_hash,f.position.x.to_bits());hash(&mut world_hash,f.position.y.to_bits());}
   hash(&mut world_hash,w.rng_state() as u64);segments+=w.stats().total_segments as u64;live+=w.stats().alive as u64;
  }
