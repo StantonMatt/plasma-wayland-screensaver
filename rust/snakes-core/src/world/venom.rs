@@ -98,8 +98,10 @@ pub(crate) mod tests {
         w.item_timer=u16::MAX;w
     }
     pub(crate) fn hunt_fixture()->World {
+        // Keep this pursuit fixture's ambient replenishment RNG stable;
+        // event-enabled hunts are exercised by the event soak.
         let mut w=World::diagnostic_arena(Config {width:2000.0,height:1200.0,
-            density:0.0,seed:73,intelligence:100.0,rules:crate::RuleSet::V2,
+            density:0.0,seed:73,intelligence:100.0,rules:crate::RuleSet::V2,world_events:false,
             self_collisions:true,deadly_walls:true,..Config::default()},&[
                 (Point{x:800.0,y:750.0},-std::f64::consts::FRAC_PI_2,20,0.3),
                 (Point{x:1200.0,y:600.0},0.0,100,0.3)],&[]).unwrap();

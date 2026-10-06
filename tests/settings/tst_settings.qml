@@ -126,10 +126,9 @@ TestCase {
         verify(label("Food:"))
         verify(label("Intelligence:"))
         verify(label("Rules:"))
-        for (const rule of ["Power-ups", "Snakes can crash into themselves",
+        for (const rule of ["Power-ups", "World events", "Snakes can crash into themselves",
                             "Screen edges are deadly", "Limit snake length"])
             verify(label(rule), rule)
-        verify(!label("World events"))
         verify(!label("Balls:"))
 
         win.write("visualModule", "bounce")
@@ -145,15 +144,15 @@ TestCase {
         verify(label("Clock:"))
     }
 
-    function test_worldEventsStayHiddenWithBindingIntact() {
+    function test_worldEventsVisibleWithBindingIntact() {
         win.write("visualModule", "snakes")
         const events = find(it => it.text === "World events" && it.toggled !== undefined, page("appearance"))
-        verify(!events.visible)
+        verify(events.visible)
         win.write("snakeWorldEvents", false)
         compare(events.checked, false)
         win.write("snakeWorldEvents", true)
         compare(events.checked, true)
-        verify(!events.visible)
+        verify(events.visible)
         events.checked = false
         events.toggled()
         compare(testConfig.snakeWorldEvents, false)

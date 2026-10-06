@@ -614,11 +614,12 @@ impl Forecast {
         let initial=self.effects.initial[id].after(step-1);
         let freeze=self.effects.freeze_step(id,step);
         let frozen=self.effects.frozen_at(id,step);
-        if freeze.is_none() && surge.is_none() && crate::effects::modifiers(effect.kind,effect.ticks).speed==crate::effects::modifiers(initial.kind,initial.ticks).speed {motion.at(step-1)}
+        let night_changes=w.forecast_night(step-1)!=w.world_event.night;
+        if !night_changes && freeze.is_none() && surge.is_none() && crate::effects::modifiers(effect.kind,effect.ticks).speed==crate::effects::modifiers(initial.kind,initial.ticks).speed {motion.at(step-1)}
         else {
             // After the single burst ends, only effect speed transitions can
             // change motion. Counter decrements alone do not change limits.
-            let key=(step-1).min(24) as u16 | ((if effect.ticks>0 {effect.kind} else {0}) as u16)<<8 | if frozen>0 {0x8000} else {0};
+            let key=(step-1).min(if night_changes {255} else {24}) as u16 | ((if effect.ticks>0 {effect.kind} else {0}) as u16)<<8 | if frozen>0 {0x8000} else {0};
             let surge_step=surge.unwrap_or(usize::MAX);
             let cached=self.motion_cache[id].get();
             if cached.key==key && cached.surge==surge_step && cached.rush==rush {return cached.limits;}

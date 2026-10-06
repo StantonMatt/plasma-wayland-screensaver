@@ -234,6 +234,8 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
         auto *material = static_cast<SnakeMaterial *>(node->material());
         material->time = float(animationTime);
         material->animationTime = float(animationTime);
+        material->ambient = m_frame && std::isfinite(m_frame->info.ambient) && m_frame->info.ambient > 0
+            ? std::clamp(m_frame->info.ambient, 0.28f, 1.0f) : 1.0f;
         material->motionScale = m_shaderTimeFrozen ? 0.6f : 1.0f;
         material->paletteMode = !m_palette.isEmpty() && m_palette.first() == QColor(255, 255, 255) ? 1.0f
             : !m_palette.isEmpty() && m_palette.first() == QColor(255, 200, 221) ? 2.0f : 0.0f;

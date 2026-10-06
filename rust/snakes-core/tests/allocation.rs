@@ -315,3 +315,22 @@ fn zero_allocations_frost_nova_on_a_6000_segment_giant() {
     assert_eq!(w.snakes[0].len,6000);
     assert_eq!(w.snakes[0].frozen_ticks,0);
 }
+
+#[test]
+fn zero_allocations_starfall_meteors_landing_night_fades_and_ai() {
+    let mut w=World::new(Config {width:3440.0,height:1440.0,rules:RuleSet::V2,deadly_walls:false,
+        density:80.0,trails:100.0,scale:200.0,speed:300.0,intelligence:100.0,self_collisions:true,..Default::default()}).unwrap();
+    let mut ai=ai::AiController::new();
+    w.diagnostic_event_schedule(1,1);
+    let (mut meteors,mut stars,mut night)=(false,false,false);
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    for _ in 0..1000 {
+        w.step(&mut ai);
+        meteors|=w.foods().any(|f|f.kind==FoodKind::Meteor);
+        stars|=w.foods().any(|f|f.kind==FoodKind::Star);
+        night|=w.world_event.night==1.0;
+    }
+    ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
+    assert!(meteors && stars && night,"all real scheduler paths must execute");
+    assert_eq!(w.world_event.night,0.0);assert_eq!(w.world_event_stats().nightfalls,1);
+}

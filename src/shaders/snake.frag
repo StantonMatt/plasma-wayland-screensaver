@@ -9,7 +9,7 @@ layout(location=4) in float ribbonLimit;
 layout(location=5) in vec3 waveLight;
 layout(location=0) out vec4 fragColor;
 layout(binding=1) uniform sampler2D iconAtlas;
-layout(std140,binding=0) uniform buf { mat4 matrix; float opacity; float time; vec2 light; float animationTime; float motionScale; float paletteMode; } ub;
+layout(std140,binding=0) uniform buf { mat4 matrix; float opacity; float time; vec2 light; float animationTime; float motionScale; float paletteMode; float ambient; } ub;
 // Geometry contract: literal constants are also read at Rust compile time by
 // render/shader/bounds.rs. UV mapping, extrusion and copy selection share these values.
 const float BOUNDS_AA = 0.04; // effect coordinates: 7 body radii per unit
@@ -122,6 +122,35 @@ void main() {
     // Palette identity is packed by Rust, independent of an individual colour.
     if((kind==0 || kind==1 || kind==7) && (int(packed.y+0.5)&64)!=0) gold=mix(gold,white,0.85);
     float t=ub.time;
+    float night=(1.0-ub.ambient)/0.72;
+    if(kind==20) {
+        float r=length(coord);float a=atan(coord.y,coord.x)+t*0.12;
+        float dash=step(0.30,fract(a/6.283185*24.0));
+        float ring=mask(abs(r-1.0)-0.012)*dash*0.65;
+        float sector=floor(a/6.283185*12.0);float h=fract(sin(sector*127.1+31.7)*43758.5453);
+        float local=fract(a/6.283185*12.0)-0.5;
+        vec2 spark=vec2(local*0.5236*r,r-(0.83+0.31*h));
+        float star=mask(abs(spark.x)+abs(spark.y)-0.018)*(0.35+0.25*sin(t*6.9+h*6.283185));
+        fragColor=vec4(base.rgb*(ring+star)*base.a*ub.opacity,0);return;
+    }
+    if(kind==22) {
+        if(packed.y<0.5) {
+            float across=max(0.0,1.0-abs(coord.x)),along=1.0-coord.y;
+            float beam=across*across*along*along;
+            fragColor=vec4(base.rgb*beam*base.a*ub.opacity,0);return;
+        }
+        float r=length(coord*4.6);float core=mask(r-0.62);
+        vec3 glow=base.rgb*falloff(r/4.6)*0.55*(1.0+0.6*night);
+        fragColor=composite(mix(base.rgb,white,0.6),core,glow,vec3(0),base.a);return;
+    }
+    if(kind==21) {
+        vec2 q=abs(coord*4.6);float r=length(q);float phase=packed.y/255.0*6.283185;
+        float tw=0.82+0.18*sin(t*6.9+phase);
+        float core=mask(sqrt(q.x*q.y)+max(q.x,q.y)*0.15-0.28);
+        float age=packed.w/255.0;float puff=mask(abs(r-(0.8+3.2*age))-0.10)*(1.0-age)*0.45;
+        vec3 glow=base.rgb*(falloff(r/4.6)*0.45*tw+puff)*(1.0+0.6*night);
+        fragColor=composite(mix(base.rgb,white,0.5),core,glow,vec3(0),clamp(packed.z/8.5,0.0,1.0));return;
+    }
     if(kind==11) {
         vec2 p=coord*BOUNDS_CAPSULE;float angle=t*0.18;
         vec2 q=mat2(cos(angle),-sin(angle),sin(angle),cos(angle))*p;
@@ -349,6 +378,8 @@ void main() {
             }
             over+=(moodAccent(vec3(0.86,0.96,1.0))*diamond*0.6+white*glint*0.85)*body;
         }
+        tube*=ub.ambient;
+        glow+=c*halo*0.05*night;
         float alpha=max(body,shadow);
         vec3 rgb=mix(vec3(0.008,0.012,0.031),tube,body/max(alpha,0.0001));
         // Curvature-limited ribbons retain the original tube width; taper the
@@ -386,6 +417,7 @@ void main() {
         rgb=mix(rgb,c*0.78,mask((length(vec2(max(p.x-0.15,0.0)/1.37,yn-ly*0.10))-0.84)*Hy));
         rgb=mix(rgb,c,mask((length(vec2(max(p.x-0.25,0.0)/1.37,yn-ly*0.22))-0.60)*Hy));
         rgb=mix(rgb,mix(c,white,0.62),mask((length(vec2(max(p.x-0.70,0.0)/1.37,yn-ly*0.50))-0.20)*Hy)*0.55);
+        rgb*=ub.ambient;
         if(tier>0) { float nostril=mask(length(vec2(p.x-1.18,abs(p.y)-0.20))-0.05);rgb=mix(rgb,vec3(0),nostril*0.45); }
         vec3 over=vec3(0);
         vec3 glow=vec3(0);
@@ -396,7 +428,7 @@ void main() {
             if(trapped) strength*=0.65+0.45*abs(sin(t*12.0));
             float gd=length(p)*hr/0.84;
             float aaG=clamp(fwidth(gd),0.008,BOUNDS_FOOD_AA);
-            glow+=c*((1.0-smoothstep(extent-0.25,extent,gd))*0.55+coverage(gd-1.42,aaG))*strength*step(0.0,p.x);
+            glow+=c*((1.0-smoothstep(extent-0.25,extent,gd))*0.55+coverage(gd-1.42,aaG))*(strength+0.05*night)*step(0.0,p.x);
         }
         float period=4.0+hash(seed+1.0)*7.0;float blinkPhase=mod(ub.animationTime+hash(seed+2.0)*period,period);
         float blinkDuration=0.15*ub.motionScale;
@@ -429,6 +461,8 @@ void main() {
         blink*=mix(1.0,lid,intensity);
         float socket=mask(ellipse(eye,vec2(er*1.12,er*1.12*max(0.3,blink))));
         float iris=mask(ellipse(eye,vec2(er,er*blink)));
+        vec3 eyeshine=irisColor*falloff(length(eye)/0.6)*0.5*night;
+        glow+=eyeshine;over+=eyeshine;
         if(mood==5) {socket*=1.0-intensity;iris*=1.0-intensity;}
         vec3 skin=rgb;vec3 dark=vec3(0.016,0.02,0.04);
         rgb=mix(rgb,vec3(0.016,0.02,0.04),socket);rgb=mix(rgb,irisColor,iris);
@@ -691,5 +725,6 @@ void main() {
     float fadeThreshold=kind==4?96.0:26.0;
     if(kind==8) expiry=packed.w>254.5?1.0:clamp(packed.z/8.5,0.0,1.0);   // prize: the halo drains, then a 1 s fade, no blink
     else if(kind!=2 && packed.z<fadeThreshold) expiry=packed.z/fadeThreshold*(0.65+0.35*sin(t*18.0+phase));
+    glow*=1.0+0.6*night;
     fragColor=composite(rgb,core,glow,over,expiry);
 }

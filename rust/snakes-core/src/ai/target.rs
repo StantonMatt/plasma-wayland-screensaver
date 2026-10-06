@@ -26,6 +26,8 @@ const _:()=assert!(std::mem::size_of::<Option<TargetFood>>()<=64);
 /// Cache outside rollout loops: no target searches or effect dispatch per step.
 #[derive(Clone, Copy)]
 pub(super) struct Contact {
+    kind:crate::FoodKind,
+    zone:bool,
     ordinary: f64,
     magnet: f64,
     effects: super::forecast::Track,
@@ -51,9 +53,9 @@ impl Contact {
         let item = f.id & ITEM_BIT != 0;
         let ordinary = s.radius * if item { 1.3 } else { 3.0 } + f.size;
         let magnet = if !item {s.radius * effects::modifiers(effects::EffectKind::Magnet as u8,1).food_reach + f.size} else {ordinary};
-        Self { ordinary, magnet, effects:track,item,alive:s.alive,guarding:s.face.guarding,ready_step:if item || f.kind==crate::FoodKind::PrismSeed {f.motion_ticks as usize} else {0},
+        Self { kind:f.kind,zone:f.id==super::events::ID,ordinary, magnet, effects:track,item,alive:s.alive,guarding:s.face.guarding,ready_step:if item || f.kind==crate::FoodKind::PrismSeed {f.motion_ticks as usize} else {0},
             claimed: !item && f.vacuum_owner == s.id as i32,
-            available: item || f.vacuum_owner < 0 || f.vacuum_owner == s.id as i32 }
+            available: f.kind!=crate::FoodKind::Meteor && (item || f.vacuum_owner < 0 || f.vacuum_owner == s.id as i32) }
     }
     pub(super) fn with_guard(mut self,guarding:bool)->Self {self.guarding=guarding;self}
     #[inline]
@@ -65,7 +67,7 @@ impl Contact {
         if effect.is(effects::EffectKind::Magnet) {self.magnet} else {self.ordinary}
     }
     pub(super) fn reached_with(self,distance_squared:f64,effect:super::forecast::Effect,step:usize)->bool {
-        crate::Item::endpoint_eligible(step as u64,self.ready_step as u64,0,usize::MAX,self.alive) && self.available
+        !self.zone && self.alive && crate::world::events::food_pickup_eligible(self.kind,step as u64,self.ready_step as u64,0) && self.available
             && (!self.item || crate::Item::pickup_allowed(self.alive,self.guarding,effect.ticks))
             && (self.claimed || distance_squared<=self.reach_with(effect).powi(2))
     }

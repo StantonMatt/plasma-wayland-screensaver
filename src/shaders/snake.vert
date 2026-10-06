@@ -9,7 +9,7 @@ layout(location=2) out vec4 packed;
 layout(location=3) out vec2 screenPosition;
 layout(location=4) out float ribbonLimit;
 layout(location=5) out vec3 waveLight;
-layout(std140,binding=0) uniform buf { mat4 matrix; float opacity; float time; vec2 light; float animationTime; float motionScale; float paletteMode; } ub;
+layout(std140,binding=0) uniform buf { mat4 matrix; float opacity; float time; vec2 light; float animationTime; float motionScale; float paletteMode; float ambient; } ub;
 // Decode origins at vertices, then interpolate premultiplied light. Decoding
 // interpolated bit fields would mix unrelated flags at replacement wave joins.
 vec3 waveAccent(int k) {

@@ -429,7 +429,7 @@ pub unsafe extern "C" fn snakes_core_export_frame(handle: *const WorldHandle, sn
                 flags: s.flags, effect_ticks: s.effect_ticks,
                 effect_kind: s.effect_kind, boost_ticks: s.boost_ticks,
                 mood:s.face.mood as u8,mood_intensity:s.face.intensity,mood_age_ticks:s.face.age,
-                target_item:w.items().position(|item|item.id==s.face.target_id).map_or(255,|i|i as u8),face_flags:(if s.face.guarding {1} else {0}) | if s.face.target_id & (1<<63)!=0 {4} else {0} | if w.config().rules==crate::RuleSet::V2 {FACE_OBSERVED} else {0},jaw_ticks:s.face.jaw_ticks,
+                target_item:w.items().position(|item|item.id==s.face.target_id).map_or(255,|i|i as u8),face_flags:w.event_race_flags(s.id) | (if s.face.guarding {1} else {0}) | if s.face.target_id & (1<<63)!=0 {4} else {0} | if w.config().rules==crate::RuleSet::V2 {FACE_OBSERVED} else {0},jaw_ticks:s.face.jaw_ticks,
                 look_x:s.face.look.x as f32,look_y:s.face.look.y as f32,pupil_x:s.face.pupil.x as f32,pupil_y:s.face.pupil.y as f32,
                 frozen_ticks:s.face.frozen_ticks,dizzy_ticks:s.face.dizzy_ticks,bite_immunity_ticks:s.face.bite_immunity_ticks,
                 stump_ticks:s.face.stump_ticks,thaw_immunity_ticks:s.face.thaw_immunity_ticks,breath_ticks:s.face.breath_ticks,

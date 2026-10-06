@@ -152,7 +152,7 @@ typedef struct snakes_core_snake {
     uint8_t effect_kind, boost_ticks; /* remaining ticks, including latest tick */
     uint8_t mood, mood_intensity; /* enum above; intensity 0..255 onset ramp */
     uint16_t mood_age_ticks; /* saturating age of current mood, zero on switch */
-    uint8_t target_item, face_flags; /* compact current slot/255; bit 0 guarding, bit 1 authoritative mood (including Calm), bit 2 prism target */
+    uint8_t target_item, face_flags; /* compact current slot/255; bit 0 guarding, bit 1 authoritative mood (including Calm), bit 2 prism target; bits 3/4/5 Starfall committed/nearest/second, bit 6 Starfall leader, bit 7 close ETAs */
     uint16_t jaw_ticks; /* remaining yawn/strike jaw animation ticks */
     float look_x, look_y; /* wrapped world-space DELTA head -> look target */
     float pupil_x, pupil_y; /* head-local offset in head radii */

@@ -5,6 +5,7 @@ pub mod effects;
 mod items;
 mod presentation;
 mod prism;
+pub(crate) mod events;
 pub(crate) mod venom;
 pub use presentation::{Mood, Glyph, FaceState, Bubble, Bulge, WorldEventState, MAX_BUBBLES, MAX_CONTENDERS};
 pub(crate) mod taper;
@@ -328,6 +329,7 @@ pub struct World {
     pub(crate) items: Vec<Item>,
     item_timer: u16,
     prism_timer: u16,
+    event_schedule: events::Events,
     pub(crate) detached:[venom::DetachedTail;MAX_SNAKES],
     pub(crate) detached_points:Vec<Point>,
     next_item: u64,
@@ -380,6 +382,7 @@ impl World {
             items: Vec::with_capacity(MAX_ITEMS),
             item_timer: 0,
             prism_timer: 0,
+            event_schedule: events::Events::default(),
             detached:[venom::DetachedTail::default();MAX_SNAKES],
             detached_points:vec![Point::default();MAX_SNAKES*(MAX_SEGMENTS/2)],
             next_item: 1,
@@ -492,7 +495,7 @@ impl World {
         let radius = self.snakes.iter().fold(self.config.base_radius()*1.14*1.25, |r, s|r.max(s.base_radius*1.25));
         // Frost retains half-speed tick history without reallocating on toggles.
         let min_step = (52.0+self.config.speed*0.66)*0.86/(1.0+(EXACT_TRAIL_SEGMENTS-24) as f64*0.004)*STEP_SECONDS
-            * if self.config.rules==RuleSet::V2 {0.5} else {1.0};
+            * if self.config.rules==RuleSet::V2 {0.45} else {1.0};
         let retained = self.snakes.iter().map(|s|s.trail_len+2).max().unwrap_or(2);
         let capacity = ((radius*1.18*(EXACT_TRAIL_SEGMENTS+6) as f64/min_step).ceil() as usize+EXACT_TRAIL_SEGMENTS+16).max(2*(MAX_SEGMENTS+6)+16).max(retained).next_power_of_two();
         if capacity!=self.trail_capacity {
@@ -549,6 +552,7 @@ impl World {
             self.add_ambient_food();
         }
         if self.items_enabled() { self.reset_item_timer(); self.reset_prism_timer(); }
+        self.reset_events();
     }
     /// Density-count or seed changes restart the world (as QML initialization
     /// does). Other controls preserve live state; geometry rescales positions.
@@ -573,6 +577,9 @@ impl World {
         if !self.items_enabled() { self.clear_items_and_effects(); }
         else if !old.power_ups { self.reset_item_timer(); self.reset_prism_timer(); }
         self.scale_geometry(old.width, old.height);
+        if !self.events_enabled() {self.clear_world_events();}
+        else if !old.world_events {self.reset_events();}
+        self.scale_world_events(old);
         for item in &mut self.items { item.radius=config.base_radius()*2.1; }
         self.prepare_storage();
         if old.deadly_walls!=config.deadly_walls {
@@ -924,7 +931,8 @@ impl World {
         }
         self.growth_slots>0 || (self.config.rules==RuleSet::V2 && s.len<80)
     }
-    fn speed(&self, s: &Snake) -> f64 {
+    fn speed(&self, s: &Snake) -> f64 {self.speed_at_night(s,self.world_event.night)}
+    fn speed_at_night(&self,s:&Snake,night:f32)->f64 {
         let boost = if !s.blocked && s.growth>=Self::growth_cost(s) {
             0.2
         } else {
@@ -935,12 +943,14 @@ impl World {
         let penalty=if self.config.rules==RuleSet::V2 {penalty.min(1.0/0.40)} else {penalty};
         (52.0+self.config.speed*0.66)*s.traits.speed_bias*(1.0+s.rush+boost)/penalty
             * effects::modifiers(s.effect_kind,s.effect_ticks).speed * if s.frozen_ticks>0 {0.5} else {1.0}
+            * (1.0-0.1*night as f64)
     }
     fn minimum_turn_radius(s: &Snake) -> f64 {
         s.radius*LENGTH_FACTORS.get().expect("World::new initializes length factors").turn[s.len]
     }
-    fn turn_rate(&self, s: &Snake) -> f64 {
-        (2.05+(self.config.intelligence/100.0).clamp(0.0, 1.0)*1.8+20.0/(s.len.max(8) as f64)).min(self.speed(s)/if s.frozen_ticks>0 {0.5} else {1.0}/Self::minimum_turn_radius(s).max(1.0)) * if s.frozen_ticks>0 {0.6} else {1.0}
+    fn turn_rate(&self, s: &Snake) -> f64 {self.turn_rate_at_night(s,self.world_event.night)}
+    fn turn_rate_at_night(&self,s:&Snake,night:f32)->f64 {
+        (2.05+(self.config.intelligence/100.0).clamp(0.0, 1.0)*1.8+20.0/(s.len.max(8) as f64)).min(self.speed_at_night(s,night)/if s.frozen_ticks>0 {0.5} else {1.0}/Self::minimum_turn_radius(s).max(1.0)) * if s.frozen_ticks>0 {0.6} else {1.0}
     }
     fn update_radius(s: &mut Snake) {
         s.radius = s.base_radius*(1.0+(s.len.saturating_sub(s.birth_len) as f64*0.0025).min(0.25));
@@ -999,6 +1009,7 @@ impl World {
         self.event_count = 0;
         self.time+=seconds;
         self.update_food(seconds);
+        if self.events_enabled() {self.advance_world_events();}
         if self.config.rules==RuleSet::V2 {self.release_detached();}
         if self.items_enabled() { self.advance_items_and_effects(); self.advance_prism(); }
         if self.config.rules==RuleSet::V2 {self.advance_presentation();}
@@ -1053,6 +1064,7 @@ impl World {
         }
         self.update_leader(self.tick.wrapping_add(1));
         if self.config.rules==RuleSet::V2 {self.update_presentation();self.update_item_races();}
+        if self.events_enabled() {self.observe_starfall();}
         self.tick = self.tick.wrapping_add(1);
     }
     pub fn step_n<C: Controller+?Sized>(&mut self, controller: &mut C, ticks: u32) {
@@ -1132,7 +1144,7 @@ impl World {
             s.boost_paid += 1;
             Self::update_radius(s);
             // Keep every spent segment represented, even when the food cap is full.
-            if self.food.len() >= self.config.maximum_food() { let oldest=self.food.iter().position(|f|!matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed)).unwrap_or(0);self.food.remove(oldest); }
+            if self.food.len() >= self.config.maximum_food() { let oldest=self.food.iter().position(|f|!matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed|FoodKind::Meteor)).unwrap_or(0);self.food.remove(oldest); }
             self.add_food(Food { p, value: 0.5, color, life: 8.0, kind: FoodKind::Pellet, ..Food::default() });
         }
     }
@@ -1175,6 +1187,7 @@ impl World {
         let g = self.config.geometry();
         let damping = 0.16_f64.powf(seconds);
         for i in (0..self.food.len()).rev() {
+            if self.config.rules==RuleSet::V2 && self.advance_meteor(i) {continue;}
             let f = &mut self.food[i];
             f.attraction = 0.0;
             if f.life>0.0 && !(self.config.rules==RuleSet::V2 && f.kind==FoodKind::Prism && f.ripe_tick!=0) {
@@ -1213,6 +1226,7 @@ impl World {
     }
     fn consume_food(&mut self, i: usize, owner: usize) {
         let f = self.food[i];
+        if f.kind==FoodKind::Star {self.event_schedule.stats.stars_eaten+=1;}
         self.consumptions.push((f.id, owner as u32, self.snakes[owner].generation, f.p, f.value));
         #[cfg(feature = "parity")]
         self.parity_eat(owner, f);
@@ -1550,7 +1564,7 @@ impl World {
                     break;
                 }
                 let f = self.food[i];
-                if f.owner>=0 || (pass==0 && f.feast>0) || (self.config.rules==RuleSet::V2 && matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed)) {
+                if f.owner>=0 || (pass==0 && f.feast>0) || (self.config.rules==RuleSet::V2 && matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed|FoodKind::Meteor)) {
                     continue;
                 }
                 self.food.remove(i);

@@ -2478,3 +2478,30 @@ fn frost_nova_crack_lifetimes_and_both_formats_are_allocation_free_in_calm() {
         assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
     }}
 }
+
+#[test]
+fn event_sprites_are_bounded_allocation_free_wrap_and_calm_keeps_landing_lifetimes() {
+    use snakes_core::{FoodKind,WorldEventState};
+    let mut r=RenderHandle::new();let mut f=info();let mut p=params();p.presentation_time=f.simulation_time;
+    f.world_event=WorldEventState {kind:1,phase:1,x:700.0,y:500.0,radius:216.0,start_tick:555,end_tick:674,..Default::default()};
+    let meteors:[FoodRecord;24]=std::array::from_fn(|i|FoodRecord {id:i as u64+1,kind:FoodKind::Meteor as u8,
+        x:400.0+i as f32*20.0,y:400.0,size:6.48,attraction_x:600.0+i as f32*20.0,attraction_y:600.0,
+        motion_origin_x:200.0+i as f32*20.0,motion_origin_y:200.0,motion_ticks:7,life_fraction:255,..Default::default()});
+    let mut output=vec![ShaderRenderVertex::default();4096];
+    COUNT.with(|c|c.set(Some(0)));
+    let a=r.build_shader(&f,&[],&[],&meteors,&[],&palette(),&p,&mut output);
+    let allocations=COUNT.with(|c|c.replace(None)).unwrap();assert_eq!(allocations,0);
+    assert_eq!(a.vertex_count,6+24*12);assert_eq!(output[..a.vertex_count].iter().filter(|v|v.params[0]==20).count(),6);
+    r.reduced_motion=true;
+    let calm=r.build_shader(&f,&[],&[],&meteors,&[],&palette(),&p,&mut output);assert_eq!(calm.vertex_count,6+24*6);
+    let head=&output[6..12];let cx=head.iter().map(|v|v.x as f64).sum::<f64>()/6.0;
+    // Triangle list's center has a diagonal bias; bounds prove landing placement.
+    assert!(cx.is_finite());assert!((head.iter().map(|v|v.x).fold(f32::INFINITY,f32::min)+head.iter().map(|v|v.x).fold(f32::NEG_INFINITY,f32::max)-1200.0).abs()<0.01);
+    let star=FoodRecord {id:99,kind:FoodKind::Star as u8,x:600.0,y:600.0,size:6.48,life_fraction:255,ripe_tick:600,..Default::default()};
+    r.build_shader(&f,&[],&[],&[star],&[],&palette(),&p,&mut output);assert_eq!(output[6].params[0],21);assert_eq!(output[6].params[3],0);
+    f.tick+=18;f.simulation_time+=0.6;p.presentation_time=f.simulation_time;
+    r.build_shader(&f,&[],&[],&[star],&[],&palette(),&p,&mut output);assert_eq!(output[6].params[3],255,"birth ages on simulation time while procedural time is frozen");
+    // Both wrap copies contain the full streak/head envelope.
+    p.deadly_walls=0;f.world_event.kind=0;let seam=FoodRecord {x:2.0,attraction_x:202.0,motion_origin_x:-198.0,..meteors[0]};
+    r.reduced_motion=false;let wrapped=r.build_shader(&f,&[],&[],&[seam],&[],&palette(),&p,&mut output);assert!(wrapped.vertex_count>=18);
+}

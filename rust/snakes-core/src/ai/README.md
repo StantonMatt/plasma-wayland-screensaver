@@ -1702,7 +1702,19 @@ endpoint. A rate-limited turn checks its actual arc against the wall on every
 movement instead: applying the inflated reserve halfway through an inward arc
 can truncate a physically safe escape and favor a shallow turn into a corner.
 When no candidate completes the horizon, emergency ranking first preserves a
-positive safety prefix with one turning circle that clears both adjacent walls.
-Separate per-axis escapes can require opposite turns and cannot establish that
-corner continuation. This bounded first-step check uses the cached candidate
-motion and stack storage; ordinary complete-horizon ranking is unchanged.
+positive safety prefix with one turning circle that clears the arena walls.
+Coupled corners always check: separate per-axis escapes can require opposite
+turns and cannot establish that corner continuation. V2 also checks single-wall
+bands when every sampled prefix is shorter than one physical half-turn. This
+prevents repeated emergency reversals from spending the last inward turn while
+preserving the body/area ordering of longer checked prefixes. The bounded
+first-step check uses the cached candidate motion and stack storage; ordinary
+complete-horizon ranking and Classic single-wall behavior are unchanged.
+Starfall's field priority is 7.5 strategic units (135 after the existing prism
+normalization), preserving crowd participation with the safer emergency routing.
+
+The 0.17.0 advisory fixes keep Nightfall's changing motion throughout the
+138-tick candidate/rival horizon, retain cutoff controls through fades, and
+bound daylight speed and turn together. After those corrections, field
+priority was rebalanced from 8 to 7.5 to preserve the three-seed non-contest
+death gate while retaining at least four arrivals per shower on average.
