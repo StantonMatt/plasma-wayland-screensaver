@@ -10,16 +10,31 @@ impl AiController {
             || inv.count==0 || inv.windup!=0 || inv.cooldown!=0 {return;}
         let danger=baseline.steps<15 || state.debug.flags&32!=0 || s.flags&crate::flags::TRAPPED!=0;
         if !danger && w.tick()%3!=s.id as u64%3 {return;}
+        let offensive=aggression::level(w);
+        let mut kinds=0u8;
+        for slot in 0..inv.count as usize {
+            if inv.life[slot]>4 && (1..=5).contains(&inv.kinds[slot]) {kinds|=1<<inv.kinds[slot];}
+        }
+        if kinds==0 {return;}
+        let phase=kinds&(1<<EffectKind::Phase as u8)!=0;
+        let surge=kinds&(1<<EffectKind::Surge as u8)!=0;
+        let frost=kinds&(1<<EffectKind::Frost as u8)!=0;
+        let magnet=kinds&(1<<EffectKind::Magnet as u8)!=0;
+        let evaluate_venom=kinds&(1<<EffectKind::Venom as u8)!=0 && offensive>0.0;
+        // A saved Phase in open space has zero utility. Its inventory cannot
+        // use rival/food evidence, so don't prepare those queries for it.
+        if phase && !surge && !frost && !magnet && !evaluate_venom
+            && !(danger && baseline.steps>=4 || offensive>0.5 && state.track_goal && state.prey!=0 && baseline.steps<horizon) {return;}
         let head=s.segments[0].current;let r=s.radius;
         let mut close=0;let mut hunter=false;let mut venom=false;let mut venom_near=false;
-        for rival in w.snakes().filter(|o|o.alive && o.id!=s.id) {
+        if surge || frost || evaluate_venom {for rival in w.snakes().filter(|o|o.alive && o.id!=s.id) {
             let d=w.displacement(rival.segments[0].current,head);
             let distance=(d.x*d.x+d.y*d.y).sqrt();
-            if crate::effects::frost::freeze_eligible(true,false,rival.face.frozen_ticks,rival.face.thaw_immunity_ticks,
+            if frost && crate::effects::frost::freeze_eligible(true,false,rival.face.frozen_ticks,rival.face.thaw_immunity_ticks,
                 distance*distance,w.config().base_radius()) {close+=1;}
-            hunter|=distance<8.0*r && d.x*rival.angle.cos()+d.y*rival.angle.sin()>distance*0.55
+            hunter|=(surge || frost) && distance<8.0*r && d.x*rival.angle.cos()+d.y*rival.angle.sin()>distance*0.55
                 && rival.segments.len()>s.segments.len();
-            if rival.segments.len()>7 && rival.face.bite_immunity_ticks==0 && rival.flags&crate::flags::PHASED==0 {
+            if evaluate_venom && rival.segments.len()>7 && rival.face.bite_immunity_ticks==0 && rival.flags&crate::flags::PHASED==0 {
                 let idx=(rival.segments.len()*3/4).max(4);
                 let p=rival.segments[idx].current;let d=w.displacement(head,p);
                 let distance=(d.x*d.x+d.y*d.y).sqrt();
@@ -30,10 +45,12 @@ impl AiController {
                     && d.x*tangent.x+d.y*tangent.y>0.0
                     && normalize_angle(d.y.atan2(d.x)-s.angle).abs()<0.9;
             }
-        }
-        let density=self.spatial.cluster_weight(self.spatial.key(head));
-        let contested=state.target!=0 && w.snakes().filter(|o|o.alive && o.id!=s.id).any(|o| {
-            let eta=w.distance_squared(head,state.goal).sqrt()/self.motion[s.id as usize].at(0).0.max(1.0);
+        }}
+        let density=if magnet {self.spatial.cluster_weight(self.spatial.key(head))} else {0.0};
+        let eta=if state.target!=0 && (surge || magnet && density>=3.0 && density<6.0) {
+            w.distance_squared(head,state.goal).sqrt()/self.motion[s.id as usize].at(0).0.max(1.0)
+        } else {f64::INFINITY};
+        let contested=eta.is_finite() && w.snakes().filter(|o|o.alive && o.id!=s.id).any(|o| {
             let rival_eta=w.distance_squared(o.segments[0].current,state.goal).sqrt()/self.motion[o.id as usize].at(0).0.max(1.0);
             eta.max(rival_eta)<=eta.min(rival_eta)*1.25 && eta<3.0
         });
@@ -42,7 +59,6 @@ impl AiController {
         for slot in 0..inv.count as usize {
             if inv.life[slot]<=4 {continue;}
             let kind=EffectKind::from_byte(inv.kinds[slot]);let expiring=inv.life[slot]<=150;
-            let offensive=aggression::level(w);
             let score=match kind {
                 EffectKind::Phase if danger && baseline.steps>=4=>1000.0,
                 EffectKind::Phase if offensive>0.5 && state.track_goal && state.prey!=0 && baseline.steps<horizon=>120.0*offensive,
