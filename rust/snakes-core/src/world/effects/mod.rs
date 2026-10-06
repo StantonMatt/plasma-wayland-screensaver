@@ -3,7 +3,7 @@
 //! Hooks run without allocation or RNG. Replacement calls end before activate.
 mod surge;
 mod motion;
-pub(crate) use motion::{forecast_motion, forecast_boost, forecast_motion_before_tick, forecast_schedule_before_tick};
+pub(crate) use motion::{forecast_daylight_motion, forecast_motion, forecast_boost, forecast_motion_before_tick, forecast_schedule_before_tick};
 mod magnet;
 mod phase;
 pub(crate) mod frost;

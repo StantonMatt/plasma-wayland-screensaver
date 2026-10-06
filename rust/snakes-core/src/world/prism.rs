@@ -6,7 +6,7 @@ use super::*;
 impl Food {
     #[inline]
     pub(crate) fn pickup_eligible(&self,tick:u64)->bool {
-        Item::endpoint_eligible(tick,self.ripe_tick,0,usize::MAX,true)
+        events::food_pickup_eligible(self.kind,tick,self.ripe_tick,self.captured_by)
     }
 }
 impl World {

@@ -120,6 +120,10 @@ public:
             std::memcpy(data->data() + offsetof(SnakeMaterial::UniformData, paletteMode), &material->paletteMode, 4);
             changed = true;
         }
+        if (!old || std::memcmp(data->constData() + offsetof(SnakeMaterial::UniformData, ambient), &material->ambient, 4) != 0) {
+            std::memcpy(data->data() + offsetof(SnakeMaterial::UniformData, ambient), &material->ambient, 4);
+            changed = true;
+        }
         if (!old) {
             const float light[] = {-0.55f, -0.83f};
             std::memcpy(data->data() + offsetof(SnakeMaterial::UniformData, light), light, 8);
@@ -141,6 +145,7 @@ int SnakeMaterial::compare(const QSGMaterial *other) const
     const auto *material = static_cast<const SnakeMaterial *>(other);
     if (animationTime != material->animationTime) return animationTime < material->animationTime ? -1 : 1;
     if (motionScale != material->motionScale) return motionScale < material->motionScale ? -1 : 1;
+    if (ambient != material->ambient) return ambient < material->ambient ? -1 : 1;
     return paletteMode < material->paletteMode ? -1 : paletteMode > material->paletteMode ? 1 : 0;
 }
 const QSGGeometry::AttributeSet &SnakeMaterial::attributes()

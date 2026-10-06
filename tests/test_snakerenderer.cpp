@@ -17,6 +17,7 @@
 #include <cmath>
 #include <limits>
 #include <cstddef>
+#include <ctime>
 #include <rhi/qrhi.h>
 
 class SnakeRendererTest final : public QObject
@@ -279,7 +280,7 @@ private Q_SLOTS:
             {"matrix", offsetof(Uniforms, matrix)}, {"opacity", offsetof(Uniforms, opacity)},
             {"time", offsetof(Uniforms, time)}, {"light", offsetof(Uniforms, light)},
             {"animationTime", offsetof(Uniforms, animationTime)},
-            {"motionScale", offsetof(Uniforms, motionScale)}, {"paletteMode", offsetof(Uniforms, paletteMode)}};
+            {"motionScale", offsetof(Uniforms, motionScale)}, {"paletteMode", offsetof(Uniforms, paletteMode)}, {"ambient", offsetof(Uniforms, ambient)}};
         for (const auto &shader : {vertex, fragment}) {
             const auto description = shader.description();
             QVERIFY(description.isValid());
@@ -1593,6 +1594,68 @@ private:
         frame.events.push_back(event);
     }
 
+    static SnakeFrame eventsFrame()
+    {
+        SnakeFrame frame;
+        frame.info={600,20,3440,1440,0,1,0,{},{}};
+        frame.itemRadius=18*2.1; // Real reference scale: base radius clamps at 18.
+        const auto phase=qEnvironmentVariable("REAL_EVENTS_PHASE", QStringLiteral("meteors"));
+        auto &event=frame.info.world_event;
+        event.start_tick=phase==QStringLiteral("telegraph") ? 578 : 530;event.end_tick=event.start_tick+119;
+        event.kind=1;event.phase=phase==QStringLiteral("telegraph") ? 1 : 2;
+        event.x=1720;event.y=680;event.radius=12*18;event.ambient=1;
+        if (phase==QStringLiteral("night")) {event.kind=2;event.phase=2;event.night=1;event.ambient=0.28f;frame.info.ambient=0.28f;}
+        const auto add=[&](uint32_t id,uint32_t len,double hx,double hy,double heading,uint8_t mood) {
+            snakes_core_snake snake{};
+            snake.id=id;snake.generation=1;snake.alive=1;snake.radius=18*(1.0+0.03*id);
+            snake.angle=heading;snake.desired_angle=heading;snake.color_index=id;
+            snake.segment_offset=frame.segments.size();snake.segment_count=len;
+            snake.target_item=255;snake.mood=mood;snake.mood_intensity=255;snake.face_flags=2;
+            snake.jaw_ticks=mood==SNAKES_CORE_MOOD_SLEEPY ? 20 : 0;
+            for (uint32_t j=0;j<len;++j) {
+                const double distance=j*snake.radius*1.18,wave=2*snake.radius*std::sin(j*0.14);
+                const float x=hx-std::cos(heading)*distance-std::sin(heading)*wave;
+                const float y=hy-std::sin(heading)*distance+std::cos(heading)*wave;
+                frame.segments.push_back({x,y,x,y});
+            }
+            frame.snakes.push_back(snake);
+        };
+        add(0,48,1330,640,0,SNAKES_CORE_MOOD_CALM);
+        add(1,40,2110,770,std::acos(-1.0),SNAKES_CORE_MOOD_CALM);
+        add(2,80,2880,1100,0,SNAKES_CORE_MOOD_HUNTING);
+        frame.snakes[2].flags|=SNAKES_CORE_HUNTING;
+        add(3,32,640,1140,-0.15,SNAKES_CORE_MOOD_SLEEPY);
+        add(4,28,2900,330,0.18,SNAKES_CORE_MOOD_SLEEPY);
+        add(5,26,1080,290,0.05,SNAKES_CORE_MOOD_CALM);
+        if (event.kind==1) {
+            // Exact exported nearest/leader/contested face flags.
+            frame.snakes[0].face_flags|=8|16|64|128;frame.snakes[1].face_flags|=8|32|128;
+            frame.info.bubble_count=2;frame.info.bubbles[0]={0,1,10,SNAKES_CORE_GLYPH_ALERT,0};
+            frame.info.bubbles[1]={1,1,15,SNAKES_CORE_GLYPH_ALERT,0};
+        }
+        for (uint32_t j=0;j<56;++j) {
+            snakes_core_food food{};food.id=j+1;food.x=160+((j*431)%3060);food.y=100+((j*317)%1220);
+            food.size=18*0.32;food.phase=j*0.73f;food.life_fraction=255;food.color_index=j%6;
+            frame.food.push_back(food);
+        }
+        if (phase!=QStringLiteral("telegraph") && phase!=QStringLiteral("night")) {
+            for (uint32_t j=0;j<24;++j) {
+                const double a=j*2.399963229728653,r=event.radius*std::sqrt((j+0.5)/24.0);
+                const float lx=event.x+std::cos(a)*r,ly=event.y+std::sin(a)*r;
+                const bool landed=phase==QStringLiteral("stars") || j<8;
+                snakes_core_food food{};food.id=1000+j;food.kind=landed ? SNAKES_CORE_FOOD_STAR : SNAKES_CORE_FOOD_METEOR;
+                food.size=18*0.36;food.life_fraction=255;food.phase=j*0.73f;food.ripe_tick=landed ? 600-j%18 : 600+5+j%9;
+                food.motion_ticks=landed ? 0 : 5+j%9;
+                food.attraction_x=lx;food.attraction_y=ly;
+                food.motion_origin_x=lx-34*18/std::sqrt(2.0);food.motion_origin_y=ly-34*18/std::sqrt(2.0);
+                food.x=landed ? lx : lx-(food.motion_ticks/14.0f)*(lx-food.motion_origin_x);
+                food.y=landed ? ly : ly-(food.motion_ticks/14.0f)*(ly-food.motion_origin_y);
+                frame.food.push_back(food);
+            }
+        }
+        return frame;
+    }
+
     static SnakeFrame s1ChaosFrame(bool features)
     {
         // The approved spec's ~8k mature estimate. The older stress fixture
@@ -1637,8 +1700,8 @@ private:
         for(uint32_t j=0;j<24;++j) {
             snakes_core_food meteor{};meteor.id=1000+j;meteor.kind=SNAKES_CORE_FOOD_METEOR;
             meteor.x=500+100*(j%12);meteor.y=900+80*(j/12);meteor.size=5;
-            meteor.life_fraction=255;meteor.motion_ticks=20;meteor.motion_origin_x=meteor.x;
-            meteor.motion_origin_y=meteor.y-50;frame.food.push_back(meteor);
+            meteor.life_fraction=255;meteor.motion_ticks=7;meteor.motion_origin_x=meteor.x-120;
+            meteor.motion_origin_y=meteor.y-120;meteor.attraction_x=meteor.x+120;meteor.attraction_y=meteor.y+120;frame.food.push_back(meteor);
         }
         snakes_core_item vortex{};vortex.id=4;vortex.kind=SNAKES_CORE_ITEM_VORTEX;
         vortex.x=2700;vortex.y=1000;vortex.radius=22*8.1;vortex.life_ticks=150;
@@ -1751,6 +1814,79 @@ private Q_SLOTS:
         delete node;
     }
 
+    void eventsFixtureAndChaosBudget()
+    {
+        SnakeRenderer renderer;renderer.m_shaderGeometryForTest=true;renderer.setSize({3440,1440});
+        auto frame=eventsFrame();renderer.syncFrame(frame,palette,1,true);
+        auto *node=renderer.updatePaintNode(nullptr,nullptr);
+        const auto *g=static_cast<QSGGeometryNode *>(node)->geometry();
+        const auto *v=static_cast<const snakes_core_shader_vertex *>(g->vertexData());
+        int zone=0,meteor=0,star=0,arcs=0;
+        for(int i=0;i<g->vertexCount();++i) {zone+=v[i].params[0]==20;meteor+=v[i].params[0]==22;star+=v[i].params[0]==21;arcs+=v[i].params[0]==17;}
+        QCOMPARE(zone,6);QCOMPARE(meteor,16*12);QCOMPARE(star,8*6);QCOMPARE(arcs,12);
+        frame.info.ambient=0.28f;renderer.syncFrame(frame,palette,1,true);node=renderer.updatePaintNode(node,nullptr);
+        QCOMPARE(static_cast<SnakeMaterial *>(static_cast<QSGGeometryNode *>(node)->material())->ambient,0.28f);
+        renderer.setShaderTimeFrozen(true);node=renderer.updatePaintNode(node,nullptr);
+        g=static_cast<QSGGeometryNode *>(node)->geometry();v=static_cast<const snakes_core_shader_vertex *>(g->vertexData());meteor=0;
+        for(int i=0;i<g->vertexCount();++i) meteor+=v[i].params[0]==22;
+        QCOMPARE(meteor,16*6);delete node;
+    }
+    void benchmarkS6ChaosGeometry()
+    {
+        SnakeRenderer renderer;renderer.m_shaderGeometryForTest=true;renderer.setSize({3440,1440});
+        auto frame=s3ChaosFrame();
+        frame.info.world_event={555,674,1720,680,216,1,0.28f,1,2,24,0};frame.info.ambient=0.28f;
+        frame.snakes[12].face_flags=2|8|16|64|128;frame.snakes[13].face_flags=2|8|32|128;
+        renderer.syncFrame(frame,palette,1,true);QSGNode *node=renderer.updatePaintNode(nullptr,nullptr);
+        frame.info.tick=601;frame.info.simulation_time=601.0/30;
+        frame.snakes[10].segment_count=71;frame.snakes[10].stump_ticks=48;
+        snakes_core_event sever{};sever.tick=601;sever.kind=SNAKES_CORE_EVENT_SEVER;
+        sever.snake_id=10;sever.other_snake_id=11;sever.generation=frame.snakes[10].generation;
+        sever.cut_index=71;sever.duration_ticks=33;frame.events.push_back(sever);
+        renderer.syncFrame(frame,palette,1,true);node=renderer.updatePaintNode(node,nullptr);
+        const auto count=static_cast<QSGGeometryNode *>(node)->geometry()->vertexCount();
+        qInfo()<<"S6 chaos vertices"<<count;QVERIFY(count<=9600);
+        QBENCHMARK {renderer.presentFrame(frame.info.simulation_time,1);node=renderer.updatePaintNode(node,nullptr);}
+        delete node;
+    }
+
+    void eventsPairedGeometryGate()
+    {
+        SnakeRenderer mature,chaos;
+        for (auto *r : {&mature,&chaos}) {r->m_shaderGeometryForTest=true;r->setSize({3440,1440});}
+        auto base=s1ChaosFrame(false);auto frame=s3ChaosFrame();
+        frame.info.world_event={555,674,1720,680,216,1,0.28f,1,2,24,0};frame.info.ambient=0.28f;
+        frame.snakes[12].face_flags=2|8|16|64|128;frame.snakes[13].face_flags=2|8|32|128;
+        mature.syncFrame(base,palette,1,true);chaos.syncFrame(frame,palette,1,true);
+        QSGNode *matureNode=mature.updatePaintNode(nullptr,nullptr),*chaosNode=chaos.updatePaintNode(nullptr,nullptr);
+        frame.info.tick=601;frame.info.simulation_time=601.0/30;
+        frame.snakes[10].segment_count=71;frame.snakes[10].stump_ticks=48;
+        snakes_core_event sever{};sever.tick=601;sever.kind=SNAKES_CORE_EVENT_SEVER;
+        sever.snake_id=10;sever.other_snake_id=11;sever.generation=frame.snakes[10].generation;
+        sever.cut_index=71;sever.duration_ticks=33;frame.events.push_back(sever);
+        chaos.syncFrame(frame,palette,1,true);chaosNode=chaos.updatePaintNode(chaosNode,nullptr);
+        QCOMPARE(static_cast<QSGGeometryNode *>(chaosNode)->geometry()->vertexCount(),9006);
+        // Alternate paired blocks using thread CPU time: scheduling delays
+        // from shared runners must not count as renderer work.
+        qint64 baseNs=0,chaosNs=0;constexpr int blocks=40,iterations=1000;
+        const auto measure=[&](SnakeRenderer &renderer,QSGNode *&node,double time) {
+            timespec start{},end{};
+            if (clock_gettime(CLOCK_THREAD_CPUTIME_ID,&start)!=0) return qint64(-1);
+            for(int i=0;i<iterations;++i) {renderer.presentFrame(time,1);node=renderer.updatePaintNode(node,nullptr);}
+            if (clock_gettime(CLOCK_THREAD_CPUTIME_ID,&end)!=0) return qint64(-1);
+            return qint64(end.tv_sec-start.tv_sec)*1000000000+end.tv_nsec-start.tv_nsec;
+        };
+        for(int block=0;block<blocks;++block) {
+            if(block%2==0) {baseNs+=measure(mature,matureNode,base.info.simulation_time);chaosNs+=measure(chaos,chaosNode,frame.info.simulation_time);}
+            else {chaosNs+=measure(chaos,chaosNode,frame.info.simulation_time);baseNs+=measure(mature,matureNode,base.info.simulation_time);}
+        }
+        QVERIFY(baseNs>0 && chaosNs>0);
+        qInfo()<<"S6 paired mature ms"<<double(baseNs)/(blocks*iterations*1e6)
+               <<"chaos ms"<<double(chaosNs)/(blocks*iterations*1e6)<<"ratio"<<double(chaosNs)/baseNs;
+        delete matureNode;delete chaosNode;
+        QVERIFY2(double(chaosNs)/baseNs<=1.15,"S6 chaos exceeds 1.15x paired mature geometry");
+    }
+
     void benchmarkS1MatureGeometry() { benchmarkS1Geometry(false); }
     void benchmarkS1ChaosGeometry() { benchmarkS1Geometry(true); }
 private:
@@ -1826,21 +1962,24 @@ private Q_SLOTS:
         QTest::addColumn<bool>("giant");
         QTest::addColumn<bool>("classic");
         QTest::addColumn<bool>("frost");
-        QTest::newRow("shader") << false << false << false << false << false << false << false << false << false;
-        QTest::newRow("driver-rejection-fallback") << true << false << false << false << false << false << false << false << false;
-        QTest::newRow("powerups") << false << true << false << false << false << false << false << false << false;
-        QTest::newRow("faces") << false << false << true << false << false << false << false << false << false;
-        QTest::newRow("faces-mono") << false << false << true << true << false << false << false << false << false;
-        QTest::newRow("prism") << false << false << false << false << true << false << false << false << false;
-        QTest::newRow("prism-mono") << false << false << false << true << true << false << false << false << false;
-        QTest::newRow("venom") << false << false << false << false << false << true << false << false << false;
-        QTest::newRow("venom-mono") << false << false << false << true << false << true << false << false << false;
-        QTest::newRow("giant") << false << false << false << false << false << false << true << false << false;
-        QTest::newRow("giant-classic") << false << false << false << false << false << false << true << true << false;
-        QTest::newRow("giant-venom") << false << false << false << false << false << true << true << false << false;
-        QTest::newRow("giant-venom-classic") << false << false << false << false << false << true << true << true << false;
-        QTest::newRow("frost") << false << false << false << false << false << false << false << false << true;
-        QTest::newRow("frost-mono") << false << false << false << true << false << false << false << false << true;
+        QTest::addColumn<bool>("events");
+        QTest::newRow("shader") << false << false << false << false << false << false << false << false << false << false;
+        QTest::newRow("driver-rejection-fallback") << true << false << false << false << false << false << false << false << false << false;
+        QTest::newRow("powerups") << false << true << false << false << false << false << false << false << false << false;
+        QTest::newRow("faces") << false << false << true << false << false << false << false << false << false << false;
+        QTest::newRow("faces-mono") << false << false << true << true << false << false << false << false << false << false;
+        QTest::newRow("prism") << false << false << false << false << true << false << false << false << false << false;
+        QTest::newRow("prism-mono") << false << false << false << true << true << false << false << false << false << false;
+        QTest::newRow("venom") << false << false << false << false << false << true << false << false << false << false;
+        QTest::newRow("venom-mono") << false << false << false << true << false << true << false << false << false << false;
+        QTest::newRow("giant") << false << false << false << false << false << false << true << false << false << false;
+        QTest::newRow("giant-classic") << false << false << false << false << false << false << true << true << false << false;
+        QTest::newRow("giant-venom") << false << false << false << false << false << true << true << false << false << false;
+        QTest::newRow("giant-venom-classic") << false << false << false << false << false << true << true << true << false << false;
+        QTest::newRow("frost") << false << false << false << false << false << false << false << false << true << false;
+        QTest::newRow("frost-mono") << false << false << false << true << false << false << false << false << true << false;
+        QTest::newRow("events") << false << false << false << false << false << false << false << false << false << true;
+        QTest::newRow("events-mono") << false << false << false << true << false << false << false << false << false << true;
     }
 
     void captureShaderFixture()
@@ -1854,11 +1993,12 @@ private Q_SLOTS:
         QFETCH(bool, giant);
         QFETCH(bool, classic);
         QFETCH(bool, frost);
+        QFETCH(bool, events);
         const auto colors = SnakeSimulation::colors(monoPalette ? QStringLiteral("mono") : QStringLiteral("ocean"));
         const auto path = qEnvironmentVariable("SNAKES_CAPTURE_PATH");
         if (path.isEmpty()) QSKIP("Set SNAKES_CAPTURE_PATH to capture the RHI fixture");
         QQuickWindow window;
-        window.resize(giant ? 3440 : (venom || frost) ? 1920 : 1280, giant ? 1440 : (venom || frost) ? 1080 : 720);
+        window.resize((giant || events) ? 3440 : (venom || frost) ? 1920 : 1280, (giant || events) ? 1440 : (venom || frost) ? 1080 : 720);
         window.setColor(Qt::black);
         // The borrowed snapshot outlives the item and every render-thread sync.
         SnakeFrame frame;
@@ -1883,15 +2023,15 @@ private Q_SLOTS:
             };
         }
         if (classic) renderer.m_shaderSupportCheck=[](QQuickWindow *) { return false; };
-        renderer.setSize(giant ? QSizeF(3440,1440) : (venom || frost) ? QSizeF(1920,1080) : QSizeF(1280, 720));
-        frame = frost ? frostFrame() : giant ? giantFrame() : venom ? venomFrame() : prism ? prismFrame() : faces ? facesFrame(false) : powerups ? powerupsFrame() : anatomyFrame();
+        renderer.setSize((giant || events) ? QSizeF(3440,1440) : (venom || frost) ? QSizeF(1920,1080) : QSizeF(1280, 720));
+        frame = events ? eventsFrame() : frost ? frostFrame() : giant ? giantFrame() : venom ? venomFrame() : prism ? prismFrame() : faces ? facesFrame(false) : powerups ? powerupsFrame() : anatomyFrame();
         if (faces) {
             adultFrame = facesFrame(true);
             adultRenderer.setSize({1280,720});
             adultRenderer.syncFrame(adultFrame,colors,1,true);
         }
         // Capture the R8 atlas and capsule contours through a real RHI path.
-        for (uint8_t kind = 1; !powerups && !faces && !prism && !venom && !giant && !frost && kind <= 3; ++kind) {
+        for (uint8_t kind = 1; !powerups && !faces && !prism && !venom && !giant && !frost && !events && kind <= 3; ++kind) {
             snakes_core_item item{};
             item.id = kind; item.kind = kind;
             item.x = 180 + (kind - 1) * 400; item.y = 650;
@@ -1927,11 +2067,11 @@ private Q_SLOTS:
             ++renderer.m_pendingHistoryCount;
         }
         renderer.syncFrame(frame, colors, 1, true);
-        if ((prism || venom || frost) && qEnvironmentVariableIsSet("REAL_CALM")) renderer.setShaderTimeFrozen(true);
+        if ((prism || venom || frost || events) && qEnvironmentVariableIsSet("REAL_CALM")) renderer.setShaderTimeFrozen(true);
         // Export the production geometry for surfaceless shader captures when
         // a sandbox cannot create a native Wayland or X11 window.
         const auto vertexDump = qEnvironmentVariable("SNAKES_VERTEX_DUMP_PATH");
-        if (frost && !vertexDump.isEmpty()) {
+        if ((frost || events) && !vertexDump.isEmpty()) {
             renderer.m_shaderGeometryForTest = true;
             auto *node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr, nullptr));
             QVERIFY(node);
@@ -1940,7 +2080,7 @@ private Q_SLOTS:
             QFile dump(vertexDump);
             QVERIFY(dump.open(QIODevice::WriteOnly));
             QCOMPARE(dump.write(static_cast<const char *>(geometry->vertexData()), bytes), bytes);
-            qInfo() << "Frost vertex dump" << vertexDump << "vertices" << geometry->vertexCount();
+            qInfo() << "Fixture vertex dump" << vertexDump << "vertices" << geometry->vertexCount();
             delete node;
             return;
         }

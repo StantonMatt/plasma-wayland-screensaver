@@ -10,10 +10,10 @@ impl AiController {
     }
     pub(super) fn prepare_races(&mut self,w:&World) {
         self.capsule_etas.fill([f64::INFINITY;MAX_SNAKES]);
-        for (slot,item) in w.items().enumerate() {
+        for (slot,f) in self.food[MAX_FOOD..].iter().enumerate().filter_map(|(slot,f)|f.map(|f|(slot,f))) {
             for (id,r) in self.rivals.iter().enumerate().filter(|(_,r)|r.alive) {
-                let d=w.displacement(r.path[0],item.position);
-                self.capsule_etas[slot][id]=(d.x*d.x+d.y*d.y).sqrt()/r.speed.max(1.0)
+                let d=w.displacement(r.path[0],f.position);
+                self.capsule_etas[slot][id]=((d.x*d.x+d.y*d.y).sqrt()-if f.id==events::ID {f.size} else {0.0}).max(0.0)/r.speed.max(1.0)
                     +normalize_angle(d.y.atan2(d.x)-r.angle).abs()/r.turn.max(0.01);
             }
         }
@@ -30,19 +30,26 @@ impl AiController {
             return;
         }
         let Some(f)=self.target_food(*state) else {state.set_target(0);state.waypoint=None;return;};
+        if f.id==events::ID && w.starfall_landed()
+            && w.distance_squared(s.segments[0].current,f.position)<=f.size*f.size {
+            state.set_target(0);state.prey=0;state.clear_attacks(s.angle);state.track_goal=false;
+            state.waypoint=None;return;
+        }
         let etas=self.capsule_etas[state_item_slot(self,f)];let mine=etas[s.id as usize];
         let rival=etas.iter().enumerate().filter(|(id,_)|*id!=s.id as usize
             && self.states[*id].target==state.target && self.rivals[*id].alive
             && self.states[*id].generation==w.snake(*id).unwrap().generation)
             .map(|(_,&eta)|eta).fold(f64::INFINITY,f64::min);
-        if !state.guarding && rival<(0.8-0.25*aggression::bold(w))*mine {state.race_losing_ticks=state.race_losing_ticks.saturating_add(1);} else {state.race_losing_ticks=0;}
+        // A wave has many prizes: later arrivals still have food to race for.
+        let wave_slack=if f.id==events::ID {2.0+4.0*aggression::bold(w)} else {0.0};
+        if !state.guarding && rival+wave_slack<(0.8-0.25*aggression::bold(w))*mine {state.race_losing_ticks=state.race_losing_ticks.saturating_add(1);} else {state.race_losing_ticks=0;}
         if state.race_losing_ticks>=10+(20.0*aggression::bold(w)) as u8 {
             state.rejected=state.target;state.reject_until=w.tick()+60;
             #[cfg(feature="desktop-diag")] {state.abandon=super::AbandonReason::LostRace;}
             state.set_target(0);state.waypoint=None;state.prey=0;state.clear_attacks(s.angle);
             state.track_goal=false;state.race_losing_ticks=0;
         }
-        self.guard_capsule(w,s,state);
+        if f.id!=events::ID {self.guard_capsule(w,s,state);}
     }
     pub(super) fn vulture_seed(&self,w:&World,s:SnakeView<'_>,state:&mut State) {
         let Some(f)=self.target_food(*state).filter(|f|f.kind==crate::FoodKind::PrismSeed) else {
@@ -101,7 +108,7 @@ impl AiController {
         })
     }
     pub(super) fn guard_capsule(&self,w:&World,s:SnakeView<'_>,state:&mut State) {
-        let Some(f)=self.target_food(*state).filter(|f|f.id & target::ITEM_BIT!=0) else {state.guarding=false;return;};
+        let Some(f)=self.target_food(*state).filter(|f|f.id & target::ITEM_BIT!=0 && f.id!=events::ID) else {state.guarding=false;return;};
         let (speed,turn)=self.motion[s.id as usize].at(0);
         let radius=(6.0*s.radius).max(speed/turn*1.15);
         let near=w.distance_squared(s.segments[0].current,f.position)<(15.0*s.radius).powi(2);

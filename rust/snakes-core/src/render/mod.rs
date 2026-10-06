@@ -4,6 +4,7 @@
 mod geometry;
 mod faces;
 mod prism;
+mod events;
 mod venom;
 mod frost;
 mod shader;
@@ -330,8 +331,10 @@ impl Renderer {
             view,
             circles: &circles
         };
+        self.classic_world_event(info,p,palette,&mut sink);
         for f in food {
             if !food_valid(f) { continue; }
+            if self.classic_event_food(f,info,p,palette,&mut sink) {continue;}
             let pulse = 0.82+(p.presentation_time*3.0+f.phase as f64).sin()*0.18;
             let pellet = f.kind==2;
             let world_size = f.size as f64*pulse*if pellet {
@@ -590,12 +593,12 @@ impl Renderer {
                                         let accent=items::accent(kind,palette);
                                         let mix=|a:u8,b:u8|(a as f64+(b as f64-a as f64)*weight).round() as u8;
                                         let tint=if rainbow {self.rainbow[edge].alpha(245).fade(fade)} else {Color::new(mix(c.red,accent.red),mix(c.green,accent.green),mix(c.blue,accent.blue),245).fade(fade)};
-                                        sink.ribbon(&mapped[edge..=edge+1],&self.normals[edge..=edge+1],&self.valid[edge..=edge+1],radius*0.96,tint);
+                                        sink.ribbon(&mapped[edge..=edge+1],&self.normals[edge..=edge+1],&self.valid[edge..=edge+1],radius*0.96,events::dim(tint,info.ambient));
                                     }
                                 } else {
-                                    sink.ribbon(&mapped[start..=end], &self.normals[start..=end], &self.valid[start..=end], radius*0.96, c.alpha(245).fade(fade));
+                                    sink.ribbon(&mapped[start..=end], &self.normals[start..=end], &self.valid[start..=end], radius*0.96, events::dim(c.alpha(245).fade(fade),info.ambient));
                                 }
-                                if end==n-1 { sink.disc(mapped[end], radius*0.96, c.alpha(245).fade(fade), 12); }
+                                if end==n-1 { sink.disc(mapped[end], radius*0.96, events::dim(c.alpha(245).fade(fade),info.ambient), 12); }
                             }
                             if split && layer!=2 { continue; }
                             if active_kind==4 {
@@ -603,12 +606,12 @@ impl Renderer {
                             }
                             let first_mark=((start+1)/6)*6+5;
                             for i in (first_mark..=end).step_by(6) {
-                                sink.disc(mapped[i], radius*0.34, Color::new(255, 255, 255, 46).fade(fade), 6);
+                                sink.disc(mapped[i], radius*0.34, events::dim(Color::new(255, 255, 255, 46).fade(fade),info.ambient), 6);
                             }
                             if !corpse && s.stump_ticks>0 && end==n-1 {sink.disc(mapped[end],radius*0.5,items::accent(4,palette).alpha(220),8);}
                             if start!=0 { continue; }
                             let head = mapped[0];
-                            sink.disc(head, radius*1.08, if active_kind==4 {items::accent(4,palette).alpha(255)} else {c.alpha(255).fade(fade)}, 12);
+                            sink.disc(head, radius*1.08, events::dim(if active_kind==4 {items::accent(4,palette).alpha(255)} else {c.alpha(255).fade(fade)},info.ambient), 12);
                             let mut forward = P::new(s.angle.cos()*sx, s.angle.sin()*sy);
                             let len = forward.length();
                             if len>0.001 {
@@ -637,6 +640,7 @@ impl Renderer {
                                 };
                                 let active_pupil=if matches!(mood,3|6) {0.12} else if matches!(mood,2|4) {0.30} else {0.48};
                                 let pupil=0.48+(active_pupil-0.48)*intensity;
+                                if info.ambient>0.0 && info.ambient<1.0 {sink.disc(eye,eye_r*2.0,white.alpha(((1.0-info.ambient)/0.72*80.0) as u8).fade(fade),8);}
                                 sink.disc(eye, eye_r, white.fade(fade), 8);
                                 // Contain the complete pupil, including the legacy bias.
                                 // The eight-sided iris has inradius r*cos(pi/8).

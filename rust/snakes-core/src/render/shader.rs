@@ -191,11 +191,20 @@ impl SpriteSink<'_> {
             Self::make_vertex(pts[3],-1.0,0.0,colors[1],[10,0,0,0]),
         ]);
     }
-    fn streak(&mut self, a:P, b:P, width:f64, c:Color, params:[u8;4]) {
+    pub(super) fn streak(&mut self, a:P, b:P, width:f64, c:Color, params:[u8;4]) {
         let d=b-a;let len=d.length();if len<0.001 { return; }
         let normal=P::new(-d.y,d.x)*(width/len);
         self.quad([a+normal,a-normal,b+normal,b-normal],
             [[1.0,0.0],[-1.0,0.0],[1.0,1.0],[-1.0,1.0]],c,params);
+    }
+    pub(super) fn event_streak(&mut self, head:P, streak:P, direction:P, width:f64, c:Color) {
+        let tail=head-streak;
+        let normal=P::new(direction.y,-direction.x)*width;
+        let margin=P::new(normal.x.abs(),normal.y.abs());
+        if !visible(head.x.min(tail.x)-margin.x,head.y.min(tail.y)-margin.y,
+            streak.x.abs()+2.0*margin.x,streak.y.abs()+2.0*margin.y,self.view) {return;}
+        self.quad_unchecked([head+normal,head-normal,tail+normal,tail-normal],
+            [[1.0,0.0],[-1.0,0.0],[1.0,1.0],[-1.0,1.0]],c,[22,0,0,0]);
     }
 }
 // Frame/record guards bound projected components far below 1e150, even after
@@ -400,8 +409,16 @@ impl Renderer {
         let color=|i:u32|palette.get(if palette.is_empty() { 0 } else { i as usize%palette.len() }).copied().unwrap_or(Color::new(0,255,255,255));
         let white_crown=white_crown_palette(palette);
         let mut sink=SpriteSink { out:output,count:0,view };
+        self.shader_world_event(info,p,palette,&mut sink);
+        // Share event colour/scale across the shower; ordinary food never
+        // enters the larger event sprite path.
+        let mut event_gold=None;
         for f in food {
             if !food_valid(f) { continue; }
+            if matches!(f.kind,5|6) {
+                let accent=*event_gold.get_or_insert_with(||events::gold(palette));
+                self.shader_event_food(f,info,p,scale,accent,&mut sink);continue;
+            }
             let raw_size=f.size as f64*scale;
             let size=raw_size*if matches!(f.kind,3|4) {PRISM_VISUAL} else {1.0};
             let extent=size*FOOD;let pos=P::new(f.x as f64,f.y as f64);
@@ -687,10 +704,13 @@ impl Renderer {
 
         }
         self.shader_items(info,p,palette,&mut sink);
+        let event_race=info.world_event.kind==1 && info.world_event.phase!=0 && snakes.iter().any(|s|s.alive!=0 && s.face_flags&48!=0);
+        if event_race {self.shader_event_races(info,p,palette,snakes,segments,&mut sink);}
         if snakes.iter().any(|s|s.alive!=0 && s.face_flags&4!=0) {
-            self.shader_race_items(info,p,palette,snakes,segments,&mut sink,&self.items[..self.item_count.min(crate::MAX_CAPSULES)],self.item_radius,4);
+            self.shader_race_items(info,p,palette,snakes,segments,&mut sink,&self.items[..self.item_count.min(crate::MAX_CAPSULES)],self.item_radius,if event_race {2} else {4});
             self.shader_prism_races(info,p,palette,snakes,segments,food,&mut sink);
-        } else {self.shader_races(info,p,palette,snakes,segments,&mut sink);}
+        } else if event_race {self.shader_race_items(info,p,palette,snakes,segments,&mut sink,&self.items[..self.item_count.min(crate::MAX_CAPSULES)],self.item_radius,4);}
+        else {self.shader_races(info,p,palette,snakes,segments,&mut sink);}
         self.shader_bubbles(info,p,palette,snakes,segments,&mut sink);
         self.shader_orphans(info,p,palette,&mut sink);
         let mut effect_budget=EffectBudget::default();

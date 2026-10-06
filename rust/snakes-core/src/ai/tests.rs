@@ -2905,3 +2905,214 @@ fn wall_reserve_still_guards_settled_controls_and_horizon_endpoints() {
     let turn=ai.rollout(&w,w.snake(0).unwrap(),State::default(),5,NORMAL_STEPS);
     assert!(turn.steps<NORMAL_STEPS);
 }
+
+#[test]
+fn replayed_single_wall_emergency_keeps_an_inward_turn_available() {
+    // F1 seed 73: the original wall victims' last recoverable emergency
+    // choices. Snake 1 selected a wallward four-tick prefix at tick 23060;
+    // snake 11 selected four ticks wallward over one tick inward at 23248.
+    // Both are far from corners, where the old emergency check returned true.
+    let captures=[
+        (Point{x:1418.0258664246398,y:51.546732133786136},-0.8107415647746452,
+            23.927880288922836,256.33756509186355,2.859179047223653,
+            -1.4107415647746451,-0.21074156477464523,83),
+        (Point{x:5022.779362120511,y:43.78574125272827},-0.5849195706446826,
+            23.093647201676386,217.05121185810543,2.4571872242313013,
+            -1.0211070890292624,0.015080429355317393,100),
+    ];
+    for (head,angle,radius,speed,turn,wallward,inward,len) in captures {
+        for mirror_x in [false,true] {for mirror_y in [false,true] {
+            let cfg=Config {width:7920.0,height:1440.0,rules:crate::RuleSet::V2,
+                self_collisions:true,deadly_walls:true,world_events:true,..Default::default()};
+            let point=|p:Point|Point {x:if mirror_x {cfg.width-p.x} else {p.x},
+                y:if mirror_y {cfg.height-p.y} else {p.y}};
+            let mut w=World::diagnostic_arena(cfg,&[(point(head),angle,len,0.0)],&[]).unwrap();
+            w.snakes[0].radius=radius;
+            let mut ai=AiController::new();
+            ai.motion[0]=Motion {limits:[(speed,turn);25],..Default::default()};
+            let candidate=|desired:f64| {
+                let next=angle+normalize_angle(desired-angle).clamp(-turn*STEP_SECONDS,turn*STEP_SECONDS);
+                let mut c=Candidate {checked:true,steps:1,..Default::default()};
+                c.path[0]=point(head);
+                c.path[1]=point(Point{x:head.x+next.cos()*speed*STEP_SECONDS,
+                    y:head.y+next.sin()*speed*STEP_SECONDS});c
+            };
+            let blocked=candidate(wallward);let escape=candidate(inward);
+            assert!(!ai.emergency_wall_turn_room(&w,w.snake(0).unwrap(),&blocked,true),
+                "wallward prefix spends its remaining turn: len={len} mirrors={mirror_x}/{mirror_y}");
+            assert!(ai.emergency_wall_turn_room(&w,w.snake(0).unwrap(),&escape,true),
+                "positive inward prefix retains a turn: len={len} mirrors={mirror_x}/{mirror_y}");
+            // Check the retained exit against independent mechanics. Restore
+            // the measured speed without a future meal/nutrition transition.
+            w.config.speed=300.0;w.config.intelligence=100.0;w.config.self_collisions=false;
+            w.snakes[0].base_radius=radius;
+            w.snakes[0].traits.speed_bias=speed*(1.0+(len-24) as f64*0.004)/250.0;
+            let reflect_angle=|a:f64| {
+                let x=if mirror_x {-a.cos()} else {a.cos()};
+                let y=if mirror_y {-a.sin()} else {a.sin()};y.atan2(x)
+            };
+            w.snakes[0].angle=reflect_angle(angle);w.snakes[0].desired=w.snakes[0].angle;
+            let limits=w.motion_limits(0,0.0).unwrap();
+            assert!((limits.0-speed).abs()<1e-9 && (limits.1-turn).abs()<1e-9);
+            let mut ticks=0;
+            let mut driver=crate::controller::ScriptedController::new(|_,_:SnakeView<'_>| {
+                ticks+=1;
+                Steering {desired_angle:reflect_angle(if ticks==1 {inward} else {std::f64::consts::FRAC_PI_2}),rush:0.0}
+            });
+            for movement in 1..=48 {
+                w.step(&mut driver);
+                assert!(w.snake(0).unwrap().alive,"retained inward turn hits wall at movement {movement}");
+                if movement==1 {assert!(w.distance_squared(w.snake(0).unwrap().segments[0].current,escape.path[1])<1e-16);}
+            }
+            assert_eq!(w.stats().wall_deaths,0);
+
+        }}
+    }
+}
+
+// Capture after World::step advances events and decrements effects, then
+// compare the ordinary candidate cache and static rival path with execution.
+#[test]
+fn advisory_night_motion_tracks_full_horizon_through_step() {
+    for age in [0,45,600,650,685,749] {for variant in 0..4 {
+        let mut w=arena(true);w.config.rules=crate::RuleSet::V2;
+        w.config.self_collisions=false;w.config.power_ups=true;w.config.width=3440.0;w.config.height=1440.0;
+        line(&mut w,0,Point{x:400.0,y:400.0},0.0,120);
+        w.diagnostic_event_schedule(10000,1);
+        let mut straight=crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering {desired_angle:s.angle,rush:0.0});
+        for _ in 0..=age {w.step(&mut straight);}
+        w.items.clear();
+        w.snakes[0].effect_kind=if variant==1 {1} else {0};
+        w.snakes[0].effect_ticks=if variant==1 {40} else {0};
+        w.snakes[0].frozen_ticks=if variant==2 {40} else {0};
+        // Suppress unrelated ordinary feeding while retaining update_food's
+        // production order and the effect-decrement machinery.
+        w.food.clear();w.food.resize(w.config.food_count(),crate::world::Food {p:Point{x:0.0,y:0.0},life:1000.0,value:0.0,owner:-1,..Default::default()});
+        let rush=if variant==3 {0.6} else {0.0};
+        let mut observed=None;
+        struct Observe<'a>(&'a mut Option<World>,f64);
+        impl Controller for Observe<'_> {
+            fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
+                if self.0.is_none() {*self.0=Some(w.diagnostic_snapshot());}
+                Steering {desired_angle:s.angle,rush:self.1}
+            }
+        }
+        // The actual first movement starts from the exact observed snapshot.
+        w.step(&mut Observe(&mut observed,rush));
+        let observed=observed.unwrap();let motion=Motion::forecast(&observed,0,rush);
+        let forecast=forecast::Forecast::new(&observed,forecast::Timeline::new(&observed));
+        let mut ai=AiController::new();ai.prepare(&observed);
+        assert!(!ai.rivals[0].dynamic);
+        let mut position=observed.snake(0).unwrap().segments[0].current;
+        for step in 1..=STEPS {
+            let limits=forecast.motion(&observed,0,rush,&motion,step);
+            let expected=crate::effects::forecast_motion(&observed,0,rush,step-1);
+            assert!((limits.0-expected.0).abs()<1e-9 && (limits.1-expected.1).abs()<1e-9,"age={age} variant={variant} step={step}: {limits:?} vs {expected:?}");
+            position=observed.canonical_point(Point{x:position.x+limits.0*STEP_SECONDS,y:position.y});
+            if step>1 {w.step(&mut straight);}
+            assert!(w.snake(0).unwrap().alive);
+            assert!(w.distance_squared(position,w.snake(0).unwrap().segments[0].current)<1e-16,"executed age={age} variant={variant} step={step} predicted={position:?} actual={:?} limits={limits:?} mechanics={:?} len={} growth={} effect={}",w.snake(0).unwrap().segments[0].current,w.motion_limits(0,0.0),w.snakes[0].len,w.snakes[0].growth,w.snakes[0].effect_kind);
+            if rush==0.0 {
+                assert!(w.distance_squared(ai.rivals[0].path[step],position)<1e-16,"static rival age={age} variant={variant} step={step}");
+            }
+        }
+    }}
+}
+
+#[test]
+fn advisory_night_daylight_curvature_bounds_executed_dawn() {
+    for length in [24,120,400] {for speed in [0.0,100.0,300.0] {for age in [620,685] {
+        let mut w=arena(true);w.config.rules=crate::RuleSet::V2;w.config.self_collisions=false;w.config.power_ups=false;w.config.speed=speed;
+        line(&mut w,0,Point{x:400.0,y:400.0},0.0,length);
+        w.diagnostic_event_schedule(10000,1);
+        let mut straight=crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering {desired_angle:s.angle,rush:0.0});
+        for _ in 0..age {w.step(&mut straight);}
+        w.food.clear();w.food.resize(w.config.food_count(),crate::world::Food {p:Point{x:0.0,y:0.0},life:1000.0,value:0.0,owner:-1,..Default::default()});
+        let mut bound=(0.0,0.0);
+        struct Observe<'a>(&'a mut (f64,f64));
+        impl Controller for Observe<'_> {
+            fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
+                let m=Motion::forecast(w,0,0.0);*self.0=(m.max_speed,m.max_curve);
+                let observed=m.limits.iter().map(|x|x.0).fold(0.0_f64,f64::max);
+                assert!(m.max_speed+1e-9>=observed/(1.0-0.1*w.world_event.night as f64),"valid speed padding was reduced");
+                Steering {desired_angle:s.angle,rush:0.0}
+            }
+        }
+        w.step(&mut Observe(&mut bound));
+        for _ in 0..STEPS {
+            let (v,t)=w.motion_limits(0,0.0).unwrap();
+            assert!(bound.0+1e-9>=v && bound.1+1e-9>=v*t,"len={length} speed={speed}: bound={bound:?} executed={v},{t}");
+            w.step(&mut straight);
+        }
+    }}}
+}
+
+#[test]
+fn advisory_night_retained_cutoff_keeps_controls_through_step() {
+    for age in [0,45,660,705] {for surge in [false,true] {
+        let mut w=arena(true);w.config.rules=crate::RuleSet::V2;w.config.self_collisions=false;w.config.power_ups=true;
+        w.config.width=3440.0;w.config.height=1440.0;
+        line(&mut w,0,Point{x:1800.0,y:400.0},0.0,120);
+        line(&mut w,1,Point{x:1600.0,y:200.0},0.0,24);w.snakes[1].traits.speed_bias=0.2;
+        w.diagnostic_event_schedule(10000,1);
+        let mut straight=crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering {desired_angle:s.angle,rush:0.0});
+        for _ in 0..=age {w.step(&mut straight);}
+        line(&mut w,0,Point{x:1800.0,y:400.0},0.0,120);
+        line(&mut w,1,Point{x:1600.0,y:200.0},0.0,24);w.snakes[1].traits.speed_bias=0.2;
+        w.items.clear();
+        if surge {w.snakes[0].effect_kind=1;w.snakes[0].effect_ticks=10;}
+        struct Retain {ai:AiController,state:Option<State>,ticks:usize,surge:bool}
+        impl Controller for Retain {
+            fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
+                if s.id!=0 {return Steering {desired_angle:s.angle,rush:0.0};}
+                self.ai.prepare(w);
+                if self.state.is_none() {
+                    let mut a=Attack {valid:true,prey:2,prey_generation:w.snake(1).unwrap().generation,
+                        start:w.tick(),turn_at:w.tick()+18,end:w.tick()+60,approach:0.0,crossing:0.0,burst:0.6,
+                        point:Point{x:3000.0,y:200.0},free_boost:self.surge,effect_kind:s.effect_kind,effect_ticks:s.effect_ticks,
+                        night:w.world_event.night,..Default::default()};
+                    a.limits=Some(AiController::attack_limits(w,s,a));
+                    self.state=Some(State {prey:2,prey_generation:a.prey_generation,hunt_until:w.tick()+180,
+                        attack:a,attack_options:[a;2],desired:0.4,exit_angle:0.8,commit_until:w.tick()+60,rush:0.6,..Default::default()});
+                }
+                let state=self.state.as_mut().unwrap();let controls=(state.desired,state.exit_angle,state.commit_until,state.rush);
+                self.ai.validate_attack(w,s,state);
+                assert!(state.attack.valid && state.attack_options.iter().all(|a|a.valid),"tick {} night {}",self.ticks,w.world_event.night);
+                assert_eq!(controls,(state.desired,state.exit_angle,state.commit_until,state.rush));
+                let rush=if self.ticks==0 {0.6} else {0.0};self.ticks+=1;
+                Steering {desired_angle:s.angle,rush}
+            }
+        }
+        let mut retain=Retain {ai:AiController::new(),state:None,ticks:0,surge};
+        for _ in 0..30 {w.step(&mut retain);}
+        assert_eq!(w.snakes[0].len,if surge {120} else {117});
+        w.snakes[0].len+=1;
+        let state=retain.state.as_mut().unwrap();retain.ai.validate_attack(&w,w.snake(0).unwrap(),state);
+        assert!(!state.attack.valid,"unplanned growth must still invalidate");
+    }}
+}
+
+#[test]
+fn advisory_night_motion_cache_follows_pending_onset_and_dawn_through_step() {
+    for delay in [40,130] {
+        let mut w=arena(true);w.config.rules=crate::RuleSet::V2;w.config.self_collisions=false;
+        w.config.width=3440.0;w.config.height=1440.0;
+        line(&mut w,0,Point{x:400.0,y:400.0},0.0,120);
+        w.diagnostic_event_schedule(10000,delay);
+        struct Check(AiController);
+        impl Controller for Check {
+            fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
+                self.0.prepare(w);
+                for offset in [0,24,25,72,137] {
+                    let cached=self.0.motion[0].at(offset);
+                    let expected=crate::effects::forecast_motion(w,0,0.0,offset);
+                    assert!((cached.0-expected.0).abs()<1e-9 && (cached.1-expected.1).abs()<1e-9,
+                        "tick={} offset={offset} cached={cached:?} expected={expected:?}",w.tick());
+                }
+                Steering {desired_angle:s.angle,rush:0.0}
+            }
+        }
+        let mut check=Check(AiController::new());
+        for _ in 0..delay+780 {w.step(&mut check);}
+    }
+}

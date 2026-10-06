@@ -87,8 +87,8 @@ impl World {
         let old=self.faces[id];
         let target=intent.target_id;
         if old.target_id!=target {
-            if old.target_id!=0 && old.target_ticks>=30 && (self.items.iter().any(|i|i.id==old.target_id) || self.food.iter().any(|f|f.id | (1<<63)==old.target_id)) {self.emit_bubble(id,Glyph::Question);}
-            else if target!=0 && (self.items.iter().any(|i|i.id==target) || self.food.iter().any(|f|f.id | (1<<63)==target)) {self.emit_bubble(id,Glyph::Alert);}
+            if old.target_id!=0 && old.target_ticks>=30 && ((old.target_id==events::ZONE_ID && self.event_schedule.star_start.is_some()) || self.items.iter().any(|i|i.id==old.target_id) || self.food.iter().any(|f|f.id | (1<<63)==old.target_id)) {self.emit_bubble(id,Glyph::Question);}
+            else if target!=0 && ((target==events::ZONE_ID && self.event_schedule.star_start.is_some()) || self.items.iter().any(|i|i.id==target) || self.food.iter().any(|f|f.id | (1<<63)==target)) {self.emit_bubble(id,Glyph::Alert);}
         }
         if self.config.rules==RuleSet::V2 && self.config.aggression>50 && intent.prey!=u32::MAX && old.prey!=intent.prey {
             self.emit_bubble(id,Glyph::Alert);

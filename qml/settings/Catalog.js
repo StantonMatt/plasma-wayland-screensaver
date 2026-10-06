@@ -5,8 +5,7 @@
 .pragma library
 .import "../visuals/VisualUtils.js" as VisualUtils
 
-// Enable when the simulation's world events feature ships.
-var snakeWorldEventsAvailable = false
+var snakeWorldEventsAvailable = true
 
 var animations = [
     { id: "none", name: qsTr("None") },

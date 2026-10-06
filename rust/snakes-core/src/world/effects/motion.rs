@@ -60,7 +60,15 @@ fn forecast_state_from(w: &World, mut s: crate::world::Snake, rush: f64, offset:
 
 pub(crate) fn forecast_motion(w: &World, id: usize, rush: f64, offset: usize) -> (f64, f64) {
     let s = forecast_state(w, id, rush, offset);
-    (w.speed(&s), w.turn_rate(&s))
+    (w.speed_at_night(&s,w.forecast_night(offset)), w.turn_rate_at_night(&s,w.forecast_night(offset)))
+}
+
+/// Daylight speed, turn and the speed-dependent turn ceiling. Cache these
+/// after the payment horizon; night then changes only one scalar factor.
+pub(crate) fn forecast_daylight_motion(w:&World,id:usize,rush:f64,offset:usize)->(f64,f64,f64) {
+    let s=forecast_state(w,id,rush,offset);
+    let per_speed=if s.frozen_ticks>0 {1.2} else {1.0}/World::minimum_turn_radius(&s).max(1.0);
+    (w.speed_at_night(&s,0.0),w.turn_rate_at_night(&s,0.0),per_speed)
 }
 
 /// AI movement after forecast replacement, without changing mechanics.
@@ -89,7 +97,7 @@ impl World {
         let mut state=self.ai_forecast_state(id,rush,offset,surge,freeze);
         state.effect_kind=kind;state.effect_ticks=ticks;state.frozen_ticks=frozen;
         if freeze.is_some() {state.rush=0.0;state.boost_ticks=0;}
-        (self.speed(&state),self.turn_rate(&state))
+        (self.speed_at_night(&state,self.forecast_night(offset)),self.turn_rate_at_night(&state,self.forecast_night(offset)))
     }
 
 }
@@ -99,20 +107,20 @@ impl World {
 /// single-burst forecast, and its new price must be latched on movement one.
 pub(crate) fn forecast_motion_before_tick(w: &World, id: usize, rush: f64, offset: usize) -> (f64, f64) {
     let s = forecast_state_before_tick(w, id, rush, offset);
-    (w.speed(&s), w.turn_rate(&s))
+    (w.speed_at_night(&s,w.forecast_night(offset)), w.turn_rate_at_night(&s,w.forecast_night(offset)))
 }
 
 /// Reuse limits until payment, boost expiry or effect expiry changes motion.
 pub(crate) fn forecast_schedule_before_tick(w: &World, id: usize, rush: f64) -> [(f64, f64); 25] {
     let mut previous = forecast_state_before_tick(w, id, rush, 0);
-    let first = (w.speed(&previous), w.turn_rate(&previous));
+    let first = (w.speed_at_night(&previous,w.forecast_night(0)), w.turn_rate_at_night(&previous,w.forecast_night(0)));
     let mut schedule = [first; 25];
     for offset in 1..25 {
         let state = forecast_state_before_tick(w, id, rush, offset);
-        let changed = (state.frozen_ticks>0) != (previous.frozen_ticks>0) || state.len != previous.len || state.rush != previous.rush
+        let changed = w.forecast_night(offset)!=w.forecast_night(offset-1) || (state.frozen_ticks>0) != (previous.frozen_ticks>0) || state.len != previous.len || state.rush != previous.rush
             || modifiers(state.effect_kind,state.effect_ticks).speed
                 != modifiers(previous.effect_kind,previous.effect_ticks).speed;
-        schedule[offset] = if changed { (w.speed(&state), w.turn_rate(&state)) }
+        schedule[offset] = if changed { (w.speed_at_night(&state,w.forecast_night(offset)), w.turn_rate_at_night(&state,w.forecast_night(offset))) }
             else { schedule[offset - 1] };
         previous = state;
     }

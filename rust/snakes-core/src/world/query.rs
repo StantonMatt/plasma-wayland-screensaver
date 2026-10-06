@@ -66,6 +66,7 @@ impl World {
         copy.items.clone_from(&self.items);
         copy.item_timer = self.item_timer;
         copy.prism_timer = self.prism_timer;
+        copy.event_schedule = self.event_schedule;
         copy.detached=self.detached;copy.detached_points.clone_from(&self.detached_points);
         copy.next_item = self.next_item;
         copy.last_item_kind = self.last_item_kind;

@@ -21,6 +21,7 @@ pub(super) struct Attack {
     pub(super) free_boost: bool,
     pub(super) effect_kind: u8,
     pub(super) effect_ticks: u16,
+    pub(super) night: f32,
 }
 impl Attack {
     pub(super) fn control(self,tick:u64)->(f64,f64) {
@@ -71,7 +72,7 @@ impl AiController {
                 let cross_ticks=(width/(slow*STEP_SECONDS)).ceil() as usize;
                 let switch=if direct {arrive} else {arrive.saturating_sub(turn_ticks/2+cross_ticks).max(2)};
                 attack=Attack {valid:true,side,prey:state.prey,prey_generation:state.prey_generation,start:w.tick(),turn_at:w.tick()+switch as u64,end:w.tick()+(ticks+18) as u64,
-                    approach:bearing,crossing,burst,crossing_rush,point,prey_heading:theta,error:0.0,free_boost:v2 && w.boost_segment_cost(s.id as usize)==Some(0),effect_kind:s.effect_kind,effect_ticks:s.effect_ticks,limits:Some([fast,fast_turn,slow,slow_turn,s.radius,s.segments.len() as f64])};
+                    approach:bearing,crossing,burst,crossing_rush,point,prey_heading:theta,error:0.0,free_boost:v2 && w.boost_segment_cost(s.id as usize)==Some(0),effect_kind:s.effect_kind,effect_ticks:s.effect_ticks,night:w.world_event.night,limits:Some([fast,fast_turn,slow,slow_turn,s.radius,s.segments.len() as f64])};
                 let mut pos=head;let mut angle=s.angle;
                 let mut forecast=self.intent_forecast::<true>(w,s,state,arrive,1<<s.id);
                 for rival in &mut rivals {rival.dynamic=false;}

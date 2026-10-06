@@ -10,6 +10,7 @@ mod magnet;
 mod phase;
 mod target;
 mod race;
+mod events;
 mod forecast;
 mod venom;
 pub(crate) mod frost;
@@ -248,12 +249,30 @@ impl Default for Candidate {
     fn default()->Self {Self {body_len:0,effects:forecast::Snapshot::default(),kind:2,checked:false,tracks_goal:false,desired:0.0,turn_until:u64::MAX,exit_angle:0.0,angle:0.0,turn_exit:0.0,path:[Point::default();STEPS+1],steps:0,simulated_steps:0,venom_bite:0,score:0.0,venom_goal:None,clearance:0.0,capped:false,area:0,uncertain:false,attack:Attack::default(),replies:0,rush:0.0}}
 }
 
+#[derive(Clone, Copy)]
+struct NightMotion {first_tick:u64,start:u64,daylight:[(f64,f64,f64);3]}
+impl NightMotion {
+    fn at(&self,offset:usize,stage:usize)->(f64,f64) {
+        let tick=self.first_tick.saturating_add(offset as u64);
+        let night=crate::world::events::night_intensity(tick,self.start);
+        let (speed,turn,per_speed)=self.daylight[stage];
+        let speed=speed*(1.0-0.1*night as f64);
+        (speed,turn.min(speed*per_speed))
+    }
+}
+
 /// Cached single-burst schedules; all steady-state storage belongs to the controller.
 #[derive(Clone, Copy)]
-struct Motion { radii:[f64;25],limits: [(f64,f64);25], max_speed:f64, max_curve:f64, frozen_speed:f64, final_len:usize, expiry:usize, expired_limits:(f64,f64),next_expiry:usize,next_limits:(f64,f64) }
-impl Default for Motion {fn default()->Self {Self {radii:[0.0;25],limits:[(0.0,0.0);25],max_speed:0.0,max_curve:0.0,frozen_speed:0.0,final_len:0,expiry:usize::MAX,expired_limits:(0.0,0.0),next_expiry:usize::MAX,next_limits:(0.0,0.0)}}}
+struct Motion { night:Option<NightMotion>,radii:[f64;25],limits: [(f64,f64);25], max_speed:f64, max_curve:f64, frozen_speed:f64, final_len:usize, expiry:usize, expired_limits:(f64,f64),next_expiry:usize,next_limits:(f64,f64) }
+impl Default for Motion {fn default()->Self {Self {night:None,radii:[0.0;25],limits:[(0.0,0.0);25],max_speed:0.0,max_curve:0.0,frozen_speed:0.0,final_len:0,expiry:usize::MAX,expired_limits:(0.0,0.0),next_expiry:usize::MAX,next_limits:(0.0,0.0)}}}
 impl Motion {
-    fn at(&self,offset:usize)->(f64,f64) {if offset>24 && offset>=self.expiry {if offset>=self.next_expiry {self.next_limits} else {self.expired_limits}} else {self.limits[offset.min(24)]}}
+    #[inline]
+    fn at(&self,offset:usize)->(f64,f64) {
+        if offset<=24 {return self.limits[offset];}
+        let stage=if offset>=self.next_expiry {2} else if offset>=self.expiry {1} else {0};
+        if let Some(night)=&self.night {return night.at(offset,stage);}
+        match stage {2=>self.next_limits,1=>self.expired_limits,_=>self.limits[24]}
+    }
     fn forecast(w:&World,id:usize,rush:f64)->Self {
         if w.config().rules==crate::RuleSet::Classic {
             let first=w.motion_limits(id,rush).unwrap();
@@ -273,22 +292,46 @@ impl Motion {
         // No burst or Surge: this bounds every predicted Nova/replacement
         // stage, even when a freeze cancels an observed paid burst.
         let frozen_speed=w.ai_forecast_frost_motion(id,0.0,0,0,0,None,Some(1),1).0;
-        let mut m=Self {radii:[w.ai_forecast_radius(id,rush,0,None,None);25],limits:[first;25],max_speed:first.0,max_curve:first.0*first.1,frozen_speed,final_len:w.ai_forecast_len(id,rush,24,None,None),expiry,expired_limits,next_expiry,next_limits};
+        let night=w.forecast_night_start().filter(|_|w.forecast_night(0)!=w.forecast_night(STEPS))
+            .map(|start|NightMotion {first_tick:w.tick+1,start,daylight:[
+                crate::effects::forecast_daylight_motion(w,id,rush,24),
+                crate::effects::forecast_daylight_motion(w,id,rush,if expiry==usize::MAX {24} else {expiry.max(24)}),
+                crate::effects::forecast_daylight_motion(w,id,rush,if next_expiry==usize::MAX {24} else {next_expiry.max(24)})]});
+        let reserve_daylight=night.is_some() || w.world_event.night>0.0;
+        let mut m=Self {night,radii:[w.ai_forecast_radius(id,rush,0,None,None);25],limits:[first;25],max_speed:first.0,max_curve:first.0*first.1,frozen_speed,final_len:w.ai_forecast_len(id,rush,24,None,None),expiry,expired_limits,next_expiry,next_limits};
+        let mut daylight_speed=0.0_f64;
         let mut due=if boost_end>0 {cost*(25-boost_end).min(21)/21} else {0};
         for j in 1..=24 {
             let next_due=if boost_end>0 {cost*(25-boost_end+j).min(21)/21} else {0};
-            m.limits[j]=if next_due!=due || j==boost_end || j==expiry || j==next_expiry {
+            m.limits[j]=if next_due!=due || j==boost_end || j==expiry || j==next_expiry || w.forecast_night(j)!=w.forecast_night(j-1) {
                 crate::effects::forecast_motion(w,id,rush,j)
             } else {m.limits[j-1]};
             m.radii[j]=if next_due!=due {w.ai_forecast_radius(id,rush,j,None,None)} else {m.radii[j-1]};
             due=next_due;
             m.max_speed=m.max_speed.max(m.limits[j].0);
             m.max_curve=m.max_curve.max(m.limits[j].0*m.limits[j].1);
+            if reserve_daylight {
+                let (speed,turn,_)=crate::effects::forecast_daylight_motion(w,id,rush,j);
+                daylight_speed=daylight_speed.max(speed);m.max_curve=m.max_curve.max(speed*turn);
+            }
         }
         if next_expiry!=usize::MAX {m.max_speed=m.max_speed.max(next_limits.0);m.max_curve=m.max_curve.max(next_limits.0*next_limits.1);}
         if expiry!=usize::MAX {
             m.max_speed=m.max_speed.max(expired_limits.0);
             m.max_curve=m.max_curve.max(expired_limits.0*expired_limits.1);
+        }
+        // Bound speed and turn together, including a change of turn limiter
+        // at dawn. Dividing observed curvature by one night factor is unsafe.
+        if reserve_daylight {
+            for offset in [0,24,if expiry==usize::MAX {24} else {expiry.max(24)},if next_expiry==usize::MAX {24} else {next_expiry.max(24)}] {
+                let (speed,turn,_)=crate::effects::forecast_daylight_motion(w,id,rush,offset);
+                daylight_speed=daylight_speed.max(speed);m.max_curve=m.max_curve.max(speed*turn);
+            }
+            // Retain the existing conservative speed margin: besides query
+            // bounds, it determines neck/planning horizons. Correcting the
+            // curvature bound does not require reducing that valid padding.
+            let factor=1.0-0.1*w.world_event.night as f64;
+            m.max_speed=(m.max_speed/factor).max(daylight_speed);
         }
         m
     }
@@ -302,7 +345,7 @@ impl Motion {
 struct MotionKey {
     generation:u32,len:usize,birth_len:usize,radius:f64,base_radius:f64,growth:f64,speed_bias:f64,
     effect_kind:u8,effect_ticks:u16,frozen_ticks:u16,boost_ticks:u8,boost_cost:u8,boost_paid:u8,boost_ready:bool,
-    width:f64,height:f64,speed:f64,intelligence:f64,rules:crate::RuleSet,growth_available:bool,snake_length_limit:bool,rush:f64,
+    width:f64,height:f64,speed:f64,intelligence:f64,rules:crate::RuleSet,growth_available:bool,snake_length_limit:bool,night:f32,night_horizon:f32,night_tick:u64,rush:f64,
 }
 impl MotionKey {
     fn observed(w:&World,id:usize)->Self {
@@ -312,7 +355,7 @@ impl MotionKey {
             growth:s.growth,speed_bias:s.traits.speed_bias,effect_kind:s.effect_kind,effect_ticks:s.effect_ticks,frozen_ticks:s.frozen_ticks,
             boost_ticks:s.boost_ticks,boost_cost,boost_paid,boost_ready:w.boost_ready(id),
             width:c.width,height:c.height,speed:c.speed,intelligence:c.intelligence,rules:c.rules,
-            growth_available,snake_length_limit:c.rules==crate::RuleSet::V2 && c.snake_length_limit,rush:if c.rules==crate::RuleSet::Classic {s.rush} else {0.0}}
+            growth_available,snake_length_limit:c.rules==crate::RuleSet::V2 && c.snake_length_limit,night:w.world_event.night,night_horizon:w.forecast_night(24),night_tick:if w.forecast_night_start().is_some() && w.forecast_night(0)!=w.forecast_night(STEPS) {w.tick+1} else {0},rush:if c.rules==crate::RuleSet::Classic {s.rush} else {0.0}}
     }
 }
 
@@ -447,9 +490,9 @@ pub struct AiController {
     effects: forecast::Timeline,
     opportunities: forecast::Timeline,
     look_deltas:[Point;MAX_SNAKES],
-    capsule_etas:[[f64;MAX_SNAKES];crate::MAX_ITEMS],
+    capsule_etas:[[f64;MAX_SNAKES];crate::MAX_ITEMS+1],
     prism:Option<(usize,target::TargetFood)>,
-    food: [Option<target::TargetFood>; MAX_FOOD + crate::MAX_ITEMS],
+    food: [Option<target::TargetFood>; MAX_FOOD + crate::MAX_ITEMS+1],
     tick: u64,
     geometry: u64,
     seed: i32,
@@ -474,7 +517,7 @@ impl AiController {
             #[cfg(test)] reference_queries:false,spatial:Spatial::new(),motion_keys:[None;MAX_SNAKES],candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],rollout_projection:[0.0;STEPS+1],rival_necks:[[0;STEPS+1];MAX_SNAKES],neck_owner:MAX_SNAKES,neck_horizons:[0;MAX_SNAKES],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,collision_effects:false,profile:[0;5],forecast_profile:[0;5],strategy_profile:[0;4], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],policy_aggression:100,
             rivals:[Rival::default();MAX_SNAKES],
             #[cfg(test)]
-            venom_searches:std::cell::Cell::new(0),opportunity_rivals:Box::new([Rival::default();MAX_SNAKES]),opportunity_mask:0,rival_limits:[[(0.0,0.0);STEPS+1];MAX_SNAKES], simulation_rivals:Some(Box::new([Rival::default();MAX_SNAKES])),item_forecast:forecast::Items::default(),initial_effects:forecast::Timeline::default(),effects:forecast::Timeline::default(),opportunities:forecast::Timeline::default(),look_deltas:[Point::default();MAX_SNAKES],capsule_etas:[[f64::INFINITY;MAX_SNAKES];crate::MAX_ITEMS],prism:None,food:[None;MAX_FOOD + crate::MAX_ITEMS],
+            venom_searches:std::cell::Cell::new(0),opportunity_rivals:Box::new([Rival::default();MAX_SNAKES]),opportunity_mask:0,rival_limits:[[(0.0,0.0);STEPS+1];MAX_SNAKES], simulation_rivals:Some(Box::new([Rival::default();MAX_SNAKES])),item_forecast:forecast::Items::default(),initial_effects:forecast::Timeline::default(),effects:forecast::Timeline::default(),opportunities:forecast::Timeline::default(),look_deltas:[Point::default();MAX_SNAKES],capsule_etas:[[f64::INFINITY;MAX_SNAKES];crate::MAX_ITEMS+1],prism:None,food:[None;MAX_FOOD + crate::MAX_ITEMS+1],
             tick:u64::MAX,geometry:0,seed:0,rng:0x9e3779b97f4a7c15,urgent_used:0,max_radius:0.0,max_forecast_speed:0.0,phase_sweeps:[0;3],planning_speed:[0.0;MAX_SNAKES],motion:[Motion::default();MAX_SNAKES],boosted_motion:[Motion::default();MAX_SNAKES],observed_angles:[0.0;MAX_SNAKES],observed_generations:[0;MAX_SNAKES]}
     }
     #[cfg(feature="desktop-diag")]
@@ -518,6 +561,7 @@ impl AiController {
         self.tick=w.tick(); self.geometry=w.geometry_generation(); self.urgent_used=0;
         self.food.fill(None);self.prism=None;
         for (i,f) in w.foods().enumerate() {
+            if f.kind==crate::FoodKind::Meteor || w.food[i].captured_by!=0 {continue;}
             let mut target:target::TargetFood=f.into();
             // Like capsule landing, the hot readiness clock is an absolute
             // endpoint delta. This also handles steering from completed frames.
@@ -534,11 +578,16 @@ impl AiController {
                 value:item.kind.base_value(),size:item.radius,vacuum_owner:-1,feast_id:0,kind:crate::FoodKind::Spark,
                 motion_ticks:item.pickable_from_tick.saturating_sub(w.tick()).min(u16::MAX as u64) as u16});
         }
+        self.prepare_event_target(w);
         self.initial_effects=forecast::Timeline::new(w);
         self.neck_owner=MAX_SNAKES;self.opportunity_mask=0;
         self.rival_bounds_horizons.fill(0);
         for r in &mut self.rivals {r.alive=false;r.dynamic=false;}
         self.max_radius=0.0;self.max_forecast_speed=0.0;self.phase_sweeps.fill(0);
+        // A fading-in night can slow tail clearance after the 24-tick burst
+        // cache. Reserve its darkest known horizon for ordinary and Nova tails.
+        let night_reserve=(1.0-0.1*w.world_event.night.max(w.forecast_night(STEPS-1)) as f64)
+            /(1.0-0.1*w.world_event.night as f64);
         for s in w.snakes().filter(|s|s.alive) {
             let id=s.id as usize;
             let key=MotionKey::observed(w,id);
@@ -554,14 +603,14 @@ impl AiController {
             self.max_radius=self.max_radius.max(s.radius);self.planning_speed[s.id as usize]=speed;
             let r=&mut self.rivals[s.id as usize];
             let release_speed=if w.config().rules==crate::RuleSet::Classic {w.motion_limits(id,0.0).unwrap().0}
-                else {self.motion[id].limits.iter().map(|m|m.0).fold(if self.motion[id].expiry==usize::MAX {speed} else {speed.min(self.motion[id].expired_limits.0)},f64::min)};
+                else {self.motion[id].limits.iter().map(|m|m.0).fold(if self.motion[id].expiry==usize::MAX {speed} else {speed.min(self.motion[id].expired_limits.0)},f64::min)*night_reserve};
             let growth_scale=if w.config().rules==crate::RuleSet::Classic {1.0} else {speed/release_speed};
             // All live horizon entries and escapes are overwritten below.
             // Preserve their storage instead of clearing two full paths per tick.
             r.alive=true;r.radius=s.radius;r.len=s.segments.len();r.speed=speed;r.turn=turn;
             r.growth_delay=w.tail_growth_delay(id).unwrap()*growth_scale;
             r.release_rate=s.radius*1.18/(release_speed*0.65).max(1.0);
-            r.release_slowdown=if w.config().rules==crate::RuleSet::V2 {(self.motion[id].frozen_speed*0.65).max(1.0)/(release_speed*0.65).max(1.0)} else {1.0};
+            r.release_slowdown=if w.config().rules==crate::RuleSet::V2 {(self.motion[id].frozen_speed*night_reserve*0.65).max(1.0)/(release_speed*0.65).max(1.0)} else {1.0};
             r.angle=s.angle;r.forecast_angle=s.angle;r.direction=Point{x:s.angle.cos(),y:s.angle.sin()};
             r.distance[0]=0.0;r.envelope[0]=0.0;
             r.path[0]=s.segments[0].current;
@@ -809,8 +858,8 @@ impl AiController {
         let prism=matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed);
         let competition=if capsule {
             let own=self.capsule_etas[state_item_slot(self,f)][id];
-            let guard=self.guard_worth(w,s,f) && s.effect_ticks>90 && w.distance_squared(s.segments[0].current,f.position)<(15.0*s.radius).powi(2);
-            if f.id!=state.target && !guard && !(own<(0.9+0.35*risk)*rival_eta || (own<(1.25+0.65*risk)*rival_eta && s.segments.len()>=16 && w.boost_ready(id))) {0.0}
+            let guard=f.id!=events::ID && self.guard_worth(w,s,f) && s.effect_ticks>90 && w.distance_squared(s.segments[0].current,f.position)<(15.0*s.radius).powi(2);
+            if f.id!=state.target && !guard && !(f.id==events::ID && own<rival_eta+2.0+4.0*bold || own<(0.9+0.35*risk)*rival_eta || (own<(1.25+0.65*risk)*rival_eta && s.segments.len()>=16 && w.boost_ready(id))) {0.0}
             else if rival_eta<own*1.2 {if advantage {1.4} else {1.1}} else {1.0}
         } else if prism {
             // Ripening synchronizes arrivals: trailing heads can wait and
@@ -907,6 +956,7 @@ impl AiController {
                 if !shortlist.iter().any(|(score,i)|*score>0.0 && *i==fi) {Self::shortlist(&mut shortlist,score,fi);}
             }
         }
+        self.event_shortlist(w,s,state,&mut shortlist);
         // Items are at most three, so an exact scan is cheaper than another
         // spatial index and never consumes the 64-food discovery budget.
         for (index,item) in w.items().enumerate() {
@@ -987,7 +1037,7 @@ impl AiController {
         // rollouts. Static route rejection scattered contenders for five
         // seconds even when a departing tail made capture safely reachable.
         let nearby_prize=w.config().rules==crate::RuleSet::V2 && self.target_food(*state).is_some_and(|f|
-            matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed)
+            (f.id==events::ID || matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed))
             && self.target_arrival(w,s,f)<=4.0);
         if !nearby_prize && self.body_blocked(w,s,head,route_goal,0.0,0.0,&mut tests).0 {
             state.waypoint=self.spatial.waypoint(head,route_goal,self.mask(w,id));
@@ -1124,7 +1174,8 @@ impl AiController {
                 let effect=crate::effects::modifiers(remaining.kind,remaining.ticks);
                 let initial_effect=crate::effects::modifiers(initial.kind,initial.ticks);
                 let expected_speed=if elapsed<=24 {limits[0]} else {limits[2]}*ratio
-                    *effect.speed/initial_effect.speed;
+                    *effect.speed/initial_effect.speed
+                    *(1.0-0.1*w.world_event.night as f64)/(1.0-0.1*a.night as f64);
                 let actual=w.motion_limits(s.id as usize,a.burst).unwrap().0;
                 if (actual-expected_speed).abs()>1e-9 {return false;}
             }
@@ -1513,6 +1564,28 @@ impl AiController {
             else {Self::boost_request(w,s,0.6)}
         }
             else {Self::boost_request(w,s,if attack.valid {attack.control(w.tick()).1} else if w.config().rules==crate::RuleSet::Classic || kind==0 || kind==1 || state.escape_boost {state.rush} else {0.0})}
+    }
+    /// A positive emergency prefix must leave one physical turn available.
+    /// Check single-wall bands as well as corners: two independent axis
+    /// escapes do not establish a shared turning circle.
+    #[inline]
+    fn emergency_wall_turn_room(&self,w:&World,s:SnakeView<'_>,c:&Candidate,immediate:bool)->bool {
+        let id=s.id as usize;
+        let motion=if c.rush>0.0 {&self.boosted_motion[id]} else {&self.motion[id]};
+        let (speed,turn)=motion.at(0);
+        let radius=speed/turn.max(0.01);
+        let reserve=radius+s.radius*0.5+speed*STEP_SECONDS+2.0;
+        let p=c.path[1];let cfg=w.config();
+        let near_x=p.x.min(cfg.width-p.x)<=2.0*radius+reserve;
+        let near_y=p.y.min(cfg.height-p.y)<=2.0*radius+reserve;
+        if !(near_x && near_y) && (!immediate || !(near_x || near_y)) {return true;}
+        let travel=(speed*STEP_SECONDS).max(0.01);
+        let direction=Point {x:(p.x-c.path[0].x)/travel,y:(p.y-c.path[0].y)/travel};
+        [-1.0,1.0].into_iter().any(|side| {
+            let center=Point {x:p.x-side*direction.y*radius,y:p.y+side*direction.x*radius};
+            center.x>=reserve && center.x<=cfg.width-reserve
+                && center.y>=reserve && center.y<=cfg.height-reserve
+        })
     }
     fn rollout_into(&mut self,w:&World,s:SnakeView<'_>,mut state:State,kind:usize,horizon:usize,c:&mut Candidate) {
         let alternate=state.venom_target!=0 && (kind==7 || kind==8 || kind==12);
@@ -2239,27 +2312,21 @@ impl Controller for AiController {
         }
         let safe=candidates.iter().filter(|c|c.steps==horizon).count();
         // When every sampled continuation fails, a longer prefix must not
-        // purchase travel into an adjacent-wall corner with neither turn left.
+        // purchase travel into a wall band with neither turn left.
         // The per-axis wall reserve can choose a different escape direction
-        // for each wall; a shared circle checks that one turn clears both.
+        // for each wall; a shared circle checks that one turn clears all walls.
         let mut wall_turn_room=[true;CANDIDATES];
         if safe==0 && w.config().deadly_walls {
+            // A blocked prefix shorter than a half-turn cannot establish a
+            // wall exit. Preserve the next inward turn in that emergency;
+            // longer physically checked prefixes keep their body/area order.
+            // Coupled corners always check, including Classic controls.
+            let turn=self.motion[id].at(0).1;
+            let immediate=w.config().rules==crate::RuleSet::V2
+                && candidates.iter().all(|c|c.steps as f64*turn*STEP_SECONDS<std::f64::consts::PI);
             for (index,c) in candidates.iter().enumerate() {
                 if !c.checked {continue;}
-                let motion=if c.rush>0.0 {self.boosted_motion[id]} else {self.motion[id]};
-                let (speed,turn)=motion.at(0);
-                let radius=speed/turn.max(0.01);
-                let reserve=radius+s.radius*0.5+speed*STEP_SECONDS+2.0;
-                let p=c.path[1];let cfg=w.config();
-                if p.x.min(cfg.width-p.x)>2.0*radius+reserve
-                    || p.y.min(cfg.height-p.y)>2.0*radius+reserve {continue;}
-                let travel=(speed*STEP_SECONDS).max(0.01);
-                let direction=Point {x:(p.x-c.path[0].x)/travel,y:(p.y-c.path[0].y)/travel};
-                wall_turn_room[index]=[-1.0,1.0].into_iter().any(|side| {
-                    let center=Point {x:p.x-side*direction.y*radius,y:p.y+side*direction.x*radius};
-                    center.x>=reserve && center.x<=cfg.width-reserve
-                        && center.y>=reserve && center.y<=cfg.height-reserve
-                });
+                wall_turn_room[index]=self.emergency_wall_turn_room(w,s,c,immediate);
             }
         }
         let rollout_time=clock.map(|c|c.elapsed().as_nanos());

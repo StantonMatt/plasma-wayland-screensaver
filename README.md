@@ -81,6 +81,10 @@ opens the latest GitHub release instead.
   Frost capsules send out a Nova: rivals turn icy, crawl and turn slowly for
   2.5 seconds while hunters plan cut-offs. Survivors shed ice and briefly
   resist another freeze. Calm keeps the crystals and suppresses shiver and breath.
+  Starfall announces a feeding zone, then showers it with meteors that become
+  stars. Snakes race into the disk to feed and contest the shower. Nightfall
+  dims their bodies while eyes glow, idle snakes doze and hunters keep prowling.
+  Toggle these set pieces with the World events checkbox.
   Turn power-ups off with the Settings checkbox;
   glossy, shaded, glowing bodies with pointed tails,
   chevrons, saddle bands and glowing spine lights on the biggest snakes;
@@ -259,7 +263,7 @@ sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
 GitHub Actions runs this same process on every push and pull request. A tag
-matching the CMake project version, such as `v0.16.0`, publishes the verified
+matching the CMake project version, such as `v0.17.0`, publishes the verified
 `.deb` and checksum to a GitHub Release. See [PUBLISHING.md](PUBLISHING.md) for
 the complete maintainer checklist.
 
