@@ -20,6 +20,13 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.17.0" date="2026-10-05">
+      <description>
+        <p>Adds Starfall meteor showers and feeding frenzies.</p>
+        <p>Adds Nightfall with glowing eyes, sleepy snakes and prowling hunters.</p>
+        <p>Enables the World events setting for Snakes.</p>
+      </description>
+    </release>
     <release version="0.16.0" date="2026-10-05">
       <description>
         <p>Adds Frost capsules that send out a freezing Nova burst. Snakes grab them when rivals are close, then cut off or bite frozen prey.</p>

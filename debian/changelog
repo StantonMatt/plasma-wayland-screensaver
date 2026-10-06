@@ -1,3 +1,11 @@
+plasma-visual-screensaver (0.17.0-1ppa1~resolute1) resolute; urgency=medium
+
+  * Add Starfall meteor showers and feeding frenzies.
+  * Add Nightfall with glowing eyes, sleepy snakes and prowling hunters.
+  * Enable the World events setting for Snakes.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Mon, 05 Oct 2026 16:00:00 -0300
+
 plasma-visual-screensaver (0.16.0-1ppa1~resolute1) resolute; urgency=medium
 
   * Add Frost capsules that send out a freezing Nova burst. Snakes grab
