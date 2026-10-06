@@ -44,13 +44,14 @@ jobs:
           # Isolate Vulkan from any hardware ICDs; both paths use Mesa CPU rendering.
           export VK_DRIVER_FILES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
           test -n "$VK_DRIVER_FILES"
-          loop_args=()
+          # Mesa CPU rendering on shared runners delivers ~72-96% of frames for healthy
+          # builds, so this job guards against stalls (70% floor plus the median pacing
+          # check); CPU cost is gated by the paired benchmarks.
+          loop_args=(--min-frame-ratio 0.7)
           if [ "${{ matrix.graphics-api }}" = vulkan ]; then
             # Reproduce the inherited GUI-thread loop seen on the real desktop.
             # Explicit experimental Vulkan startup must replace it with its threaded loop.
-            # Lavapipe on small runners delivers ~75-81% of frames even for healthy builds,
-            # so this job guards against stalls; CPU cost is gated by the paired benchmarks.
-            loop_args+=(--render-loop basic --min-frame-ratio 0.7)
+            loop_args+=(--render-loop basic)
           fi
           ./scripts/frame-timing.sh \
             --binary /usr/bin/plasma-visual-screensaver \
