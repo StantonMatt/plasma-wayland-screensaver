@@ -434,17 +434,20 @@ impl Renderer {
                 continue;
             }
             let pickup_waves=self.waves[s.id as usize].map(|w| {
-                let center=(event_time(info,p,self.reduced_motion)-w.time)*1.3*(n-1) as f64;
-                if w.active && w.kind!=0 && w.kind!=8 && (0.0..(n as f64+3.5)).contains(&center) {
-                    (center,w.kind)
-                } else { (0.0,0) }
+                let flip=w.kind==0 && w.duration_ticks>0;
+                let motion_scale=if self.reduced_motion {0.6} else {1.0};
+                let travel=(event_time(info,p,self.reduced_motion)-w.time)*if flip {30.0/w.duration_ticks as f64/motion_scale} else {1.3}*(n-1) as f64;
+                let (center,trail)=if flip {((n-1) as f64-travel,(0.12*(n-1) as f64).max(6.0))} else {(travel,0.0)};
+                if w.active && (w.kind!=0 || flip) && w.kind!=8 && center+trail>=if flip {-3.5} else {0.0} && center<n as f64+3.5 {
+                    (center,if flip {6} else {w.kind},trail)
+                } else { (0.0,0,0.0) }
             });
             let rainbow=prism::rainbow(s,self.waves[s.id as usize],info,p,self.reduced_motion,palette,
                 color(s.color_index),&mut self.rainbow[..n]);
             if rainbow && s.flags&flags::FROZEN!=0 {for c in &mut self.rainbow[..n] {*c=frost::ice(*c,s.flags,palette);}}
             let gulp_centers=prism::centers(s,info,p,self.reduced_motion);
             let has_gulp=gulp_centers.iter().any(|c|c.1>0.0);
-            let has_pickup_wave=pickup_waves.iter().any(|&(_,kind)|kind!=0);
+            let has_pickup_wave=pickup_waves.iter().any(|&(_,kind,_)|kind!=0);
             let body = &segments[s.segment_offset as usize..s.segment_offset as usize+n];
             let points = &mut self.points[..n];
             let interpolate = moving(s);
@@ -596,12 +599,13 @@ impl Renderer {
                                 if has_pickup_wave || rainbow {
                                     for edge in start..end {
                                         let mut weight=0.0_f64;let mut kind=0;
-                                        for &(center,origin) in &pickup_waves {
+                                        for &(center,origin,trail) in &pickup_waves {
                                             if origin==0 {continue;}
-                                            let strength=(1.0-((edge as f64-center)/3.5).abs()).max(0.0)*0.95;
+                                            let x=edge as f64-center;
+                                            let strength=(1.0-(x/3.5).abs()).max(if x>0.0 && trail>0.0 {(1.0-x/trail).max(0.0)*0.7} else {0.0})*if origin==6 {1.0} else {0.95};
                                             if strength>weight {weight=strength;kind=origin;}
                                         }
-                                        let accent=items::accent(kind,palette);
+                                        let accent=if kind==6 {Color::new(255,255,255,255)} else {items::accent(kind,palette)};
                                         let mix=|a:u8,b:u8|(a as f64+(b as f64-a as f64)*weight).round() as u8;
                                         let tint=if rainbow {self.rainbow[edge].alpha(245).fade(fade)} else {Color::new(mix(c.red,accent.red),mix(c.green,accent.green),mix(c.blue,accent.blue),245).fade(fade)};
                                         sink.ribbon(&mapped[edge..=edge+1],&self.normals[edge..=edge+1],&self.valid[edge..=edge+1],radius*0.96,events::dim(tint,info.ambient));
@@ -620,6 +624,22 @@ impl Renderer {
                                 sink.disc(mapped[i], radius*0.34, events::dim(Color::new(255, 255, 255, 46).fade(fade),info.ambient), 6);
                             }
                             if !corpse && s.stump_ticks>0 && end==n-1 {sink.disc(mapped[end],radius*0.5,items::accent(4,palette).alpha(220),8);}
+                            // Classic has an untapered body. A small protruding knob
+                            // and rimmed eyes give its held Flip the same false face.
+                            if !corpse && s.flags&flags::FLIP_HELD!=0 && end==n-1 && self.valid[end] {
+                                let side=self.normals[end];
+                                let outward=P::new(side.y,-side.x);
+                                let knob=mapped[end]+outward*(radius*0.8);
+                                sink.disc(knob,radius*0.38,events::dim(c.alpha(245).fade(fade),info.ambient),12);
+                                let acc=items::accent(6,palette);
+                                let mix=|a:u8|(a as f64+(255-a) as f64*0.42).round() as u8;
+                                let iris=events::dim(Color::new(mix(acc.red),mix(acc.green),mix(acc.blue),255).fade(fade),info.ambient);
+                                for sign in [-1.0,1.0] {
+                                    let eye=knob-outward*(radius*0.045)+side*(radius*0.165*sign);
+                                    sink.disc(eye,radius*0.135,Color::new(5,6,11,255).fade(fade),8);
+                                    sink.disc(eye,radius*0.095,iris,8);
+                                }
+                            }
                             if start!=0 { continue; }
                             let head = mapped[0];
                             sink.disc(head, radius*1.08, events::dim(if active_kind==4 {items::accent(4,palette).alpha(255)} else {c.alpha(255).fade(fade)},info.ambient), 12);

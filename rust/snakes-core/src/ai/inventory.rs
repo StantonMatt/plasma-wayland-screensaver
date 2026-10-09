@@ -6,16 +6,19 @@ impl AiController {
     pub(super) fn choose_inventory(&mut self,w:&World,s:SnakeView<'_>,state:&mut State,baseline:&Candidate,horizon:usize) {
         state.use_slot=0;
         let inv=s.inventory;
-        if w.config().rules!=crate::RuleSet::V2 || !w.config().store_power_ups || !w.config().power_ups
+        if w.config().rules!=crate::RuleSet::V2 || !w.config().power_ups
             || inv.count==0 || inv.windup!=0 || inv.cooldown!=0 {return;}
         let danger=baseline.steps<15 || state.debug.flags&32!=0 || s.flags&crate::flags::TRAPPED!=0;
         if !danger && w.tick()%3!=s.id as u64%3 {return;}
         let offensive=aggression::level(w);
         let mut kinds=0u8;
         for slot in 0..inv.count as usize {
-            if inv.life[slot]>4 && (1..=5).contains(&inv.kinds[slot]) {kinds|=1<<inv.kinds[slot];}
+            if inv.life[slot]>4 && (1..=6).contains(&inv.kinds[slot]) {kinds|=1<<inv.kinds[slot];}
         }
         if kinds==0 {return;}
+        let flip=kinds&(1<<EffectKind::Flip as u8)!=0;
+        let evaluate_flip=flip && (danger || state.last_strategy==w.tick() || self.flip_nearby(w,s));
+        let (flip_situation,ambush_mask,flip_goal)=if evaluate_flip {self.flip_opportunity(w,s,baseline)} else {(0,0,None)};
         let phase=kinds&(1<<EffectKind::Phase as u8)!=0;
         let surge=kinds&(1<<EffectKind::Surge as u8)!=0;
         let frost=kinds&(1<<EffectKind::Frost as u8)!=0;
@@ -23,7 +26,7 @@ impl AiController {
         let evaluate_venom=kinds&(1<<EffectKind::Venom as u8)!=0 && offensive>0.0;
         // A saved Phase in open space has zero utility. Its inventory cannot
         // use rival/food evidence, so don't prepare those queries for it.
-        if phase && !surge && !frost && !magnet && !evaluate_venom
+        if !flip && phase && !surge && !frost && !magnet && !evaluate_venom
             && !(danger && baseline.steps>=4 || offensive>0.5 && state.track_goal && state.prey!=0 && baseline.steps<horizon) {return;}
         let head=s.segments[0].current;let r=s.radius;
         let mut close=0;let mut hunter=false;let mut venom=false;let mut venom_near=false;
@@ -60,6 +63,9 @@ impl AiController {
             if inv.life[slot]<=4 {continue;}
             let kind=EffectKind::from_byte(inv.kinds[slot]);let expiring=inv.life[slot]<=150;
             let score=match kind {
+                EffectKind::Flip if flip_situation==1=>900.0,
+                EffectKind::Flip if flip_situation==2=>180.0*offensive,
+                EffectKind::Flip if flip_situation==3=>100.0*(0.3+offensive),
                 EffectKind::Phase if danger && baseline.steps>=4=>1000.0,
                 EffectKind::Phase if offensive>0.5 && state.track_goal && state.prey!=0 && baseline.steps<horizon=>120.0*offensive,
                 EffectKind::Surge if hunter || danger=>200.0,
@@ -74,19 +80,29 @@ impl AiController {
                 _=>0.0,
             };
             // Avoid replacing a still useful effect merely to spend another.
-            let score=if kind!=EffectKind::Frost && s.effect_ticks>30 && !danger {score*0.25} else {score};
+            let score=if !matches!(kind,EffectKind::Frost|EffectKind::Flip) && s.effect_ticks>30 && !danger {score*0.25} else {score};
             let score=score+if score>0.0 && expiring {25.0} else {0.0};
             if score>value {value=score;chosen=Some(slot);}
         }
         let Some(slot)=chosen else {return;};
         let kind=EffectKind::from_byte(inv.kinds[slot]);
+        if kind==EffectKind::Flip && flip_situation>0 {self.flip_note(20+flip_situation as usize);}
         let mut proposal=*state;proposal.use_slot=slot as u8+1;
+        if kind==EffectKind::Flip {proposal.revise_opponents=true;}
         // Never assume Phase during the four corporeal wind-up movements.
         // Require a checked continuation, including Surge's new turn radius.
         let mut trial=Candidate::default();
         let proof_horizon=if kind==EffectKind::Phase {STEPS} else {horizon};
+        let flip_clock=(self.profile_enabled && kind==EffectKind::Flip).then(std::time::Instant::now);
         self.rollout_into(w,s,proposal,1,proof_horizon,&mut trial);
-        if !trial.wall_safe || trial.capped || trial.steps<proof_horizon || (trial.venom_bite>0 && trial.steps<trial.venom_bite+VENOM_EXIT_STEPS) {return;}
+        if let Some(c)=flip_clock {self.flip_profile[2]+=c.elapsed().as_nanos();}
+        if !trial.wall_safe || trial.capped || trial.steps<proof_horizon || (trial.venom_bite>0 && trial.steps<trial.venom_bite+VENOM_EXIT_STEPS) {
+            if kind==EffectKind::Flip {self.flip_note(if !trial.wall_safe {12} else if trial.capped {13} else {14});}
+            return;
+        }
+        if kind==EffectKind::Flip && flip_situation==2 && trial.flip_head_wins&ambush_mask==0 {
+            self.flip_note(20);return;
+        }
         // A speed/effect change needs a fresh continuation utility. Do not
         // borrow the ordinary candidate's space hint for the changed endpoint.
         let id=s.id as usize;
@@ -99,9 +115,16 @@ impl AiController {
                 &trial.path[..=trial.steps],(rate*10.0).ceil() as usize,
                 (trial.effects.body_time(id,s.segments.len() as f64*self.rivals[id].release_rate+self.rivals[id].growth_delay,&self.rivals[id])/STEP_SECONDS).ceil() as usize)
         } else {self.spatial.space(trial.path[trial.steps],mask,(need*2).max(64),release)};
-        if area<need {return;}
+        if area<need {if kind==EffectKind::Flip {self.flip_note(15);}return;}
         if kind==EffectKind::Phase && danger && baseline.steps>=horizon && s.flags&crate::flags::TRAPPED==0 && state.debug.flags&32==0 {return;}
+        if kind==EffectKind::Flip {self.flip_note(16+flip_situation as usize);}
         state.use_slot=slot as u8+1;
+        state.flip_situation=if kind==EffectKind::Flip {flip_situation} else {0};
+        if kind==EffectKind::Flip {
+            state.flip_prey=if flip_situation==2 {(trial.flip_head_wins&ambush_mask).trailing_zeros() as u8+1} else {0};
+            state.flip_prey_generation=if state.flip_prey!=0 {w.snake(state.flip_prey as usize-1).unwrap().generation} else {0};
+            state.flip_goal=flip_goal.unwrap_or_default();state.flip_request_tick=w.tick();
+        }
     }
 }
 #[cfg(test)]

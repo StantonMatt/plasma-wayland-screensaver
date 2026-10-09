@@ -73,12 +73,16 @@ float falloff(float u) { u=1.0-clamp(u,0.0,1.0); return u*u; }   // matches the 
 // Premultiplied over; `glow` is additive outside opaque coverage, `over` is additive on top.
 vec4 composite(vec3 rgb,float a,vec3 glow,vec3 over,float fade) { return vec4(rgb*a+glow*(1.0-a)+over,a)*fade*ub.opacity; }
 const float SEG=1.18;  // segment spacing in body radii (world.rs spacing = radius*1.18)
+// Held-Flip false head: knob radius in body radii. Must stay below the body quad's
+// half-extent at the tail tip, BOUNDS_BODY*taper(1) = 2.5*0.22 = 0.55 radii.
+const float FLIP_KNOB=0.38;
 vec3 itemAccent(int k) {
     vec3 a;
     if(k==1) a=vec3(1.0,0.88235,0.30196);
     else if(k==2) a= vec3(1.0,0.37255,0.82353);
     else if(k==3) a= vec3(0.66275,0.54510,1.0);
     else if(k==4) a= vec3(0.61569,1.0,0.22745);
+    else if(k==6) a=vec3(1.0,0.60392,0.23529);
     else a=vec3(0.74118,0.95294,1.0);
     if(ub.paletteMode==1.0) a=mix(a,vec3(dot(a,vec3(0.2126,0.7152,0.0722))),0.88);
     if(ub.paletteMode==2.0) a=mix(a,vec3(1),0.3);
@@ -327,9 +331,19 @@ void main() {
         float w=max(base.a,1.0/255.0)*breath;
         float acrossR=coord.x*BOUNDS_BODY;
         float tipK=clamp(coord.y,0.0,1.0);
-        float sd=abs(acrossR)-w*tipK;           // radii, <0 inside the tube
+        float wv=w*tipK;                         // local silhouette half-width
+        // Held Flip (body bit 2, never on corpses): the tail tip swells into a small
+        // rounded false head; smooth max avoids a kink where it meets the taper.
+        bool flipTail=(flags&132)==4 && coord.y<FLIP_KNOB*2.0/SEG;
+        if(flipTail) {
+            float yr=coord.y*SEG-FLIP_KNOB;
+            float knob=sqrt(max(FLIP_KNOB*FLIP_KNOB-yr*yr,0.0));
+            float h=clamp(0.5+(knob-wv)/0.12,0.0,1.0);
+            wv=mix(wv,knob,h)+0.06*h*(1.0-h);
+        }
+        float sd=abs(acrossR)-wv;                // radii, <0 inside the tube
         float d=1.0+sd/w;                        // 1 at the silhouette, like the old |across|
-        float across=acrossR/max(w*tipK,0.001);  // band coordinate, +-1 at the silhouette
+        float across=acrossR/max(wv,0.001);      // band coordinate, +-1 at the silhouette
         vec2 normal=gradient(coord.x);
         float lit=dot(normal,ub.light);
         // Shared derivatives for slope-one bands and silhouette/shadow/halo.
@@ -373,6 +387,18 @@ void main() {
             float ripple=0.3+0.7*pow(max(0.0,sin(t*2.2+coord.y*0.11)),4.0);
             vec3 lc=mix(c,white,0.7);
             over+=lc*(mask(dd-0.15)*(0.4+0.6*ripple)+falloff(dd/1.2)*0.5*ripple)*body;
+        }
+        // False eyes on the Flip knob, sized in body radii (not taper) so they read at
+        // real size on any body length: dark rim, light accent iris, soft glow that
+        // glints at 0.41 Hz (static in Calm). Body bit 2 is presentation-only.
+        if(flipTail) {
+            float le=length(vec2(abs(acrossR)-0.165,coord.y*SEG-0.425));
+            float aaE=max(fwidth(le),0.008);
+            vec3 acc=itemAccent(6);
+            tube=mix(tube,vec3(0.02,0.024,0.043),coverage(le-0.135,aaE)*body*0.85);
+            tube=mix(tube,mix(acc,white,0.42),coverage(le-0.095,aaE)*body);
+            float glint=ub.motionScale==1.0?0.8+0.2*sin(t*2.6):1.0;
+            over+=acc*falloff(le/0.30)*0.22*glint*body;
         }
         float activeFade=1.0;
         if(!corpse && effectKind==1) {
@@ -516,7 +542,7 @@ void main() {
             float ad=((sc.y*q.x>sc.x*q.y)?length(q-sc*rr):abs(length(q)-rr))-0.075;
             pupilMask=mix(pupilMask,mask(ad),intensity);
         } else if(mood==7) {
-            float a=atan(eye.y,eye.x)+(moving?t*0.7:0.0);
+            float a=atan(eye.y,eye.x)+(moving?t*5.0:0.0);
             float spiral=mask(abs(sin(a*2.0-length(eye)*23.0))*0.10-0.035)*iris;
             pupilMask=mix(pupilMask,spiral,intensity);
         }

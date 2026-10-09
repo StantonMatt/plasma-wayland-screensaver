@@ -41,11 +41,11 @@ pub(super) const ACID_GLOW:u8=25;
 pub(super) struct SpriteSink<'a> { pub(super) out: &'a mut [ShaderVertex], pub(super) count: usize, pub(super) view: P }
 impl SpriteSink<'_> {
     #[inline]
-    fn make_vertex(p:P, u:f64, v:f64, color:Color, params:[u8;4])->ShaderVertex {
+    pub(super) fn make_vertex(p:P, u:f64, v:f64, color:Color, params:[u8;4])->ShaderVertex {
         ShaderVertex { x:p.x as f32,y:p.y as f32,across:u as f32,along:v as f32,color,params }
     }
     #[inline(always)]
-    fn push_quad(&mut self, points:[ShaderVertex;4]) {
+    pub(super) fn push_quad(&mut self, points:[ShaderVertex;4]) {
         // Check retained capacity once per primitive, and convert each of the
         // four corners once. Triangle-list duplicates become straight copies.
         if let Some(out)=self.out.get_mut(self.count..self.count+6) {
@@ -103,6 +103,13 @@ impl SpriteSink<'_> {
     // corpse pieces and exact f64 translated wrap copies.
     fn live_ribbon<const MIXED:bool>(&mut self, points:&[P], normals:&[P], valid:&[bool], widths:&[f64],
                    taper_bytes:&[u8], brightness:&[u8], origins:&[u8], r:f64, c:Color, params:[u8;4]) {
+        // Establish the common length once. The private callers provide one
+        // sample of every attribute per point; LLVM can then remove independent
+        // slice bounds checks from the ribbon's per-point walk.
+        let n=points.len();
+        let normals=&normals[..n];let valid=&valid[..n];let widths=&widths[..n];
+        let taper_bytes=&taper_bytes[..n];let brightness=&brightness[..n];
+        let origins=if MIXED {&origins[..n]} else {&[]};
         let mut previous=[ShaderVertex::default();2];
         let mut previous_valid=false;let mut previous_cached=false;
         let mut previous_width=0.0_f64;let mut a=P::default();
@@ -142,8 +149,16 @@ impl SpriteSink<'_> {
     }
 
     // Separate feature path keeps the ordinary ribbon ABI and hot loop intact.
-    fn live_prism_ribbon<const MIXED:bool>(&mut self, points:&[P], normals:&[P], valid:&[bool], widths:&[f64],
-                   taper_bytes:&[u8], brightness:&[u8], origins:&[u8], r:f64, c:Color, params:[u8;4], colors:&[Color], rainbow:bool, gulp:bool) {
+    fn live_prism_ribbon<const MIXED:bool,const RAINBOW:bool>(&mut self, points:&[P], normals:&[P], valid:&[bool], widths:&[f64],
+                   taper_bytes:&[u8], brightness:&[u8], origins:&[u8], r:f64, c:Color, params:[u8;4], colors:&[Color], gulp:bool) {
+        // Establish the common length once. The private callers provide one
+        // sample of every attribute per point; LLVM can then remove independent
+        // slice bounds checks from the ribbon's per-point walk.
+        let n=points.len();
+        let normals=&normals[..n];let valid=&valid[..n];let widths=&widths[..n];
+        let taper_bytes=&taper_bytes[..n];let brightness=&brightness[..n];
+        let origins=if MIXED {&origins[..n]} else {&[]};
+        let colors=if RAINBOW {&colors[..n]} else {&[]};
         let mut previous=[ShaderVertex::default();2];
         let mut previous_valid=false;let mut previous_cached=false;
         let mut previous_width=0.0_f64;let mut a=P::default();
@@ -162,7 +177,7 @@ impl SpriteSink<'_> {
                 let along=(points.len()-1-i) as f64;
                 if !previous_cached {
                     let normal=normals[i-1]*previous_width;
-                    let cc=if rainbow {colors[i-1]} else {c}.alpha(taper_bytes[i-1]);
+                    let cc=if RAINBOW {colors[i-1]} else {c}.alpha(taper_bytes[i-1]);
                     packed[3]=brightness[i-1];
                     if MIXED {packed[2]=(packed[2]&!50)|origins[i-1];}
                     previous=[Self::make_vertex(a+normal,widths[i-1],along+1.0,cc,packed),
@@ -170,7 +185,7 @@ impl SpriteSink<'_> {
                 } else {
                     previous[0].params[1]=packed[1];previous[1].params[1]=packed[1];
                 }
-                let normal=normals[i]*w;let cc=if rainbow {colors[i]} else {c}.alpha(taper_bytes[i]);
+                let normal=normals[i]*w;let cc=if RAINBOW {colors[i]} else {c}.alpha(taper_bytes[i]);
                 packed[3]=brightness[i];
                 if MIXED {packed[2]=(packed[2]&!50)|origins[i];}
                 let current=[Self::make_vertex(b+normal,widths[i],along,cc,packed),
@@ -353,6 +368,15 @@ impl Renderer {
                 || !coordinate32(e.x) || !coordinate32(e.y) { continue; }
             let time=info.simulation_time-(info.tick-e.tick) as f64*crate::STEP_SECONDS;
             let radius=snakes.iter().find(|s|s.id==if e.kind==1 {e.other_snake_id} else {e.snake_id}).map_or(8.0,|s|s.radius);
+            if e.kind==crate::EventKind::Flip as u8 && snakes.iter().any(|s|s.id==e.snake_id && s.generation==e.generation && snake_valid(s)) {
+                let id=e.snake_id as usize;
+                self.trails[id]=Trail {generation:e.generation,..Trail::default()};
+                self.waves[id]=[Wave::default();2];self.shader_angles[id]=snakes.iter().find(|s|s.id==e.snake_id).unwrap().angle;
+                self.shader_previous_angles[id]=self.shader_angles[id];
+                self.waves[id][0]=Wave {time,active:true,kind:0,duration_ticks:e.duration_ticks};
+                self.effect(Effect {p:P::new(e.x as f64,e.y as f64),time,radius,color:6,kind:12,active:true,
+                    snake_id:e.snake_id,generation:e.generation,duration_ticks:if self.reduced_motion {(u32::from(e.duration_ticks)*3/5) as u16} else {e.duration_ticks},seed:e.tick as u8});
+            }
             if e.kind==crate::EventKind::Feast as u8 && (e.snake_id as usize)<MAX_SNAKES {
                 if snakes.iter().any(|s|s.id==e.snake_id && s.generation==e.generation && s.alive!=0) {
                     let waves=&mut self.waves[e.snake_id as usize];waves[1]=waves[0];waves[0]=Wave {time,active:true,kind:8,duration_ticks:e.duration_ticks};
@@ -363,11 +387,11 @@ impl Renderer {
                     color:if e.kind==1 {0x80000004} else {e.color_index},kind:if e.kind==0 || e.kind==1 { 6 } else { 7 },active:true,
                     snake_id:e.snake_id,generation:0,duration_ticks:0,seed:(e.tick as u8).wrapping_add((e.snake_id as u8).wrapping_mul(13)) });
             }
-            if matches!(e.kind,2|6|7|14) {
+            if matches!(e.kind,2|6|7|14) && !(e.kind==2 && e.other_snake_id==6) {
                 self.effect(Effect {p:P::new(e.x as f64,e.y as f64),time,radius,
                     color:if e.kind==7 && e.other_snake_id==5 {0x80000005} else {e.other_snake_id},kind:if e.kind==2 {12} else if e.kind==7 && e.other_snake_id==5 {6} else {13},active:true,
-                    snake_id:e.snake_id,generation:0,duration_ticks:if e.kind==7 && e.other_snake_id==5 {e.duration_ticks} else if e.kind==14 {9} else if e.kind==15 {if self.reduced_motion {5} else {8}} else {0},seed:e.tick as u8});
-                if e.kind==2 && (e.snake_id as usize)<MAX_SNAKES {
+                    snake_id:e.snake_id,generation:0,duration_ticks:if e.kind==7 && e.other_snake_id==6 {if self.reduced_motion {(u32::from(e.duration_ticks)*3/5) as u16} else {e.duration_ticks}} else if e.kind==7 && e.other_snake_id==5 {e.duration_ticks} else if e.kind==14 {9} else if e.kind==15 {if self.reduced_motion {5} else {8}} else {0},seed:e.tick as u8});
+                if e.kind==2 && e.other_snake_id!=6 && (e.snake_id as usize)<MAX_SNAKES {
                     let waves=&mut self.waves[e.snake_id as usize];
                     waves[1]=waves[0];waves[0]=Wave {time,active:true,kind:e.other_snake_id as u8,..Wave::default()};
                 }
@@ -562,30 +586,38 @@ impl Renderer {
             }
             let age=if corpse { ((event_time(info,p,self.reduced_motion)-self.corpses[id].time)/(0.55*motion_scale)).clamp(0.0,1.0) } else { 0.0 };
             // Select at most two waves once per snake, not once per vertex.
-            let mut waves=[(0.0_f64,0.0_f64,0_u8);2];let mut wave_count=0;
+            // (centre, strength, origin, trailing length in segments; 0 = symmetric pulse)
+            let mut waves=[(0.0_f64,0.0_f64,0_u8,0.0_f64);2];let mut wave_count=0;
             for w in self.waves[id] {
                 if w.kind==8 {continue;}
-                let center=(event_time(info,p,self.reduced_motion)-w.time)/motion_scale*if w.kind==0 {1.1} else {1.3}*(n-1) as f64;
-                if w.active && center>=-3.5 && center<(n as f64+3.5) {
-                    waves[wave_count]=(center,if w.kind==0 {1.0} else {0.95},if w.kind==0 {6} else {w.kind});wave_count+=1;
+                let flip=w.kind==0 && w.duration_ticks>0;
+                let travel=(event_time(info,p,self.reduced_motion)-w.time)/motion_scale*if flip {30.0/w.duration_ticks as f64} else if w.kind==0 {1.1} else {1.3}*(n-1) as f64;
+                // Flip light runs from the old head (now the tail) to the new head. Its
+                // trailing streak (>= one frame of travel at 60 fps) keeps long bodies from strobing.
+                let (center,trail)=if flip {((n-1) as f64-travel,(0.12*(n-1) as f64).max(6.0))} else {(travel,0.0)};
+                if w.active && center+trail>=-3.5 && center<(n as f64+3.5) {
+                    waves[wave_count]=(center,if w.kind==0 {1.0} else {0.95},if w.kind==0 {6} else {w.kind},trail);wave_count+=1;
                 }
             }
             if s.flags&flags::BOOSTING!=0 {
                 let phase=(p.presentation_time/0.11).fract();
-                for j in 0..2-wave_count { waves[wave_count+j]=((phase+j as f64)*0.11*2.4*(n-1) as f64/motion_scale,0.55,6); }
+                for j in 0..2-wave_count { waves[wave_count+j]=((phase+j as f64)*0.11*2.4*(n-1) as f64/motion_scale,0.55,6,0.0); }
                 wave_count=2;
             } else if s.flags&flags::LEADER!=0 && wave_count<2 {
                 let center=(p.presentation_time%4.0)/motion_scale*0.75*(n-1) as f64;
-                if center<(n as f64+3.5) { waves[wave_count]=(center,0.5,7);wave_count+=1; }
+                if center<(n as f64+3.5) { waves[wave_count]=(center,0.5,7,0.0);wave_count+=1; }
             }
             let common_origin=waves[0].2;
             let mixed=phase_progress==255 && (s.stump_ticks>0 || (wave_count==2 && waves[1].2!=common_origin) || (rainbow && wave_count>0));
-            let body_flags=(flags & !50)|if phase_progress<255 {phase_bits} else if mixed || rainbow {0} else {wave_flags(common_origin)};
+            let body_flags=(flags & !54)|if s.flags&flags::FLIP_HELD!=0 {4} else {0}|if phase_progress<255 {phase_bits} else if mixed || rainbow {0} else {wave_flags(common_origin)};
             self.brightness[..n].fill(0);
             if mixed {self.wave_origins[..n].fill(0);}
-            for &(center,strength,kind) in &waves[..wave_count] {
+            for &(center,strength,kind,trail) in &waves[..wave_count] {
                 let origin=wave_flags(kind);
                 let first=(center-3.5).max(0.0).ceil() as usize;
+                // Ordinary pulses keep their original tight loop. Flip's trail
+                // is a separate max-composited pass, so other waves pay no
+                // per-sample trail branch or division.
                 let last=(center+3.5).max(0.0).floor() as usize;
                 for j in first..=last.min(n-1) {
                     let light=((1.0-(j as f64-center).abs()/3.5).max(0.0)*strength*255.0).round() as u8;
@@ -593,6 +625,16 @@ impl Renderer {
                         // Newest wins ties, independently of the active effect.
                         if light>self.brightness[j] {self.brightness[j]=light;self.wave_origins[j]=origin;}
                     } else {self.brightness[j]=self.brightness[j].max(light);}
+                }
+                if trail>0.0 {
+                    let first=center.max(0.0).ceil() as usize;
+                    let last=(center+trail).max(0.0).floor() as usize;
+                    for j in first..=last.min(n-1) {
+                        let light=((1.0-(j as f64-center)/trail).max(0.0)*0.7*strength*255.0).round() as u8;
+                        if mixed {
+                            if light>self.brightness[j] {self.brightness[j]=light;self.wave_origins[j]=origin;}
+                        } else {self.brightness[j]=self.brightness[j].max(light);}
+                    }
                 }
             }
             if s.stump_ticks>0 && !corpse {
@@ -619,12 +661,20 @@ impl Renderer {
                         sink.live_ribbon::<false>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
                             taper_bytes,&self.brightness[..n],&[],r,c,params);
                     }
+                } else if rainbow {
+                    if mixed {
+                        sink.live_prism_ribbon::<true,true>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
+                            taper_bytes,&self.brightness[..n],&self.wave_origins[..n],r,c,params,&self.rainbow[..n],gulp);
+                    } else {
+                        sink.live_prism_ribbon::<false,true>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
+                            taper_bytes,&self.brightness[..n],&[],r,c,params,&self.rainbow[..n],gulp);
+                    }
                 } else if mixed {
-                    sink.live_prism_ribbon::<true>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
-                        taper_bytes,&self.brightness[..n],&self.wave_origins[..n],r,c,params,&self.rainbow[..n],rainbow,gulp);
+                    sink.live_prism_ribbon::<true,false>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
+                        taper_bytes,&self.brightness[..n],&self.wave_origins[..n],r,c,params,&[],gulp);
                 } else {
-                    sink.live_prism_ribbon::<false>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
-                        taper_bytes,&self.brightness[..n],&[],r,c,params,&self.rainbow[..n],rainbow,gulp);
+                    sink.live_prism_ribbon::<false,false>(mapped,&self.normals[..n],&self.valid[..n],&self.shader_limits[..n],
+                        taper_bytes,&self.brightness[..n],&[],r,c,params,&[],gulp);
                 }
             } else { for i in 1..n {
                 if !self.valid[i-1] || !self.valid[i] { continue; }
@@ -806,6 +856,40 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn calm_borrowed_flip_and_expiry_durations_cover_u16_range() {
+        for ticks in [15,21_845,21_846,u16::MAX] {
+            let mut r=Renderer::new();r.reduced_motion=true;
+            let info=FrameInfo {tick:1,simulation_time:crate::STEP_SECONDS,..Default::default()};
+            let s=SnakeRecord {id:0,generation:1,..Default::default()};
+            let events=[EventRecord {tick:1,snake_id:0,generation:1,kind:crate::EventKind::Flip as u8,duration_ticks:ticks,..Default::default()},
+                EventRecord {tick:1,snake_id:0,generation:1,kind:crate::EventKind::EffectExpiry as u8,other_snake_id:6,duration_ticks:ticks,..Default::default()}];
+            r.shader_history(&info,&[s],&[],&events);
+            for effect in &r.effects[..2] {assert_eq!(effect.duration_ticks,(u32::from(ticks)*3/5) as u16);}
+        }
+    }
+    #[test]
+    fn compact_flip_clears_indexed_history_in_generation_matched_event_order() {
+        for before in [false,true] {for generation in [1,2] {
+            let mut r=Renderer::new();
+            let mut info=FrameInfo {tick:1,simulation_time:crate::STEP_SECONDS,..Default::default()};
+            let s=SnakeRecord {id:0,generation:1,alive:1,segment_count:1,effect_kind:1,effect_ticks:90,..Default::default()};
+            let body=[SegmentRecord::default()];r.shader_history(&info,&[s],&body,&[]);
+            r.waves[0][0]=Wave {active:true,kind:8,duration_ticks:90,..Default::default()};
+            info.tick=2;info.simulation_time=2.0*crate::STEP_SECONDS;
+            let flip=EventRecord {tick:2,kind:crate::EventKind::Flip as u8,generation,duration_ticks:15,..Default::default()};
+            let feast=EventRecord {kind:crate::EventKind::Feast as u8,generation:1,duration_ticks:60,..flip};
+            let events=if before {[feast,flip]} else {[flip,feast]};
+            r.shader_history(&info,&[s],&body,&events);
+            assert_eq!(r.trails[0].len,if generation==1 {1} else {2});
+            if generation==1 {
+                assert_eq!(r.waves[0][0].kind,if before {0} else {8});
+                assert_eq!(r.waves[0][1].active,!before);
+            } else {assert_eq!(r.waves[0][0].kind,8);assert_eq!(r.waves[0][1].kind,8);}
+            let waves=r.waves[0];r.shader_history(&info,&[s],&body,&events);
+            assert!(r.waves[0]==waves,"compact retries are idempotent");
+        }}
+    }
     #[test]
     fn viewport_broadphase_preserves_vertices_and_history() {
         let mut fast=Renderer::new();let mut reference=Renderer::new();reference.shader_culling=false;

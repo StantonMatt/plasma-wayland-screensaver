@@ -31,6 +31,7 @@ impl World {
             duration_ticks:duration,..Default::default()});
     }
     pub(super) fn activate_item(&mut self,id:usize,kind:EffectKind) {
+        if kind==EffectKind::Flip {self.flip_snake(id);self.emit_bubble(id,Glyph::Flip);return;}
         if kind!=EffectKind::Frost {
             let old=EffectKind::from_byte(self.snakes[id].effect_kind);
             if old!=EffectKind::None {effects::end(old,self,id,EndReason::Replaced);}
@@ -42,9 +43,10 @@ impl World {
         self.emit_bubble(id,glyph);
     }
     pub(super) fn request_inventory_use(&mut self,id:usize,action:u32) {
-        if !self.items_enabled() || !self.config.store_power_ups {return;}
+        if !self.items_enabled() {return;}
         let inv=&mut self.snakes[id].inventory;
         if action==0 || action>inv.count as u32 || inv.windup!=0 || inv.cooldown!=0 {return;}
+        if !self.config.store_power_ups && inv.kinds[action as usize-1]!=EffectKind::Flip as u8 {return;}
         inv.windup=action as u8;inv.windup_ticks=INVENTORY_WINDUP_TICKS;inv.cooldown=30;
         let kind=EffectKind::from_byte(inv.kinds[action as usize-1]);
         self.inventory_event(id,action as usize-1,kind,EventKind::Use,self.segments[id*MAX_SEGMENTS].current,4);

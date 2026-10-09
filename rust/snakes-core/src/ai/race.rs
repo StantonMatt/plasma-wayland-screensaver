@@ -110,6 +110,7 @@ impl AiController {
     pub(super) fn guard_capsule(&self,w:&World,s:SnakeView<'_>,state:&mut State) {
         if w.config().store_power_ups && s.inventory.count<3 {state.guarding=false;return;}
         let Some(f)=self.target_food(*state).filter(|f|f.id & target::ITEM_BIT!=0 && f.id!=events::ID) else {state.guarding=false;return;};
+        if w.items().any(|item|item.id==f.id & !target::ITEM_BIT && item.kind==crate::effects::EffectKind::Flip) {state.guarding=false;return;}
         let (speed,turn)=self.motion[s.id as usize].at(0);
         let radius=(6.0*s.radius).max(speed/turn*1.15);
         let near=w.distance_squared(s.segments[0].current,f.position)<(15.0*s.radius).powi(2);

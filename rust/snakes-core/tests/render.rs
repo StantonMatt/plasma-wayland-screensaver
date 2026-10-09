@@ -2885,3 +2885,177 @@ fn inventory_pending_configuration_fizzle_does_not_advance_other_event_cutoff() 
     let n=r.build_shader(&i,&[s],&b,&[],&[use_event],&palette(),&p,&mut out).vertex_count;
     assert_eq!(out[..n].iter().filter(|v|v.params[0]==26 && v.params[3]>=128).count(),6);
 }
+#[test]
+fn flip_then_sever_orphan_geometry_matches_reversed_source_without_allocations() {
+    for calm in [false,true] {for compact in [false,true] {
+        let mut actual=RenderHandle::new();let mut reference=RenderHandle::new();
+        actual.reduced_motion=calm;reference.reduced_motion=calm;
+        let mut i=info();let mut p=params();p.interpolation=1.0;let pal=palette();
+        let mut s=SnakeRecord {segment_count:40,..snake()};
+        let body:[SegmentRecord;40]=std::array::from_fn(|j|SegmentRecord {x:1200.0-j as f32*9.44,y:500.0,
+            previous_x:1200.0-j as f32*9.44,previous_y:500.0});
+        let mut reversed=body;reversed.reverse();
+        let mut a=[ShaderRenderVertex::default();4096];let mut b=a;let mut orphan_a=a;let mut orphan_b=a;
+        actual.build_shader(&i,&[s],&body,&[],&[],&pal,&p,&mut a);
+        reference.build_shader(&i,&[s],&reversed,&[],&[],&pal,&p,&mut b);
+        i.tick+=1;i.simulation_time=i.tick as f64/30.0;p.presentation_time=i.simulation_time;
+        s.segment_count=30;s.angle=std::f64::consts::PI;
+        let flip=EventRecord {tick:i.tick,kind:9,snake_id:0,generation:1,x:reversed[0].x,y:500.0,duration_ticks:15,..Default::default()};
+        let sever=EventRecord {kind:1,cut_index:30,duration_ticks:33,other_snake_id:1,..flip};
+        COUNT.with(|c|c.set(Some(0)));
+        if compact {
+            let small=SnakeRecord {segment_count:1,..s};let hidden=RenderParams {scale_x:0.0,scale_y:0.0,..p};
+            actual.build_shader(&i,&[small],&reversed[29..30],&[],&[flip,sever],&pal,&hidden,&mut []);
+            reference.build_shader(&i,&[small],&reversed[29..30],&[],&[sever],&pal,&hidden,&mut []);
+            i.tick+=1;i.simulation_time=i.tick as f64/30.0;p.presentation_time=i.simulation_time;
+        }
+        let actual_events=[flip,sever];let reference_events=[sever];
+        let n=actual.build_shader(&i,&[s],&reversed[..30],&[],if compact {&[]} else {&actual_events},&pal,&p,&mut a).vertex_count;
+        let m=reference.build_shader(&i,&[s],&reversed[..30],&[],if compact {&[]} else {&reference_events},&pal,&p,&mut b).vertex_count;
+        let mut na=0;let mut nb=0;
+        for &v in &a[..n] {if v.params[0]==0 && v.params[2]&flags::CORPSE as u8!=0 {orphan_a[na]=v;na+=1;}}
+        for &v in &b[..m] {if v.params[0]==0 && v.params[2]&flags::CORPSE as u8!=0 {orphan_b[nb]=v;nb+=1;}}
+        assert!(na>0);assert_eq!(&orphan_a[..na],&orphan_b[..nb]);
+        assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+    }}
+}
+#[test]
+fn borrowed_flip_duration_extremes_are_safe_across_both_render_abis() {
+    for calm in [false,true] {for kind in [9,7] {for ticks in [15,21_845,21_846,u16::MAX] {
+        let mut r=RenderHandle::new();r.reduced_motion=calm;
+        let i=info();let p=params();let s=snake();let b=body();let pal=palette();
+        let e=EventRecord {tick:i.tick,kind,snake_id:s.id,generation:s.generation,other_snake_id:6,
+            x:b[0].x,y:b[0].y,duration_ticks:ticks,..Default::default()};
+        let mut gpu=[ShaderRenderVertex::default();2048];let mut cpu=[RenderVertex::default();4096];let mut result=RenderOutput::default();
+        COUNT.with(|c|c.set(Some(0)));
+        unsafe {
+            assert_eq!(snakes_core_render_build_shader(&mut r,&i,&s,1,b.as_ptr(),b.len(),std::ptr::null(),0,
+                &e,1,pal.as_ptr(),pal.len(),&p,gpu.as_mut_ptr(),gpu.len(),&mut result),OK);
+            assert!(result.vertex_count>0);
+            assert_eq!(snakes_core_render_build(&mut r,&i,&s,1,b.as_ptr(),b.len(),std::ptr::null(),0,
+                &e,1,pal.as_ptr(),pal.len(),&p,cpu.as_mut_ptr(),cpu.len(),&mut result),OK);
+            assert!(result.vertex_count>0);
+        }
+        assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+    }}}
+}
+#[test]
+fn flip_gem_tail_flag_reversal_history_and_simulation_clocks_allocate_nothing() {
+    for calm in [false,true] {
+        let mut r=RenderHandle::new();r.reduced_motion=calm;
+        let mut i=info();let mut p=params();let pal=palette();
+        let mut s=SnakeRecord {radius:18.0,segment_count:30,inv_kind:[6,0,0],inv_count:1,inv_life:[255,0,0],flags:flags::FLIP_HELD|flags::BOOSTING,..snake()};
+        let mut body:[SegmentRecord;30]=std::array::from_fn(|j|SegmentRecord {x:1200.0-j as f32*21.24,y:500.0,previous_x:1200.0-j as f32*21.24,previous_y:500.0});
+        let mut out=[ShaderRenderVertex::default();2048];let mut retry=out;
+        for tick in 586..=600 {i.tick=tick;i.simulation_time=tick as f64/30.0;p.presentation_time=i.simulation_time;
+            r.build_shader(&i,&[s],&body,&[],&[],&pal,&p,&mut out);}
+        COUNT.with(|c|c.set(Some(0)));
+        let n=r.build_shader(&i,&[s],&body,&[],&[],&pal,&p,&mut out).vertex_count;
+        assert_eq!(out[..n].iter().filter(|v|v.params[0]==26 && v.params[1]==6).count(),6);
+        assert!(out[..n].iter().filter(|v|v.params[0]==0).all(|v|v.params[2]&4!=0));
+        body.reverse();s.inv_count=0;s.inv_kind[0]=0;s.flags=0;s.angle=std::f64::consts::PI;s.flip_tick=601;s.mood=7;s.mood_intensity=255;s.face_flags=2;
+        i.tick=601;i.simulation_time=601.0/30.0;p.presentation_time=i.simulation_time;
+        let event=EventRecord {tick:601,snake_id:0,generation:1,kind:9,other_snake_id:6,x:body[0].x,y:body[0].y,duration_ticks:15,..Default::default()};
+        let n=r.build_shader(&i,&[s],&body,&[],&[event],&pal,&p,&mut out).vertex_count;
+        let m=r.build_shader(&i,&[s],&body,&[],&[event],&pal,&p,&mut retry).vertex_count;
+        assert_eq!(&out[..n],&retry[..m]);assert!(!out[..n].iter().any(|v|v.params[0]==10),"old contrail must not connect swapped endpoints");
+        assert!(out[..n].iter().any(|v|v.params[0]==12));
+        // Calm freezes procedural motion, but event clocks keep advancing.
+        i.tick=617;i.simulation_time=617.0/30.0;p.presentation_time=i.simulation_time;
+        let n=r.build_shader(&i,&[s],&body,&[],&[],&pal,&p,&mut out).vertex_count;
+        assert!(!out[..n].iter().any(|v|v.params[0]==12));
+        assert!(out[..n].iter().filter(|v|v.params[0]==0).all(|v|v.params[2]&4==0));
+        assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+    }
+}
+#[test]
+fn flip_light_runs_from_old_head_to_new_head_without_gaps() {
+    // A long reversed body (tightly spaced to fit the world): index 0 is the new head,
+    // the old head is now the tail. 60 fps travel is ~13 segments per frame here.
+    const N:usize=400;
+    let mut r=RenderHandle::new();
+    let mut i=info();let mut p=params();let pal=palette();
+    let s=SnakeRecord {radius:18.0,segment_count:N as u32,angle:std::f64::consts::PI,flip_tick:601,mood:7,mood_intensity:255,face_flags:2,..snake()};
+    let body:[SegmentRecord;N]=std::array::from_fn(|j|{let x=100.0+j as f32*8.0;SegmentRecord {x,y:700.0,previous_x:x,previous_y:700.0}});
+    let mut out=vec![ShaderRenderVertex::default();8192];
+    i.tick=601;i.simulation_time=601.0/30.0;p.presentation_time=i.simulation_time;
+    let event=EventRecord {tick:601,snake_id:0,generation:1,kind:9,other_snake_id:6,x:body[0].x,y:body[0].y,duration_ticks:15,..Default::default()};
+    r.build_shader(&i,&[s],&body,&[],&[event],&pal,&p,&mut out);
+    // Lit body samples (distance from the tail in segments) at 60 fps presentation steps.
+    let mut lit=|frame:u32,r:&mut RenderHandle|{
+        p.presentation_time=i.simulation_time+frame as f64/60.0;
+        let n=r.build_shader(&i,&[s],&body,&[],&[],&pal,&p,&mut out).vertex_count;
+        let mut brightest=(0u8,0.0f32);let mut along=Vec::new();
+        for v in out[..n].iter().filter(|v|v.params[0]==0 && v.params[3]>0) {
+            if v.params[3]>brightest.0 {brightest=(v.params[3],v.along);}
+            along.push(v.along);
+        }
+        (brightest.1,along)
+    };
+    let (early,_)=lit(3,&mut r);
+    let (late,_)=lit(24,&mut r);
+    assert!(early<0.25*(N-1) as f32,"light starts at the old head (tail end), front at {early}");
+    assert!(late>0.75*(N-1) as f32,"light finishes at the new head, front at {late}");
+    // Consecutive 60 fps frames overlap, so a long body never shows a strobing dotted pulse.
+    for frame in 1..28 {
+        let (_,a)=lit(frame,&mut r);let (_,b)=lit(frame+1,&mut r);
+        if a.is_empty() || b.is_empty() {continue;}
+        let (a_min,a_max)=a.iter().fold((f32::MAX,f32::MIN),|m,&v|(m.0.min(v),m.1.max(v)));
+        let (b_min,b_max)=b.iter().fold((f32::MAX,f32::MIN),|m,&v|(m.0.min(v),m.1.max(v)));
+        assert!(b_min<=a_max+1.0 && a_min<=b_max+1.0,"frames {frame}/{} leave a gap: {a_min}..{a_max} vs {b_min}..{b_max}",frame+1);
+    }
+}
+
+#[test]
+fn flip_classic_tail_face_is_held_only_and_allocation_free() {
+    let i=info();let p=params();let pal=palette();let b=body();
+    let mut r=RenderHandle::new();let mut s=SnakeRecord {radius:18.0,flags:flags::FLIP_HELD,..snake()};
+    let mut out=[RenderVertex::default();4096];
+    let rim=RenderColor {red:5,green:6,blue:11,alpha:255};
+    COUNT.with(|c|c.set(Some(0)));
+    let n=r.build(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+    let eyes=out[..n].iter().filter(|v|v.color==rim).count();
+    assert_eq!(eyes,48,"two eight-sided dark eye rims");
+    assert!(out[..n].iter().filter(|v|v.color==rim).all(|v|v.x<b[2].x),"false face belongs to the tail");
+    s.flags=0;
+    let n=r.build(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+    assert!(!out[..n].iter().any(|v|v.color==rim));
+    s.flags=flags::CORPSE|flags::FLIP_HELD;s.alive=0;
+    let n=r.build(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+    assert!(!out[..n].iter().any(|v|v.color==rim),"corpses never retain the false face");
+    assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+}
+
+#[test]
+fn flip_classic_wave_reverses_overlapping_front_and_calm_clock_without_allocations() {
+    const N:usize=400;
+    let b:[SegmentRecord;N]=std::array::from_fn(|j|{let x=100.0+j as f32*8.0;SegmentRecord {x,y:700.0,previous_x:x,previous_y:700.0}});
+    let mut out=vec![RenderVertex::default();16384];
+    for calm in [false,true] {
+        let mut r=RenderHandle::new();r.reduced_motion=calm;
+        let mut i=info();i.tick=601;i.simulation_time=601.0/30.0;
+        let mut p=params();p.presentation_time=i.simulation_time;
+        let pal=[RenderColor {red:40,green:80,blue:120,alpha:255};6];
+        let s=SnakeRecord {radius:18.0,segment_count:N as u32,angle:std::f64::consts::PI,flip_tick:601,..snake()};
+        let event=EventRecord {tick:601,snake_id:0,generation:1,kind:9,other_snake_id:6,x:b[0].x,y:b[0].y,duration_ticks:15,..Default::default()};
+        r.build(&i,&[s],&b,&[],&[event],&pal,&p,&mut out);
+        let duration=if calm {18} else {30};
+        let mut previous=(f32::MAX,f32::MIN);
+        COUNT.with(|c|c.set(Some(0)));
+        for frame in 1..duration {
+            if calm {i.simulation_time=601.0/30.0+frame as f64/60.0;} else {p.presentation_time=601.0/30.0+frame as f64/60.0;}
+            let n=r.build(&i,&[s],&b,&[],&[],&pal,&p,&mut out).vertex_count;
+            let mut range=(f32::MAX,f32::MIN);let mut brightest=(0,0.0);
+            for v in out[..n].iter().filter(|v|v.color.alpha==245 && v.color.red>40) {
+                range=(range.0.min(v.x),range.1.max(v.x));
+                if v.color.red>brightest.0 {brightest=(v.color.red,v.x);}
+            }
+            assert!(range.0<=range.1,"wave is present");
+            if frame==1 {assert!(brightest.1>2500.0,"front starts at old head");}
+            if frame==duration-1 {assert!(brightest.1<800.0,"front ends at new head");}
+            if frame>1 {assert!(range.1>=previous.0,"consecutive 60 fps frames overlap");}
+            previous=range;
+        }
+        assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+    }
+}

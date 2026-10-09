@@ -4,20 +4,20 @@ use super::*;
 use super::shader::SpriteSink;
 pub(crate) fn valid_item(item: &ItemRecord) -> bool {
     coordinate32(item.x) && coordinate32(item.y)
-        && (1..=5).contains(&item.kind) && item.life_ticks<=780 && item.reserved==0
+        && (1..=6).contains(&item.kind) && item.life_ticks<=780 && item.reserved==0
         && item.reserved_byte==0
 }
 #[inline]
 pub(super) fn accent(kind:u8,palette:&[Color])->Color {
     // Fixed item colours use exactly the same rounded tint as arbitrary
     // colours, without repeating luminance/rounding for every carried gem.
-    const RGB:[[u8;3];5]=[[255,225,77],[255,95,210],[169,139,255],[157,255,58],[189,243,255]];
-    const MONO:[[u8;3];5]=[[225,221,203],[151,132,146],[156,152,166],[212,224,201],[227,234,235]];
-    const PASTEL:[[u8;3];5]=[[255,234,130],[255,143,224],[195,174,255],[186,255,117],[209,247,255]];
+    const RGB:[[u8;3];6]=[[255,225,77],[255,95,210],[169,139,255],[157,255,58],[189,243,255],[255,154,60]];
+    const MONO:[[u8;3];6]=[[225,221,203],[151,132,146],[156,152,166],[212,224,201],[227,234,235],[179,167,156]];
+    const PASTEL:[[u8;3];6]=[[255,234,130],[255,143,224],[195,174,255],[186,255,117],[209,247,255],[255,184,119]];
     let table=match palette.first().map(|c|(c.red,c.green,c.blue)) {
         Some((255,255,255))=>&MONO,Some((255,200,221))=>&PASTEL,_=>&RGB,
     };
-    let [r,g,b]=table[if (1..=4).contains(&kind) {kind as usize-1} else {4}];
+    let [r,g,b]=table[if (1..=6).contains(&kind) {kind as usize-1} else {4}];
     Color::new(r,g,b,255)
 }
 pub(super) fn tint(mut c:Color,palette:&[Color])->Color {
@@ -222,6 +222,10 @@ impl Renderer {
             2=>{for k in 0..6 {let a=k as f64*std::f64::consts::PI/6.0;let b=(k+1) as f64*std::f64::consts::PI/6.0;line(sink,P::new(a.cos()*0.7,a.sin()*0.8),P::new(b.cos()*0.7,b.sin()*0.8));}line(sink,P::new(-0.7,0.0),P::new(-0.7,-0.75));line(sink,P::new(0.7,0.0),P::new(0.7,-0.75));},
             3=>{for x in [-0.35,0.35] {let v=[P::new(x,-0.9),P::new(x+0.35,0.0),P::new(x,0.9),P::new(x-0.35,0.0)];for k in 0..4 {line(sink,v[k],v[(k+1)%4]);}}},
             4=>{for x in [-0.5,0.5] {line(sink,P::new(x,-0.8),P::new(x*0.4,0.9));}},
+            6=>{for side in [-1.0,1.0] {
+                line(sink,P::new(-0.8*side,-0.35*side),P::new(0.8*side,-0.35*side));
+                for y in [-0.3,0.3] {line(sink,P::new(0.8*side,-0.35*side),P::new(0.4*side,(-0.35+y)*side));}
+            }},
             _=>{for k in 0..6 {let a=k as f64*std::f64::consts::TAU/6.0;line(sink,P::default(),P::new(a.cos(),a.sin()));}},
         }
     }

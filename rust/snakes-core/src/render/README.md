@@ -882,3 +882,36 @@ full head coordinates are available. Resting inventory uses the existing body
 broadphase; only stash/fizzle transients require admission outside that envelope.
 Surge budgets count visible ribbons and seam/cull margins bound the widened
 normals, including the maximum 35% feeding pulse.
+
+Flip (0.19.0) uses inventory kind 6, atlas tile 5 and #ff9a3c with the same CPU
+Mono/Pastel rules as other gems. Body packed.z bit 2 carries a held tail knob with rimmed false eyes
+and is independent of timed effects (the body never used HUNTING). No extra
+shader vertices are emitted for tail eyes. Classic adds a small knob and two
+rimmed eyes within its existing body bounds. A generation-matched Flip event clears the
+owner's contrail, waves and interpolated heading, then emits an accent ring and
+fast white wave from the old head to the new head over duration_ticks. Its fading
+trail spans max(6, 12% of body length) segments to overlap consecutive 60 fps frames.
+Ordinary waves keep their original pulse loop. The old head's EffectExpiry kind 6 emits
+the companion collapsing ring. Event ages use simulation time in Calm; both
+rings and the wave shorten by 40%. Existing mood 7 draws static spiral eyes in
+Calm and spirals spinning at 5 rad/s otherwise. Detached orphans retain their own geometry.
+The sever source cache reverses its generation-matched retained body in event order,
+including compact tail-only replay, so a later Sever takes the newly oriented tail.
+World::step regressions cover same-tick and later cuts, full/compact histories and
+retry deduplication. Contrails and waves clear on Flip; bulges come from the current
+snapshot, pip neck caches compare current points, and rainbow reuse includes the
+current waves. Detached pieces and world-anchored animation origins remain independent.
+Calm ring duration scaling widens borrowed u16 durations before multiplication;
+the full ABI range maps safely to at most 39,321 ticks, with 15 ticks still mapping to 9.
+
+Rendering headroom: ribbon walks establish matching slice lengths once, and the
+prism colour path specializes rainbow selection outside its per-point loop.
+Wall-bounded slipstreams and intact orphan tubes convert shared corners once;
+translated wraps and dissolving orphan pieces retain their independent edge walk.
+Short orphan wriggle tangents depend only on the immutable severed source and
+arena/wall topology, so two fixed 101-point caches reuse their original f64
+normalization across presentation ages. New severs, topology changes and renderer
+reset invalidate them. Projection and displaced-curve normals still update on
+every draw. The caches add approximately 3.2 KiB per renderer and no allocation.
+Regression comparisons cover viewport gaps, partial output capacity, both wrap
+policies, intact/dissolving pieces, Calm, topology changes and cache eviction.

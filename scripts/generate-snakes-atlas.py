@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Generate the 128x128 R8 icon SDF. Standard library only, build-time only.
 
-32px padded tiles: five items, two reserved items, then !, ?, anger, Zz, heart.
+32px padded tiles: six items, one reserved item, then !, ?, anger, Zz, heart.
 Distances are encoded as 0.5 - distance / 8 pixels (positive inside).
 """
 import math
@@ -55,7 +55,10 @@ def icon(kind, x, y):
                 lines.append(segment(x, y, (7 * direction[0], 7 * direction[1]),
                                      (7 * direction[0] - 4 * math.cos(branch), 7 * direction[1] - 4 * math.sin(branch)), 0.9))
         return min(lines)
-    # Tiles 5/6 reserved for Flip/Whirlpool. Glyphs occupy 7..11.
+    if kind == 5:
+        return min(polygon(x,y,[(-8.5,-7),(3.5,-7),(3.5,-11),(9.5,-5),(3.5,1),(3.5,-3),(-8.5,-3)]),
+                   polygon(x,y,[(8.5,3),(-3.5,3),(-3.5,-1),(-9.5,5),(-3.5,11),(-3.5,7),(8.5,7)]))
+    # Tile 6 reserved for Whirlpool. Glyphs occupy 7..11.
     if kind == 7:
         return min(segment(x, y, (0, -10), (0, 3), 2.0), math.hypot(x, y-8)-2.0)
     if kind == 8:

@@ -92,6 +92,9 @@ impl AiController {
                         let changed=(1<<s.id) | rivals.iter().enumerate().fold(0,|mask,(id,r)|mask | if r.dynamic {1<<id} else {0});
                         forecast.advance_cached(w,j+1,|id|if id==s.id as usize {pos} else {Self::forecast_rival(&rivals,&self.rivals,id).path[j+1]},changed,&self.item_forecast,0.0);
                     }
+                    // A discontinuous head swap invalidates this fixed
+                    // crossing objective; physical candidates handle reversals.
+                    if forecast.effects.flip_mask!=0 && forecast.effects.flip_steps.iter().any(|&at|at!=0 && at as usize<=j+1) {return best;}
                 }
                 let error=w.displacement(pos,point);
                 attack.error=(error.x*error.x+error.y*error.y).sqrt();
@@ -112,6 +115,10 @@ impl AiController {
     pub(super) fn replies_blocked(&self,w:&World,s:SnakeView<'_>,state:State,c:&Candidate)->usize {
         if !self.attack_usable(w,s,state,c.attack) {return 0;}
         let victim=w.snake(state.prey-1).unwrap();
+        // A pending head swap invalidates a fixed head/neck cut-off objective.
+        // Physical steering rollouts still model its shared reversal timeline.
+        if s.inventory.windup!=0 && s.inventory.kinds[s.inventory.windup as usize-1]==6
+            || victim.inventory.windup!=0 && victim.inventory.kinds[victim.inventory.windup as usize-1]==6 {return 0;}
         let mut blocked=0;
         let mut attacker_distance=[0.0;73];
         for j in 1..=72 {attacker_distance[j]=attacker_distance[j-1]+w.distance_squared(c.path[j-1],c.path[j]).sqrt();}
@@ -152,6 +159,9 @@ impl AiController {
                 let changed=(1<<s.id) | (1<<victim.id) | rivals.iter().enumerate().fold(0,|mask,(id,r)|mask | if r.dynamic {1<<id} else {0});
                 forecast.advance_cached(w,j,|id|if id==s.id as usize {c.path[j]} else if id==victim.id as usize {q} else {Self::forecast_rival(rivals,&self.rivals,id).path[j]},changed,&self.item_forecast,0.0);
             }
+            // Reply utility has no retained reversed-body trail. It must not
+            // certify a blocked response once any participant swaps endpoints.
+            if forecast.effects.flip_mask!=0 && forecast.effects.flip_steps.iter().any(|&at|at!=0 && at as usize<=j) {return false;}
             let own_phased=forecast.effects.phased(s.id as usize,j);
             let victim_phased=forecast.effects.phased(victim.id as usize,j);
             let cfg=w.config();

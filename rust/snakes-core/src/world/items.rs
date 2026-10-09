@@ -50,7 +50,7 @@ impl Item {
     #[inline]
     pub(crate) fn pickup_eligible(&self, tick:u64, elapsed:usize, alive:bool, guarding:bool, effect_ticks:u16)->bool {
         Self::endpoint_eligible(tick,self.pickable_from_tick,elapsed,self.life_ticks as usize,alive)
-            && Self::pickup_allowed(alive,guarding,effect_ticks)
+            && Self::pickup_allowed(alive,guarding && self.kind!=EffectKind::Flip,effect_ticks)
     }
 }
 impl World {
@@ -229,13 +229,13 @@ impl World {
                 self.resolve_denial(item,id);
                 self.faces[id].happy_ticks=45;
                 self.items.remove(i);
-                if self.config.store_power_ups && self.snakes[id].inventory.count<3 {
+                if (self.config.store_power_ups || item.kind==EffectKind::Flip) && self.snakes[id].inventory.count<3 {
                     let slot=self.snakes[id].inventory.count as usize;
                     let inv=&mut self.snakes[id].inventory;
                     inv.kinds[slot]=item.kind as u8;inv.life[slot]=1800;inv.count+=1;
                     self.inventory_event(id,slot,item.kind,EventKind::Stash,item.position,0);
                 } else {
-                    if self.config.store_power_ups {self.inventory_event(id,usize::MAX,item.kind,EventKind::Use,item.position,0);}
+                    if self.config.store_power_ups || item.kind==EffectKind::Flip {self.inventory_event(id,usize::MAX,item.kind,EventKind::Use,item.position,0);}
                     self.activate_item(id,item.kind);
                     self.item_event(item,EventKind::Pickup,id as u32);
                 }

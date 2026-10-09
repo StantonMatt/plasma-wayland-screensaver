@@ -69,3 +69,31 @@ Item bubble glyphs 5..9 are Surge/Magnet/Phase/Venom/Frost (kind+4), with
 three-bubble cap, using the same forced replacement policy as Anger/Heart.
 Rendering (pips, icon mapping, drain, flight and Surge styling) is a separate
 worker's scope; this document specifies the simulation data it consumes.
+
+## Flip (0.19.0)
+
+ABI v4 and all record sizes remain unchanged. Kind 6 is now enabled; atlas tile
+5 contains opposed arrows and the accent is #ff9a3c. Inventory kind 6 and
+FLIP_HELD (512) identify held copies, including when inventory storage is off.
+Enabled spawn weights are Surge 20, Magnet 24, Phase 12, Venom 16, Frost 10
+and Flip 10. The draw normalizes over enabled kinds and excludes the last kind;
+Whirlpool remains disabled.
+
+All copies use the existing 1800-tick shelf clock, four-tick wind-up, cooldown,
+fizzle, full-inventory immediate use and death-drop lifecycle. Turning storage
+off fizzles the current inventory; later Flip pickups remain held.
+
+Flip is instantaneous and preserves the independent active effect and boost.
+Event Flip (9) identifies the new head, generation and completed simulation
+tick; duration_ticks=15 drives its rings and fast white wave. EffectExpiry (7)
+with kind 6 locates the companion collapsing ring at the old head. Pickup (2)
+continues to report inventory activation. Existing flip_tick, flip_grace_ticks
+and mood fields report reversal, six collision passes of eight-segment neck
+exemption and 30 ticks of Dizzy. Previous segment positions reset at reversal
+so interpolation and collision sweeps never cross the entire snake.
+
+Reversal rebuilds the trail in place, retires indexed bulges/stump/face targets,
+and clears AI objectives and renderer contrail/wave/heading history per snake.
+Detached orphan tails retain their own geometry and lifecycle. The body shader
+uses its otherwise unused HUNTING bit (packed.z bit 2) for held tail eye-spots;
+head HUNTING and the existing Phase entry encoding remain independent.

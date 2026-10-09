@@ -13,6 +13,7 @@ mod race;
 mod events;
 mod forecast;
 mod inventory;
+mod flip;
 mod wall;
 mod venom;
 pub(crate) mod frost;
@@ -63,6 +64,9 @@ struct VenomPlan {goal:Point,target:usize,generation:u32,index:usize,standoff:bo
 struct VenomHunt {best:Option<VenomPlan>,nearest:Option<VenomPlan>}
 #[derive(Clone, Copy, Default)]
 struct State {
+    last_flip:u64,
+    flip_situation:u8,
+    flip_prey:u8,flip_prey_generation:u32,flip_goal:Point,flip_until:u64,flip_request_tick:u64,
     use_slot:u8,
     generation: u32,
     #[cfg(feature="desktop-diag")]
@@ -198,6 +202,14 @@ impl State {
         2+((s.traits.turn_bias/0.175+1.0)*3.0).round().clamp(0.0,6.0) as u64
     }
 }
+/// Dimensions and travel used to reconstruct the instantaneous reversal.
+#[derive(Clone, Copy, Default)]
+struct Reversal {step:usize,len:usize,radius:f64,distance:f64}
+impl Reversal {
+    fn index(self,observed:usize,observed_radius:f64)->f64 {
+        self.len.saturating_sub(1) as f64-observed as f64*observed_radius/self.radius-self.distance/(self.radius*1.18)
+    }
+}
 #[derive(Clone, Copy)]
 struct Rival {
     alive: bool,
@@ -213,6 +225,9 @@ struct Rival {
     forecast_angle: f64,
     direction: Point,
     dynamic: bool,
+    flip_at:usize,
+    flip_origin:Point,
+    reversal:Reversal,
     path: [Point; STEPS+1],
     envelope: [f64; STEPS+1],
     distance: [f64; STEPS+1],
@@ -221,6 +236,7 @@ struct Rival {
 #[derive(Clone, Copy)]
 struct Candidate {
     body_len: usize,
+    flip_head_wins:u16,
     effects: forecast::Snapshot,
     kind: usize,
     checked: bool,
@@ -248,10 +264,10 @@ struct Candidate {
 }
 
 impl Default for Rival {
-    fn default()->Self {Self {alive:false,radius:0.0,len:0,speed:0.0,turn:0.0,growth_delay:0.0,release_rate:0.0,release_slowdown:1.0,angle:0.0,observed_turn:0.0,forecast_angle:0.0,direction:Point::default(),dynamic:false,path:[Point::default();STEPS+1],envelope:[0.0;STEPS+1],distance:[0.0;STEPS+1],escape:[Point::default();3]}}
+    fn default()->Self {Self {alive:false,radius:0.0,len:0,speed:0.0,turn:0.0,growth_delay:0.0,release_rate:0.0,release_slowdown:1.0,angle:0.0,observed_turn:0.0,forecast_angle:0.0,direction:Point::default(),dynamic:false,flip_at:0,flip_origin:Point::default(),reversal:Reversal::default(),path:[Point::default();STEPS+1],envelope:[0.0;STEPS+1],distance:[0.0;STEPS+1],escape:[Point::default();3]}}
 }
 impl Default for Candidate {
-    fn default()->Self {Self {body_len:0,effects:forecast::Snapshot::default(),kind:2,checked:false,tracks_goal:false,wall_safe:false,wall_first_safe:false,desired:0.0,turn_until:u64::MAX,exit_angle:0.0,angle:0.0,turn_exit:0.0,path:[Point::default();STEPS+1],steps:0,simulated_steps:0,venom_bite:0,score:0.0,venom_goal:None,clearance:0.0,capped:false,area:0,uncertain:false,attack:Attack::default(),replies:0,rush:0.0}}
+    fn default()->Self {Self {flip_head_wins:0,body_len:0,effects:forecast::Snapshot::default(),kind:2,checked:false,tracks_goal:false,wall_safe:false,wall_first_safe:false,desired:0.0,turn_until:u64::MAX,exit_angle:0.0,angle:0.0,turn_exit:0.0,path:[Point::default();STEPS+1],steps:0,simulated_steps:0,venom_bite:0,score:0.0,venom_goal:None,clearance:0.0,capped:false,area:0,uncertain:false,attack:Attack::default(),replies:0,rush:0.0}}
 }
 
 #[derive(Clone, Copy)]
@@ -489,6 +505,7 @@ pub struct DesktopObservation {
     pub safe_ticks:usize, pub horizon:usize, pub continuation:bool, pub continuation_unresolved:bool,
     pub any_first_step:bool, pub next_head:Point, pub rival_next:[Point;MAX_SNAKES],
     pub rival_generation:[u32;MAX_SNAKES],
+    pub flip_situation:u8,
     pub generation:u32, pub mode:u8, pub target:u64, pub goal:Point,
     pub reused_plan:bool, pub retained_drift:f64, pub reach:f64, pub abandon:AbandonReason,
     pub escape_started:bool, pub target_kind:u8,
@@ -510,6 +527,7 @@ pub struct AiController {
     body_cache: [BodyCache;256],
     candidates: Option<Box<[Candidate;CANDIDATES]>>,
     rollout_distance: [f64;STEPS+1],
+    rollout_reversal:Reversal,
     rollout_projection: [f64;STEPS+1],
     rival_necks:[[u16;STEPS+1];MAX_SNAKES],
     rival_bounds:[[TrailBounds;STEPS+1];MAX_SNAKES],
@@ -555,20 +573,29 @@ pub struct AiController {
     motion: [Motion;MAX_SNAKES],
     boosted_motion: [Motion;MAX_SNAKES],
     observed_angles: [f64;MAX_SNAKES],
+    flip_threats:[flip::Threat;MAX_SNAKES],flip_threat_count:usize,
+    flip_holders:u16,
+    flip_field:bool,
+    flip_reserves:[u16;MAX_SNAKES],
+    flip_areas:[flip::AreaCache;MAX_SNAKES*2],
+    flip_profile:[u128;5],
+    #[cfg(feature="desktop-diag")]
+    flip_counts:[u64;24],
     observed_generations: [u32;MAX_SNAKES],
 }
 impl Default for AiController {fn default() -> Self {Self::new()}}
 impl AiController {
     pub fn new() -> Self {
         Self {
+            #[cfg(feature="desktop-diag")] flip_counts:[0;24],
             race_profile:[0;2],
             rival_bounds:[[TrailBounds::default();STEPS+1];MAX_SNAKES],rival_bounds_horizons:[0;MAX_SNAKES],
             #[cfg(feature="desktop-diag")] desktop:[DesktopObservation::default();MAX_SNAKES],
-            #[cfg(test)] reference_queries:false,spatial:Spatial::new(),motion_keys:[None;MAX_SNAKES],candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],rollout_projection:[0.0;STEPS+1],rival_necks:[[0;STEPS+1];MAX_SNAKES],neck_owner:MAX_SNAKES,neck_horizons:[0;MAX_SNAKES],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,wall_circles:[None;64],collision_effects:false,profile:[0;5],forecast_profile:[0;5],strategy_profile:[0;4], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],policy_aggression:100,
+            #[cfg(test)] reference_queries:false,spatial:Spatial::new(),motion_keys:[None;MAX_SNAKES],candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],rollout_reversal:Reversal::default(),rollout_projection:[0.0;STEPS+1],rival_necks:[[0;STEPS+1];MAX_SNAKES],neck_owner:MAX_SNAKES,neck_horizons:[0;MAX_SNAKES],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,wall_circles:[None;64],collision_effects:false,profile:[0;5],forecast_profile:[0;5],strategy_profile:[0;4], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],policy_aggression:100,
             rivals:[Rival::default();MAX_SNAKES],
             #[cfg(test)]
             venom_searches:std::cell::Cell::new(0),opportunity_rivals:Box::new([Rival::default();MAX_SNAKES]),opportunity_mask:0,rival_limits:[[(0.0,0.0);STEPS+1];MAX_SNAKES], simulation_rivals:Some(Box::new([Rival::default();MAX_SNAKES])),item_forecast:forecast::Items::default(),initial_effects:forecast::Timeline::default(),effects:forecast::Timeline::default(),opportunities:forecast::Timeline::default(),look_deltas:[Point::default();MAX_SNAKES],capsule_etas:[[f64::INFINITY;MAX_SNAKES];crate::MAX_ITEMS+1],prism:None,food:[None;MAX_FOOD + crate::MAX_ITEMS+1],
-            tick:u64::MAX,geometry:0,seed:0,rng:0x9e3779b97f4a7c15,urgent_used:0,max_radius:0.0,max_forecast_speed:0.0,phase_sweeps:[0;3],planning_speed:[0.0;MAX_SNAKES],motion:[Motion::default();MAX_SNAKES],boosted_motion:[Motion::default();MAX_SNAKES],observed_angles:[0.0;MAX_SNAKES],observed_generations:[0;MAX_SNAKES]}
+            tick:u64::MAX,geometry:0,seed:0,rng:0x9e3779b97f4a7c15,urgent_used:0,max_radius:0.0,max_forecast_speed:0.0,phase_sweeps:[0;3],planning_speed:[0.0;MAX_SNAKES],motion:[Motion::default();MAX_SNAKES],boosted_motion:[Motion::default();MAX_SNAKES],observed_angles:[0.0;MAX_SNAKES],flip_threats:[flip::Threat::default();MAX_SNAKES],flip_threat_count:0,flip_holders:0,flip_field:false,flip_reserves:[0;MAX_SNAKES],flip_areas:[flip::AreaCache::default();MAX_SNAKES*2],flip_profile:[0;5],observed_generations:[0;MAX_SNAKES]}
     }
     #[cfg(feature="desktop-diag")]
     pub fn desktop_observation(&self,id:usize)->DesktopObservation {self.desktop[id]}
@@ -582,6 +609,8 @@ impl AiController {
     pub fn strategy_profile(&self)->[u128;4] {self.strategy_profile}
     /// Shared capsule ETA preparation, retained capsule/prism race updates.
     pub fn race_profile(&self)->[u128;2] {self.race_profile}
+    /// Tail reserve, opportunity admission (including area), proposed Flip rollout, admission area, follow-through.
+    pub fn flip_profile(&self)->[u128;5] {self.flip_profile}
     pub fn enable_diagnostics(&mut self) { self.diagnostic_enabled = true; }
     pub fn disable_observers(&mut self) {self.diagnostic_enabled=false;self.profile_enabled=false;self.spatial.profile_enabled=false;}
     pub fn decision(&self, id:usize) -> DecisionDiagnostic { self.decisions[id] }
@@ -607,7 +636,15 @@ impl AiController {
             self.rng=0x9e3779b97f4a7c15 ^ (self.seed as u32 as u64).wrapping_mul(0xd1342543de82ef95);
         }
         self.cache_epoch=self.cache_epoch.wrapping_add(1);
-        if self.cache_epoch==0 {self.body_cache.fill(BodyCache::default());self.cache_epoch=1;}
+        if self.cache_epoch==0 {self.body_cache.fill(BodyCache::default());self.flip_areas.fill(flip::AreaCache::default());self.cache_epoch=1;}
+        for flipped in w.snakes().filter(|s|s.alive && s.face.flip_tick!=0 && s.face.flip_tick==w.tick()) {
+            for state in &mut self.states {
+                if state.prey==flipped.id as usize+1 || state.venom_target==flipped.id as usize+1 {
+                    state.prey=0;state.venom_target=0;state.venom_alternative=None;state.track_goal=false;
+                    state.waypoint=None;state.target=0;state.clear_attacks(state.desired);
+                }
+            }
+        }
         self.tick=w.tick(); self.geometry=w.geometry_generation(); self.urgent_used=0;
         self.food.fill(None);self.prism=None;
         for (i,f) in w.foods().enumerate() {
@@ -625,21 +662,32 @@ impl AiController {
         // they reuse target persistence, routing, race and contest handling.
         for (i,item) in w.items().enumerate() {
             self.food[MAX_FOOD+i]=Some(target::TargetFood {id:item.id | target::ITEM_BIT,position:item.position,
-                value:item.kind.base_value(),size:item.radius,vacuum_owner:-1,feast_id:0,kind:crate::FoodKind::Spark,
+                value:item.kind.base_value(),size:item.radius,item_kind:item.kind as u8,vacuum_owner:-1,feast_id:0,kind:crate::FoodKind::Spark,
                 motion_ticks:item.pickable_from_tick.saturating_sub(w.tick()).min(u16::MAX as u64) as u16});
         }
         self.prepare_event_target(w);
+        self.flip_field=w.items().any(|i|i.kind==crate::effects::EffectKind::Flip);
         self.initial_effects=forecast::Timeline::new(w);
         self.neck_owner=MAX_SNAKES;self.opportunity_mask=0;
         self.rival_bounds_horizons.fill(0);
         for r in &mut self.rivals {r.alive=false;r.dynamic=false;}
-        self.max_radius=0.0;self.max_forecast_speed=0.0;self.phase_sweeps.fill(0);
+        self.flip_threat_count=0;self.flip_holders=0;self.flip_reserves.fill(0);self.max_radius=0.0;self.max_forecast_speed=0.0;self.phase_sweeps.fill(0);
         // A fading-in night can slow tail clearance after the 24-tick burst
         // cache. Reserve its darkest known horizon for ordinary and Nova tails.
         let night_reserve=(1.0-0.1*w.world_event.night.max(w.forecast_night(STEPS-1)) as f64)
             /(1.0-0.1*w.world_event.night as f64);
         for s in w.snakes().filter(|s|s.alive) {
             let id=s.id as usize;
+            if s.flags&crate::flags::FLIP_HELD!=0 && s.segments.len()>=2 {
+                self.flip_holders|=1<<id;
+                let n=s.segments.len();let tail=s.segments[n-1].current;let out=w.displacement(s.segments[n-2].current,tail);
+                self.flip_threats[self.flip_threat_count]=flip::Threat {id,tail,out,range2:(s.radius*if s.inventory.windup!=0 {6.0} else {2.0+4.0*(1.0-aggression::level(w))}).powi(2),inner2:(2.0*s.radius).powi(2),observers:Self::flip_observers(w,s,tail)};
+                let threat=&self.flip_threats[self.flip_threat_count];
+                for observer in w.snakes().filter(|o|o.alive && o.id!=s.id && o.segments.len()<n+4) {
+                    if threat.observers&(1<<observer.id)!=0 {self.flip_reserves[observer.id as usize]|=1<<self.flip_threat_count;}
+                }
+                self.flip_threat_count+=1;
+            }
             let key=MotionKey::observed(w,id);
             let refresh=self.motion_keys[id]!=Some(key);
             #[cfg(test)] let refresh=refresh || self.reference_queries;
@@ -661,11 +709,12 @@ impl AiController {
             r.growth_delay=w.tail_growth_delay(id).unwrap()*growth_scale;
             r.release_rate=s.radius*1.18/(release_speed*0.65).max(1.0);
             r.release_slowdown=if w.config().rules==crate::RuleSet::V2 {(self.motion[id].frozen_speed*night_reserve*0.65).max(1.0)/(release_speed*0.65).max(1.0)} else {1.0};
+            r.flip_at=0;r.reversal=Reversal::default();
             r.angle=s.angle;r.forecast_angle=s.angle;r.direction=Point{x:s.angle.cos(),y:s.angle.sin()};
             r.distance[0]=0.0;r.envelope[0]=0.0;
             r.path[0]=s.segments[0].current;
             let id=s.id as usize;
-            let observed_turn=if self.observed_generations[id]==s.generation {
+            let observed_turn=if s.face.flip_tick!=0 && s.face.flip_tick==w.tick() {0.0} else if self.observed_generations[id]==s.generation {
                 normalize_angle(s.angle-self.observed_angles[id]).clamp(-turn*STEP_SECONDS,turn*STEP_SECONDS)
             } else {0.0};
             self.observed_generations[id]=s.generation;self.observed_angles[id]=s.angle;
@@ -694,7 +743,10 @@ impl AiController {
                     let radii=std::array::from_fn::<_,MAX_SNAKES,_>(|id|forecast.radius(w,id,0.0,&self.motion[id],j));
                     forecast.set_radii(|id|radii[id]);
                 }
-                forecast.advance(w,j,|id|Self::forecast_rival(&scratch,&self.rivals,id).path[j],0.0);
+                if forecast.effects.flip_mask!=0 || self.flip_field {
+                    let mut positions=std::array::from_fn(|id|Self::forecast_rival(&scratch,&self.rivals,id).path[j]);
+                    forecast.advance_ordered(w,j,&mut positions,|f,id|Self::reverse_rival(w,&mut scratch,&self.rivals,&self.motion,f,id,j),None,0.0);
+                } else {forecast.advance(w,j,|id|Self::forecast_rival(&scratch,&self.rivals,id).path[j],0.0);}
                 // Reach envelopes change on the pickup movement itself, even
                 // though its new speed applies only on the next movement.
                 let mut changed=forecast.effects.movement_bits();
@@ -728,6 +780,15 @@ impl AiController {
                 let known=forecast::Forecast::empty(self.opportunities);
                 for j in 1..=STEPS {
                     Self::advance_rivals(w,&mut self.opportunity_rivals,&self.motion,&known,j,!certain,None,None);
+                    let mut flips=known.effects.flip_mask & certain;
+                    while flips!=0 {
+                        let id=flips.trailing_zeros() as usize;flips&=flips-1;
+                        if known.effects.flip_steps[id] as usize==j {
+                            self.opportunity_rivals[id].dynamic=true;
+                            Self::reverse_rival(w,&mut self.opportunity_rivals,&self.rivals,&self.motion,&known,id,j);
+                            self.opportunity_rivals[id].dynamic=false;
+                        }
+                    }
                     Self::update_envelopes(w,&mut self.opportunity_rivals,&self.motion,&known,j,!certain,None);
                 }
             }
@@ -774,6 +835,7 @@ impl AiController {
             let motion=&self.motion[id];
             let mut angle=r.angle;
             let mut direction=r.direction;
+            let mut observed_turn=r.observed_turn;
             for j in 1..=STEPS {
                 let (speed,turn)=motion.at(j-1);self.rival_limits[id][j]=(speed,turn);
                 let t=j as f64*STEP_SECONDS;
@@ -781,7 +843,7 @@ impl AiController {
                 let cap=(r.radius*2.0+12.0)*reserve;
                 r.envelope[j]=if r.envelope[j-1]>=cap {cap}
                     else {(speed*t*(turn*t).min(1.2).sin()*0.3*reserve).min(cap)};
-                let desired=angle+r.observed_turn*(1.0-(j-1) as f64/9.0).max(0.0);
+                let desired=angle+observed_turn*(1.0-(j-1) as f64/9.0).max(0.0);
                 let delta=normalize_angle(desired-angle);
                 // Observed curvature is bounded by movement one's turn limit;
                 // later observed deltas decay, but expiry can lower the limit.
@@ -794,6 +856,13 @@ impl AiController {
                 }
                 r.distance[j]=r.distance[j-1]+speed*STEP_SECONDS;
                 r.path[j]=w.canonical_point(Point{x:r.path[j-1].x+direction.x*speed*STEP_SECONDS,y:r.path[j-1].y+direction.y*speed*STEP_SECONDS});
+                if self.initial_effects.flip_steps[id] as usize==j {
+                    let s=w.snake(id).unwrap();let len=w.ai_forecast_len(id,0.0,j-1,None,None);
+                    let radius=motion.radii[(j-1).min(23)];
+                    let (head,heading)=crate::world::flip::forecast_pose(w,s,&r.path[..=j],&r.distance[..=j],len,radius);
+                    r.flip_origin=r.path[j];r.flip_at=j;r.reversal=Reversal {step:j,len,radius,distance:r.distance[j]};
+                    r.path[j]=head;angle=heading;direction=Point{x:angle.cos(),y:angle.sin()};observed_turn=0.0;
+                }
             }
         }
         for j in 1..=STEPS {
@@ -811,9 +880,12 @@ impl AiController {
             if let Some((effects,observed))=baseline {
                 if !observed[id].alive {continue;}
                 if !r.dynamic {
-                    if ((forecast.effects.movement_bits()|effects.movement_bits())&(1<<id)==0) || forecast.effects.same_movement(effects,id,j) {continue;}
+                    if ((forecast.effects.movement_bits()|effects.movement_bits())&(1<<id)==0) || forecast.effects.same_movement(effects,id,j) && forecast.effects.flip_steps[id] as usize!=j {continue;}
                     *r=observed[id];
-                    if j>1 {
+                    if j==1 {
+                        r.forecast_angle=r.angle;
+                        r.direction=Point{x:r.angle.cos(),y:r.angle.sin()};
+                    } else {
                         let direction=w.displacement(r.path[j-2],r.path[j-1]);
                         r.forecast_angle=direction.y.atan2(direction.x);
                         let (sin,cos)=r.forecast_angle.sin_cos();r.direction=Point{x:cos,y:sin};
@@ -834,7 +906,23 @@ impl AiController {
             }
             r.distance[j]=r.distance[j-1]+speed*STEP_SECONDS;
             r.path[j]=w.canonical_point(Point {x:r.path[j-1].x+r.direction.x*speed*STEP_SECONDS,y:r.path[j-1].y+r.direction.y*speed*STEP_SECONDS});
+
         }
+    }
+    fn reverse_rival(w:&World,rivals:&mut [Rival;MAX_SNAKES],observed:&[Rival;MAX_SNAKES],
+        motions:&[Motion;MAX_SNAKES],forecast:&forecast::Forecast,id:usize,j:usize)->Point {
+        let r=&mut rivals[id];
+        if !r.dynamic {
+            *r=observed[id];r.dynamic=true;
+            if r.flip_at==j {r.path[j]=r.flip_origin;}
+        }
+        r.flip_origin=r.path[j];r.flip_at=j;
+        let s=w.snake(id).unwrap();
+        let len=forecast.endpoint_len(w,id,0.0,j);let radius=forecast.radius(w,id,0.0,&motions[id],j);
+        r.reversal=Reversal {step:j,len,radius,distance:r.distance[j]};
+        let (head,angle)=crate::world::flip::forecast_pose(w,s,&r.path[..=j],&r.distance[..=j],len,radius);
+        r.path[j]=head;r.forecast_angle=angle;r.direction=Point{x:angle.cos(),y:angle.sin()};r.observed_turn=0.0;
+        r.len=len;head
     }
     #[inline]
     fn forecast_rival<'a>(scratch:&'a [Rival;MAX_SNAKES],observed:&'a [Rival;MAX_SNAKES],id:usize)->&'a Rival {
@@ -1425,6 +1513,22 @@ impl AiController {
         result
     }
     fn body_query<const BITES:bool,const EFFECTS:bool>(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline,bite_result:&mut Option<(usize,usize)>,start:usize,physical_rivals:Option<&[Rival;MAX_SNAKES]>)->(bool,f64,bool) {
+        if EFFECTS && effects.flip_mask!=0 {
+            self.body_query_flags::<BITES,EFFECTS,true>(w,s,a,b,time,padding,tests,phased,effects,bite_result,start,physical_rivals)
+        } else {
+            self.body_query_flags::<BITES,EFFECTS,false>(w,s,a,b,time,padding,tests,phased,effects,bite_result,start,physical_rivals)
+        }
+    }
+    fn body_query_flags<const BITES:bool,const EFFECTS:bool,const FLIPS:bool>(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline,bite_result:&mut Option<(usize,usize)>,start:usize,physical_rivals:Option<&[Rival;MAX_SNAKES]>)->(bool,f64,bool) {
+        if w.config().rules==crate::RuleSet::V2 {
+            self.body_query_rules::<BITES,EFFECTS,FLIPS,true>(w,s,a,b,time,padding,tests,phased,effects,bite_result,start,physical_rivals)
+        } else {
+            self.body_query_rules::<BITES,EFFECTS,FLIPS,false>(w,s,a,b,time,padding,tests,phased,effects,bite_result,start,physical_rivals)
+        }
+    }
+    // Rules are fixed throughout a query. Resolve once, before the hot record
+    // walk, so Classic/Flip-free queries shed taper and reversal branches.
+    fn body_query_rules<const BITES:bool,const EFFECTS:bool,const FLIPS:bool,const V2:bool>(&self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline,bite_result:&mut Option<(usize,usize)>,start:usize,physical_rivals:Option<&[Rival;MAX_SNAKES]>)->(bool,f64,bool) {
         let phase_step=phase::step(time);
         if phased {return (false,200.0,false);}
         let key=self.spatial.key(w.canonical_point(a));
@@ -1432,10 +1536,10 @@ impl AiController {
         let first=time<=STEP_SECONDS+1e-9;
         let motion=if first {self.spatial.max_motion} else {0.0};
         let ordinary=spatial::query_radius(s.radius+self.max_radius,8.0+padding,1.0,motion);
-        let reach=if w.config().rules==crate::RuleSet::V2 {
+        let reach=if V2 {
             // Full-width contacts bound taper and advancing neck widths. Own
             // first-step margin reaches 2px; later margins are capped by r/4.
-            let contact=crate::world::taper::contact_radius(w.config().rules,s.radius,self.max_radius,false);
+            let contact=crate::world::taper::contact_radius(if V2 {crate::RuleSet::V2} else {crate::RuleSet::Classic},s.radius,self.max_radius,false);
             let margin=if first {2.0} else {1.5+self.max_radius*0.25+padding};
             ordinary.max(spatial::query_radius(contact,margin,if EFFECTS {effects.max_reach_scale(phase_step)} else {1.0},motion))
         } else {ordinary};
@@ -1475,13 +1579,28 @@ impl AiController {
                 let other=encoded/MAX_SEGMENTS;let j=encoded%MAX_SEGMENTS;
                 let same=other==s.id as usize;
                 if EFFECTS && !same && effects.phased(other,phase_step) {continue;}
-                if same && (!w.config().self_collisions || j as f64+neck_advance<10.0) {continue;}
+                let flipped=FLIPS && effects.flip_steps[other]!=0 && phase_step>=effects.flip_steps[other] as usize;
+                let flip_step=if FLIPS {effects.flip_steps[other] as usize} else {0};
+                let physical=physical_rivals.map_or(&self.rivals[other],|scratch|Self::forecast_rival(scratch,&self.rivals,other));
+                let candidate_self=same && physical_rivals.is_some();
+                let reversal=if candidate_self {self.rollout_reversal} else {physical.reversal};
+                // Without the matching reconstruction, retain uncertain samples.
+                let known=flipped && reversal.step==flip_step
+                    && (physical_rivals.is_some() || effects.same_movement(&self.effects,other,flip_step));
+                let body_index=if known {reversal.index(j,self.rivals[other].radius)} else {j as f64};
+                if known && body_index<0.0 {continue;}
+                let advance=if known && same {
+                    let distance=if candidate_self {self.rollout_distance[phase_step.min(STEPS)]} else {physical.distance[phase_step.min(STEPS)]};
+                    (distance-reversal.distance).max(0.0)/(reversal.radius*1.18)
+                } else if flipped {0.0} else {neck_advance};
+                let neck=if flipped && phase_step<effects.flip_steps[other] as usize+6 || !flipped && s.face.flip_grace_ticks as usize>=phase_step {8.0} else {10.0};
+                if same && (!w.config().self_collisions || (!flipped || known) && body_index+advance<neck) {continue;}
                 let r=&self.rivals[other];
                 let seg=w.segments[encoded];let p=seg.current;
                 let ap=w.displacement(a,p);
                 if reserves[other]==0.0 {
-                    let contact=crate::world::taper::contact_radius(w.config().rules,s.radius,r.radius,same);
-                    let margin=if first {if same && w.config().rules==crate::RuleSet::V2 {2.0} else {0.75}}
+                    let contact=crate::world::taper::contact_radius(if V2 {crate::RuleSet::V2} else {crate::RuleSet::Classic},s.radius,r.radius,same);
+                    let margin=if first {if same && V2 {2.0} else {0.75}}
                         else {1.5+(r.speed*STEP_SECONDS*0.35).min(r.radius*0.25)+padding};
                     let scale=if !EFFECTS || same {1.0} else {effects.reach_scale(other,phase_step)};
                     // Match the narrow phase's multiplication/addition order.
@@ -1492,11 +1611,11 @@ impl AiController {
                     || ap.y<min_y-reserve || ap.y>max_y+reserve;
                 #[cfg(test)] let distant=distant && !self.reference_queries;
                 if distant {continue;}
-                if BITES && effects.sever_cut[other]>0 && j>=effects.sever_cut[other] {continue;}
+                if BITES && effects.bite_step[other]<=phase_step && effects.sever_cut[other]>0 && j>=effects.sever_cut[other] {continue;}
                 if BITES && bite.is_some_and(|(victim,cut)|victim==other && j>=cut) {continue;}
                 // 65% of current speed allows for growth, slowing and curved
                 // tails. Current growth adds a finite release delay.
-                let sever=if BITES {effects.sever_cut[other]} else {0};
+                let sever=if BITES && effects.bite_step[other]<=phase_step {effects.sever_cut[other]} else {0};
                 let physical=physical_rivals.map_or(r,|scratch|Self::forecast_rival(scratch,&self.rivals,other));
                 let retained_index=if sever>0 {j as f64+physical.distance[start.min(STEPS)]/(r.radius*1.18)} else {j as f64};
                 // A severed tail advances with the physical trail. Adding a
@@ -1512,7 +1631,8 @@ impl AiController {
                     // original full-width mid-body. Keeping its old width
                     // rejected safe strikes against a phantom large stump.
                     crate::world::taper::body_radius(r.radius,retained_index,sever)
-                } else if w.config().rules==crate::RuleSet::V2 {
+                } else if flipped {r.radius}
+                else if V2 {
                     // Advancing an old neck sample may widen it; retain the
                     // maximum width until it has passed the full-width band.
                     if (j as f64)<0.07*r.len.saturating_sub(1).max(1) as f64 {
@@ -1523,10 +1643,10 @@ impl AiController {
                         crate::world::taper::span_radius(r.radius,j as f64/scale,(j as f64+advance)/scale)
                     } else {r.radius*self.spatial.widths[encoded]}
                 } else {r.radius};
-                let physical_contact=crate::world::taper::contact_radius(w.config().rules,s.radius,body,same);
+                let physical_contact=crate::world::taper::contact_radius(if V2 {crate::RuleSet::V2} else {crate::RuleSet::Classic},s.radius,body,same);
                 // Half a tick's motion and a small radius reserve protect the
                 // first swept tick against segments that shift along corners.
-                let margin=if time<=STEP_SECONDS+1e-9 {if same && w.config().rules==crate::RuleSet::V2 {0.75+1.25*body/r.radius} else {0.75}} else {1.5+(r.speed*STEP_SECONDS*0.35).min(r.radius*0.25)+padding};
+                let margin=if time<=STEP_SECONDS+1e-9 {if same && V2 {0.75+1.25*body/r.radius} else {0.75}} else {1.5+(r.speed*STEP_SECONDS*0.35).min(r.radius*0.25)+padding};
                 let scale=if !EFFECTS || same {1.0} else {effects.reach_scale(other,phase_step)};
                 let threshold=physical_contact*scale;
                 let margin=margin*scale;
@@ -1543,13 +1663,13 @@ impl AiController {
                 clearance=clearance.min(d.sqrt()-threshold);
                 if d<spatial::query_radius(threshold,margin,1.0,0.0).powi(2) {
                     let effect=effects.at(s.id as usize,phase_step);
-                    let immunity=if effects.bite_step[other]>0 {60usize.saturating_sub(phase_step-effects.bite_step[other]) as u16}
+                    let immunity=if effects.bite_step[other]>0 && effects.bite_step[other]<=phase_step {60usize.saturating_sub(phase_step-effects.bite_step[other]) as u16}
                         else {w.faces[other].bite_immunity_ticks.saturating_sub(phase_step.saturating_sub(1) as u16)};
-                    let len=if effects.sever_cut[other]>0 {effects.sever_cut[other]} else {r.len};
+                    let len=if sever>0 {sever} else {r.len};
                     // One charge can detach only one victim's rear body. Keep
                     // finding its deepest contact, but all other bodies stay lethal.
-                    if BITES && bite.is_none_or(|(victim,_)|victim==other)
-                        && crate::world::venom::bite_eligible(w.config().rules,effect.kind,effect.ticks,s.id as usize,other,j,len,immunity,effects.phased(other,phase_step)) {
+                    if BITES && !flipped && bite.is_none_or(|(victim,_)|victim==other)
+                        && crate::world::venom::bite_eligible(if V2 {crate::RuleSet::V2} else {crate::RuleSet::Classic},effect.kind,effect.ticks,s.id as usize,other,j,len,immunity,effects.phased(other,phase_step)) {
                         // Surge widens avoidance, never the mechanics bite disk.
                         let cut=if first { (d<physical_contact*physical_contact).then_some(j) }
                             else {self.venom_physical_bite(w,s,other,j,a,b,start.min(phase_step-1),phase_step,effects,physical_rivals.map_or(r,|scratch|Self::forecast_rival(scratch,&self.rivals,other)))};
@@ -1576,7 +1696,7 @@ impl AiController {
         self.cached_body_blocked_phase_flags::<true>(w,s,a,b,time,padding,tests,phased,effects)
     }
     fn cached_body_blocked_phase_flags<const EFFECTS:bool>(&mut self,w:&World,s:SnakeView<'_>,a:Point,b:Point,time:f64,padding:f64,tests:&mut usize,phased:bool,effects:&forecast::Timeline)->(bool,f64,bool) {
-        if effects.release_uncacheable() || (EFFECTS && effects.may_have(s.id as usize,crate::effects::EffectKind::Venom)) {
+        if effects.flip_mask!=0 || effects.release_uncacheable() || (EFFECTS && effects.may_have(s.id as usize,crate::effects::EffectKind::Venom)) {
             return self.body_blocked_phase(w,s,a,b,time,padding,tests,phased,effects);
         }
         let hash=a.x.to_bits().wrapping_mul(0x9e3779b97f4a7c15)^a.y.to_bits().rotate_left(23)
@@ -1605,7 +1725,7 @@ impl AiController {
         candidate
     }
     fn candidate_mask(&self,w:&World,id:usize,c:&Candidate)->u16 {
-        c.effects.mask(w,id,c.steps.max(1))
+        c.effects.mask(w,id,c.steps)
     }
     fn candidate_rush(w:&World,s:SnakeView<'_>,state:State,kind:usize,attack:Attack)->f64 {
         if kind==11 {0.0} else if kind==12 {
@@ -1689,6 +1809,21 @@ impl AiController {
         result
     }
     fn rollout_simulation<const ITEMS:bool,const EFFECTS:bool>(&mut self,w:&World,s:SnakeView<'_>,state:State,kind:usize,horizon:usize,c:&mut Candidate,rivals:&mut [Rival;MAX_SNAKES]) {
+        // A dormant held Flip cannot alter a rollout. Compile out endpoint
+        // and reversed-trail bookkeeping unless an activation is possible.
+        let flips=EFFECTS && (self.effects.flip_mask!=0 || self.initial_effects.flip_mask!=0
+            || state.use_slot!=0 && s.inventory.kinds[state.use_slot as usize-1]==6
+            || ITEMS && self.flip_field);
+        #[cfg(test)] let flips=flips || self.reference_queries;
+        if flips {self.rollout_simulation_flips::<ITEMS,EFFECTS,true>(w,s,state,kind,horizon,c,rivals);}
+        else {self.rollout_simulation_flips::<ITEMS,EFFECTS,false>(w,s,state,kind,horizon,c,rivals);}
+    }
+    fn rollout_simulation_flips<const ITEMS:bool,const EFFECTS:bool,const FLIPS:bool>(&mut self,w:&World,s:SnakeView<'_>,state:State,kind:usize,horizon:usize,c:&mut Candidate,rivals:&mut [Rival;MAX_SNAKES]) {
+        // Reference queries force reversed-trail branches even without any
+        // possible activation; keep their ordinary cached pickup semantics.
+        #[cfg(test)] let ordered_flips=FLIPS && (self.effects.flip_mask!=0 || self.initial_effects.flip_mask!=0
+            || state.use_slot!=0 && s.inventory.kinds[state.use_slot as usize-1]==6 || ITEMS && self.flip_field);
+        #[cfg(not(test))] let ordered_flips=FLIPS;
         let forecast_clock=self.profile_enabled.then(std::time::Instant::now);
         let proposed=if kind==1 {state.attack} else if kind==7 || kind==8 {state.attack_options[kind-7]} else {Attack::default()};
         let attack=if self.attack_usable(w,s,state,proposed) {proposed} else {Attack::default()};
@@ -1706,6 +1841,7 @@ impl AiController {
         // Reset metadata only. Every path/distance entry that can be read is
         // overwritten by this rollout; clearing the unused horizon for every
         // candidate used to stream hundreds of KB of zeros per snake/tick.
+        c.flip_head_wins=0;self.rollout_reversal=Reversal::default();
         c.body_len=if w.config().rules==crate::RuleSet::V2 {motion.final_len} else {s.segments.len()};
         c.kind=kind;c.checked=false;c.wall_safe=false;c.wall_first_safe=false;c.tracks_goal=tracks_goal;c.desired=0.0;
         c.turn_until=match kind {1|12=>state.turn_until,7|8=>w.tick()+16,9|10=>w.tick()+32,_=>u64::MAX};
@@ -1730,6 +1866,7 @@ impl AiController {
         let mut rotation=(turn*STEP_SECONDS).sin_cos();
         self.rollout_distance[0]=0.0;self.rollout_projection[0]=0.0;
         let mut checked=0;
+        let mut flip_at=0;
         let mut self_bounds=TrailBounds::point(c.path[0]);let mut self_bounds_horizon=0;
         let mut max_curve=if w.config().rules==crate::RuleSet::V2 {motion.max_curve*pickup_speed_scale.powi(2)} else if attack.valid {let limits=w.motion_limits(s.id as usize,attack.burst).unwrap();
             (limits.0*limits.1).max(crossing_limits.0*crossing_limits.1)} else {speed*turn};
@@ -1747,7 +1884,18 @@ impl AiController {
                 ordinary.max(spatial::query_radius((s.radius+r.radius)*0.82,r.radius*2.0+15.0+curvature,
                     1.6,(maximum_speed+rival_motion.max_speed*rival_scale)*horizon as f64*STEP_SECONDS))
             } else {ordinary};
-            if w.distance_squared(c.path[0],r.path[0])<bound*bound {near|=1<<other;}
+            // A full-inventory field pickup can swap either participant
+            // without a held Flip. The ordinary head-distance bound must
+            // include those possible body-length jumps before narrow sweeps.
+            let reversal=if FLIPS {
+                let own=if forecast.effects.flip_steps[s.id as usize]!=0 || ITEMS && self.flip_field {s.radius*1.18*s.segments.len().saturating_sub(1) as f64} else {0.0};
+                let other=if forecast.effects.flip_steps[other]!=0 || ITEMS && self.flip_field {r.radius*1.18*r.len.saturating_sub(1) as f64} else {0.0};
+                own+other
+            } else {0.0};
+            let bound=bound+reversal;
+            if w.distance_squared(c.path[0],r.path[0])<bound*bound
+                || FLIPS && forecast.effects.flip_steps[s.id as usize]!=0 && w.distance_squared(s.segments[s.segments.len()-1].current,r.path[0])<bound*bound
+                || self.flip_holders&(1<<other)!=0 && w.snake(other).is_some_and(|o|w.distance_squared(c.path[0],o.segments[o.segments.len()-1].current)<bound*bound) {near|=1<<other;}
         }
         if self.neck_owner!=s.id as usize {self.neck_owner=s.id as usize;self.neck_horizons.fill(0);}
         let mut missing=near;
@@ -1802,7 +1950,7 @@ impl AiController {
                 Self::advance_spiral(w,&mut trajectory_state,c.path[j-1]);
                 if state.coil_radius>0.0 && (trajectory_state.coil_radius<=0.0 || speed*Self::spiral_curvature(trajectory_state.coil_radius,trajectory_state.coil_pitch)>turn) {break;}
             }
-            let desired=if attack.valid {attack_control.0} else if tracks_goal {
+            let desired=if flip_at!=0 {c.angle} else if attack.valid {attack_control.0} else if tracks_goal {
                 let goal=Self::trajectory_goal(w,trajectory_state,c.path[j-1]);
                 let d=w.displacement(c.path[j-1],goal);
                 if reached || (state.venom_target!=0 && forecast.effects.consumed_at[s.id as usize]>0) || (state.prey!=0 && defeated&(1<<(state.prey-1))!=0) {c.angle} else {d.y.atan2(d.x)}
@@ -1822,16 +1970,32 @@ impl AiController {
                 c.turn_exit=c.angle;
                 if kind!=1 && kind!=12 && kind!=9 && kind!=10 {c.exit_angle=c.angle;}
             }
-            let p=w.canonical_point(Point {x:c.path[j-1].x+direction.x*speed*STEP_SECONDS,
+            let mut p=w.canonical_point(Point {x:c.path[j-1].x+direction.x*speed*STEP_SECONDS,
                 y:c.path[j-1].y+direction.y*speed*STEP_SECONDS});
             c.path[j]=p;c.simulated_steps=j;
-            let projection=(p.x-c.path[0].x)*forward.x+(p.y-c.path[0].y)*forward.y;
-            self.rollout_projection[j]=self.rollout_projection[j-1].max(projection);
-            if !reached && target.is_some_and(|(target,contact)|contact.with_guard(state.guarding).reached_with(w.distance_squared(p,target),forecast.effects.before(s.id as usize,j),j)) {reached=true;}
+            // Every constructed first movement supplies a fallback heading,
+            // including a conservative inventory/geometry cap below.
+            c.checked=true;
             let participant_clock=(ITEMS && self.profile_enabled).then(std::time::Instant::now);
-            let changed_movement=ITEMS && forecast.movement_changed() & !(1<<s.id)!=0;
+            let changed_movement=ITEMS && (forecast.movement_changed() & !(1<<s.id)!=0
+                || FLIPS && (forecast.effects.flip_steps.iter().enumerate().any(|(id,&at)|id!=s.id as usize && at as usize==j)
+                    || self.effects.flip_steps.iter().enumerate().any(|(id,&at)|id!=s.id as usize && at as usize==j)));
             if changed_movement {Self::advance_rivals(w,rivals,&self.motion,&forecast,j,1<<s.id,Some((&self.effects,&self.rivals)),None);}
-            if ITEMS && forecast.has_items() {
+            if ordered_flips && EFFECTS {
+                self.rollout_distance[j]=self.rollout_distance[j-1]+speed*STEP_SECONDS;
+                let mut positions=std::array::from_fn(|id|if id==s.id as usize {p} else {Self::forecast_rival(rivals,&self.rivals,id).path[j]});
+                let radii=std::array::from_fn::<_,MAX_SNAKES,_>(|id|forecast.radius(w,id,if id==s.id as usize {rush} else {0.0},if id==s.id as usize {&motion} else {&self.motion[id]},j));
+                forecast.set_radii(|id|radii[id]);
+                forecast.advance_ordered(w,j,&mut positions,|f,id| {
+                    if id!=s.id as usize {return Self::reverse_rival(w,rivals,&self.rivals,&self.motion,f,id,j);}
+                    let len=f.endpoint_len(w,id,rush,j);
+                    let (head,angle)=crate::world::flip::forecast_pose(w,s,&c.path[..=j],&self.rollout_distance[..=j],len,radii[id]);
+                    self.rollout_reversal=Reversal {step:j,len,radius:radii[id],distance:self.rollout_distance[j]};
+                    c.path[j]=head;c.angle=angle;direction=Point{x:angle.cos(),y:angle.sin()};
+                    flip_at=j;self_bounds=TrailBounds::point(head);self_bounds_horizon=j;head
+                },ITEMS.then_some(&self.item_forecast),maximum_speed.max(self.max_forecast_speed*pickup_speed_scale)*4.0*STEP_SECONDS);
+                p=positions[s.id as usize];
+            } else if ITEMS && forecast.has_items() {
                 let radius=forecast.radius(w,s.id as usize,rush,&motion,j);
                 forecast.set_radius(s.id as usize,radius);
                 for (id,_) in rivals.iter().enumerate().filter(|(_,r)|r.dynamic) {
@@ -1845,6 +2009,16 @@ impl AiController {
             }
             if changed_movement {Self::update_envelopes(w,rivals,&self.motion,&forecast,j,1<<s.id,Some((&self.effects,&self.rivals)));}
             if let Some(t)=participant_clock {self.forecast_profile[4]+=t.elapsed().as_nanos();}
+            // Multiple full-inventory contacts can reverse one owner again.
+            // A single retained-trail origin cannot certify that continuation.
+            if FLIPS && EFFECTS && forecast.effects.flip_conflict_at!=0 && j>=forecast.effects.flip_conflict_at as usize {c.capped=true;break;}
+            // Indexed cut/growth geometry cannot be certified by the original
+            // retained trail. Cap this combination for every participant.
+            if FLIPS && EFFECTS && (0..MAX_SNAKES).any(|id|forecast.effects.flip_steps[id] as usize==j
+                && (forecast.effects.sever_cut[id]!=0 || w.forecast_growth_active(id))) {c.capped=true;break;}
+            let projection=(p.x-c.path[0].x)*forward.x+(p.y-c.path[0].y)*forward.y;
+            self.rollout_projection[j]=self.rollout_projection[j-1].max(projection);
+            if !reached && target.is_some_and(|(target,contact)|contact.with_guard(state.guarding).reached_with(w.distance_squared(p,target),forecast.effects.before(s.id as usize,j),j)) {reached=true;}
             let movement_event=forecast.effects.movement_event(j);
             if movement_event && forecast.effects.movement_bits()&(1<<s.id)!=0 {
                 c.body_len=forecast.body_len(w,s.id as usize,rush,j);
@@ -1856,9 +2030,6 @@ impl AiController {
             let surge_changed=previous_surge!=(if EFFECTS {forecast.effects.surge_bits(j)} else {0});previous_surge=if EFFECTS {forecast.effects.surge_bits(j)} else {0};
             if phased {phase_start=j;}
 
-            // Even a first-step collision is checked. A tactic feasibility
-            // rejection before constructing that step is not a fallback.
-            c.checked=true;
             self.rollout_distance[j]=self.rollout_distance[j-1]+speed*STEP_SECONDS;
             let cfg=w.config();
             if !cfg.deadly_walls {c.wall_first_safe=true;}
@@ -1891,11 +2062,12 @@ impl AiController {
             // Finish the old stage before changing speed/turn. Every consumer
             // uses this same interval, including head and deposited-self sweeps.
             let bite_exit=forecast.effects.consumed_at[s.id as usize];
-            let sweep=(bite_exit>0 && j<=bite_exit+3) || ((EFFECTS && forecast.effects.may_have(s.id as usize,crate::effects::EffectKind::Venom)) && forecast.effects.at(s.id as usize,j).is(crate::effects::EffectKind::Venom)) || approaching_phase || movement_event || rival_phase_changed || surge_changed || phase_changed || j==1 || j%4==0 || j==horizon || (attack.valid && w.tick()+j as u64==attack.turn_at)
+            let sweep=(flip_at!=0 && j<flip_at+6) || (bite_exit>0 && j<=bite_exit+3) || ((EFFECTS && forecast.effects.may_have(s.id as usize,crate::effects::EffectKind::Venom)) && forecast.effects.at(s.id as usize,j).is(crate::effects::EffectKind::Venom)) || approaching_phase || movement_event || rival_phase_changed || surge_changed || phase_changed || j==1 || j%4==0 || j==horizon || (attack.valid && w.tick()+j as u64==attack.turn_at)
                 || (w.config().rules==crate::RuleSet::V2 && forecast.motion(w,s.id as usize,rush,&motion,j+1)!=(speed,turn))
                 || (if EFFECTS {forecast.effects.phase_bits(j+1)} else {0})!=previous_bits || (if EFFECTS {forecast.effects.surge_bits(j+1)} else {0})!=previous_surge
                 || self.phase_sweeps[j/64]&(1u64<<(j%64))!=0;
-            let from_index=if phase_changed || rival_phase_changed {j-1} else {checked};
+            let sweep_start=if phase_changed || rival_phase_changed {j-1} else {checked};
+            let from_index=if flip_at==j {j} else {sweep_start};
             let span=(j-from_index) as f64*STEP_SECONDS;
             // Tracking strikes continue straight after spending their charge.
             // Applying a maximum-turn sagitta to that known straight exit made
@@ -1909,13 +2081,18 @@ impl AiController {
             if sweep {
                 let from=c.path[from_index];
                 checked=j;
-                let (hit,clearance,capped)=if EFFECTS && forecast.effects.may_have(s.id as usize,crate::effects::EffectKind::Venom) {
+                let (hit,clearance,capped)=if EFFECTS && (FLIPS || forecast.effects.may_have(s.id as usize,crate::effects::EffectKind::Venom)) {
                     self.body_blocked_effects_from::<true>(w,s,from,p,t,padding,&mut tests,phased,&mut forecast.effects,from_index,Some(rivals))
                 } else {self.cached_body_blocked_phase_flags::<EFFECTS>(w,s,from,p,t,padding,&mut tests,phased,&forecast.effects)};
                 c.clearance=c.clearance.min(clearance); c.capped|=capped;
                 if hit {break;}
+                if FLIPS && EFFECTS && forecast.effects.sever_cut.iter().enumerate().any(|(id,&cut)|cut!=0
+                    && forecast.effects.flip_steps[id]!=0 && forecast.effects.flip_steps[id] as usize<=horizon) {c.capped=true;break;}
             }
-            let mut hit=false;
+            let tail_clock=(self.profile_enabled && sweep && self.flip_reserves[s.id as usize]!=0).then(std::time::Instant::now);
+            let mut hit=sweep && self.flip_reserves[s.id as usize]!=0 && self.flip_tail_sweep(w,s,c.path[from_index],p,defeated,j,&forecast.effects);
+            if let Some(c)=tail_clock {self.flip_profile[0]+=c.elapsed().as_nanos();}
+            if hit {break;}
             let mut active=if sweep && (j==1 || state.revise_opponents) {near & !defeated} else {0};
             while active!=0 {
                 let other=active.trailing_zeros() as usize;active&=active-1;
@@ -1930,16 +2107,25 @@ impl AiController {
                 let envelope_scale=if dynamic {1.0} else {(if EFFECTS {forecast.effects.reach_scale(other,j)} else {1.0})/(if EFFECTS {self.effects.reach_scale(other,j)} else {1.0})};
                 let (rival_speed,rival_turn)=if dynamic {forecast.motion(w,other,0.0,&self.motion[other],j)} else {self.rival_limits[other][j]};
                 let envelope=r.envelope[j]*envelope_scale+padding+rival_speed*rival_turn*span*span/8.0;
-                let head_near=w.distance_squared(p,r.path[j])<spatial::query_radius(reach,envelope+3.0,1.0,self.rollout_distance[j]-self.rollout_distance[from_index]+r.distance[j]-r.distance[from_index]).powi(2);
-                if !winning && head_near && w.segments_distance_squared(c.path[from_index],p,r.path[from_index],r.path[j])<(reach+envelope+3.0).powi(2) {hit=true;break;}
-                let lethal_head=winning && head_near && Self::head_contact(w,&c.path,&r.path,from_index.max(phase_start).min(j-1),j,physical_reach);
+                let rival_flip=if FLIPS {forecast.effects.flip_steps[other] as usize} else {0};
+                // A swapped head exists only on this completion movement. The
+                // other participant keeps its final movement sweep; neither
+                // starts from the other's discontinuity or an earlier tick.
+                let own_from=if rival_flip==j && flip_at!=j {j-1} else {from_index};
+                let rival_start=if flip_at==j {j-1} else {sweep_start};
+                let rival_from=if rival_flip!=0 && rival_flip<=j {rival_start.max(rival_flip)} else {rival_start};
+                let head_near=w.distance_squared(p,r.path[j])<spatial::query_radius(reach,envelope+3.0,1.0,self.rollout_distance[j]-self.rollout_distance[own_from]+r.distance[j]-r.distance[rival_from]).powi(2);
+                if !winning && head_near && w.segments_distance_squared(c.path[own_from],p,r.path[rival_from],r.path[j])<(reach+envelope+3.0).powi(2) {hit=true;break;}
+                let lethal_head=winning && head_near && (Self::head_contact(w,&c.path,&r.path,own_from.max(rival_from).max(phase_start).min(j),j,physical_reach)
+                    || (flip_at==j || rival_flip==j) && w.segments_distance_squared(c.path[own_from],p,r.path[rival_from],r.path[j])<physical_reach*physical_reach);
                 // Future rival neck deposition is lethal even for a winner.
                 // Skip the last head-sized piece: that is the head contest.
-                if sweep && r.distance[j]>physical_reach+5.0 && w.distance_squared(p,r.path[0])<spatial::query_radius(reach,2.0,1.0,r.distance[j]+self.rollout_distance[j]-self.rollout_distance[from_index]).powi(2) {
+                if sweep && (r.distance[j]>physical_reach+5.0 || FLIPS && r.flip_at!=0 && r.flip_at<=j) && (FLIPS && r.flip_at!=0 && r.flip_at<=j || w.distance_squared(p,r.path[0])<spatial::query_radius(reach,2.0,1.0,r.distance[j]+self.rollout_distance[j]-self.rollout_distance[from_index]).powi(2)) {
                     // Actual forecast travel, including pickup/expiry speed
                     // changes, determines the exempt head-sized neck piece.
                     let newest=r.distance[j]-(physical_reach+5.0);
                     let neck_end=if dynamic {r.distance[..j].partition_point(|&distance|distance<=newest).saturating_sub(1)} else {self.rival_necks[other][j] as usize};
+                    let neck_end=if FLIPS && r.flip_at!=0 && r.flip_at<=j {neck_end.max(r.flip_at)} else {neck_end};
                     // All candidates and hunters see the same observed rival
                     // trail. Build its prefix bounds once per tick, on demand.
                     // The full-width reach bounds every tapered edge below;
@@ -1959,26 +2145,43 @@ impl AiController {
                     #[cfg(test)] let separated=separated && !self.reference_queries;
                     if !separated {for k in (1..=neck_end).step_by(3) {
                         let end=(k+2).min(neck_end);
-                        // Full-width broad phase before any tapered tail powf.
-                        let reserve=spatial::query_radius(reach,2.0,1.0,self.rollout_distance[j]-self.rollout_distance[from_index]+r.distance[end]-r.distance[k-1]);
-                        if w.distance_squared(p,r.path[end])>=reserve*reserve {continue;}
-                        let reach=if w.config().rules==crate::RuleSet::V2 {
-                            let length=r.len.saturating_sub(1).max(1) as f64*r.radius*1.18;
-                            let age=r.distance[j]-r.distance[end];
-                            if age>length {continue;}
-                            let body=crate::world::taper::span_radius(r.radius,
-                                age/length,(r.distance[j]-r.distance[k-1])/length);
-                            crate::world::taper::contact_radius(w.config().rules,s.radius,body,false)
-                        } else {reach};
-                        let reach=reach*(if EFFECTS {forecast.effects.reach_scale(other,j)} else {1.0});
-                        if w.distance_squared(p,r.path[end])<spatial::query_radius(reach,2.0,1.0,self.rollout_distance[j]-self.rollout_distance[from_index]+r.distance[end]-r.distance[k-1]).powi(2)
-                            && w.segments_distance_squared(c.path[from_index],p,r.path[k-1],r.path[end])<(reach+2.0).powi(2) {hit=true;break;}
+                        let flip=if FLIPS && r.flip_at<=j {r.flip_at} else {0};
+                        // Split at the swap, retaining movement on both sides.
+                        // flip_origin is the old head after its final movement;
+                        // path[flip] is the new head, with no connecting edge.
+                        let split=flip!=0 && k<=flip && flip<=end;
+                        let spans=if split {[(k-1,flip),(flip,end)]} else {[(k-1,end),(end,end)]};
+                        for (start,end) in spans.into_iter().take(if split {2} else {1}) {
+                            if start==end {continue;}
+                            let a=r.path[start];
+                            let b=if FLIPS && end==flip && start<flip {r.flip_origin} else {r.path[end]};
+                            let reserve=spatial::query_radius(reach,2.0,1.0,self.rollout_distance[j]-self.rollout_distance[from_index]+r.distance[end]-r.distance[start]);
+                            if w.distance_squared(p,b)>=reserve*reserve {continue;}
+                            let reach=if w.config().rules==crate::RuleSet::V2 {
+                                let length=r.len.saturating_sub(1).max(1) as f64*r.radius*1.18;
+                                let age=r.distance[j]-r.distance[end];
+                                // Pre-swap deposition becomes the new tail;
+                                // its forward age cannot prove tail clearance.
+                                if age>length && !(FLIPS && flip!=0 && end<=flip) {continue;}
+                                let body=if FLIPS && flip!=0 && end<=flip {r.radius} else {crate::world::taper::span_radius(r.radius,
+                                    age/length,(r.distance[j]-r.distance[start])/length)};
+                                crate::world::taper::contact_radius(w.config().rules,s.radius,body,false)
+                            } else {reach};
+                            let reach=reach*(if EFFECTS {forecast.effects.reach_scale(other,j)} else {1.0});
+                            if w.distance_squared(p,b)<spatial::query_radius(reach,2.0,1.0,self.rollout_distance[j]-self.rollout_distance[from_index]+r.distance[end]-r.distance[start]).powi(2)
+                                && w.segments_distance_squared(c.path[from_index],p,a,b)<(reach+2.0).powi(2) {hit=true;break;}
+                        }
+                        if hit {break;}
                     }}
                 }
                 if hit {break;}
                 // Check the deposited neck before dropping later geometry:
                 // an earlier body contact cannot be rescued by a later kill.
-                if lethal_head {defeated|=1<<other;}
+                if lethal_head {
+                    if flip_at!=0 && j<=flip_at+16 {c.flip_head_wins|=1<<other;}
+                    defeated|=1<<other;
+                    if EFFECTS && flip_at!=0 {forecast.defeat_after(other,j);}
+                }
             }
             if hit {break;}
             if w.config().self_collisions && !phased {
@@ -1986,7 +2189,7 @@ impl AiController {
                     (s.radius*1.18*10.0/(if attack.valid || w.config().rules==crate::RuleSet::V2 {maximum_speed} else {speed})/STEP_SECONDS).ceil() as usize
                 } else {self_neck_age};
                 #[cfg(not(test))] let age=self_neck_age;
-                if sweep && j>age {
+                if sweep && j>age+flip_at {
                     let full=s.radius*1.48+3.0+max_curve*(4.0*STEP_SECONDS).powi(2)/8.0;
                     let from=c.path[from_index];
                     let from_projection=(from.x-c.path[0].x)*forward.x+(from.y-c.path[0].y)*forward.y;
@@ -2006,7 +2209,7 @@ impl AiController {
                         separated=self_bounds.separated(from,p,full+1.0);
                     }
                     #[cfg(test)] let separated=separated && !self.reference_queries;
-                    if !separated {for k in (0..j-age).step_by(3) {
+                    if !separated {for k in (flip_at..j-age).step_by(3) {
                         let end=(k+3).min(j-age);
                         if self.rollout_distance[j]-self.rollout_distance[end]<s.radius*1.18*10.0 {continue;}
                         let reserve=spatial::query_radius(full,0.0,1.0,self.rollout_distance[j]-self.rollout_distance[from_index]+self.rollout_distance[end]-self.rollout_distance[k]);
@@ -2183,10 +2386,17 @@ impl Controller for AiController {
         let intelligence=(w.config().intelligence/100.0).clamp(0.0,1.0);
         let mut state=self.states[id];
         state.use_slot=0;
-        if state.generation!=s.generation {
-            state=State {generation:s.generation,desired:s.angle,turn_until:u64::MAX,exit_angle:s.angle,last_angle:s.angle,
+        if state.generation!=s.generation || (s.face.flip_tick!=0 && self.tick<=s.face.flip_tick && state.last_flip!=s.face.flip_tick) {
+            let previous=state;
+            state=State {last_flip:s.face.flip_tick,generation:s.generation,desired:s.angle,turn_until:u64::MAX,exit_angle:s.angle,last_angle:s.angle,
                 goal:w.canonical_point(Point{x:s.segments[0].current.x+s.angle.cos()*350.0,y:s.segments[0].current.y+s.angle.sin()*350.0}),
                 best_distance:f64::MAX,debug:DebugInfo {generation:s.generation,..DebugInfo::default()},..State::default()};
+            if previous.generation==s.generation && s.face.flip_tick==previous.flip_request_tick+5
+                && (previous.flip_prey!=0 && previous.flip_situation==2 || previous.flip_situation==3) {
+                state.flip_situation=previous.flip_situation;state.flip_prey=previous.flip_prey;
+                state.flip_prey_generation=previous.flip_prey_generation;state.flip_goal=previous.flip_goal;
+                state.flip_until=w.tick()+30;
+            }
         }
         #[cfg(feature="desktop-diag")]
         let mut observation=DesktopObservation {generation:s.generation,..Default::default()};
@@ -2219,7 +2429,7 @@ impl Controller for AiController {
         state.last_angle=s.angle;
         // Guard turns are intentional just like coils. Do not carry their
         // accumulated rotation into the direct approach when the guard ends.
-        if state.guarding || state.vulturing || state.venom_target!=0 || state.venom_standoff || planned_pounce
+        if s.inventory.windup!=0 || s.face.flip_tick!=0 && w.tick()<s.face.flip_tick+30 || state.guarding || state.vulturing || state.venom_target!=0 || state.venom_standoff || planned_pounce
             || (aggression::bold(w)>0.0 && (state.prey!=0 || (state.target!=0 && w.tick().saturating_sub(state.last_progress)<30))) {state.turn_accum=0.0;}
         else if turned.abs()<0.015 {state.turn_accum*=0.90;}
         else if turned*state.turn_accum<0.0 {state.turn_accum=turned;}
@@ -2293,7 +2503,10 @@ impl Controller for AiController {
         // Acquisition, expiry and moving bite points cannot wait for a food
         // strategy slot. Holder work is bounded and absent on ordinary ticks.
         if s.effect_kind==4 || state.venom_target!=0 {self.venom_tactics_cached(w,s,&mut state,&mut venom);}
-        state.rush=self.rush_for(w,s,state);
+        let follow_clock=(self.profile_enabled && state.flip_until!=0).then(std::time::Instant::now);
+        self.flip_followup(w,s,&mut state);
+        if let Some(c)=follow_clock {self.flip_profile[4]+=c.elapsed().as_nanos();}
+        state.rush=if state.flip_until>w.tick() {0.0} else {self.rush_for(w,s,state)};
         self.planning_speed[id]=w.motion_limits(id,state.rush).unwrap().0;
         // Equal safety coverage at every IQ. Wall-turn viability separately
         // catches inevitable wall hits beyond this fixed cost bound.
@@ -2314,6 +2527,7 @@ impl Controller for AiController {
         if !strategic && (candidates[1].steps<horizon || (state.target==0 && state.prey==0 && w.tick().saturating_sub(state.last_strategy)>6)) && self.urgent_used<URGENT_QUOTA {
             self.urgent_used+=1;strategic=true;
             self.strategy_with_venom(w,s,&mut state,intelligence,&mut venom);
+            self.flip_followup(w,s,&mut state);
             state.rush=self.rush_for(w,s,state);
             self.planning_speed[id]=w.motion_limits(id,state.rush).unwrap().0;
             self.rollout_into(w,s,state,1,horizon,&mut candidates[1]);
@@ -2527,7 +2741,7 @@ impl Controller for AiController {
             let objective=self.target_food(state);
             observation.target_kind=objective.map_or(0,|f|if f.id & target::ITEM_BIT!=0 {1} else if matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed) {2} else {0});
             observation.distance=w.distance_squared(s.segments[0].current,objective.map_or(state.goal,|f|f.position)).sqrt();
-            observation.turn_accum=state.turn_accum;observation.tracking=state.track_goal;
+            observation.flip_situation=state.flip_situation;observation.turn_accum=state.turn_accum;observation.tracking=state.track_goal;
             let d=w.displacement(s.segments[0].current,state.goal);
             observation.target_bearing=normalize_angle(d.y.atan2(d.x)-s.angle);
             observation.mode=if w.tick()<state.orbit_until {1} else if w.tick()<state.escape_until {2}
@@ -2539,6 +2753,7 @@ impl Controller for AiController {
             self.desktop[id]=observation;
         }
         self.choose_inventory(w,s,&mut state,&candidates[best],horizon);
+        #[cfg(feature="desktop-diag")] {self.desktop[id].flip_situation=state.flip_situation;}
         self.states[id]=state;
         self.candidates=Some(candidates);
         if let Some(c)=clock {self.profile[4]+=c.elapsed().as_nanos();}

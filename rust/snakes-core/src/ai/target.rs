@@ -12,12 +12,12 @@ pub(super) const ITEM_BIT: u64 = 1 << 63;
 #[derive(Clone,Copy,Debug)]
 pub(super) struct TargetFood {
     pub id:u64,pub position:Point,pub value:f64,pub size:f64,
-    pub vacuum_owner:i32,pub feast_id:u64,pub kind:crate::FoodKind,pub motion_ticks:u16,
+    pub vacuum_owner:i32,pub feast_id:u64,pub kind:crate::FoodKind,pub motion_ticks:u16,pub item_kind:u8,
 }
 impl From<FoodView> for TargetFood {
     fn from(f:FoodView)->Self {
         Self {id:f.id,position:f.position,value:f.value,size:f.size,vacuum_owner:f.vacuum_owner,
-            feast_id:f.feast_id,kind:f.kind,motion_ticks:f.motion_ticks}
+            feast_id:f.feast_id,kind:f.kind,motion_ticks:f.motion_ticks,item_kind:0}
     }
 }
 const _:()=assert!(std::mem::size_of::<Option<TargetFood>>()<=64);
@@ -35,6 +35,7 @@ pub(super) struct Contact {
     available: bool,
     ready_step:usize,
     item:bool,
+    held_item:bool,
     alive:bool,
     guarding:bool,
 }
@@ -53,7 +54,7 @@ impl Contact {
         let item = f.id & ITEM_BIT != 0;
         let ordinary = s.radius * if item { 1.3 } else { 3.0 } + f.size;
         let magnet = if !item {s.radius * effects::modifiers(effects::EffectKind::Magnet as u8,1).food_reach + f.size} else {ordinary};
-        Self { kind:f.kind,zone:f.id==super::events::ID,ordinary, magnet, effects:track,item,alive:s.alive,guarding:s.face.guarding && !track.store,ready_step:if item || f.kind==crate::FoodKind::PrismSeed {f.motion_ticks as usize} else {0},
+        Self { kind:f.kind,zone:f.id==super::events::ID,ordinary, magnet, effects:track,item,held_item:f.item_kind==effects::EffectKind::Flip as u8,alive:s.alive,guarding:s.face.guarding && !track.store,ready_step:if item || f.kind==crate::FoodKind::PrismSeed {f.motion_ticks as usize} else {0},
             claimed: !item && f.vacuum_owner == s.id as i32,
             available: f.kind!=crate::FoodKind::Meteor && (item || f.vacuum_owner < 0 || f.vacuum_owner == s.id as i32) }
     }
@@ -68,7 +69,7 @@ impl Contact {
     }
     pub(super) fn reached_with(self,distance_squared:f64,effect:super::forecast::Effect,step:usize)->bool {
         !self.zone && self.alive && crate::world::events::food_pickup_eligible(self.kind,step as u64,self.ready_step as u64,0) && self.available
-            && (!self.item || crate::Item::pickup_allowed(self.alive,self.guarding,effect.ticks))
+            && (!self.item || crate::Item::pickup_allowed(self.alive,self.guarding && !self.held_item,effect.ticks))
             && (self.claimed || distance_squared<=self.reach_with(effect).powi(2))
     }
     pub(super) fn distance_with(self,distance:f64,effect:super::forecast::Effect)->f64 {
@@ -141,7 +142,7 @@ impl super::AiController {
     /// bodies, scratch storage or RNG are needed.
     pub(super) fn capsule_value(&self,w:&World,s:SnakeView<'_>,item:&crate::Item,eta:f64)->f64 {
         use effects::EffectKind;
-        if w.config().store_power_ups {
+        if w.config().store_power_ups || item.kind==EffectKind::Flip {
             if s.inventory.count>=3 {return 0.0;}
             // Storage preserves the active effect and makes every kind useful.
             let duplicates=s.inventory.kinds.iter().filter(|&&k|k==item.kind as u8).count();
