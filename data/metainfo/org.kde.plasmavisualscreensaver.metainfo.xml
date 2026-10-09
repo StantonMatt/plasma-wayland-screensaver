@@ -20,6 +20,13 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.19.0" date="2026-10-09">
+      <description>
+        <p>Adds Flip, a held power-up that swaps a snake's head and tail for escapes, ambushes and loot U-turns.</p>
+        <p>Shows opposed-arrow gems, false tail eyes, reversal rings and dizzy eyes.</p>
+        <p>Render busy scenes faster.</p>
+      </description>
+    </release>
     <release version="0.18.0" date="2026-10-06">
       <description>
         <p>Snakes store up to three power-ups as gems on their neck and use them when it matters: Phase to escape traps, Surge to win races and cut-offs, Frost when rivals bunch up, Venom to bite, and Magnet near food.</p>
