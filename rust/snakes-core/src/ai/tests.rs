@@ -1495,7 +1495,7 @@ fn items_use_base_values_and_persist_as_high_bit_targets() {
     line(&mut w,0,Point{x:300.0,y:300.0},0.0,24);
     food(&mut w,Point{x:450.0,y:300.0});
     for (i,kind) in crate::effects::ENABLED_KINDS.iter().copied().enumerate() {
-        assert_eq!(kind.base_value(),[6.0,4.0,3.0,5.0,3.0][i]);
+        assert_eq!(kind.base_value(),[6.0,4.0,3.0,5.0,3.0,4.0][i]);
     }
     // Enabled kinds outnumber simultaneous item slots starting with Frost.
     for (i,kind) in crate::effects::ENABLED_KINDS.iter().copied().take(crate::MAX_ITEMS).enumerate() {
@@ -1891,12 +1891,16 @@ fn phase_capsule_replacement_checks_the_pickup_movement_against_world() {
         let mut ai=AiController::new();ai.prepare(&w);
         let state=State {desired:0.0,turn_until:u64::MAX,..State::default()};
         let plan=ai.rollout(&w,w.snake(0).unwrap(),state,2,1);
-        assert_eq!(plan.steps==1,matches!(kind,crate::effects::EffectKind::Phase|crate::effects::EffectKind::Frost),"wrap={wrap} kind={kind:?}");
-        assert_eq!(ai.candidate_mask(&w,0,&plan)==0,matches!(kind,crate::effects::EffectKind::Phase|crate::effects::EffectKind::Frost));
+        assert_eq!(plan.steps==1,matches!(kind,crate::effects::EffectKind::Phase|crate::effects::EffectKind::Frost|crate::effects::EffectKind::Flip),"wrap={wrap} kind={kind:?}");
+        // A rejected first movement retains the observed Phase at endpoint
+        // zero; its attempted replacement belongs only to movement one.
+        assert_eq!(ai.candidate_mask(&w,0,&plan),0,"retained endpoint={} kind={kind:?}",plan.steps);
+        assert_eq!(plan.effects.mask(&w,0,1)==0,matches!(kind,crate::effects::EffectKind::Phase|crate::effects::EffectKind::Frost|crate::effects::EffectKind::Flip));
         w.step(&mut crate::controller::ScriptedController::new(|_,s:SnakeView<'_>|Steering{desired_angle:s.angle,rush:0.0}));
-        assert!(w.frame_events().any(|e|e.kind==crate::EventKind::Pickup && e.snake_id==0));
-        assert_eq!(w.snake(0).unwrap().alive,matches!(kind,crate::effects::EffectKind::Phase|crate::effects::EffectKind::Frost),"World wrap={wrap} kind={kind:?}");
-        if !matches!(kind,crate::effects::EffectKind::Phase|crate::effects::EffectKind::Frost) {assert_eq!(w.last_death_reason(0),Some(crate::DeathReason::Body));}
+        assert!(w.frame_events().any(|e|e.kind==if *kind==crate::effects::EffectKind::Flip {crate::EventKind::Stash} else {crate::EventKind::Pickup} && e.snake_id==0));
+        if *kind==crate::effects::EffectKind::Flip {assert_eq!(w.snakes[0].effect_kind,3);assert_eq!(w.snakes[0].inventory.kinds[0],6);}
+        assert_eq!(w.snake(0).unwrap().alive,matches!(kind,crate::effects::EffectKind::Phase|crate::effects::EffectKind::Frost|crate::effects::EffectKind::Flip),"World wrap={wrap} kind={kind:?}");
+        if !matches!(kind,crate::effects::EffectKind::Phase|crate::effects::EffectKind::Frost|crate::effects::EffectKind::Flip) {assert_eq!(w.last_death_reason(0),Some(crate::DeathReason::Body));}
     }}
 }
 

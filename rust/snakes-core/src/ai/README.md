@@ -1763,3 +1763,110 @@ proof through its first tangible movements rather than stopping while ghosted.
 drops and situation counts. Its stdout also reports trapped Phase activations,
 one-second same-generation survival and deaths with unused held Phase. These
 are diagnostic observations, not proofs of a causal rescue or guaranteed safety.
+
+## Flip inventory action (0.19.0)
+
+Kind 6 stays held with storage disabled. Checks share the three-tick inventory
+cadence (urgent checks every tick). Off strategy cadence, an unthreatened holder
+first requires a rival or useful prize within the full admission range using
+squared distances; escape checks remain immediate. Decisions prefer a valid last-five-second use and
+never reverse merely because an item expires. Trapped escape compares tail-side
+space with twice the current reachable area. Ambush admission starts before the
+six-radius false-eyes cone: six radii plus relative-speed travel for wind-up and
+an aggression-scaled intercept window, plus a bounded turning-radius allowance.
+A closing heading or observed curved intercept qualifies; the rollout must then
+certify a winning four-segment head contact within sixteen ticks after reversal.
+Known paid boost loss and Phase remain part of that proof. Opponent private
+controls are unknown, so the head-on result is a prediction, not a guarantee.
+
+Loot scans valuable food, capsules and the live Starfall objective near the tail,
+even when a long body puts them far from the current head. The prize must be
+behind the head, within fifteen radii of the tail, outward within sixty degrees,
+and save at least four radii of travel. At least six value must beat forward
+food by twenty percent. In the final 150 ticks, a useful one-value objective may
+qualify with two radii saved and greater value than forward food; this also
+admits ordinary pellets/sparks. Expiry alone never admits a reversal. Aggression
+scales offensive utility, while beneficial expiry use remains available at zero.
+
+The admitted ambush prey or loot position survives the endpoint objective reset
+for up to thirty ticks. Each movement still competes against ordinary physical
+safety candidates. Dead/reborn/phased prey, lost winning length, arrival, and
+escape cancel the follow-up. Growth-in-progress is conservatively not admitted:
+the shared motion forecast does not yet model nutrition repayment, stretch,
+growth-driven radius and length changes through reversal.
+
+The shared Timeline records endpoint flip steps separately from timed effects;
+Flip preserves the independent active effect. The retained physical trail and
+forecast head travel locate the moved tail, with endpoint length (not final
+boost length). Reversal is a discontinuity: no head sweep or deposited neck
+connects the old head to the new one. Deposited-edge groups split at the swap,
+retaining both real movement spans and the final pre-swap head endpoint. Neck
+bounds include the reversed destination, and the old forward neck becomes a
+reserved tail immediately. Held completions run in production snake-ID
+order before capsule arbitration; a full-inventory field Flip updates its owner's
+endpoint immediately, before later capsules. Future scheduled swaps do not clip
+head sweeps until activation. Capsule reach bounds include retained-body reversal
+destinations for proposed, pending and possible full-inventory field Flips.
+Endpoint length respects projected sever cuts; a projected sever or outstanding
+growth combined with reversal caps the safety rollout until the indexed body can
+be observed again. Fixed crossing/reply utility cannot certify a discontinuous
+head-swap objective. Indexed footprint queries discard old tail
+samples already cleared before the reversal, reverse neck indices, and reserve
+the retained body conservatively. Clearance uses the same candidate-specific
+pre-swap distance, paid length and radius as reconstruction, including Frost,
+Surge and Nightfall. Original sample distances use their observed spacing;
+post-swap self-neck advancement uses the cumulative travel difference, so thaw
+and effect changes cannot retain the pre-swap average speed. Each participant
+keeps its own sweep start on the completion movement; the stationary swapped
+head is tested against the other head's real final movement. Strategy opportunities
+use the same ordered completion/capsule pass with possible/certain movement bounds;
+reversed endpoints also determine subsequent capsule arbitration and Nova centres.
+For queries without that trajectory, uncertain samples remain occupied. Snapshot defeat
+masks keep rivals through their projected death movement, including queries at
+a backed-off endpoint. Sever cuts and consumed effects likewise retain their
+activation steps in retrospective length, footprint and effect queries; endpoint
+zero uses the observed state. The first six collision passes use the
+mechanics' eight-segment self exemption. Wall admission checks the new head with
+ai/wall.rs, and rivals reserve a holder's outward six-radius tail cone after seeing the
+false eyes ahead of them. IQ scales sight from four to twelve holder radii;
+announced wind-up is public regardless of sight. A held item's reserve ranges
+from six radii at zero aggression to the two-radius inner disk at full aggression;
+announced wind-up always restores the six-radius reserve. Aggressive rivals may
+risk tailgating a dormant item, but still avoid its actual predicted activation.
+Live tail poses are cached once per observation, and collision checkpoints test
+the entire swept interval against the cone and inner disk. Observer/length eligibility is resolved once per tick into fixed threat bits,
+so ordinary candidate sweeps skip tail geometry when no reserve applies.
+Time-zero tail-area queries share a fixed, tick/geometry-scoped cache; candidate
+trajectory and release-clock queries remain independent. Tail reserves require
+contact eligibility for both participants at the queried step, and retire when
+the holder's final Flip expires or completes. A remaining held or projected
+stored Flip retains the reserve. Endpoint masks scan
+only owners with a possible Phase; no per-tick candidate kill-mask search is
+introduced for dormant items. Rollouts compile out reversal bookkeeping when
+neither a scheduled/proposed activation nor a field Flip can reach the scenario.
+Body queries resolve Classic/V2 rules before walking records. A live Flip mask
+keeps ordinary movement-event and body-cache checks constant-time.
+A full-inventory Flip contact with another field Flip remaining, or multiple
+known Flip contacts for one owner within a forecast horizon, is
+conservatively capped: the single retained-trail origin cannot certify a second
+reversal. Mechanics still activates every full-inventory contact.
+Known pending swaps invalidate staged cut-off reply utility. A completed swap
+resets the holder's objectives and rivals' retained prey/Venom objectives;
+intentional wind-up/dizzy movement is exempt from anti-circling.
+
+Diagnostic Flip uses are keyed by slot and generation through the shared
+inventory lifecycle helper. Escape survival and ambush head wins are observed
+for one second after activation; they are context, not a causal counterfactual.
+
+`desktop_diag` also emits `flip_decision` counters for admission calls, growth,
+wall and area rejections, nearby rivals, losing size/Phase, non-closing motion,
+ambush geometry, valuable rear objectives, rollout rejection/caps, missing
+certified head wins, proposals and selected signatures. These count decision
+observations (which can repeat across ticks), not unique encounter episodes.
+Warm-up counts are reset before F1 measurement. All counters compile out of
+ordinary builds; no diagnostic observers run in the CPU benchmark.
+
+`perf_tick ... profile` reports `flip_ns` for tail reserves, opportunity admission
+(including initial area), proposed Flip rollouts, initial area, and follow-through.
+Area is a subset of admission time, so those two entries must not be summed.
+Profiling is opt-in; ordinary benchmarks run with these clocks disabled.

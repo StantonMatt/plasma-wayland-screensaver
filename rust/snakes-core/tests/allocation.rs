@@ -353,3 +353,39 @@ fn zero_allocations_inventory_store_use_fizzle_and_drop() {
     }
     ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
 }
+#[test]
+fn zero_allocations_flip_windup_reversal_and_ai_forecasts() {
+    struct Use {ai:ai::AiController,force:bool}
+    impl controller::Controller for Use {
+        fn delegate(&self,_:u32)->Option<&dyn controller::Controller> {Some(&self.ai)}
+        fn steer(&mut self,w:&World,s:SnakeView<'_>)->controller::Steering {self.ai.steer(w,s)}
+        fn use_request(&self,id:u32)->u32 {if self.force {1} else {self.ai.use_request(id)}}
+    }
+    let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,width:4000.0,height:2000.0,density:0.0,
+        deadly_walls:false,self_collisions:true,world_events:false,..Default::default()},
+        &[(Point{x:1500.0,y:1000.0},0.0,40,0.0)],&[]).unwrap();
+    let mut c=Use {ai:ai::AiController::new(),force:false};w.step(&mut c);
+    w.snakes[0].inventory=Inventory {kinds:[6,0,0],life:[1800,0,0],count:1,..Default::default()};
+    c.force=true;
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    for _ in 0..15 {w.step(&mut c);}
+    ENABLED.with(|e|e.set(false));
+    assert_eq!(COUNT.with(Cell::get),0);assert!(w.snake(0).unwrap().face.flip_tick>0);
+}
+
+#[test]
+fn zero_allocations_full_inventory_flip_pickup_and_ordered_forecasts() {
+    let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,width:6000.0,height:3000.0,density:0.0,
+        deadly_walls:false,self_collisions:false,store_power_ups:false,world_events:false,..Default::default()},
+        &[(Point{x:3000.0,y:1500.0},0.0,40,0.0),(Point{x:4500.0,y:2300.0},0.0,20,0.0)],&[]).unwrap();
+    let mut ai=ai::AiController::new();w.step(&mut ai);
+    w.snakes[0].inventory=Inventory {kinds:[1;3],life:[1800;3],count:3,..Default::default()};
+    let head=w.segments[0].current;let tail=w.segments[39].current;
+    for (id,kind,position) in [(41,effects::EffectKind::Flip,head),(42,effects::EffectKind::Phase,tail)] {
+        w.items.push(Item {id,kind,position,radius:6.0,life_ticks:750,..Default::default()});
+    }
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    w.step_n(&mut ai,15);
+    ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
+    assert_eq!(w.faces[0].flip_tick,2);assert_eq!(w.snakes[0].effect_kind,3);
+}

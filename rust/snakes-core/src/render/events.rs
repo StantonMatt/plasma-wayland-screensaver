@@ -33,6 +33,7 @@ impl Renderer {
             sink.effect_sprite(P::new(v.x*p.scale_x+p.offset_x,v.y*p.scale_y+p.offset_y),extent*scale,1.2,gold(palette).fade(fade),[20,0,0,0]);
         }}
     }
+    #[inline(always)]
     pub(super) fn shader_event_food(&self,f:&FoodRecord,info:&FrameInfo,p:&Params,scale:f64,c:Color,sink:&mut SpriteSink<'_>)->bool {
         if !matches!(f.kind,5|6) {return false;}
         if f.kind==5 && (!coordinate32(f.motion_origin_x) || !coordinate32(f.motion_origin_y)) {return true;}

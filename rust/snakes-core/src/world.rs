@@ -4,6 +4,7 @@ mod broad_phase;
 pub mod effects;
 mod items;
 mod inventory;
+pub(crate) mod flip;
 pub use inventory::{Inventory, INVENTORY_SLOTS, INVENTORY_WINDUP_TICKS};
 mod presentation;
 mod prism;
@@ -1106,6 +1107,7 @@ impl World {
         s.intent_flags | if self.faces[id].strike && s.effect_kind==4 && s.effect_ticks>0 {flags::STRIKE} else {0} | effects::modifiers(s.effect_kind,s.effect_ticks).flags | if s.boost_ticks > 0 { flags::BOOSTING } else { 0 }
             | if s.cooldown_ticks > 0 { flags::COOLDOWN } else { 0 }
             | if s.frozen_ticks > 0 { flags::FROZEN } else { 0 }
+            | if s.inventory.kinds[..s.inventory.count as usize].contains(&6) {flags::FLIP_HELD} else {0}
             | if self.leader == Some(id) { flags::LEADER } else { 0 }
     }
     /// AI/user hooks; only intent bits are writable. Other flags belong to mechanics.
@@ -1527,7 +1529,7 @@ impl World {
                     let j = encoded%MAX_SEGMENTS;
                     occupant = self.grid_next[encoded];
                     let same = i==other;
-                    if same && (!self.config.self_collisions || j<10) {
+                    if same && (!self.config.self_collisions || j<if V2 && self.faces[i].flip_grace_ticks>0 {8} else {10}) {
                         continue;
                     }
                     let body = self.snakes[other];

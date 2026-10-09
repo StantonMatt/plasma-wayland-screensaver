@@ -30,7 +30,7 @@ use crate::controller::Steering;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EffectKind { #[default] None, Surge, Magnet, Phase, Venom, Frost, Flip, Whirlpool }
 /// Extend for R4; weights of disabled kinds are never included in the draw.
-pub const ENABLED_KINDS: &[EffectKind] = &[EffectKind::Surge, EffectKind::Magnet, EffectKind::Phase, EffectKind::Venom, EffectKind::Frost];
+pub const ENABLED_KINDS: &[EffectKind] = &[EffectKind::Surge, EffectKind::Magnet, EffectKind::Phase, EffectKind::Venom, EffectKind::Frost, EffectKind::Flip];
 pub const WARNING_TICKS: u16 = 36;
 impl EffectKind {
     pub fn from_byte(kind: u8) -> Self {
@@ -40,7 +40,7 @@ impl EffectKind {
         match self {Self::Surge=>180,Self::Magnet=>300,Self::Phase=>120,Self::Venom=>240,Self::Frost=>75,Self::Flip=>300,Self::Whirlpool=>150,Self::None=>0}
     }
     pub const fn weight(self) -> u32 {
-        match self {Self::Surge=>25,Self::Magnet=>30,Self::Phase=>15,Self::Venom=>20,Self::Frost=>10,Self::Flip=>10,Self::Whirlpool=>8,Self::None=>0}
+        match self {Self::Surge=>20,Self::Magnet=>24,Self::Phase=>12,Self::Venom=>16,Self::Frost=>10,Self::Flip=>10,Self::Whirlpool=>8,Self::None=>0}
     }
     pub const fn base_value(self) -> f64 {
         match self {Self::Surge=>6.0,Self::Magnet=>4.0,Self::Phase=>3.0,Self::Venom=>5.0,Self::Frost=>3.0,Self::Flip=>4.0,Self::Whirlpool=>4.0,Self::None=>0.0}

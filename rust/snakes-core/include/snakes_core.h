@@ -89,6 +89,7 @@ extern "C" {
 #define SNAKES_CORE_GLYPH_PHASE 7u
 #define SNAKES_CORE_GLYPH_VENOM 8u
 #define SNAKES_CORE_GLYPH_FROST 9u
+#define SNAKES_CORE_GLYPH_FLIP 10u
 #define SNAKES_CORE_FOOD_PRISM_SEED 4u
 #define SNAKES_CORE_FOOD_METEOR 5u
 #define SNAKES_CORE_FOOD_STAR 6u
@@ -263,7 +264,7 @@ double snakes_core_item_radius(const snakes_core_world *world);
  * Failure changes no output. For pickup/spawn/item expiry/effect expiry,
  * other_snake_id is the effect kind; snake_id is UINT32_MAX for field items.
  * Emote: snake_id owner, other_snake_id glyph. Sever: snake_id/generation victim, other_snake_id/other_generation biter; cut_index is first removed, duration_ticks=33, value is nutrition, release_tick=tick+33.
- * Flip/Feast: actor. WorldEvent: snake_id UINT32_MAX, other_snake_id event kind,
+ * Flip: actor/new head, duration_ticks=15; EffectExpiry kind 6: old-head ring. Flip preserves the active effect. Feast: actor. WorldEvent: snake_id UINT32_MAX, other_snake_id event kind,
  * duration_ticks window; value 1 start / 0 end. Vortex uses item kind 8 (not
  * effect kind 7); age/life/charge, captured_value and owner identity are reserved. */
 int32_t snakes_core_export_extras(const snakes_core_world *world,

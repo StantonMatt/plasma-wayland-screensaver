@@ -29,10 +29,10 @@ impl ItemLifecycle {
     pub fn activation(self)->bool {matches!(self,Self::HeldActivation|Self::FieldActivation)}
 }
 pub fn replaces_effect(e:&FrameEvent)->bool {
-    lifecycle(e).activation() && e.other_snake_id!=EffectKind::Frost as u32
+    lifecycle(e).activation() && !matches!(EffectKind::from_byte(e.other_snake_id as u8),EffectKind::Frost|EffectKind::Flip)
 }
 
-/// Slot identity alone never identifies an effect episode. Frost and Stash do
+/// Slot identity alone never identifies an effect episode. Frost, Flip and Stash do
 /// not replace it; both touch and held activation start a fresh episode.
 #[derive(Clone,Copy,Debug,Default)]
 pub struct EffectEpisode {pub generation:u32,pub kind:u8,pub used:bool}

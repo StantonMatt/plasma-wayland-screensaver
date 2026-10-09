@@ -57,23 +57,37 @@ struct Orphan {len:usize,time:f64,duration:f64,radius:f64,color:u32,tier:u8}
 pub(super) struct History {
     bodies:Vec<SegmentRecord>,records:[SnakeRecord;MAX_SNAKES],
     tails:Vec<P>,widths:Vec<f64>,orphans:[Orphan;2],sine:[f64;256],
+    // Immutable source tangents for the short orphan's wriggle. Keyed by
+    // topology, not presentation age; the displaced curve is still prepared
+    // on every draw, including projection/interpolation changes.
+    wriggle_normals:[[P;EDGES+1];2],wriggle_valid:[bool;2],wriggle_arenas:[P;2],wriggle_walls:[bool;2],
     indices:[[u16;EDGES+1];2],selected:[usize;2],scales:[P;2],arenas:[P;2],walls:[bool;2],
 }
 impl History {
     pub fn new()->Self {Self {bodies:vec![SegmentRecord::default();MAX_SNAKES*MAX_SEGMENTS],
         records:[SnakeRecord::default();MAX_SNAKES],tails:vec![P::default();2*CAP],widths:vec![0.0;2*CAP],
+        wriggle_normals:[[P::default();EDGES+1];2],wriggle_valid:[false;2],wriggle_arenas:[P::default();2],wriggle_walls:[false;2],
         indices:[[0;EDGES+1];2],selected:[0;2],scales:[P::default();2],arenas:[P::default();2],walls:[false;2],
         orphans:[Orphan::default();2],sine:std::array::from_fn(|i|(i as f64*std::f64::consts::TAU/256.0).sin())}}
-    pub fn reset(&mut self) {self.records.fill(SnakeRecord::default());self.orphans.fill(Orphan::default());}
+    pub fn reset(&mut self) {self.records.fill(SnakeRecord::default());self.orphans.fill(Orphan::default());self.wriggle_valid.fill(false);}
     pub fn observe(&mut self,info:&FrameInfo,snakes:&[SnakeRecord],segments:&[SegmentRecord],events:&[EventRecord],through:Option<u64>) {
         for e in events {
-            if e.kind!=crate::EventKind::Sever as u8 || e.tick>info.tick || through.is_some_and(|t|e.tick<=t) {continue;}
+            if (e.kind!=crate::EventKind::Flip as u8 && e.kind!=crate::EventKind::Sever as u8)
+                || e.tick>info.tick || through.is_some_and(|t|e.tick<=t) {continue;}
             let id=e.snake_id as usize;if id>=MAX_SNAKES {continue;}
             let r=self.records[id];let cut=e.cut_index as usize;let n=r.segment_count as usize;
-            if r.generation!=e.generation || cut<=n/2 || cut<=3 || cut>=n || n-cut>CAP || !snake_valid(&r) {continue;}
+            if r.generation!=e.generation || n<2 || n>MAX_SEGMENTS || !snake_valid(&r) {continue;}
+            if e.kind==crate::EventKind::Flip as u8 {
+                // Compact frames cannot replace this last full body. Reverse
+                // its retained prefix in stream order before any later sever;
+                // detached orphans already own independent source geometry.
+                self.bodies[id*MAX_SEGMENTS..id*MAX_SEGMENTS+n].reverse();
+                continue;
+            }
+            if cut<=n/2 || cut<=3 || cut>=n || n-cut>CAP {continue;}
             let slot=self.orphans.iter().position(|o|o.len==0 || info.simulation_time-o.time>o.duration+0.55)
                 .unwrap_or_else(||if self.orphans[0].time<=self.orphans[1].time {0} else {1});
-            self.selected[slot]=0;
+            self.selected[slot]=0;self.wriggle_valid[slot]=false;
             let start=slot*CAP;
             for j in cut..n {
                 let seg=self.bodies[id*MAX_SEGMENTS+j];
@@ -107,6 +121,17 @@ impl Renderer {
         let arena=P::new(info.world_width,info.world_height);let walls=p.deadly_walls!=0;
         let base=slot*CAP;
         let mut unwrapped=self.venom.tails[base];let mut previous=unwrapped;
+        if o.len>1 && !self.reduced_motion && age<wriggle
+            && (!self.venom.wriggle_valid[slot] || self.venom.wriggle_arenas[slot]!=arena || self.venom.wriggle_walls[slot]!=walls) {
+            for i in 0..n {
+                let j=i*(o.len-1)/(n-1);
+                let before=self.venom.tails[base+j.saturating_sub(1)];let after=self.venom.tails[base+(j+1).min(o.len-1)];
+                let d=P::new(delta(before.x,after.x,arena.x,walls),delta(before.y,after.y,arena.y,walls));
+                let length=d.length().max(0.001);
+                self.venom.wriggle_normals[slot][i]=P::new(-d.y/length,d.x/length);
+            }
+            self.venom.wriggle_arenas[slot]=arena;self.venom.wriggle_walls[slot]=walls;self.venom.wriggle_valid[slot]=true;
+        }
         let mut i=0;
         // Unwrap every source edge before LOD. A sampled edge can exceed half
         // a narrow arena, so shortest-wrap on selected points reverses it.
@@ -120,11 +145,9 @@ impl Renderer {
             if j!=i*(o.len-1)/n.saturating_sub(1).max(1) {continue;}
             let mut q=unwrapped;
             if o.len>1 && !self.reduced_motion && age<wriggle {
-                let before=self.venom.tails[base+j.saturating_sub(1)];let after=self.venom.tails[base+(j+1).min(o.len-1)];
-                let d=P::new(delta(before.x,after.x,arena.x,walls),delta(before.y,after.y,arena.y,walls));
-                let length=d.length().max(0.001);let phase=(0.75*j as f64-17.0*age)/std::f64::consts::TAU;
+                let phase=(0.75*j as f64-17.0*age)/std::f64::consts::TAU;
                 let wave=self.venom.sine[((phase*256.0) as i64).rem_euclid(256) as usize];
-                q=q+P::new(-d.y/length,d.x/length)*(o.radius*(1.0-age/wriggle).sqrt()*(0.4+0.6*j as f64/(o.len-1) as f64)*wave);
+                q=q+self.venom.wriggle_normals[slot][i]*(o.radius*(1.0-age/wriggle).sqrt()*(0.4+0.6*j as f64/(o.len-1) as f64)*wave);
             }
             self.points[i]=q;
             self.mapped[i]=P::new(q.x*p.scale_x+p.offset_x,q.y*p.scale_y+p.offset_y);
@@ -249,6 +272,35 @@ impl Renderer {
                     if sink.count>begin {budget-=1;}
                 }}
             }
+            if REUSE && walls && dissolve==0.0 && n>1 {
+                // While the piece wriggles as one tube, wall-bounded edges
+                // share their corners. The dissolve/wrap walk below retains
+                // its independent translated and drifting pieces.
+                let mut previous:Option<[shader::ShaderVertex;2]>=None;let mut previous_width=0.0_f64;
+                let params=[0,o.tier,flags::CORPSE as u8,(fade*255.0).round() as u8];
+                for i in 0..n {
+                    if !self.valid[i] {previous=None;continue;}
+                    if budget==0 {break;}
+                    let width=self.brightness[i] as f64/255.0;
+                    let normal=self.normals[i]*(r*BODY*width);
+                    // Keep the two zero translations in the legacy path too.
+                    let center=self.mapped[i]+P::default()+P::default();
+                    let j=if o.len>800 {self.venom.indices[slot][i] as usize} else {i*(o.len-1)/(n-1)};
+                    let along=(o.len-1-j) as f64;
+                    let color=cc.alpha((width*255.0).round() as u8);
+                    let current=[shader::SpriteSink::make_vertex(center+normal,width,along,color,params),
+                        shader::SpriteSink::make_vertex(center-normal,-width,along,color,params)];
+                    if let Some(pair)=previous {
+                        let a=self.mapped[i-1]+P::default()+P::default();
+                        let extent=r*BODY*previous_width.max(width);
+                        if visible(a.x.min(center.x)-extent,a.y.min(center.y)-extent,
+                            (center.x-a.x).abs()+2.0*extent,(center.y-a.y).abs()+2.0*extent,sink.view) {
+                            sink.push_quad([pair[0],pair[1],current[0],current[1]]);budget-=1;
+                        }
+                    }
+                    previous=Some(current);previous_width=width;
+                }
+            } else {
             'edges: for i in 1..n {
                 if budget==0 {break;}if !self.valid[i-1] || !self.valid[i] {continue;}
                 let a=self.points[i-1];let b=self.points[i];let margin=P::new(r*4.3/p.scale_x,r*4.3/p.scale_y);
@@ -276,6 +328,7 @@ impl Renderer {
                         [0,o.tier,flags::CORPSE as u8,alpha_byte],alpha_byte,None);
                     if sink.count>begin {budget-=1;}
                 }}
+            }
             }
             if let Some((xs,ys,extent,a))=glow {
                 for x in xs.first..=xs.last {for y in ys.first..=ys.last {
@@ -323,6 +376,99 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn snapshot(w:&crate::World,compact:bool)->(FrameInfo,Vec<SnakeRecord>,Vec<SegmentRecord>,Vec<EventRecord>) {
+        let mut snakes=Vec::new();let mut body=Vec::new();
+        for s in w.snakes() {
+            let offset=body.len();
+            let source=if compact && !s.segments.is_empty() {&s.segments[s.segments.len()-1..]} else {s.segments};
+            body.extend(source.iter().map(|seg|SegmentRecord {x:seg.current.x as f32,y:seg.current.y as f32,
+                previous_x:seg.previous.x as f32,previous_y:seg.previous.y as f32}));
+            snakes.push(SnakeRecord {id:s.id,generation:s.generation,alive:u32::from(s.alive),radius:s.radius,angle:s.angle,
+                flags:s.flags,effect_kind:s.effect_kind,effect_ticks:s.effect_ticks,bulges:s.face.bulges,
+                segment_count:source.len() as u32,segment_offset:offset as u32,..Default::default()});
+        }
+        let events=w.frame_events().map(|e|EventRecord {tick:e.tick,kind:e.kind as u8,snake_id:e.snake_id,generation:e.generation,
+            x:e.position.x as f32,y:e.position.y as f32,other_snake_id:e.other_snake_id,cut_index:e.cut_index,duration_ticks:e.duration_ticks,..Default::default()}).collect();
+        (FrameInfo {tick:w.tick(),simulation_time:w.simulation_time(),world_width:w.config().width,
+            world_height:w.config().height,geometry_generation:w.geometry_generation(),..Default::default()},snakes,body,events)
+    }
+    struct Straight;
+    impl crate::controller::Controller for Straight {
+        fn steer(&mut self,_:&crate::World,s:crate::SnakeView<'_>)->crate::controller::Steering {
+            crate::controller::Steering {desired_angle:s.angle,rush:0.0}
+        }
+    }
+    #[test]
+    fn cached_flip_event_order_generation_and_cutoff_preserve_detached_tails() {
+        let info=FrameInfo {tick:2,simulation_time:2.0/30.0,..Default::default()};
+        let s=SnakeRecord {id:0,generation:1,segment_count:40,..Default::default()};
+        let body:Vec<_>=(0..40).map(|j|SegmentRecord {x:j as f32,..Default::default()}).collect();
+        let flip=EventRecord {kind:crate::EventKind::Flip as u8,tick:2,generation:1,..Default::default()};
+        let sever=EventRecord {kind:crate::EventKind::Sever as u8,cut_index:30,duration_ticks:33,..flip};
+        for events in [vec![flip,sever],vec![sever,flip],vec![EventRecord {generation:2,..flip},sever],
+            vec![EventRecord {tick:3,..flip},sever],vec![EventRecord {tick:1,..flip},sever]] {
+            let mut h=History::new();h.observe(&info,&[s],&body,&[],None);
+            h.observe(&info,&[],&[],&events,Some(1));
+            let reversed=events[0].kind==flip.kind && events[0].tick==flip.tick && events[0].generation==flip.generation;
+            assert_eq!(h.orphans[0].len,10);
+            for j in 0..10 {assert_eq!(h.tails[j].x,if reversed {(9-j) as f64} else {(30+j) as f64});}
+            // Flip after Sever reverses only the retained body, preserving the
+            // old orphan. A later sever must use that shorter reversed source.
+            if events[0].kind==sever.kind {
+                h.observe(&info,&[],&[],&[EventRecord {cut_index:20,..sever}],None);
+                for j in 0..10 {assert_eq!(h.tails[CAP+j].x,(9-j) as f64);}
+            }
+        }
+    }
+    #[test]
+    fn world_step_flip_before_sever_reverses_full_and_compact_sources() {
+        for compact in [false,true] {for delayed_sever in [false,true] {
+            let config=crate::Config {width:12000.0,height:4000.0,rules:crate::RuleSet::V2,density:0.0,
+                self_collisions:false,deadly_walls:true,world_events:false,..Default::default()};
+            let radius=6.0; // diagnostic_arena uses a fixed physical radius
+            let offset=0.7*crate::world::taper::contact_radius(crate::RuleSet::V2,radius,
+                crate::world::taper::body_radius(radius,30.0,40),false);
+            let mut w=crate::World::diagnostic_arena(config,&[
+                (crate::Point {x:11500.0-9.0*radius*1.18,y:1000.0+offset},-std::f64::consts::FRAC_PI_2,20,0.0),
+                (crate::Point {x:11500.0,y:1000.0},0.0,40,0.0)],&[]).unwrap();
+            w.snakes[0].effect_kind=4;w.snakes[0].effect_ticks=240;
+            w.snakes[1].inventory=crate::Inventory {kinds:[6,0,0],life:[150,0,0],count:1,windup:1,windup_ticks:1,..Default::default()};
+            // Keep the fixture stationary so every cached point can be compared
+            // to the real detached source, while running the complete step order.
+            for s in &mut w.snakes {s.traits.speed_bias=0.0;}
+            w.snakes[1].effect_kind=1;w.snakes[1].effect_ticks=100;
+            w.faces[1].bulges[0]=crate::world::Bulge {duration_ticks:30,strength:0.5,..Default::default()};
+            if delayed_sever {w.snakes[0].effect_kind=3;w.snakes[0].effect_ticks=100;}
+            let mut r=Renderer::new();let (info,snakes,body,events)=snapshot(&w,false);
+            r.shader_history(&info,&snakes,&body,&events);
+            r.waves[1][0]=shader::Wave {active:true,kind:8,duration_ticks:90,..Default::default()};
+            assert_eq!(r.trails[1].len,1);
+            w.step(&mut Straight);
+            assert!(w.frame_events().any(|e|e.kind==crate::EventKind::Flip));
+            assert_eq!(w.faces[1].bulges[0].duration_ticks,0);
+            let (info,snakes,body,events)=snapshot(&w,compact);r.shader_history(&info,&snakes,&body,&events);
+            assert!(w.snakes[1].alive,"victim died: {:?}; events: {:?}",w.snakes[1].dying,w.frame_events().collect::<Vec<_>>());
+            assert_eq!(r.trails[1].len,1,"only the new tail sample survives");
+            assert!(r.waves[1].iter().any(|wave|wave.active && wave.kind==0 && wave.duration_ticks==15),"events: {:?}",events);
+            assert!(!r.waves[1].iter().any(|wave|wave.active && wave.kind==8));
+            if delayed_sever {
+                w.snakes[0].effect_kind=4;w.snakes[0].effect_ticks=240;w.step(&mut Straight);
+                let (info,snakes,body,events)=snapshot(&w,compact);r.shader_history(&info,&snakes,&body,&events);
+            } else {
+                let kinds:Vec<_>=w.frame_events().map(|e|e.kind).collect();
+                assert!(kinds.iter().position(|&k|k==crate::EventKind::Flip).unwrap()<kinds.iter().position(|&k|k==crate::EventKind::Sever).unwrap());
+            }
+            let cut=w.frame_events().find(|e|e.kind==crate::EventKind::Sever).expect("rival must sever after Flip").cut_index as usize;
+            assert_eq!(cut,30);assert_eq!(r.venom.orphans[0].len,10);
+            for j in 0..10 {
+                let actual=w.detached_points[CAP+j];
+                assert_eq!(r.venom.tails[j],P::new(actual.x as f32 as f64,actual.y as f32 as f64));
+            }
+            let before=r.venom.tails[..10].to_vec();
+            let (info,snakes,body,events)=snapshot(&w,false);r.shader_history(&info,&snakes,&body,&events);
+            assert_eq!(r.venom.tails[..10],before,"full retry cannot reverse or detach twice");
+        }}
+    }
     fn fixture(width:f64,height:f64,len:usize,vertical:bool)->(Renderer,FrameInfo,Params) {
         let mut r=Renderer::new();r.reduced_motion=true;
         let info=FrameInfo {tick:30,simulation_time:1.0,world_width:width,world_height:height,..Default::default()};
@@ -339,22 +485,49 @@ mod tests {
         (r,info,p)
     }
     #[test]
+    fn immutable_wriggle_tangents_invalidate_for_topology_and_reset() {
+        let (mut cached,mut info,mut p)=fixture(80.0,90.0,199,false);
+        let (mut fresh,_,_)=fixture(80.0,90.0,199,false);
+        for (time,width,walls,sx,calm) in [(1.0,80.0,0,1.0,false),(1.1,80.0,0,1.0,false),
+            (1.2,80.0,1,1.0,false),(1.3,60.0,0,1.0,false),(1.4,60.0,0,1.8,false),
+            (1.5,60.0,0,1.8,true),(1.6,60.0,0,1.8,false),(2.2,60.0,0,1.8,false)] {
+            info.simulation_time=time;info.world_width=width;p.presentation_time=time;p.deadly_walls=walls;p.scale_x=sx;
+            cached.reduced_motion=calm;fresh.reduced_motion=calm;fresh.venom.wriggle_valid.fill(false);
+            let a=cached.orphan_points(0,&info,&p);let b=fresh.orphan_points(0,&info,&p);assert_eq!(a,b);
+            let n=a.unwrap().0;
+            for i in 0..n {
+                // Include NaN gaps by comparing the actual f64 bits.
+                assert_eq!((cached.points[i].x.to_bits(),cached.points[i].y.to_bits()),(fresh.points[i].x.to_bits(),fresh.points[i].y.to_bits()));
+                assert_eq!(cached.valid[i],fresh.valid[i]);
+                if cached.valid[i] {assert_eq!(cached.normals[i],fresh.normals[i]);}
+            }
+        }
+        // Both slots are occupied: a new sever evicts the oldest slot and
+        // must not reuse its source directions, even in the same topology.
+        cached.venom.records[0]=SnakeRecord {id:0,generation:2,alive:1,radius:6.0,segment_count:24,..Default::default()};
+        for j in 0..24 {cached.venom.bodies[j]=SegmentRecord {x:50.0,y:j as f32*7.0,previous_x:50.0,previous_y:j as f32*7.0};}
+        let event=EventRecord {kind:crate::EventKind::Sever as u8,tick:info.tick,snake_id:0,generation:2,cut_index:14,duration_ticks:33,..Default::default()};
+        cached.venom.observe(&info,&[],&[],&[event],None);
+        assert!(!cached.venom.wriggle_valid[0]);
+        cached.reset();assert_eq!(cached.venom.wriggle_valid,[false;2]);
+    }
+    #[test]
     fn reused_orphan_preparation_preserves_every_shader_vertex() {
         let colors=[Color::new(255,0,0,255),Color::new(0,255,0,255)];
-        for len in [1,19,799,1200] {for active in [1,2,3] {for moving in [false,true] {for invalid in [false,true] {
+        for len in [1,19,799,1200] {for active in [1,2,3] {for moving in [false,true] {for invalid in [false,true] {for walls in [0,1] {for age in [0.3,1.2] {for capacity in [5,6000] {
             let render=|reuse:bool| {
                 let (mut r,mut info,mut p)=fixture(800.0,800.0,len,false);
-                r.reduced_motion=!moving;info.simulation_time+=0.3;p.presentation_time=info.simulation_time;
+                r.reduced_motion=!moving;info.simulation_time+=age;p.presentation_time=info.simulation_time;p.deadly_walls=walls;
                 for slot in 0..2 {if active&(1<<slot)==0 {r.venom.orphans[slot].len=0;}}
                 if invalid {r.venom.tails[CAP..CAP+len].fill(P::new(f64::NAN,f64::NAN));}
-                let mut out=vec![shader::ShaderVertex::default();6000];
+                let mut out=vec![shader::ShaderVertex::default();capacity];
                 let mut sink=shader::SpriteSink {out:&mut out,count:0,view:P::new(800.0,800.0)};
                 if reuse {r.shader_orphans_impl::<true>(&info,&p,&colors,&mut sink);}
                 else {r.shader_orphans_impl::<false>(&info,&p,&colors,&mut sink);}
-                let count=sink.count;out.truncate(count);out
+                let count=sink.count;out.truncate(count);(count,out)
             };
-            assert_eq!(render(true),render(false),"len={len} active={active} moving={moving} invalid={invalid}");
-        }}}}
+            assert_eq!(render(true),render(false),"len={len} active={active} moving={moving} invalid={invalid} walls={walls} age={age} capacity={capacity}");
+        }}}}}}}
     }
     #[test]
     fn venom_lod_unwraps_all_source_edges_before_selecting_points() {

@@ -254,7 +254,7 @@ fn pips(h:&History,s:&SnakeRecord,points:&[P],info:&FrameInfo,p:&Params,calm:boo
     let mut out=[Pip::default();3];let mut count=0;let mut flying=None;
     if s.alive!=0 && s.flags&flags::CORPSE==0 {
         for slot in 0..(s.inv_count as usize).min(3) {
-            let kind=s.inv_kind[slot];if !(1..=5).contains(&kind) {continue;}
+            let kind=s.inv_kind[slot];if !(1..=6).contains(&kind) {continue;}
             let mut distance=OFFSETS[slot];let slide=held.slide[slot];
             if slide.active {distance=slide.from+(distance-slide.from)*close((now-slide.time)/if calm {0.15} else {0.25});}
             if s.inv_windup>0 && slot+1>s.inv_windup as usize && held.use_motion.active {
@@ -289,6 +289,7 @@ fn pips(h:&History,s:&SnakeRecord,points:&[P],info:&FrameInfo,p:&Params,calm:boo
     if let Some(pip)=flying {out[count]=pip;count+=1;}
     (out,count)
 }
+#[inline]
 pub(super) fn shader_pips(h:&mut History,s:&SnakeRecord,points:&[P],r:f64,info:&FrameInfo,p:&Params,palette:&[Color],calm:bool,budget:&mut usize,sink:&mut SpriteSink<'_>) {
     if *budget>=MAX_VISIBLE_PIPS || (s.inv_count==0 && !h.has_fizzle(s)) {return;}
     // Resting gems share the same neck arc samples across a redraw/retry.
@@ -315,7 +316,7 @@ pub(super) fn shader_pips(h:&mut History,s:&SnakeRecord,points:&[P],r:f64,info:&
         }
         let mut pips=[Pip::default();3];let mut n=0;
         for slot in 0..(s.inv_count as usize).min(3) {
-            if !(1..=5).contains(&s.inv_kind[slot]) {continue;}
+            if !(1..=6).contains(&s.inv_kind[slot]) {continue;}
             pips[n]=Pip {pos:cache.positions[slot],kind:s.inv_kind[slot],life:s.inv_life[slot],scale:1.0,anim:0};n+=1;
         }
         (pips,n)
@@ -341,7 +342,12 @@ fn shader_pip_list(pips:[Pip;3],n:usize,r:f64,info:&FrameInfo,p:&Params,palette:
     }
 }
 pub(super) fn slipstream(s:&SnakeRecord,points:&[P],mapped:&[P],normals:&[P],valid:&[bool],widths:&[f64],r:f64,gulp:bool,info:&FrameInfo,p:&Params,palette:&[Color],sink:&mut SpriteSink<'_>) {
+    slipstream_impl::<true>(s,points,mapped,normals,valid,widths,r,gulp,info,p,palette,sink);
+}
+fn slipstream_impl<const REUSE:bool>(s:&SnakeRecord,points:&[P],mapped:&[P],normals:&[P],valid:&[bool],widths:&[f64],r:f64,gulp:bool,info:&FrameInfo,p:&Params,palette:&[Color],sink:&mut SpriteSink<'_>) {
     if r<=0.0 || s.radius<=0.0 {return;}
+    let n=points.len();
+    let mapped=&mapped[..n];let normals=&normals[..n];let valid=&valid[..n];let widths=&widths[..n];
     let length=if s.flags&flags::BOOSTING!=0 {14.0} else {10.0};let mut along=-1.0;
     let color=items::accent(1,palette);let begin=sink.count;
     // Prepared normals are unit length; feeding is their only enlargement.
@@ -353,6 +359,7 @@ pub(super) fn slipstream(s:&SnakeRecord,points:&[P],mapped:&[P],normals:&[P],val
     let forward=points[0]-points[1];let span=(forward.x*forward.x+forward.y*forward.y).sqrt();
     if !span.is_finite() || span<1e-9 {return;}
     let prefix=points[0]+forward*(s.radius/span);
+    let mut previous=None;
     for i in 0..points.len().min(14) {
         let (wa,wb,a,b,an,bn,next)=if i==0 {
             let a=P::new(prefix.x*p.scale_x+p.offset_x,prefix.y*p.scale_y+p.offset_y);
@@ -364,7 +371,20 @@ pub(super) fn slipstream(s:&SnakeRecord,points:&[P],mapped:&[P],normals:&[P],val
         if valid[i] && valid[i.saturating_sub(1)] {
             if p.deadly_walls!=0 {
                 if sink.count-begin>=84 {return;}
-                sink.body_edge(a,b,an,bn,width,[1.0;2],[255;2],[along,next],color,params,params[3],None);
+                // Adjacent wall-bounded quads share their two corners and
+                // attributes. Convert each pair once, retaining exact f64
+                // arithmetic and the same triangle-list order.
+                if !REUSE {
+                    sink.body_edge(a,b,an,bn,width,[1.0;2],[255;2],[along,next],color,params,params[3],None);
+                } else if visible(a.x.min(b.x)-width,a.y.min(b.y)-width,(b.x-a.x).abs()+2.0*width,(b.y-a.y).abs()+2.0*width,sink.view) {
+                    let pair=previous.unwrap_or_else(||[
+                        SpriteSink::make_vertex(a+an,1.0,along,color,params),
+                        SpriteSink::make_vertex(a-an,-1.0,along,color,params)]);
+                    let current=[SpriteSink::make_vertex(b+bn,1.0,next,color,params),
+                        SpriteSink::make_vertex(b-bn,-1.0,next,color,params)];
+                    sink.push_quad([pair[0],pair[1],current[0],current[1]]);
+                    previous=Some(current);
+                } else {previous=None;}
             } else {
                 let (xs,ys)=copies(P::new(wa.x.min(wb.x),wa.y.min(wb.y)),P::new(wa.x.max(wb.x),wa.y.max(wb.y)),P::new(width/p.scale_x,width/p.scale_y),P::new(info.world_width,info.world_height),false);
                 for x in xs.first..=xs.last {for y in ys.first..=ys.last {
@@ -373,7 +393,7 @@ pub(super) fn slipstream(s:&SnakeRecord,points:&[P],mapped:&[P],normals:&[P],val
                     sink.body_edge(a+shift,b+shift,an,bn,width,[1.0;2],[255;2],[along,next],color,params,params[3],None);
                 }}
             }
-        }
+        } else {previous=None;}
         along=next;if along>length+1.0 {break;}
     }
 }
@@ -400,6 +420,28 @@ impl Renderer {
 mod tests {
     use super::*;
     use crate::{World,Config,RuleSet,Point,Inventory,controller::{Controller,Steering}};
+    #[test]
+    fn slipstream_shared_corners_preserve_vertices_at_viewport_breaks_and_capacity_limits() {
+        let points:Vec<_>=(0..40).map(|i|P::new(120.0-i as f64*7.0,10.0+(i as f64*0.3).sin()*8.0)).collect();
+        let mut normals=vec![P::default();40];let mut valid=vec![false;40];
+        prepare(&points,&mut normals,&mut valid);
+        let widths:Vec<_>=(0..40).map(|i|0.9-i as f64*0.01).collect();
+        let info=FrameInfo {world_width:200.0,world_height:100.0,..Default::default()};
+        let snake=SnakeRecord {radius:6.0,..Default::default()};
+        for walls in [0,1] {for gulp in [false,true] {for offset in [-110.0,0.0,100.0] {for gap in [false,true] {for capacity in [0,1,5,6,23,84] {
+            let p=Params {scale_x:1.0,scale_y:1.0,offset_x:offset,deadly_walls:walls,..Default::default()};
+            let mapped:Vec<_>=points.iter().map(|q|P::new(q.x+offset,q.y)).collect();
+            let mut valid=valid.clone();if gap {valid[3]=false;valid[8]=false;}
+            let render=|reuse:bool| {
+                let mut out=vec![ShaderVertex::default();capacity];
+                let mut sink=SpriteSink {out:&mut out,count:0,view:P::new(100.0,100.0)};
+                if reuse {slipstream_impl::<true>(&snake,&points,&mapped,&normals,&valid,&widths,6.0,gulp,&info,&p,&[],&mut sink);}
+                else {slipstream_impl::<false>(&snake,&points,&mapped,&normals,&valid,&widths,6.0,gulp,&info,&p,&[],&mut sink);}
+                (sink.count,out)
+            };
+            assert_eq!(render(true),render(false),"walls={walls} gulp={gulp} offset={offset} gap={gap} capacity={capacity}");
+        }}}}}
+    }
     #[test]
     fn drop_history_matches_spawn_boundary_and_retires_stale_records() {
         let item=ItemRecord {state:1,kind:1,x:10.0,y:20.0,age_ticks:0,..Default::default()};

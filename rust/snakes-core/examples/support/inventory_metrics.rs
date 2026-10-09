@@ -15,13 +15,14 @@ pub fn field_acquisition<'a>(w:&World,e:&FrameEvent,items:&'a [Item],captured:&[
 #[derive(Clone,Copy,Default)]
 struct Before {generation:u32,kinds:[u8;3],life:[u16;3],flags:u32}
 #[derive(Clone,Copy,Default)]
-struct Use {generation:u32,kind:u8,trap:bool,expiry:bool,at:u64}
+struct Use {situation:u8,generation:u32,kind:u8,trap:bool,expiry:bool,at:u64}
 pub struct InventoryMetrics {
     before:[Before;MAX_SNAKES],pending:[Use;MAX_SNAKES],instant:[Use;MAX_SNAKES],phase:[Use;MAX_SNAKES],
-    stored:[u64;6],used:[u64;6],fizzled:[u64;6],situations:[[u64;7];6],
-    phase_trapped:u64,phase_survived:u64,unused_phase_deaths:u64,dropped:[u64;6],
+    stored:[u64;7],used:[u64;7],fizzled:[u64;7],situations:[[u64;7];7],
+    flip:[Use;MAX_SNAKES],flip_situations:[u64;4],escape_survived:u64,ambush_wins:u64,
+    phase_trapped:u64,phase_survived:u64,unused_phase_deaths:u64,dropped:[u64;7],
 }
-impl Default for InventoryMetrics {fn default()->Self {Self {before:[Before::default();MAX_SNAKES],pending:[Use::default();MAX_SNAKES],instant:[Use::default();MAX_SNAKES],phase:[Use::default();MAX_SNAKES],stored:[0;6],used:[0;6],fizzled:[0;6],situations:[[0;7];6],phase_trapped:0,phase_survived:0,unused_phase_deaths:0,dropped:[0;6]}}}
+impl Default for InventoryMetrics {fn default()->Self {Self {flip:[Use::default();MAX_SNAKES],flip_situations:[0;4],escape_survived:0,ambush_wins:0,before:[Before::default();MAX_SNAKES],pending:[Use::default();MAX_SNAKES],instant:[Use::default();MAX_SNAKES],phase:[Use::default();MAX_SNAKES],stored:[0;7],used:[0;7],fizzled:[0;7],situations:[[0;7];7],phase_trapped:0,phase_survived:0,unused_phase_deaths:0,dropped:[0;7]}}}
 impl InventoryMetrics {
     pub fn before(&mut self,w:&World) {for s in w.snakes() {self.before[s.id as usize]=Before {generation:s.generation,kinds:s.inventory.kinds,life:s.inventory.life,flags:s.flags};}}
     pub fn after(&mut self,w:&World,obs:&[DesktopObservation;MAX_SNAKES]) {
@@ -38,7 +39,7 @@ impl InventoryMetrics {
             w.config().rules==RuleSet::V2 && w.config().power_ups));
         for e in events {
             let k=e.other_snake_id as usize;let id=e.snake_id as usize;
-            if k>=6 {continue;}
+            if k>=7 {continue;}
             match e.kind {
                 EventKind::Stash=>self.stored[k]+=1,
                 EventKind::Fizzle=>self.fizzled[k]+=1,
@@ -48,7 +49,7 @@ impl InventoryMetrics {
                     // Zero-duration Uses are full-inventory touches, independent
                     // of a held request that may still be winding up.
                     let request=if e.duration_ticks==0 {&mut self.instant[id]} else {&mut self.pending[id]};
-                    *request=Use {generation:e.generation,kind:k as u8,trap:(b.generation==e.generation && b.flags&flags::TRAPPED!=0) || w.snake(id).is_some_and(|s|s.generation==e.generation && s.flags&flags::TRAPPED!=0) || (d.generation==e.generation && d.safe_ticks<15),
+                    *request=Use {situation:if e.duration_ticks!=0 && d.generation==e.generation {d.flip_situation} else {0},generation:e.generation,kind:k as u8,trap:(b.generation==e.generation && b.flags&flags::TRAPPED!=0) || w.snake(id).is_some_and(|s|s.generation==e.generation && s.flags&flags::TRAPPED!=0) || (d.generation==e.generation && d.safe_ticks<15),
                         expiry:lifecycle(e)==ItemLifecycle::HeldRequest && inventory[id].expiring_request(e),at:w.tick()};
                 }
                 EventKind::Pickup if id<MAX_SNAKES=> {
@@ -59,6 +60,10 @@ impl InventoryMetrics {
                         else if d.fleeing {3} else if k==2 {4} else if pending && use_.expiry {5} else {6};
                     self.situations[k][category]+=1;
                     if k==3 && pending && use_.trap {self.phase_trapped+=1;self.phase[id]=Use {at:w.tick(),..use_};}
+                    if k==6 && pending {
+                        self.flip_situations[use_.situation.min(3) as usize]+=1;
+                        self.flip[id]=Use {at:w.tick(),..use_};
+                    }
                     if held {self.pending[id]=Use::default();} else {self.instant[id]=Use::default();}
                 }
                 _=>{}
@@ -66,7 +71,22 @@ impl InventoryMetrics {
             if id<MAX_SNAKES {inventory[id].apply(e,collisions.iter().any(|c|c.victim==e.snake_id && c.generation==e.generation));}
         }
         for e in collisions {if inventory[e.victim as usize].carries(3,e.generation) {self.unused_phase_deaths+=1;}}
+        for collision in collisions {if collision.reason==DeathReason::Head {for id in 0..w.snake_count() {
+            let flip=self.flip[id];
+            if flip.kind==6 && flip.situation==2 && collision.owner_mask&(1<<id)!=0
+                && collision.owner_generations[id]==flip.generation && w.tick()<=flip.at+30
+                && w.snake(id).is_some_and(|s|s.alive && s.generation==flip.generation) {
+                self.ambush_wins+=1;self.flip[id]=Use::default();
+            }
+        }}}
         for id in 0..w.snake_count() {
+            let flip=self.flip[id];
+            if flip.kind==6 {let s=w.snake(id).unwrap();
+                if !s.alive || s.generation!=flip.generation {self.flip[id]=Use::default();}
+                else if w.tick()>=flip.at+30 {
+                    if flip.situation==1 {self.escape_survived+=1;}self.flip[id]=Use::default();
+                }
+            }
             let phase=self.phase[id];if phase.kind==0 {continue;}
             let s=w.snake(id).unwrap();
             if !s.alive || s.generation!=phase.generation {self.phase[id]=Use::default();}
@@ -76,7 +96,8 @@ impl InventoryMetrics {
     pub fn write(&self,prefix:&str) {
         let mut out=BufWriter::new(File::create(format!("{prefix}.inventory.csv")).unwrap());
         writeln!(out,"kind,stored,used,fizzled,dropped,trapped,contest,cutoff,fleeing,food,expiry,other").unwrap();
-        for k in 1..6 {let a=self.situations[k];writeln!(out,"{k},{},{},{},{},{},{},{},{},{},{},{}",self.stored[k],self.used[k],self.fizzled[k],self.dropped[k],a[0],a[1],a[2],a[3],a[4],a[5],a[6]).unwrap();}
+        for k in 1..7 {let a=self.situations[k];writeln!(out,"{k},{},{},{},{},{},{},{},{},{},{},{}",self.stored[k],self.used[k],self.fizzled[k],self.dropped[k],a[0],a[1],a[2],a[3],a[4],a[5],a[6]).unwrap();}
+        println!("inventory flip_escape={} flip_ambush={} flip_loot={} flip_other={} escape_survived_1s={} ambush_head_wins_1s={}",self.flip_situations[1],self.flip_situations[2],self.flip_situations[3],self.flip_situations[0],self.escape_survived,self.ambush_wins);
         println!("inventory phase_trapped={} phase_survived_1s={} unused_phase_deaths={}",self.phase_trapped,self.phase_survived,self.unused_phase_deaths);
     }
 }
@@ -228,4 +249,16 @@ mod tests {
         }
         assert_eq!((acquired,stored,activated),(1,1,1));
     }
+    #[test]
+    fn flip_touch_does_not_inherit_a_pending_signature() {
+        let w=World::new(Config {rules:RuleSet::V2,..Default::default()}).unwrap();
+        let generation=w.snake(0).unwrap().generation;
+        let mut obs=[DesktopObservation::default();MAX_SNAKES];obs[0].generation=generation;obs[0].flip_situation=2;
+        let use_=FrameEvent {kind:EventKind::Use,generation,other_snake_id:6,duration_ticks:0,..Default::default()};
+        let pickup=FrameEvent {kind:EventKind::Pickup,..use_};
+        let mut metrics=InventoryMetrics::default();metrics.before(&w);
+        metrics.after_records(&w,&obs,[use_,pickup].iter(),&[]);
+        assert_eq!(metrics.flip_situations,[1,0,0,0]);
+    }
+
 }

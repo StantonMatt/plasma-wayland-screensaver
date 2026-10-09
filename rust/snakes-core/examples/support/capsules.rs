@@ -298,7 +298,7 @@ mod tests {
                 position,snake_id:0,generation:w.snake(0).unwrap().generation,..Default::default()});
             assert_eq!(c.pickups[raw],1);
             assert_eq!(c.records.last().unwrap().outcome,Some(Some((0,w.snake(0).unwrap().generation))));
-            assert_eq!(c.episodes[0].kind,if kind==EffectKind::Frost {EffectKind::Venom as u8} else {kind as u8});
+            assert_eq!(c.episodes[0].kind,if matches!(kind,EffectKind::Frost|EffectKind::Flip) {EffectKind::Venom as u8} else {kind as u8});
         }
         for &kind in snakes_core::effects::ENABLED_KINDS {assert!((kind as usize)<EFFECT_KIND_COUNT);}
         c.report("test",w.config(),false); // Includes the resolved-total invariant.

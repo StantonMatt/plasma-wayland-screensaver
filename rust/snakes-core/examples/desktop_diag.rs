@@ -68,6 +68,7 @@ let inner=AiController::new();assert_eq!(experiment,0,"policy experiments are no
   .map_or(EffectEpisode::default(),|s|EffectEpisode {generation:s.generation,kind:s.effect_kind,used:false}));
  let mut replay_out=if args.iter().any(|a|a=="--replay") {Some(BufWriter::new(File::create(format!("{prefix}.replay.jsonl")).unwrap()))} else {None};
  let mut trace=if replay_out.is_some() {let mut f=BufWriter::new(File::create(format!("{prefix}.ticks.csv")).unwrap());writeln!(f,"tick,snake,generation,mode,target,distance,selected,direct_safe,direct_viable,tracking,turn_accum,recovery,stall,prey,prey_generation,venom_target").unwrap();Some(f)} else {None};
+ ai.inner.reset_flip_decision_counts();
  let mut inventory=super::inventory_metrics::InventoryMetrics::default();
  let (mut frost_spawns,mut frost_picks,mut frost_activations,mut frost_freezes,mut frost_kills,mut frost_bites)=(0u64,0u64,0u64,0u64,0u64,0u64);
  for tick in 0..minutes*1800 {
@@ -121,6 +122,7 @@ let inner=AiController::new();assert_eq!(experiment,0,"policy experiments are no
   if ((0..1800).contains(&tick) || (36000..37800).contains(&tick)) && tick%3==0 {if let Some(f)=&mut replay_out {replay(&w,&ai.obs,f);}}
  }
  inventory.write(prefix);
+ for (label,count) in ["considered","growth","tail_wall","near_tail","size_or_phase","not_closing","ambush_geometry","prize_near_head","prize_behind","prize_tail_reachable","no_situation","tail_area","trial_wall","trial_cap","trial_short","trial_area","selected_other","selected_escape","selected_ambush","selected_loot","ambush_no_certified_win","escape_proposals","ambush_proposals","loot_proposals"].into_iter().zip(ai.inner.flip_decision_counts()) {println!("flip_decision {label}={count}");}
  times.sort_unstable_by(f64::total_cmp);cap_times.sort_unstable_by(f64::total_cmp);prism_times.sort_unstable_by(f64::total_cmp);
  let median=|xs:&[f64]|if xs.is_empty(){0.0}else{xs[xs.len()/2]};let total_ticks:u64=counts.iter().map(|c|c.ticks).sum();let food:u64=counts.iter().map(|c|c.food).sum();let intended:u64=counts.iter().map(|c|c.intended).sum();let pickups:u64=counts.iter().map(|c|c.capsules).sum();let caps_intended:u64=counts.iter().map(|c|c.caps_intended).sum();let circles:u64=counts.iter().map(|c|c.circles.iter().sum::<u64>()).sum();let strategy:u64=counts.iter().map(|c|c.strategy).sum();
  let pct=|a:u64,b:u64|a as f64*100.0/b.max(1) as f64;let sum=|f:fn(&Counts)->u64|counts.iter().map(f).sum::<u64>();
