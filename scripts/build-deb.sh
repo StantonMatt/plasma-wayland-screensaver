@@ -23,6 +23,7 @@ if [[ -z "${project_version}" || "${debian_version}" != "${project_version}" ||
 fi
 
 shellcheck \
+    "${project_root}/scripts/ci-frame-cadence.sh" \
     "${project_root}/scripts/build-deb.sh" \
     "${project_root}/scripts/build-ppa-source.sh" \
     "${project_root}/scripts/publish-ppa.sh" \

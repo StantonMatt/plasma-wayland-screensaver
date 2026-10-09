@@ -328,11 +328,30 @@ usage. Initial five seconds are excluded from frame metrics. Reanalyze saved CSV
 and logs with `--summarize-only --output-dir PATH` (use `--warmup` to override the
 exclusion period).
 
-CI checks three 640×360 outputs for 45 seconds on both forced Vulkan (lavapipe)
-and OpenGL (llvmpipe), using the freshly built package. Reproduce it with
+CI compares the freshly built package (A) against the latest GitHub release (B)
+on the same runner for both forced Vulkan (lavapipe) and OpenGL (llvmpipe).
+The release is extracted to a separate prefix without replacing the installed
+candidate. Four 30-second runs use three 640×360 outputs in B/A/A/B order, each
+excluding five seconds of warmup. The symmetric run order reduces bias from
+gradual runner load changes. Each window's mean candidate frame count must
+be at least 90% of its baseline mean; the 10% allowance accommodates residual
+shared-runner noise (historical unpaired Vulkan counts varied by up to 7.6%,
+and OpenGL by up to 25.1%). This initial allowance needs calibration with paired
+CI results; independent runner samples do not estimate paired noise.
+Every candidate run also requires at least 70% of expected frames and a median
+interval within 25% of the target. Missing releases, download failures, or an
+unusable release trace produce a warning and retain the absolute checks.
+Both builds' CSV, summaries, compositor/app logs, release identity, and the
+comparison JSON are uploaded together, with a per-window comparison table in
+the job log.
+
+Reproduce one candidate measurement with
 `--graphics-api vulkan --render-loop basic --outputs 3 --rates 60 --width 640 --height 360
---duration 45 --check`. A backend fallback, fewer than 80% of expected frames
-on any window, or a median interval more than 25% from the target fails the run.
+--duration 30 --warmup 5 --min-frame-ratio 0.7 --check`.
+Use `scripts/ci-frame-cadence.sh CANDIDATE_BINARY BASELINE_BINARY GRAPHICS_API OUTPUT_DIR`
+for the interleaved runs (an empty baseline path selects the absolute fallback),
+or `python3 scripts/compare-frame-timing.py --help` to compare saved summaries.
+A candidate backend fallback also fails the run.
 The Vulkan check also verifies each initialized scene graph uses a render thread
 and swap interval zero, even when the harness supplies the `basic` override.
 The expected cadence uses each output's advertised refresh and the clock's

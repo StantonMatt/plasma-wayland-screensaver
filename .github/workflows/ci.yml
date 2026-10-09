@@ -14,7 +14,8 @@ jobs:
     name: Wayland multi-output (${{ matrix.graphics-api }})
     runs-on: ubuntu-26.04
     needs: kubuntu-package
-    timeout-minutes: 10
+    # Four 30s measurements plus bounded release download and dependency installation.
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -36,29 +37,44 @@ jobs:
             "$RUNNER_TEMP"/package/*.deb kwin-wayland mesa-vulkan-drivers \
             libvulkan1 libgl1-mesa-dri dbus python3 qt6-wayland
 
-      - name: Check three-output submission cadence
+      - name: Extract latest release baseline
+        id: baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-package" "$RUNNER_TEMP/frame-timing"
+          # Resolve once so a release published mid-job cannot change the baseline.
+          if tag=$(timeout 20s gh api "repos/$GH_REPO/releases/latest" --jq .tag_name) &&
+             timeout 60s gh release download "$tag" --repo "$GH_REPO" \
+               --pattern 'plasma-visual-screensaver_*_amd64.deb' --dir "$RUNNER_TEMP/release-package"; then
+            packages=("$RUNNER_TEMP"/release-package/*.deb)
+            if [[ ${#packages[@]} == 1 ]] &&
+               dpkg-deb -x "${packages[0]}" "$RUNNER_TEMP/release-prefix" &&
+               [[ -x "$RUNNER_TEMP/release-prefix/usr/bin/plasma-visual-screensaver" ]]; then
+              echo "binary=$RUNNER_TEMP/release-prefix/usr/bin/plasma-visual-screensaver" >> "$GITHUB_OUTPUT"
+              printf 'Release baseline: %s (%s)\n' "$tag" "$(basename "${packages[0]}")" \
+                | tee "$RUNNER_TEMP/frame-timing/baseline.txt"
+            else
+              echo "::warning::Release package missing, ambiguous, or invalid; using absolute cadence checks."
+            fi
+          else
+            echo "::warning::Latest release unavailable or download failed; using absolute cadence checks."
+          fi
+
+      - name: Compare three-output submission cadence with release
         env:
           LIBGL_ALWAYS_SOFTWARE: 1
           GALLIUM_DRIVER: llvmpipe
+          BASELINE_BINARY: ${{ steps.baseline.outputs.binary }}
+          GRAPHICS_API: ${{ matrix.graphics-api }}
         run: |
           # Isolate Vulkan from any hardware ICDs; both paths use Mesa CPU rendering.
-          export VK_DRIVER_FILES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
+          VK_DRIVER_FILES="$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)"
+          export VK_DRIVER_FILES
           test -n "$VK_DRIVER_FILES"
-          # Mesa CPU rendering on shared runners delivers ~72-96% of frames for healthy
-          # builds, so this job guards against stalls (70% floor plus the median pacing
-          # check); CPU cost is gated by the paired benchmarks.
-          loop_args=(--min-frame-ratio 0.7)
-          if [ "${{ matrix.graphics-api }}" = vulkan ]; then
-            # Reproduce the inherited GUI-thread loop seen on the real desktop.
-            # Explicit experimental Vulkan startup must replace it with its threaded loop.
-            loop_args+=(--render-loop basic)
-          fi
-          ./scripts/frame-timing.sh \
-            --binary /usr/bin/plasma-visual-screensaver \
-            --graphics-api "${{ matrix.graphics-api }}" --outputs 3 --rates 60 \
-            "${loop_args[@]}" \
-            --width 640 --height 360 --duration 45 --warmup 5 --check \
-            --output-dir "$RUNNER_TEMP/frame-timing"
+          ./scripts/ci-frame-cadence.sh /usr/bin/plasma-visual-screensaver \
+            "$BASELINE_BINARY" "$GRAPHICS_API" "$RUNNER_TEMP/frame-timing"
 
       - name: Upload timings and compositor logs
         if: always()

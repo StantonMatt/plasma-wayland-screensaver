@@ -160,6 +160,8 @@ add_test(NAME egl-drain-exports
         "$<TARGET_FILE:plasma-visual-screensaver>")
 add_test(NAME frame-timing-gate
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_frame_timing.py")
+add_test(NAME frame-timing-comparison
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_frame_timing_comparison.py")
 add_custom_target(snakes-parity-build ALL
     COMMAND "${CMAKE_COMMAND}" -E env ${SNAKES_CORE_CARGO_ENV}
         "${CARGO_EXECUTABLE}" build --frozen --offline
