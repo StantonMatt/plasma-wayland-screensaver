@@ -20,6 +20,13 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.22.0" date="2026-10-10">
+      <description>
+        <p>Adds a Halloween theme from October 24 to November 1: a jack-o'-lantern
+        prize, lantern eyes, a witch's hat, sweets and bats. It can be turned off
+        with Seasonal themes.</p>
+      </description>
+    </release>
     <release version="0.21.0" date="2026-10-10">
       <description>
         <p>Trapped snakes now use their held power-ups to escape: Venom bites
