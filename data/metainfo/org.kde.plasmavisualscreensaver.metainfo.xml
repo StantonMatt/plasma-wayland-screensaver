@@ -20,6 +20,13 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.21.0" date="2026-10-10">
+      <description>
+        <p>Trapped snakes now use their held power-ups to escape: Venom bites
+        through the trapping body, Phase slips through, Frost freezes the
+        trappers, Surge outruns a closing gap and Flip reverses out.</p>
+      </description>
+    </release>
     <release version="0.20.0" date="2026-10-09">
       <description>
         <p>Add Whirlpool, a teal spiral power-up. Snakes open a vortex near food,
