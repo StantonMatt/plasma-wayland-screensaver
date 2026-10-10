@@ -25,6 +25,7 @@ public:
         float motionScale;
         float paletteMode;
         float ambient;
+        float season;
     };
     static constexpr int UniformBufferSize = (sizeof(UniformData) + 15) & ~15;
     SnakeMaterial();
@@ -42,6 +43,7 @@ public:
     float motionScale = 1;
     float paletteMode = 0;
     float ambient = 1;
+    float season = 0;
 private:
     QSGTexture *m_iconAtlas = nullptr;
     friend class SnakeRendererTest;

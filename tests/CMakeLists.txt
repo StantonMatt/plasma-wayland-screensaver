@@ -117,7 +117,7 @@ add_executable(test-snakerenderer
     ../src/configuration.cpp
     ../src/configuration.h
 )
-target_include_directories(test-snakerenderer PRIVATE ../src)
+target_include_directories(test-snakerenderer PRIVATE ../src "${PROJECT_BINARY_DIR}/src")
 target_link_libraries(test-snakerenderer PRIVATE Qt6::Qml Qt6::Quick Qt6::Test KF6::ConfigCore SnakesCore::snakes_core)
 add_test(NAME snake-renderer COMMAND test-snakerenderer)
 set_tests_properties(snake-renderer PROPERTIES
@@ -179,6 +179,7 @@ set_tests_properties(snakes-parity-record PROPERTIES TIMEOUT 240)
 add_executable(test-overlaysnakes
     test_overlaysnakes.cpp
     ../src/overlaymanager.cpp ../src/overlaymanager.h
+    ../src/season.cpp ../src/season.h
     ../src/animationstate.cpp ../src/animationstate.h
     ../src/presentationclock.cpp ../src/presentationclock.h
     ../src/snakesimulation.cpp ../src/snakesimulation.h
@@ -200,6 +201,7 @@ add_executable(test-applicationcontroller
     ../src/inhibitor.cpp ../src/inhibitor.h
     ../src/screensaverstatemachine.cpp ../src/screensaverstatemachine.h
     ../src/overlaymanager.cpp ../src/overlaymanager.h
+    ../src/season.cpp ../src/season.h
     ../src/animationstate.cpp ../src/animationstate.h
     ../src/presentationclock.cpp ../src/presentationclock.h
     ../src/snakesimulation.cpp ../src/snakesimulation.h
@@ -230,3 +232,8 @@ target_include_directories(test-settingsqml PRIVATE ../src)
 target_link_libraries(test-settingsqml PRIVATE Qt6::Quick Qt6::Qml Qt6::QuickTest KF6::ConfigCore)
 add_test(NAME settings-qml COMMAND test-settingsqml -input "${CMAKE_CURRENT_SOURCE_DIR}/settings")
 set_tests_properties(settings-qml PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+
+add_executable(test-season test_season.cpp ../src/season.cpp ../src/season.h)
+target_include_directories(test-season PRIVATE ../src)
+target_link_libraries(test-season PRIVATE Qt6::Core Qt6::Test)
+add_test(NAME season COMMAND test-season)

@@ -2,6 +2,8 @@
 #pragma once
 
 #include "animationstate.h"
+#include "season.h"
+#include <QTimer>
 
 #include <QObject>
 #include <QElapsedTimer>
@@ -49,6 +51,8 @@ private:
     bool addScreen(QScreen *screen);
     void removeScreen(QScreen *screen);
     void updateAllViewGeometry();
+    void updateSeason();
+    void refreshSeasonDate();
     void updateViewGeometry(QScreen *screen);
     void updateAnimationState();
     void updatePresentationClocks();
@@ -60,6 +64,10 @@ private:
     bool isDismissEvent(const QEvent *event) const;
 
     Configuration *m_configuration;
+    QTimer m_seasonTimer;
+    QDate m_seasonDate;
+    QString m_seasonOverride;
+    Season m_season = Season::None;
     AnimationState m_animationState;
     QHash<QScreen *, QQuickView *> m_views;
     QHash<QScreen *, QRect> m_screenGeometries;

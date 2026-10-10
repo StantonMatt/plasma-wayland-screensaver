@@ -34,6 +34,7 @@ const fn value(name: &str) -> f64 {
 
 pub(in crate::render) const BODY: f64 = value("BOUNDS_BODY");
 pub(super) const HEAD_BACK: f64 = value("BOUNDS_HEAD_BACK");
+pub(super) const HEAD_HAT_BACK: f64 = value("BOUNDS_HEAD_HAT_BACK");
 pub(super) const HEAD_BOOST_BACK: f64 = value("BOUNDS_HEAD_BOOST_BACK");
 pub(super) const HEAD_FRONT: f64 = value("BOUNDS_HEAD_FRONT");
 pub(super) const HEAD_SIDE: f64 = value("BOUNDS_HEAD_SIDE");
@@ -176,6 +177,17 @@ mod tests {
         assert!(HEAD_SIDE >= 0.56 + 1.15); // both eye glows, incl. flare
         assert!(HEAD_BACK >= 1.0); // explicit neck fade
         assert!(HEAD_BACK >= 0.60 + 0.035 + head_aa); // crown outline
+        for expression in ["vec2(-0.98,0.36)", "vec2(-0.80,0.12)",
+            "crown=min(cone-0.02,tip-0.02)", "rim=mask(abs(hat)-0.05)",
+            "smoothstep(-1.0,-0.55,p.x)"] {
+            assert!(SHADER.contains(expression), "rederive witch hat support: {expression}");
+        }
+        assert!(HEAD_HAT_BACK >= 0.98 + 0.02 + 0.05 + head_aa); // bent tip + dilation + outline + AA
+        assert!(HEAD_HAT_BACK >= 0.80 + 0.02 + 0.05 + head_aa); // cone, same support
+        assert!(HEAD_SIDE >= 0.92 + 0.05 + head_aa); // brim outline
+        // Head copy selection uses the front bound as its conservative radial
+        // longitudinal extent; it contains all three possible rear bounds.
+        assert!(HEAD_FRONT >= HEAD_HAT_BACK && HEAD_FRONT >= HEAD_BOOST_BACK);
         assert!(HEAD_SIDE >= 0.8 + 0.035 + head_aa);
         assert!(HEAD_FRONT >= 0.02 + 1.0); // crown additive glow
         assert!(HEAD_SIDE >= (2.15_f64.max(1.42 + food_aa)) * 0.84 / 1.14); // head halo, max tier

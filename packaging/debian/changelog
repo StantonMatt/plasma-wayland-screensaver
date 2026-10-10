@@ -1,3 +1,12 @@
+plasma-visual-screensaver (0.22.0-1) unstable; urgency=medium
+
+  * Add a Halloween theme from October 24 to November 1: a pumpkin prize that
+    lights up as a jack-o'-lantern, lantern eyes, a witch's hat for the
+    leader, wrapped sweets, bat essence shards and Nightfall bats.
+  * Add a Seasonal themes setting under Colors, on by default.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Sat, 10 Oct 2026 10:07:41 -0300
+
 plasma-visual-screensaver (0.21.0-1) unstable; urgency=medium
 
   * Trapped snakes use held power-ups to escape: Venom bites through the
