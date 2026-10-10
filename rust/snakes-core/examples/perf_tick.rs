@@ -3,10 +3,11 @@
 use snakes_core::{ai::AiController,controller::{Controller,Steering},Config,World,RuleSet,Point,SnakeView};
 use std::time::Instant;
 #[path="support/long_fixtures.rs"] mod long_fixtures;
+// Replay fixes all world inputs, including guard/intent hooks; only AI work changes.
 struct Observed {ai:AiController,hash:u64,diagnostics:bool,replay:bool}
 fn hash(h:&mut u64,x:u64){*h=h.rotate_left(7)^x.wrapping_mul(0x9e3779b97f4a7c15);}
 impl Controller for Observed {
-    fn delegate(&self,_id:u32)->Option<&dyn Controller> {Some(&self.ai)}
+    fn delegate(&self,_id:u32)->Option<&dyn Controller> {if self.replay {None} else {Some(&self.ai)}}
  fn use_request(&self,id:u32)->u32 {if self.replay {0} else {self.ai.use_request(id)}}
  fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {
   let id=s.id;let result=self.ai.steer(w,s);

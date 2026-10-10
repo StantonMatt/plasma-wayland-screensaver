@@ -8,7 +8,16 @@ impl AiController {
         let inv=s.inventory;
         if w.config().rules!=crate::RuleSet::V2 || !w.config().power_ups
             || inv.count==0 || inv.windup!=0 || inv.cooldown!=0 {return;}
-        let danger=baseline.steps<15 || state.debug.flags&32!=0 || s.flags&crate::flags::TRAPPED!=0;
+        let danger=baseline.steps<horizon || state.debug.flags&32!=0
+            || s.flags&crate::flags::TRAPPED!=0 || w.tick()<state.escape_until;
+        if danger {
+            // Search every held escape before applying offence/expiry utility.
+            // A failed first item must not hide another certified escape.
+            if self.choose_escape_item(w,s,state,baseline,horizon) {return;}
+            // No proof survived the wind-up. Spending a rescue speculatively
+            // cannot improve the chosen emergency prefix.
+            return;
+        }
         if !danger && w.tick()%3!=s.id as u64%3 {return;}
         let offensive=aggression::level(w);
         let mut kinds=0u8;
@@ -171,7 +180,7 @@ mod tests {
         ai.rollout_into(&w,w.snake(0).unwrap(),proposal,1,STEPS,&mut trial);
         assert!(trial.steps>=125 && trial.steps<STEPS,"tangible exit hits the wall: steps={} capped={} width={} travel={}",trial.steps,trial.capped,w.config().width,travel);
         ai.choose_inventory(&w,w.snake(0).unwrap(),&mut state,&Candidate {steps:4,..Default::default()},NORMAL_STEPS);
-        assert_eq!(state.use_slot,0,"reject a use with no checked tangible exit");
+        assert_eq!(state.use_slot,0,"keep Phase when a checked item-free turn escapes the unsafe straight exit");
         w.snakes[0].inventory.windup=1;w.snakes[0].inventory.windup_ticks=4;
         assert_eq!(phase::horizon(&w,w.snake(0).unwrap(),NORMAL_STEPS),STEPS);
     }

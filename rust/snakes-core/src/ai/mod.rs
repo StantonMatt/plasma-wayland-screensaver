@@ -13,6 +13,7 @@ mod race;
 mod events;
 mod forecast;
 mod inventory;
+mod escape;
 mod flip;
 mod whirlpool;
 mod wall;
@@ -145,6 +146,15 @@ impl State {
 
     /// Install the controls carried by the rollout after bookkeeping that can
     /// clear old tactics. Never reconstruct a maneuver from its scratch slot.
+    /// Public debug describes the trajectory the snake will execute.
+    fn record_path(&mut self,c:&Candidate) {
+        self.debug.path_count=16.min(c.steps+1) as u32;
+        for j in 0..self.debug.path_count as usize {
+            self.debug.path[j]=c.path[j*c.steps/(self.debug.path_count as usize-1).max(1)];
+        }
+        self.debug.safe_seconds=c.steps as f64*STEP_SECONDS;
+        self.debug.reachable_cells=c.area as u32;
+    }
     fn commit_candidate(state:&mut State,c:&Candidate,best:usize,w:&World,s:SnakeView<'_>,turn:f64,need:usize) {
         if !c.tracks_goal {state.clear_coil(s.angle);}
         if best!=1 && normalize_angle(c.desired-s.angle).abs()>0.5 {
@@ -503,10 +513,12 @@ pub enum AbandonReason {#[default] None,Recovery,Stall,Escape,Rescore,Blocked,De
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DesktopObservation {
     pub contested:bool, pub fleeing:bool, pub cutoff:bool, pub cutoff_start:u64, pub boosted:bool, pub power_up:u8,
+    pub ordinary_danger:bool, pub ordinary_horizon:usize,
     pub safe_ticks:usize, pub horizon:usize, pub continuation:bool, pub continuation_unresolved:bool,
     pub any_first_step:bool, pub next_head:Point, pub rival_next:[Point;MAX_SNAKES],
     pub rival_generation:[u32;MAX_SNAKES],
     pub flip_situation:u8,
+    pub escape_item:u8, pub escape_item_safe:usize, pub escape_item_bite:usize, pub escape_item_danger:bool,
     pub generation:u32, pub mode:u8, pub target:u64, pub goal:Point,
     pub reused_plan:bool, pub retained_drift:f64, pub reach:f64, pub abandon:AbandonReason,
     pub escape_started:bool, pub target_kind:u8,
@@ -521,6 +533,8 @@ pub struct DesktopObservation {
 pub struct AiController {
     #[cfg(test)]
     reference_queries:bool,
+    #[cfg(test)]
+    legacy_escape_proof:bool,
     #[cfg(test)]
     venom_searches:std::cell::Cell<usize>,
     spatial: Spatial,
@@ -547,6 +561,8 @@ pub struct AiController {
     decisions: [DecisionDiagnostic; MAX_SNAKES],
     #[cfg(feature="desktop-diag")]
     desktop: [DesktopObservation;MAX_SNAKES],
+    #[cfg(feature="desktop-diag")]
+    escape_decisions:[Option<escape::EscapeDecision>;MAX_SNAKES],
     states: [State; MAX_SNAKES],
     policy_aggression:u8,
     rivals: [Rival; MAX_SNAKES],
@@ -592,6 +608,8 @@ impl AiController {
             race_profile:[0;2],
             rival_bounds:[[TrailBounds::default();STEPS+1];MAX_SNAKES],rival_bounds_horizons:[0;MAX_SNAKES],
             #[cfg(feature="desktop-diag")] desktop:[DesktopObservation::default();MAX_SNAKES],
+            #[cfg(feature="desktop-diag")] escape_decisions:[None;MAX_SNAKES],
+            #[cfg(test)] legacy_escape_proof:false,
             #[cfg(test)] reference_queries:false,spatial:Spatial::new(),motion_keys:[None;MAX_SNAKES],candidates:Some(Box::new([Candidate::default();CANDIDATES])),rollout_distance:[0.0;STEPS+1],rollout_reversal:Reversal::default(),rollout_projection:[0.0;STEPS+1],rival_necks:[[0;STEPS+1];MAX_SNAKES],neck_owner:MAX_SNAKES,neck_horizons:[0;MAX_SNAKES],body_cache:[BodyCache::default();256],cache_epoch:0, diagnostic_enabled:false,profile_enabled:false,wall_circles:[None;64],collision_effects:false,profile:[0;5],forecast_profile:[0;5],strategy_profile:[0;4], decisions:[DecisionDiagnostic::default();MAX_SNAKES], states:[State::default(); MAX_SNAKES],policy_aggression:100,
             rivals:[Rival::default();MAX_SNAKES],
             #[cfg(test)]
@@ -2780,12 +2798,7 @@ impl Controller for AiController {
         let diff=normalize_angle(c.desired-s.angle);
         let sign=if diff>0.07 {1} else if diff< -0.07 {-1} else {0};
         if sign!=0 {state.last_turn_tick=w.tick();state.turn_sign=sign;}
-        state.debug.path_count=16.min(c.steps+1) as u32;
-        for j in 0..state.debug.path_count as usize {
-            state.debug.path[j]=c.path[j*c.steps/(state.debug.path_count as usize-1).max(1)];
-        }
-        state.debug.safe_seconds=c.steps as f64*STEP_SECONDS;
-        state.debug.reachable_cells=c.area as u32;
+        state.record_path(c);
         if (c.area as f64) < 1.5 * need as f64 && !c.uncertain {state.debug.flags|=32;}
         if c.uncertain {state.debug.flags|=1;}
         if c.capped {state.debug.flags|=2;}
@@ -2793,27 +2806,12 @@ impl Controller for AiController {
         if reuse_plan {state.debug.flags|=16;}
         self.look_deltas[id]=w.displacement(s.segments[0].current,state.goal);
         #[cfg(feature="desktop-diag")] {
-            observation.contested=self.contested_target(w,s,state);
-            observation.fleeing=w.tick()<state.dodge_until;
-            observation.cutoff=state.attack.valid || (state.barrier && state.track_goal && state.prey!=0 && w.tick()>=state.escape_until && w.tick()>=state.orbit_until);observation.cutoff_start=state.attack.start;
-            observation.boosted=s.boost_ticks>0 || state.rush>0.0;
-            observation.power_up=if s.effect_ticks>0 {s.effect_kind} else {0};
-            observation.target=state.target;observation.goal=state.goal;
-            observation.prey=state.prey as u32;observation.prey_generation=state.prey_generation;observation.venom_target=state.venom_target as u32;
-            let objective=self.target_food(state);
-            observation.target_kind=objective.map_or(0,|f|if f.kind==crate::FoodKind::Meteor {3} else if f.id & target::ITEM_BIT!=0 {1} else if matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed) {2} else {0});
-            observation.distance=w.distance_squared(s.segments[0].current,objective.map_or(state.goal,|f|f.position)).sqrt();
-            observation.flip_situation=state.flip_situation;observation.turn_accum=state.turn_accum;observation.tracking=state.track_goal;
-            let d=w.displacement(s.segments[0].current,state.goal);
-            observation.target_bearing=normalize_angle(d.y.atan2(d.x)-s.angle);
-            observation.mode=if w.tick()<state.orbit_until {1} else if w.tick()<state.escape_until {2}
-                else if state.vulturing && objective.is_some_and(|f|f.kind==crate::FoodKind::Meteor) {if w.vortex().is_some_and(|v|v.owner_snake_id==s.id && v.owner_generation==s.generation) {12} else {13}} else if state.coil_radius>0.0 {3} else if state.guarding {4} else if state.vulturing {5}
-                else if state.venom_standoff {6} else if state.venom_target!=0 {7}
-                else if state.prey!=0 {8} else if state.target & target::ITEM_BIT!=0 {9}
-                else if self.target_food(state).is_some_and(|f|matches!(f.kind,crate::FoodKind::Prism|crate::FoodKind::PrismSeed)) {10}
-                else if state.target!=0 {11} else {0};
+            self.observe_objective(w,s,state,&mut observation);
+            observation.ordinary_horizon=horizon;
+            observation.ordinary_danger=observation.safe_ticks<horizon || observation.mode==2 || observation.escape_started;
             self.desktop[id]=observation;
         }
+        #[cfg(feature="desktop-diag")] self.remember_escape_decision(w,s,state,&candidates[best],horizon);
         self.choose_inventory(w,s,&mut state,&candidates[best],horizon);
         #[cfg(feature="desktop-diag")] {self.desktop[id].flip_situation=state.flip_situation;}
         self.states[id]=state;
