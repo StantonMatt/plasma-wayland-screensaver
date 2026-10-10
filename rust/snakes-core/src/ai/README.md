@@ -1748,7 +1748,7 @@ activation, replacement, effect expiry, free Surge burst payments, and Frost
 victim motion at the activation endpoint. Held Frost preserves the active effect.
 
 Ordinary use decisions run every three ticks, staggered by snake ID. Imminent
-collision/Trapped Phase checks run each tick. Phase is saved for escape or a
+collision/Trapped escape checks consider every held escape kind. Phase is saved for escape or a
 blocked offensive route; Surge is used for closing hunters, dangerous pockets,
 contested arrivals and cutoffs; Frost for clustered eligible rivals or a
 closing hunter; Venom for a behind-the-rear approach with a checked continuation;
@@ -1763,6 +1763,90 @@ proof through its first tangible movements rather than stopping while ghosted.
 drops and situation counts. Its stdout also reports trapped Phase activations,
 one-second same-generation survival and deaths with unused held Phase. These
 are diagnostic observations, not proofs of a causal rescue or guaranteed safety.
+
+## Held-item escape admission (0.21.0)
+
+Escape inventory decisions override offence and expiry reservations whenever the
+selected ordinary path falls below its safety horizon, has insufficient room,
+or carries a trapped/escape observation. A full-horizon ordinary continuation
+with enough room keeps its items. Frost, Flip, Surge, Phase and Venom are tried
+in that order; Magnet and Whirlpool do not qualify as escapes. A failed item
+cannot hide a surviving item in another slot. Rescue Venom is independent of
+aggression.
+
+`escape.rs` checks the retained controls and bounded straight, turn and compound
+maneuvers with the existing rollout buffers and `forecast.rs` participant
+ordering. Completion is movement five after a new request: the first four
+movements remain corporeal. Venom needs a legal physical rear-body cut and at
+least twelve checked exit movements; detached tails are noncollidable and their
+nutrition is released by World after its usual wriggle delay. Phase admission
+includes tangible emergence at the full 138-movement horizon. Frost retains
+victim slowdown and burst cancellation; Surge retains its changed turn radius;
+Flip retains the completion endpoint and reversed trail. Other items use the
+ordinary candidate horizon, including its existing enclosure-risk extension.
+Every accepted path passes shared wall admission and rechecks endpoint trajectory space. The
+same maneuver is checked without the item before spending it; a surviving free
+escape keeps the inventory. A no-cut Venom forecast can only return such an
+item-free continuation; it cannot justify spending Venom as a rescue. The
+feature-gated `escape_item_bite` observation and `venom_no_cut` request counter
+check this condition. Selected controls, including compound exits, are
+committed from the proved candidate. All production storage is fixed-size;
+open safe paths skip item evaluation.
+
+The feature-gated desktop observer reports `holding_any` and `usable_any` at
+death, with kind/cause counts. Held activation totals are separate from full-inventory
+field-touch activations. It preserves three thirty-tick World/controller
+snapshots and reproduces each death's actual last thirty decisions. At each
+same-generation decision, an isolated AI clone tests each kind still held at
+death using the shared escape rollouts, the actual recorded decision horizon
+(including scheduled enclosure extensions), inventory clocks and wind-up.
+The probe retains the state from before inventory selection and rejects stale
+tick/generation contexts. It requires an actual held-slot request; a Venom
+proof returning an item-free continuation never counts as usable. Like real
+admission, each item proof must also fail its equally safe item-free version. It applies the same aggression/Surge planner view as steer. This is a
+bounded forecast-certified opportunity, not an exhaustive
+proof or a guarantee against unobserved rival changes. Snapshot/replay work is
+outside timed steps and is absent from CPU builds. `escape_requests` counts
+policy requests by kind; false positives count requests without current safety
+or space danger, and admission also excludes an equally safe item-free version
+of the same path.
+
+`desktop_diag` additionally writes `.attribution.csv` for every self/head death
+and `.escape_activations.csv` for every held completion. Histories include the
+five-minute warm-up and reset on generation changes. The ten-second window
+starts at actual completion, not request; shelf compaction and fizzles preserve
+the pending slot identity. Danger-associated completions use the same observed
+ordinary-path danger/escape-mode criterion in both policies, while a separate mask
+identifies requests from the new escape proof. Executed-path observations (next head, safety
+horizon/continuation, selected
+maneuver and objective/contest/replay fields) refresh after every escape commit,
+including item-free continuations. Ordinary-path danger and horizon are kept
+separately for episode attribution and counterfactual certification. Objective
+observations share one helper between ordinary and escape commits.
+All held completions are retained
+as a sensitivity check for offensive uses. These associations do not establish
+causality.
+
+Attribution reports both existing cohort schemes: physical body length from
+`length_metrics` (giant at twice arena height, long above four nominal safety
+horizons of travel) and segment count from `death_leadups` (<40, 40..99, >=100).
+Death cohorts use the collision's captured length; exposure samples movers
+before each measured movement and assigns their tick after completion events.
+Both exposure and death masks use that completed movement's tick, including
+same-frame activation/death and ten-second expiry. Cohorts use the completed
+movement length (captured collision length for deaths), with the mover's sampled
+radius/speed; replacements born after movement receive no movement exposure. Near-death episodes contain unsafe-horizon or
+escape decisions; dangerous observations at most 30 ticks apart form one episode. Death rows retain
+the latest episode's start, last danger, and previous distinct episode's end,
+so an ongoing terminal episode cannot replace the previous-episode age.
+Missing episode ages mean no earlier observed episode in that generation.
+The seed-404 World-step regression replays the original no-cut Venom request at
+9154, forks the controller/world at 9153, and checks that the corrected proof
+keeps the item and survives the original head death at 9196. Its legacy replay
+switch exists only in test builds. Six-seed attribution, exposure, policy
+variants and interleaved CPU evidence are recorded in the worker scratch
+`escape/REPORT.md`; short three-seed changes are not treated as rate evidence
+without the live-cohort denominator.
 
 ## Flip inventory action (0.19.0)
 

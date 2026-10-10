@@ -37,13 +37,14 @@ opens the latest GitHub release instead.
 > It does not authenticate, lock input, protect running applications, or replace
 > Plasma's lock screen. Anyone who dismisses it can use the session.
 
-## Slithering Snakes 0.20.0
+## Slithering Snakes 0.21.0
 
-Whirlpool is a teal spiral power-up. With storage on, a snake saves it and
-opens a vortex near food when it chooses. With storage off, the vortex opens
-at the capsule. It gathers ordinary food for five seconds and bursts into
-essence shards. The holder circles nearer the core, while rivals orbit
-outside and race the burst. Prism fruit and Starfall food stay outside the brew.
+Trapped snakes now fight their way out with what they hold. When a snake is
+boxed in, it checks each stored power-up as an escape: Venom bites through
+the blocking body, Phase slips through it, Frost freezes the snakes closing
+in, Surge outruns a closing gap and Flip reverses out. It spends the
+cheapest item that gets it out alive and keeps its items when a free path
+exists.
 
 ## Architecture
 
