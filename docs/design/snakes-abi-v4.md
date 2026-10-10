@@ -97,3 +97,25 @@ and clears AI objectives and renderer contrail/wave/heading history per snake.
 Detached orphan tails retain their own geometry and lifecycle. The body shader
 uses its otherwise unused HUNTING bit (packed.z bit 2) for held tail eye-spots;
 head HUNTING and the existing Phase entry encoding remain independent.
+
+## Whirlpool (0.20.0)
+
+ABI v4 and all sizes stay unchanged. Inventory/effect kind 7 uses atlas tile 6
+and accent #33e0c8. It follows the shared storage, four-tick wind-up, expiry,
+fizzle, full-inventory contact and death-drop lifecycle. It does not replace
+an active effect. With storage off, contact opens it at the capsule; stored
+completion opens it at the holder's final endpoint.
+
+Vortex item kind 8, state 2, occupies the reserved fourth item slot, separately
+from the three-capsule cap. `charge_ticks` is elapsed charge (0..150),
+`life_ticks` is time until burst, `radius` is 22 base radii, `captured_value`
+is absorbed nutrition, and owner ID/generation identify the original life.
+`captured_by` uses the current one-based exported item slot; capture releases
+vacuum claims. Captured food is unavailable to every contact/forecast query.
+Prism/seed, Star and Meteor cannot be captured. Pull ends at tick 138; at 150
+VortexBurst=11 carries absorbed value, duration_ticks=14 and release_tick=vortex
+ID. Shards are ordinary Shard food. A second held use waits while a vortex
+exists; simultaneous completions or full-inventory contacts fizzle excess uses.
+Glyph 11 is the Whirlpool bubble. GPU sprite kind 19 is the vortex, with
+viewport culling, wrap copies and monotonic charge. Burst rings/flash use the
+existing event budget and simulation clock, including Calm.

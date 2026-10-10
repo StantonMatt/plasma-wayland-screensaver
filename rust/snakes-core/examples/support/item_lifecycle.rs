@@ -29,11 +29,16 @@ impl ItemLifecycle {
     pub fn activation(self)->bool {matches!(self,Self::HeldActivation|Self::FieldActivation)}
 }
 pub fn replaces_effect(e:&FrameEvent)->bool {
-    lifecycle(e).activation() && !matches!(EffectKind::from_byte(e.other_snake_id as u8),EffectKind::Frost|EffectKind::Flip)
+    // Exhaustive inventory-kind policy: keep in step with activate_item.
+    // Adding a kind requires explicitly classifying its observer episode.
+    lifecycle(e).activation() && match EffectKind::from_byte(e.other_snake_id as u8) {
+        EffectKind::Surge|EffectKind::Magnet|EffectKind::Phase|EffectKind::Venom=>true,
+        EffectKind::None|EffectKind::Frost|EffectKind::Flip|EffectKind::Whirlpool=>false,
+    }
 }
 
-/// Slot identity alone never identifies an effect episode. Frost, Flip and Stash do
-/// not replace it; both touch and held activation start a fresh episode.
+/// Slot identity alone never identifies an effect episode. Frost, Flip, Whirlpool
+/// and Stash preserve it; replacing touch/held activations start a fresh episode.
 #[derive(Clone,Copy,Debug,Default)]
 pub struct EffectEpisode {pub generation:u32,pub kind:u8,pub used:bool}
 impl EffectEpisode {
@@ -91,6 +96,37 @@ impl StepInventory {
 mod tests {
     use super::*;
     fn event(kind:EventKind,item:u32,slot:u16)->FrameEvent {FrameEvent {kind,generation:7,other_snake_id:item,cut_index:slot,..Default::default()}}
+    #[test]
+    fn every_inventory_kind_has_an_explicit_episode_policy() {
+        let expected=[false,true,true,true,true,false,false,false];
+        for (raw,&replacing) in expected.iter().enumerate() {
+            assert_eq!(EffectKind::from_byte(raw as u8) as usize,raw);
+            for flags in [0,event_flags::HELD_ACTIVATION] {
+                assert_eq!(replaces_effect(&FrameEvent {flags,..event(EventKind::Pickup,raw as u32,0)}),replacing,"kind={raw} flags={flags}");
+            }
+            for stage in [EventKind::Stash,EventKind::Use,EventKind::Fizzle,EventKind::EffectExpiry] {
+                assert!(!replaces_effect(&event(stage,raw as u32,0)));
+            }
+        }
+        for &kind in snakes_core::effects::ENABLED_KINDS {assert!((kind as usize)<expected.len());}
+    }
+    #[test]
+    fn non_replacing_activations_preserve_incumbent_use_and_expiry() {
+        for incumbent in 1..=4 {for auxiliary in [EffectKind::Frost,EffectKind::Flip,EffectKind::Whirlpool] {for held in [false,true] {
+            let mut episode=EffectEpisode::default();
+            assert!(episode.observe(&event(EventKind::Pickup,incumbent,0)));
+            let activation=FrameEvent {flags:if held {event_flags::HELD_ACTIVATION} else {0},..event(EventKind::Pickup,auxiliary as u32,0)};
+            assert!(!episode.observe(&activation));
+            assert_eq!((episode.kind,episode.generation,episode.used),(incumbent as u8,7,false));
+            assert!(episode.use_once(incumbent as u8,7),"subsequent benefit belongs to incumbent {incumbent}");
+            assert!(!episode.observe(&activation));
+            assert!(!episode.use_once(incumbent as u8,7),"auxiliary activation must not count the same episode twice");
+            episode.observe(&event(EventKind::EffectExpiry,auxiliary as u32,0));
+            assert_eq!(episode.kind,incumbent as u8);
+            episode.observe(&event(EventKind::EffectExpiry,incumbent,0));
+            assert_eq!(episode.kind,0);
+        }}}
+    }
     #[test]
     fn episodes_follow_activation_and_preserve_frost_storage_and_identity() {
         for kind in 1..=4 {for held in [false,true] {

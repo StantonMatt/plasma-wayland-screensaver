@@ -114,7 +114,7 @@ impl AiController {
             && w.distance_squared(tail,o.segments[0].current)<self.flip_ambush_window(w,s,o.id as usize).powi(2)) {return true;}
         let reach2=(15.0*s.radius).powi(2);
         let expiring=s.inventory.kinds.iter().zip(s.inventory.life).any(|(&kind,life)|kind==6 && life>4 && life<=150);
-        w.foods().any(|f|(f.vacuum_owner<0 || f.vacuum_owner==s.id as i32)
+        w.foods().any(|f|f.pickup_eligible(u64::MAX,0) && (f.vacuum_owner<0 || f.vacuum_owner==s.id as i32)
             && (matches!(f.kind,crate::FoodKind::Shard|crate::FoodKind::Prism|crate::FoodKind::Star)
                 || expiring && matches!(f.kind,crate::FoodKind::Spark|crate::FoodKind::Pellet))
             && w.distance_squared(tail,f.position)<=reach2)
@@ -199,7 +199,7 @@ impl AiController {
                 }
             };
             for f in w.foods() {
-                if f.vacuum_owner>=0 && f.vacuum_owner!=s.id as i32 {continue;}
+                if !f.pickup_eligible(u64::MAX,0) || f.vacuum_owner>=0 && f.vacuum_owner!=s.id as i32 {continue;}
                 if matches!(f.kind,crate::FoodKind::Shard|crate::FoodKind::Prism|crate::FoodKind::Star)
                     || expiring && matches!(f.kind,crate::FoodKind::Spark|crate::FoodKind::Pellet) {
                     prize(f.position,if f.kind==crate::FoodKind::Prism {9.0} else {f.value});

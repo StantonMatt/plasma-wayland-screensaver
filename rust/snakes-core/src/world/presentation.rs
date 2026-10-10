@@ -9,7 +9,7 @@ pub const MAX_CONTENDERS:usize=2;
 pub enum Mood {#[default] Calm, Sleepy, Hunting, Scared, Angry, Happy, Trapped, Dizzy, Frozen}
 #[repr(u8)]
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
-pub enum Glyph {#[default] Alert, Question, Anger, Sleep, Heart, Surge, Magnet, Phase, Venom, Frost, Flip}
+pub enum Glyph {#[default] Alert, Question, Anger, Sleep, Heart, Surge, Magnet, Phase, Venom, Frost, Flip, Whirlpool}
 #[repr(C)]
 #[derive(Clone,Copy,Debug,Default,PartialEq)]
 pub struct Bulge {pub start_tick:u64,pub duration_ticks:u16,pub origin_segment:u16,pub strength:f32}
@@ -66,7 +66,7 @@ impl World {
         }
     }
     pub(super) fn emit_bubble(&mut self,id:usize,glyph:Glyph) {
-        let forced=matches!(glyph,Glyph::Anger|Glyph::Heart|Glyph::Surge|Glyph::Magnet|Glyph::Phase|Glyph::Venom|Glyph::Frost|Glyph::Flip);
+        let forced=matches!(glyph,Glyph::Anger|Glyph::Heart|Glyph::Surge|Glyph::Magnet|Glyph::Phase|Glyph::Venom|Glyph::Frost|Glyph::Flip|Glyph::Whirlpool);
         if !forced && self.faces[id].bubble_cooldown>0 {return;}
         let own=self.bubbles().iter().position(|b|b.snake_id==id as u32);
         // Forced emotions replace the owner's bubble, or the oldest global

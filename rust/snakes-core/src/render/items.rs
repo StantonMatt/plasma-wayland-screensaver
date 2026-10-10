@@ -4,20 +4,21 @@ use super::*;
 use super::shader::SpriteSink;
 pub(crate) fn valid_item(item: &ItemRecord) -> bool {
     coordinate32(item.x) && coordinate32(item.y)
-        && (1..=6).contains(&item.kind) && item.life_ticks<=780 && item.reserved==0
+        && ((1..=7).contains(&item.kind) && item.state<=1 || item.kind==8 && item.state==2
+            && item.radius>0.0 && nonnegative(item.radius as f64) && nonnegative(item.captured_value as f64)) && item.life_ticks<=780 && item.reserved==0
         && item.reserved_byte==0
 }
 #[inline]
 pub(super) fn accent(kind:u8,palette:&[Color])->Color {
     // Fixed item colours use exactly the same rounded tint as arbitrary
     // colours, without repeating luminance/rounding for every carried gem.
-    const RGB:[[u8;3];6]=[[255,225,77],[255,95,210],[169,139,255],[157,255,58],[189,243,255],[255,154,60]];
-    const MONO:[[u8;3];6]=[[225,221,203],[151,132,146],[156,152,166],[212,224,201],[227,234,235],[179,167,156]];
-    const PASTEL:[[u8;3];6]=[[255,234,130],[255,143,224],[195,174,255],[186,255,117],[209,247,255],[255,184,119]];
+    const RGB:[[u8;3];7]=[[255,225,77],[255,95,210],[169,139,255],[157,255,58],[189,243,255],[255,154,60],[51,224,200]];
+    const MONO:[[u8;3];7]=[[225,221,203],[151,132,146],[156,152,166],[212,224,201],[227,234,235],[179,167,156],[169,190,187]];
+    const PASTEL:[[u8;3];7]=[[255,234,130],[255,143,224],[195,174,255],[186,255,117],[209,247,255],[255,184,119],[112,233,217]];
     let table=match palette.first().map(|c|(c.red,c.green,c.blue)) {
         Some((255,255,255))=>&MONO,Some((255,200,221))=>&PASTEL,_=>&RGB,
     };
-    let [r,g,b]=table[if (1..=6).contains(&kind) {kind as usize-1} else {4}];
+    let [r,g,b]=table[if (1..=7).contains(&kind) {kind as usize-1} else {4}];
     Color::new(r,g,b,255)
 }
 pub(super) fn tint(mut c:Color,palette:&[Color])->Color {
@@ -34,7 +35,7 @@ pub(super) fn tint(mut c:Color,palette:&[Color])->Color {
 impl Renderer {
     pub fn set_items(&mut self,items:&[ItemRecord],radius:f64) {
         self.item_count=items.len().min(crate::MAX_ITEMS);
-        self.item_radius=radius;
+        self.item_radius=if nonnegative(radius) {radius} else {0.0};
         self.items[..self.item_count].copy_from_slice(&items[..self.item_count]);
     }
     pub(super) fn shader_items(&self,info:&FrameInfo,p:&Params,palette:&[Color],sink:&mut SpriteSink<'_>) {
@@ -42,6 +43,7 @@ impl Renderer {
         let map=|v:P|P::new(v.x*p.scale_x+p.offset_x,v.y*p.scale_y+p.offset_y);
         for item in &self.items[..self.item_count] {
             if !valid_item(item) {continue;}
+            if item.state==2 {continue;} // the brew is drawn under food in build_shader
             let (pos,drop_scale)=self.inventory.drop_pose(item,info,p,self.reduced_motion);let extent=self.item_radius*super::shader::bounds::CAPSULE;
             let (xs,ys)=copies(pos,pos,P::new(extent*scale/p.scale_x,extent*scale/p.scale_y),arena,p.deadly_walls!=0);
             let extra=if self.reduced_motion {0.0} else {((p.presentation_time-info.simulation_time)/crate::STEP_SECONDS).max(0.0)};
@@ -61,6 +63,7 @@ impl Renderer {
         let time=if self.reduced_motion {0.0} else {p.presentation_time};
         for item in &self.items[..self.item_count] {
             if !valid_item(item) {continue;}
+            if item.kind==8 {continue;} // vortices are emitted beneath food
             let (pos,drop_scale)=self.inventory.drop_pose(item,info,p,self.reduced_motion);let r=self.item_radius*scale*drop_scale;
             let fade=if item.life_ticks<90 {(0.65+0.35*(time*(18.0+24.0*(1.0-item.life_ticks as f64/90.0))).sin()).max(0.1)} else {1.0};
             let c=accent(item.kind,palette).fade(fade);
@@ -109,6 +112,18 @@ impl Renderer {
             let duration=if e.duration_ticks>0 {e.duration_ticks as f64*crate::STEP_SECONDS} else {0.5*if self.reduced_motion && e.color&0x80000000!=0 {0.6} else {1.0}};
             let age=(event_time(info,p,self.reduced_motion)-e.time)/duration;
             if !(0.0..1.0).contains(&age) || (e.duration_ticks>0 && age+1e-9>=1.0) {continue;}
+            if e.color==0x80000007 || e.kind==12 && e.color==7 && e.duration_ticks>0 {
+                let radius=e.radius*scale;let extent=radius*if e.kind==6 {5.0} else {super::shader::bounds::WHIRL_RING};
+                let c=accent(7,palette).fade((if e.kind==6 {0.3} else {0.6})*(1.0-age));
+                let (xs,ys)=copies(e.p,e.p,P::new(extent/p.scale_x,extent/p.scale_y),arena,p.deadly_walls!=0);
+                for x in xs.first..=xs.last {for y in ys.first..=ys.last {
+                    if budget.full() {continue;}
+                    let center=map(e.p+P::new(x as f64*xs.extent,y as f64*ys.extent));let before=sink.count;
+                    if e.kind==6 {sink.disc(center,radius*5.0,c,12);} else {self.classic_ring(center,radius*(2.0+10.0*(1.0-(1.0-age)*(1.0-age))),radius*0.10,c,sink);}
+                    budget.emitted(before,sink.count);
+                }}
+                continue;
+            }
             if e.kind==18 || (e.kind==6 && e.duration_ticks>0) {
                 let radius=e.radius*scale;let extent=radius*if e.kind==18 {1.05} else {super::shader::bounds::FROST_CRACK};
                 let (xs,ys)=copies(e.p,e.p,P::new(extent/p.scale_x,extent/p.scale_y),arena,p.deadly_walls!=0);
@@ -222,6 +237,7 @@ impl Renderer {
             2=>{for k in 0..6 {let a=k as f64*std::f64::consts::PI/6.0;let b=(k+1) as f64*std::f64::consts::PI/6.0;line(sink,P::new(a.cos()*0.7,a.sin()*0.8),P::new(b.cos()*0.7,b.sin()*0.8));}line(sink,P::new(-0.7,0.0),P::new(-0.7,-0.75));line(sink,P::new(0.7,0.0),P::new(0.7,-0.75));},
             3=>{for x in [-0.35,0.35] {let v=[P::new(x,-0.9),P::new(x+0.35,0.0),P::new(x,0.9),P::new(x-0.35,0.0)];for k in 0..4 {line(sink,v[k],v[(k+1)%4]);}}},
             4=>{for x in [-0.5,0.5] {line(sink,P::new(x,-0.8),P::new(x*0.4,0.9));}},
+            7=>{for k in 0..24 {let point=|k:usize| {let a=k as f64*std::f64::consts::TAU*1.35/24.0;let radius=0.1+0.8*k as f64/24.0;P::new(a.cos()*radius,a.sin()*radius)};line(sink,point(k),point(k+1));}},
             6=>{for side in [-1.0,1.0] {
                 line(sink,P::new(-0.8*side,-0.35*side),P::new(0.8*side,-0.35*side));
                 for y in [-0.3,0.3] {line(sink,P::new(0.8*side,-0.35*side),P::new(0.4*side,(-0.35+y)*side));}

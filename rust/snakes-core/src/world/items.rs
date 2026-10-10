@@ -30,6 +30,7 @@ pub struct Item {
     pub owner_generation:u32,
     pub owner_snake_id:u32,
     pub dropped:bool,
+    pub vortex:bool,
 }
 impl Item {
     pub(crate) const GUARD_RELEASE_TICKS:u16=30;
@@ -49,12 +50,13 @@ impl Item {
     /// current effect, including any earlier pickup in the same item pass.
     #[inline]
     pub(crate) fn pickup_eligible(&self, tick:u64, elapsed:usize, alive:bool, guarding:bool, effect_ticks:u16)->bool {
-        Self::endpoint_eligible(tick,self.pickable_from_tick,elapsed,self.life_ticks as usize,alive)
+        !self.vortex && Self::endpoint_eligible(tick,self.pickable_from_tick,elapsed,self.life_ticks as usize,alive)
             && Self::pickup_allowed(alive,guarding && self.kind!=EffectKind::Flip,effect_ticks)
     }
 }
 impl World {
     pub fn items(&self) -> impl ExactSizeIterator<Item = &Item> { self.items.iter() }
+    pub fn capsule_count(&self)->usize {self.items.iter().filter(|i|!i.vortex).count()}
     pub fn item_cap(&self) -> usize { ((self.snakes.len()+2)/4).clamp(1, MAX_CAPSULES) }
     pub(super) fn items_enabled(&self) -> bool { self.config.rules == RuleSet::V2 && self.config.power_ups }
     pub(super) fn reset_item_timer(&mut self) { self.item_timer = 450 + (self.rng.random()*451.0) as u16; }
@@ -67,6 +69,7 @@ impl World {
         self.event_count=0; // Clear stale effects before publishing inventory fizzles.
         self.fizzle_inventories();
         self.items.clear();
+        for f in &mut self.food {f.captured_by=0;}
         self.food.retain(|f| !matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed));
         self.prism_timer=0;
         for face in &mut self.faces {face.bulges=[Bulge::default();2];}
@@ -96,6 +99,7 @@ impl World {
         self.advance_inventory();
         let mut i=0;
         while i<self.items.len() {
+            if self.items[i].vortex {i+=1;continue;}
             self.items[i].age_ticks += 1;
             self.items[i].life_ticks -= 1;
             if self.items[i].life_ticks == 0 {
@@ -103,9 +107,10 @@ impl World {
                 self.item_event(item,EventKind::ItemExpiry,u32::MAX);
             } else { i+=1; }
         }
+        self.refresh_capture_slot();
         self.item_timer = self.item_timer.saturating_sub(1);
         if self.item_timer == 0 {
-            if self.items.len()<self.item_cap() { self.spawn_item(); }
+            if self.capsule_count()<self.item_cap() { self.spawn_item(); }
             self.reset_item_timer();
         }
     }
@@ -189,12 +194,14 @@ impl World {
     pub(super) fn spawn_item(&mut self) {
         let r=self.config.base_radius();
         let Some(position)=self.item_spawn_location() else {return;};
-        let total: u32=effects::ENABLED_KINDS.iter().filter(|&&k|k!=self.last_item_kind).map(|k|k.weight()).sum();
+        // spawn-fixture: repeat-exclusion
+        let exclude_repeat = true;
+        let total: u32=effects::ENABLED_KINDS.iter().filter(|&&k|(!exclude_repeat || k!=self.last_item_kind) && (k!=EffectKind::Whirlpool || self.vortex().is_none())).map(|k|k.weight()).sum();
         if total==0 {return;}
         let mut roll=(self.rng.random()*total as f64) as u32;
         let mut kind=EffectKind::None;
         for &k in effects::ENABLED_KINDS {
-            if k==self.last_item_kind {continue;}
+            if (exclude_repeat && k==self.last_item_kind) || (k==EffectKind::Whirlpool && self.vortex().is_some()) {continue;}
             if roll<k.weight() {kind=k;break;}
             roll-=k.weight();
         }
@@ -236,11 +243,15 @@ impl World {
                     self.inventory_event(id,slot,item.kind,EventKind::Stash,item.position,0);
                 } else {
                     if self.config.store_power_ups || item.kind==EffectKind::Flip {self.inventory_event(id,usize::MAX,item.kind,EventKind::Use,item.position,0);}
-                    self.activate_item(id,item.kind);
+                    if item.kind==EffectKind::Whirlpool && self.vortex().is_some() {
+                        self.inventory_event(id,usize::MAX,item.kind,EventKind::Fizzle,item.position,8);continue;
+                    }
+                    if item.kind==EffectKind::Whirlpool {self.open_whirlpool(id,item.position);} else {self.activate_item(id,item.kind);}
                     self.item_event(item,EventKind::Pickup,id as u32);
                 }
             } else {i+=1;}
         }
+        self.refresh_capture_slot();
     }
 }
 #[cfg(test)]

@@ -31,6 +31,7 @@ const float BOUNDS_RING = 7.0;
 const float BOUNDS_MAGNET = 10.2;
 const float BOUNDS_CAPSULE = 3.4;
 const float BOUNDS_FROST_CRACK = 6.0; // thaw-crack quad, snake radii
+const float BOUNDS_WHIRL_RING = 12.5; // Whirlpool burst ring quad, base radii
 const float BOUNDS_CONTRAIL = 0.465;
 const float BOUNDS_VACUUM = 0.65;
 const float BOUNDS_DEVELOPER = 1.2;
@@ -83,6 +84,7 @@ vec3 itemAccent(int k) {
     else if(k==3) a= vec3(0.66275,0.54510,1.0);
     else if(k==4) a= vec3(0.61569,1.0,0.22745);
     else if(k==6) a=vec3(1.0,0.60392,0.23529);
+    else if(k==7) a=vec3(0.2,0.87843,0.78431);
     else a=vec3(0.74118,0.95294,1.0);
     if(ub.paletteMode==1.0) a=mix(a,vec3(dot(a,vec3(0.2126,0.7152,0.0722))),0.88);
     if(ub.paletteMode==2.0) a=mix(a,vec3(1),0.3);
@@ -253,9 +255,13 @@ void main() {
     if(kind==12 || kind==13 || kind==14) {
         float age=packed.w/255.0;float r=length(coord);vec3 accent=base.rgb;
         float radius=kind==14?2.0:ub.motionScale!=1.0?(kind==12?3.5:1.5):kind==12?1.0+5.0*age:2.5*(1.0-age);
+        // The Whirlpool burst ring sweeps past the holder (9r) and the rivals (12r).
+        if(packed.z>1.5) radius=ub.motionScale!=1.0?8.0:2.0+10.0*(1.0-(1.0-age)*(1.0-age));
         float ring=mask(abs(r-radius)-0.08)*(kind==14?1.0:1.0-age)*0.8;
         vec3 glow=accent*ring;
         if(kind==12) glow+=white*mask(abs(r-radius*0.65)-0.055)*(1.0-age)*0.85;
+        // Whirlpool burst: one ring, then a faint pressure band behind it.
+        if(packed.z>1.5) glow=min(glow,vec3(0.6))+accent*falloff(max(radius-r,0.0)/1.8)*step(r,radius)*0.16*(1.0-age);
         if(kind==14) glow*=0.5+0.5*sin(t*22.0);
         fragColor=vec4(min(glow,vec3(0.9))*base.a*ub.opacity,0);return;
     }
@@ -652,6 +658,31 @@ void main() {
         }
         fragColor=composite(rgb,alpha,glow,over,phaseHead?mix(1.0,0.45,phaseFade):(flags&32)!=0?0.45:1.0);return;
     }
+    if(kind==19) {
+        // Brew quad: radius 22 base radii, so one base radius is 1/22 quad units.
+        // Pixel size is read before the corner rejection (uniform control flow).
+        float px=fwidth(coord.x);
+        float r2=dot(coord,coord);
+        if(r2>1.0) {fragColor=vec4(0);return;}
+        float r=sqrt(r2);float a=atan(coord.y,coord.x);
+        float brew=packed.w/255.0;                    // 150 ticks
+        float open=smoothstep(0.0,0.1,brew);          // 0.5 s fade-in
+        float charge=smoothstep(0.72,0.92,brew);      // 1 s swell until the pull stops (tick 138)
+        float collapse=smoothstep(0.92,1.0,brew);     // then inhale: arms and rim fade, core contracts
+        // Three log-spiral arms on the captured food's path; +t drifts them inward at
+        // 0.9 rad/s (prototype). Arm distance = phase offset * r / |grad phase| (sqrt 45).
+        float phase=a*3.0+log(max(r,0.022))*6.0+t*2.7;
+        float d=abs(fract(phase*0.1591549-0.25)-0.5)*6.283185*r*0.1490712;
+        float armFade=smoothstep(0.035,0.11,r)*(1.0-smoothstep(0.86,0.97,r))*open*(1.0-collapse);
+        float arms=min(0.42,coverage(d-0.0055,px)*0.42+falloff(d/0.035)*0.12)*armFade;
+        float rim=coverage(abs(r-0.97)-0.0035,px)*smoothstep(0.0,0.4,sin(a*36.0))*0.30*open*(1.0-collapse);
+        // Core radius in base radii: 0.6 + 0.55 sqrt(V), with packed.z = sqrt(V)/5.
+        float core=(0.6+2.75*packed.z/255.0)*(1.0+0.3*charge)*(1.0-0.65*collapse)*0.04545;
+        float glowOut=falloff(r/(core*3.2))*(0.35+0.40*charge)*open;
+        float glowHot=falloff(r/(core*1.4))*(0.50+0.40*charge)*open;
+        vec3 light=c*(arms+rim+glowOut)+mix(c,white,0.6)*glowHot;
+        fragColor=vec4(min(light,vec3(0.9))*ub.opacity,0);return;
+    }
     if(kind==25) {
         // Venom stump / severed-end glow: prototype radial glow, additive.
         fragColor=vec4(itemAccent(4)*falloff(length(coord))*base.a*ub.opacity,0);return;
@@ -667,7 +698,10 @@ void main() {
         float age=packed.w/255.0;float radius=length(effectCoord);float progress=1.0-pow(1.0-age,2.0);
         float ring=mask(abs(radius-(1.0+(kind==9?2.2:5.0)*progress)/BOUNDS_EFFECT_UNITS)-0.012)*(1.0-age)*0.8;
         vec3 glow=(kind==7?gold:mix(c,white,0.5))*ring;
-        if(kind==6 && packed.z>0.5) {
+        if(kind==6 && packed.z>1.5) {
+            // Whirlpool's one-shot flash (prototype): half-white, grows 3r -> 5r, alpha <= 0.6.
+            glow=mix(c,white,0.5)*falloff(length(coord)/(ub.motionScale==1.0?3.0+2.0*age:4.0))*0.6*(1.0-age);
+        } else if(kind==6 && packed.z>0.5) {
             // Thaw crack (coord in snake radii, quad 6 r): seven ice shards fly out
             // from just outside the head (prototype shatter), a thin pop ring and a
             // short frost puff. Shards taper from about 1.6 px to a point.

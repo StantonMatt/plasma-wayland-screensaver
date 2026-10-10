@@ -6,6 +6,81 @@
 use super::*;
 use crate::effects::EffectKind;
 use std::cell::Cell;
+/// A single target's discrete food transport; no heap or enlarged target cache.
+#[derive(Clone,Copy,Default)]
+pub(super) struct FoodMotion {pub position:Point,pub velocity:Point,captured_until:u16,absorbed:bool}
+impl FoodMotion {
+    pub fn new(w:&World,f:target::TargetFood)->Self {
+        let raw=w.food.get(f.food_index as usize).filter(|raw|raw.id==f.id)
+            .or_else(||w.food.iter().find(|raw|raw.id==f.id));
+        Self {position:f.position,velocity:raw.map_or(Point::default(),|raw|raw.velocity),
+            captured_until:if raw.is_some_and(|raw|raw.captured_by!=0) {w.vortex().map_or(0,|v|v.life_ticks+1)} else {0},absorbed:false}
+    }
+    pub fn advance(&mut self,w:&World) {
+        if self.velocity.x.abs()+self.velocity.y.abs()<0.1 {return;}
+        self.position.x+=self.velocity.x*STEP_SECONDS;self.position.y+=self.velocity.y*STEP_SECONDS;
+        let damping=0.16_f64.powf(STEP_SECONDS);self.velocity.x*=damping;self.velocity.y*=damping;
+        if !w.config().deadly_walls {self.position=w.canonical_point(self.position);} else {
+            for (v,speed,n) in [(&mut self.position.x,&mut self.velocity.x,w.config().width),(&mut self.position.y,&mut self.velocity.y,w.config().height)] {
+                if *v<2.0 || *v>n-2.0 {*v=v.clamp(2.0,n-2.0);*speed*= -0.45;}
+            }
+        }
+    }
+    pub fn unavailable(self)->bool {self.absorbed || self.captured_until!=0}
+    /// Steering observes movement one's food update and pull already done.
+    /// Later updates move free food, then pull/capture, then release at burst.
+    /// Return new ownership so callers can revoke a provisional vacuum claim.
+    pub fn advance_brew(&mut self,w:&World,brew:Brew,kind:crate::FoodKind,step:usize)->bool {
+        if step<=1 || self.absorbed {return false;}
+        if self.captured_until==0 {self.advance(w);}
+        if self.captured_until!=0 && step>=self.captured_until as usize {self.captured_until=0;}
+        if brew.start==0 || step<brew.start as usize || step>=brew.pull_end as usize
+            || !crate::world::whirlpool::capturable(kind) {return false;}
+        let captured=self.captured_until==0 && brew.inside(self.position);
+        if captured {self.captured_until=brew.end;self.velocity=Point::default();}
+        if self.captured_until!=0 {
+            let cfg=w.config();let d=w.displacement(brew.center,self.position);
+            let distance=(d.x*d.x+d.y*d.y).sqrt();let radius=brew.radius2.sqrt();
+            let q=(1.0-distance/radius).clamp(0.0,1.0);
+            let next=(distance-radius*0.25*(0.55+0.6*q)*STEP_SECONDS).max(0.0);
+            if next<0.9*w.config().base_radius() {self.absorbed=true;return captured;}
+            let angle=if w.reduced_motion {0.0} else {(0.5+1.9*q)*STEP_SECONDS};
+            let (sin,cos)=angle.sin_cos();let scale=next/distance.max(1e-9);
+            let p=Point{x:brew.center.x+(d.x*cos-d.y*sin)*scale,y:brew.center.y+(d.x*sin+d.y*cos)*scale};
+            self.position=if cfg.deadly_walls {Point{x:p.x.clamp(2.0,cfg.width-2.0),y:p.y.clamp(2.0,cfg.height-2.0)}} else {w.canonical_point(p)};
+        }
+        captured
+    }
+
+}
+#[derive(Clone,Copy,Default)]
+pub(super) struct Brew {pub start:u16,pub end:u16,pub pull_end:u16,center:Point,radius2:f64,width:f64,height:f64,wrap:bool}
+impl Brew {
+    fn new(w:&World,center:Point,start:usize,end:usize,pull_end:usize)->Self {Self {start:start as u16,end:end as u16,pull_end:pull_end as u16,center,
+        radius2:(w.config().base_radius()*crate::world::whirlpool::RADIUS).powi(2),width:w.config().width,height:w.config().height,wrap:!w.config().deadly_walls}}
+    pub fn inside(self,p:Point)->bool {
+        let mut d=Point{x:p.x-self.center.x,y:p.y-self.center.y};
+        if self.wrap {for (v,n) in [(&mut d.x,self.width),(&mut d.y,self.height)] {if *v>n*0.5 {*v-=n;} else if *v< -n*0.5 {*v+=n;}}}
+        d.x*d.x+d.y*d.y<=self.radius2
+    }
+    /// Absorbed nutrition becomes burst shards; only surviving particles
+    /// regain their own identity at the deadline. Share the rollout transport.
+    #[inline(never)]
+    pub fn captures(self,w:&World,f:target::TargetFood,step:usize,previous:Self)->bool {
+        if self.start==0 || f.id&target::ITEM_BIT!=0 || !crate::world::whirlpool::capturable(f.kind) {return false;}
+        let mut motion=FoodMotion::new(w,f);
+        // Ordinary stationary food outside the disk cannot enter this brew.
+        if !motion.unavailable() && motion.velocity.x.abs()+motion.velocity.y.abs()<0.1 && !self.inside(motion.position)
+            && (previous.start==0 || !previous.inside(motion.position)) {return false;}
+        for j in 2..=step.min(self.end as usize) {
+            let brew=if previous.start!=0 && j<self.start as usize {previous} else {self};
+            motion.advance_brew(w,brew,f.kind,j);
+            if motion.unavailable() && step<brew.end as usize {return true;}
+            if motion.absorbed {return true;}
+        }
+        motion.unavailable()
+    }
+}
 pub(super) const EFFECT_EVENTS:usize=crate::MAX_ITEMS+MAX_SNAKES;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -108,6 +183,7 @@ impl Snapshot {
 }
 #[derive(Clone, Copy)]
 pub(super) struct Timeline {
+    pub brew:Brew,previous_brew:Brew,windup_brew_mask:u16,
     scheduled:bool,
     pub flip_steps:[u16;MAX_SNAKES],
     pub flip_mask:u16,
@@ -137,11 +213,14 @@ pub(super) struct Timeline {
     surge:[u16;STEPS+1],
 }
 impl Default for Timeline {
-    fn default()->Self {Self {flip_slots:[0;MAX_SNAKES],scheduled:false,defeated:0,defeat_steps:[0;MAX_SNAKES],field_flips:0,flip_conflict_at:0,flip_mask:0,flip_steps:[0;MAX_SNAKES],inventory_stashes:[Pickup::default();crate::MAX_ITEMS],stash_count:0,inventory_counts:[0;MAX_SNAKES],inventory_expiry:[[0;3];MAX_SNAKES],inventory_expired:[0;MAX_SNAKES],store:false,inventory_release:[0;MAX_SNAKES],windup_frost:[0;MAX_SNAKES],windup_frost_mask:0,initial:[Effect::default();MAX_SNAKES],pickups:[Pickup::default();EFFECT_EVENTS],count:0,pickup_mask:0,movement_mask:0,venom_possible:0,frost_empty:0,frost_hits:[0;MAX_SNAKES],frozen:[0;MAX_SNAKES],immunity:[0;MAX_SNAKES],novas:[Freeze::default();EFFECT_EVENTS],nova_count:0,guards:0,guard_targets:[0;MAX_SNAKES],sever_cut:[0;MAX_SNAKES],bite_step:[0;MAX_SNAKES],consumed_at:[0;MAX_SNAKES],phase:[0;STEPS+1],surge:[0;STEPS+1]}}
+    fn default()->Self {Self {brew:Brew::default(),previous_brew:Brew::default(),windup_brew_mask:0,flip_slots:[0;MAX_SNAKES],scheduled:false,defeated:0,defeat_steps:[0;MAX_SNAKES],field_flips:0,flip_conflict_at:0,flip_mask:0,flip_steps:[0;MAX_SNAKES],inventory_stashes:[Pickup::default();crate::MAX_ITEMS],stash_count:0,inventory_counts:[0;MAX_SNAKES],inventory_expiry:[[0;3];MAX_SNAKES],inventory_expired:[0;MAX_SNAKES],store:false,inventory_release:[0;MAX_SNAKES],windup_frost:[0;MAX_SNAKES],windup_frost_mask:0,initial:[Effect::default();MAX_SNAKES],pickups:[Pickup::default();EFFECT_EVENTS],count:0,pickup_mask:0,movement_mask:0,venom_possible:0,frost_empty:0,frost_hits:[0;MAX_SNAKES],frozen:[0;MAX_SNAKES],immunity:[0;MAX_SNAKES],novas:[Freeze::default();EFFECT_EVENTS],nova_count:0,guards:0,guard_targets:[0;MAX_SNAKES],sever_cut:[0;MAX_SNAKES],bite_step:[0;MAX_SNAKES],consumed_at:[0;MAX_SNAKES],phase:[0;STEPS+1],surge:[0;STEPS+1]}}
 }
 impl Timeline {
     pub fn new(w:&World)->Self {
         let mut result=Self::default();
+        if let Some(v)=w.vortex() {
+            result.brew=Brew::new(w,v.position,2,v.life_ticks as usize+1,crate::world::whirlpool::PULL_END.saturating_sub(v.age_ticks) as usize+1);
+        }
         for s in w.snakes().filter(|s|s.alive) {
             let id=s.id as usize;let e=Effect::observed(w,s);result.initial[id]=e;
             result.frozen[id]=s.face.frozen_ticks;result.immunity[id]=s.face.thaw_immunity_ticks;
@@ -222,6 +301,24 @@ impl Timeline {
         if self.nova_count==0 {return [0;crate::MAX_ITEMS];}
         std::array::from_fn(|i|if i<self.nova_count {(self.novas[i].step as u32)<<16|self.novas[i].mask as u32} else {0})
     }
+    fn open_brew(&mut self,w:&World,center:Point,step:usize) {
+        // Activation follows feeding at age zero. Its first pull is the next
+        // movement; age LIFE bursts before feeding at step + LIFE. Only an
+        // already observed vortex needs the extra movement-one offset.
+        if self.brew.start==0 || step>=self.brew.end as usize {
+            // Within the bounded rollout at most one observed brew can be
+            // followed by a new one (STEPS < LIFE). Keep that transport so
+            // a replacement cannot resurrect an already absorbed identity.
+            self.previous_brew=self.brew;
+            self.brew=Brew::new(w,center,step+1,step+crate::world::whirlpool::LIFE as usize,step+crate::world::whirlpool::PULL_END as usize);
+        }
+    }
+    /// Shared rollouts can already contain a later activation. Food must use
+    /// its predecessor through the activation frame, before the first pull.
+    pub fn feeding_brew(&self,step:usize)->Brew {
+        if self.previous_brew.start!=0 && step<self.brew.start as usize {self.previous_brew} else {self.brew}
+    }
+    pub fn food_available(&self,w:&World,f:target::TargetFood,step:usize)->bool {!self.brew.captures(w,f,step,self.previous_brew)}
     pub fn track(&self,id:usize)->Track {
         let mut result=Track {store:self.store,initial:self.initial[id],consumed_at:self.consumed_at[id] as u16,..Track::default()};
         for pickup in &self.pickups[..self.count] {
@@ -381,7 +478,8 @@ impl Timeline {
         // Upper slot bits identify the one Flip consumed at the release deadline.
         if kind==EffectKind::Flip {self.flip_slots[id]|=1<<(slot+3);}
         self.inventory_release[id]=step as u16;self.inventory_expiry[id][slot]=u16::MAX;
-        if kind==EffectKind::Frost {self.windup_frost[id]=step as u16;self.windup_frost_mask|=1<<id;}
+        if kind==EffectKind::Whirlpool {self.windup_brew_mask|=1<<id;}
+        else if kind==EffectKind::Frost {self.windup_frost[id]=step as u16;self.windup_frost_mask|=1<<id;}
         else {self.activation(id,kind,step);}
     }
     pub(super) fn activation(&mut self,id:usize,kind:EffectKind,step:usize) {
@@ -392,7 +490,7 @@ impl Timeline {
             }
             self.flip_steps[id]=step as u16;self.flip_mask|=1<<id;self.movement_mask|=1<<id;return;
         }
-        if kind==EffectKind::Frost {return;}
+        if matches!(kind,EffectKind::Frost|EffectKind::Whirlpool) {return;}
 
         if kind==EffectKind::Venom {self.venom_possible|=1<<id;}
         let effect=if kind==EffectKind::Frost {Effect::default()} else {Effect {kind:kind as u8,ticks:kind.duration()}};
@@ -605,6 +703,13 @@ impl Forecast {
         result
     }
     pub fn advance_windups(&mut self,w:&World,step:usize,positions:impl Fn(usize)->Point) {
+        let mut brews=self.effects.windup_brew_mask;
+        while brews!=0 {
+            let id=brews.trailing_zeros() as usize;brews&=brews-1;
+            if self.effects.inventory_release[id] as usize==step && self.effects.defeated&(1<<id)==0 {
+                self.effects.open_brew(w,positions(id),step);
+            }
+        }
         let mut pending=self.effects.windup_frost_mask;
         while pending!=0 {
             let id=pending.trailing_zeros() as usize;pending&=pending-1;
@@ -637,6 +742,9 @@ impl Forecast {
                 positions[id]=reverse(self,id);
                 self.effects.set_guard(id,false,0);
             }
+            if self.effects.inventory_release[id] as usize==step && self.effects.windup_brew_mask&(1<<id)!=0 {
+                self.effects.open_brew(w,positions[id],step);
+            }
             if self.effects.windup_frost[id] as usize==step && self.effects.windup_frost_mask&(1<<id)!=0 {
                 let alive=w.snakes().filter(|s|s.alive).fold(0,|bits,s|bits|(1<<s.id)) & !self.effects.defeated;
                 self.effects.nova(w,id,positions[id],step,alive,|other|positions[other]);
@@ -666,6 +774,7 @@ impl Forecast {
             }
             if winner==MAX_SNAKES {continue;}
             let active=self.effects.pickup(winner,item,step,i);
+            if active && item.kind==EffectKind::Whirlpool {self.effects.open_brew(w,item.position,step);}
             if active && item.kind==EffectKind::Flip {
                 positions[winner]=reverse(self,winner);
                 self.effects.set_guard(winner,false,0);
@@ -721,6 +830,7 @@ impl Forecast {
             }
             if winner!=MAX_SNAKES {
                 let active=self.effects.pickup(winner,item,step,i);
+            if active && item.kind==EffectKind::Whirlpool {self.effects.open_brew(w,item.position,step);}
                 if active && item.kind==EffectKind::Frost {self.effects.nova(w,winner,positions(winner),step,self.alive,&positions);self.movement_changed|=self.effects.movement_bits()|items.pickup_movement[i];}
                 self.pickup_steps[i]=step as u16;self.pickup_owners[i]=winner as u8;
                 if winner!=expected || step!=expected_step {
@@ -765,6 +875,8 @@ impl Forecast {
     pub fn body_len(&self,w:&World,id:usize,rush:f64,step:usize)->usize {
         w.ai_forecast_len(id,rush,24,self.effects.surge_pickup_before(id,step+1),self.effects.freeze_step(id,step+1))
     }
+    pub fn brewing(&self)->bool {self.effects.brew.start!=0 || self.effects.windup_brew_mask!=0
+        || self.pending!=0 && self.items.iter().any(|item|item.kind==EffectKind::Whirlpool)}
     pub fn has_items(&self)->bool {self.pending!=0 || self.effects.has_scheduled()}
     pub fn set_radius(&mut self,id:usize,radius:f64) {self.radii[id]=radius;}
     pub fn set_radii(&mut self,radius:impl Fn(usize)->f64) {
@@ -799,6 +911,7 @@ impl Forecast {
                 if item.kind==EffectKind::Phase && reserve>0.0 && distance<=(reach+reserve).powi(2) {self.sweep_needed=true;}
                 if distance>reach*reach {continue;}
                 let active=self.effects.pickup(id,item,step,i);
+                if active && item.kind==EffectKind::Whirlpool {self.effects.open_brew(w,item.position,step);}
                 if active && item.kind==EffectKind::Frost {self.effects.nova(w,id,positions(id),step,self.alive,&positions);self.movement_changed|=self.effects.movement_bits();}
                 self.pickup_steps[i]=step as u16;self.pickup_owners[i]=id as u8;self.pending&=!(1<<i);break;
             }
@@ -1186,3 +1299,7 @@ mod inventory_order_tests {
         assert!(timeline.pickup(0,second,5,1),"use releases one slot, never one per capsule");
     }
 }
+
+#[cfg(test)]
+#[path="whirlpool_timing_tests.rs"]
+mod whirlpool_timing_tests;

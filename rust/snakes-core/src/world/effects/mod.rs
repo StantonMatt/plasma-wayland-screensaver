@@ -30,7 +30,7 @@ use crate::controller::Steering;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EffectKind { #[default] None, Surge, Magnet, Phase, Venom, Frost, Flip, Whirlpool }
 /// Extend for R4; weights of disabled kinds are never included in the draw.
-pub const ENABLED_KINDS: &[EffectKind] = &[EffectKind::Surge, EffectKind::Magnet, EffectKind::Phase, EffectKind::Venom, EffectKind::Frost, EffectKind::Flip];
+pub const ENABLED_KINDS: &[EffectKind] = &[EffectKind::Surge, EffectKind::Magnet, EffectKind::Phase, EffectKind::Venom, EffectKind::Frost, EffectKind::Flip, EffectKind::Whirlpool];
 pub const WARNING_TICKS: u16 = 36;
 impl EffectKind {
     pub fn from_byte(kind: u8) -> Self {

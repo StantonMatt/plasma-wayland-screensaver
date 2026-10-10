@@ -48,6 +48,7 @@ pub(super) const VACUUM: f64 = value("BOUNDS_VACUUM");
 pub(super) const DEVELOPER: f64 = value("BOUNDS_DEVELOPER");
 pub(super) const CORPSE_DRIFT: f64 = value("BOUNDS_CORPSE_DRIFT");
 pub(in crate::render) const FROST_CRACK: f64 = value("BOUNDS_FROST_CRACK");
+pub(in crate::render) const WHIRL_RING: f64 = value("BOUNDS_WHIRL_RING");
 
 #[cfg(test)]
 mod tests {
@@ -128,6 +129,13 @@ mod tests {
         assert!(CAPSULE >= 1.3+0.5);
         assert!(CAPSULE >= 1.0+(0.035+aa)/0.8660254);
         assert!(RING >= 6.0+0.08+aa);
+        // Whirlpool burst: ring and its 0.65 echo reach 2+10 radii; the pressure
+        // band lies inside the ring; the flash grows to 5r in its own 5r quad.
+        for expression in ["radius=ub.motionScale!=1.0?8.0:2.0+10.0*(1.0-(1.0-age)*(1.0-age))",
+            "falloff(max(radius-r,0.0)/1.8)*step(r,radius)", "falloff(length(coord)/(ub.motionScale==1.0?3.0+2.0*age:4.0))"] {
+            assert!(SHADER.contains(expression), "rederive whirlpool burst: {expression}");
+        }
+        assert!(WHIRL_RING >= 12.0+0.08+aa);
         assert!(MAGNET >= (9.0+0.08+aa).max(9.0+1.1));
         // The active body halo and Phase outline are compacted by the
         // existing ribbon edgeFade even at tiny radii.

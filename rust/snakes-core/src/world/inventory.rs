@@ -31,6 +31,7 @@ impl World {
             duration_ticks:duration,..Default::default()});
     }
     pub(super) fn activate_item(&mut self,id:usize,kind:EffectKind) {
+        if kind==EffectKind::Whirlpool {self.open_whirlpool(id,self.segments[id*MAX_SEGMENTS].current);return;}
         if kind==EffectKind::Flip {self.flip_snake(id);self.emit_bubble(id,Glyph::Flip);return;}
         if kind!=EffectKind::Frost {
             let old=EffectKind::from_byte(self.snakes[id].effect_kind);
@@ -44,6 +45,7 @@ impl World {
     }
     pub(super) fn request_inventory_use(&mut self,id:usize,action:u32) {
         if !self.items_enabled() {return;}
+        if action>0 && action<=self.snakes[id].inventory.count as u32 && self.snakes[id].inventory.kinds[action as usize-1]==7 && self.vortex().is_some() {return;}
         let inv=&mut self.snakes[id].inventory;
         if action==0 || action>inv.count as u32 || inv.windup!=0 || inv.cooldown!=0 {return;}
         if !self.config.store_power_ups && inv.kinds[action as usize-1]!=EffectKind::Flip as u8 {return;}
@@ -73,7 +75,11 @@ impl World {
             let inv=&mut self.snakes[id].inventory;
             if inv.windup!=0 && inv.windup_ticks==0 {
                 let slot=inv.windup as usize-1;let kind=EffectKind::from_byte(inv.kinds[slot]);
-                inv.remove(slot);self.activate_item(id,kind);
+                inv.remove(slot);
+                if kind==EffectKind::Whirlpool && self.vortex().is_some() {
+                    self.inventory_event(id,slot,kind,EventKind::Fizzle,self.segments[id*MAX_SEGMENTS].current,8);continue;
+                }
+                self.activate_item(id,kind);
                 self.inventory_event(id,slot,kind,EventKind::Pickup,self.segments[id*MAX_SEGMENTS].current,0);
             }
         }
@@ -105,7 +111,7 @@ impl World {
         let inv=self.snakes[id].inventory;
         for slot in 0..inv.count as usize {
             let kind=EffectKind::from_byte(inv.kinds[slot]);let (p,t)=self.inventory_position(id,slot);
-            if self.items.len()>=self.item_cap() {
+            if self.capsule_count()>=self.item_cap() {
                 self.inventory_event(id,slot,kind,EventKind::Fizzle,p,8);continue;
             }
             let r=3.0*self.snakes[id].radius;

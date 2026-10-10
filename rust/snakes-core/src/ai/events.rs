@@ -8,7 +8,7 @@ impl AiController {
     pub(super) fn prepare_event_target(&mut self,w:&World) {
         let Some((position,radius,_))=w.starfall_target() else {return;};
         self.food[SLOT]=Some(target::TargetFood {id:ID,position,
-            value:7.5,size:radius,vacuum_owner:-1,feast_id:0,kind:crate::FoodKind::Star,motion_ticks:0,item_kind:0});
+            value:7.5,size:radius,vacuum_owner:-1,feast_id:0,kind:crate::FoodKind::Star,motion_ticks:0,item_kind:0,food_index:u16::MAX});
     }
     pub(super) fn event_shortlist(&self,w:&World,s:SnakeView<'_>,state:&State,shortlist:&mut [(f64,usize);5]) {
         let Some(f)=self.food[SLOT] else {return;};

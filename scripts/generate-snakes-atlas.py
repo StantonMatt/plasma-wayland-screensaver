@@ -58,7 +58,13 @@ def icon(kind, x, y):
     if kind == 5:
         return min(polygon(x,y,[(-8.5,-7),(3.5,-7),(3.5,-11),(9.5,-5),(3.5,1),(3.5,-3),(-8.5,-3)]),
                    polygon(x,y,[(8.5,3),(-3.5,3),(-3.5,-1),(-9.5,5),(-3.5,11),(-3.5,7),(8.5,7)]))
-    # Tile 6 reserved for Whirlpool. Glyphs occupy 7..11.
+    if kind == 6:
+        # Spiral polyline: only generated at build time, one atlas sample in GL.
+        # Wound like the vortex arms: clockwise on screen when traced inward.
+        points = [(math.cos(a) * (1.2 + a * 1.1), -math.sin(a) * (1.2 + a * 1.1))
+                  for a in (i * math.tau * 1.35 / 48 for i in range(49))]
+        return min(segment(x,y,a,b,1.35) for a,b in zip(points,points[1:]))
+    # Tile 6 enabled for Whirlpool. Glyphs occupy 7..11.
     if kind == 7:
         return min(segment(x, y, (0, -10), (0, 3), 2.0), math.hypot(x, y-8)-2.0)
     if kind == 8:

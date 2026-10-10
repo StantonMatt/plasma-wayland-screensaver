@@ -1595,8 +1595,45 @@ private:
         frame.events.push_back(event);
     }
 
+    static SnakeFrame whirlpoolFrame()
+    {
+        auto frame=makeFrame(32,3,0);
+        frame.itemRadius=18*2.1;
+        const auto phase=qEnvironmentVariable("REAL_WHIRLPOOL_PHASE",QStringLiteral("mid"));
+        const int age=phase==QStringLiteral("early") ? 15 : phase==QStringLiteral("charged") ? 140 : 75;
+        snakes_core_item v{};v.id=77;v.kind=8;v.state=2;v.x=1720;v.y=720;
+        v.radius=22*18;v.charge_ticks=age;v.age_ticks=age;v.life_ticks=150-age;
+        v.captured_value=age*0.45;v.owner_snake_id=0;v.owner_generation=1;
+        v.leader_snake_id=UINT32_MAX;v.guard_snake_id=UINT32_MAX;
+        if(phase!=QStringLiteral("burst")) frame.items.push_back(v);
+        for(auto &s:frame.snakes) {
+            s.radius=18;s.flags=0;s.mood=0;s.face_flags=2;
+            const double radius=18*(s.id==0 ? 9 : 12+s.id),start=s.id*2.1;
+            for(uint32_t j=0;j<s.segment_count;++j) {
+                const double angle=start-j*18*1.18/radius;
+                auto &p=frame.segments[s.segment_offset+j];
+                p.x=v.x+radius*std::cos(angle);p.y=v.y+radius*std::sin(angle);p.previous_x=p.x;p.previous_y=p.y;
+            }
+            s.angle=start+M_PI/2;s.desired_angle=s.angle;
+            s.inv_count=1;s.inv_kind[0]=7;s.inv_life[0]=255;
+        }
+        for(int j=0;j<64;++j) {
+            const double angle=j*2.399963,rr=phase==QStringLiteral("burst") ? 18*(3.5+j%7*0.6) : v.radius*(0.04+(0.96-0.75*age/150.0)*(j+0.5)/64.0);
+            snakes_core_food f{};f.id=j+1;f.x=v.x+rr*std::cos(angle);f.y=v.y+rr*std::sin(angle);
+            f.size=18*0.32;f.phase=j*0.73;f.life_fraction=255;f.color_index=j%6;
+            f.kind=phase==QStringLiteral("burst") ? SNAKES_CORE_FOOD_SHARD : SNAKES_CORE_FOOD_SPARK;
+            f.captured_by=phase==QStringLiteral("burst") ? 0 : 1;frame.food.push_back(f);
+        }
+        if(phase==QStringLiteral("burst")) {
+            snakes_core_event e{};e.tick=594;e.kind=SNAKES_CORE_EVENT_VORTEX_BURST;e.snake_id=0;e.generation=1;
+            e.x=v.x;e.y=v.y;e.duration_ticks=14;e.value=64;e.other_snake_id=7;frame.events.push_back(e);
+        }
+        return frame;
+    }
+
     static SnakeFrame eventsFrame()
     {
+        if(qEnvironmentVariableIsSet("REAL_WHIRLPOOL_PHASE")) return whirlpoolFrame();
         SnakeFrame frame;
         frame.info={600,20,3440,1440,0,1,0,{},{}};
         frame.itemRadius=18*2.1; // Real reference scale: base radius clamps at 18.
@@ -1923,6 +1960,68 @@ private Q_SLOTS:
         renderer.setShaderTimeFrozen(true);node=renderer.updatePaintNode(node,nullptr);
         QCOMPARE(static_cast<SnakeMaterial *>(static_cast<QSGGeometryNode *>(node)->material())->motionScale,0.6f);
         delete node;
+    }
+
+    void whirlpoolBurstHistorySurvivesNodeRecreation_data()
+    {
+        QTest::addColumn<bool>("shader");
+        QTest::addColumn<bool>("calm");
+        for (bool shader : {false, true}) for (bool calm : {false, true})
+            QTest::newRow(qPrintable(QStringLiteral("shader-%1-calm-%2").arg(shader).arg(calm))) << shader << calm;
+    }
+    void whirlpoolBurstHistorySurvivesNodeRecreation()
+    {
+        QFETCH(bool, shader); QFETCH(bool, calm);
+        SnakeRenderer renderer;
+        renderer.m_shaderGeometryForTest=shader;renderer.setSize({3440,1440});
+        auto frame=makeFrame(0,0,0);frame.itemRadius=37.8;
+        frame.info.tick=601;frame.info.simulation_time=601.0/30;
+        renderer.syncFrame(frame,palette,1,true);
+        if (calm) renderer.setShaderTimeFrozen(true);
+        auto &history=renderer.m_pendingHistory[0];history={};
+        history.info=frame.info;history.info.tick=600;history.info.simulation_time=20;
+        history.eventCount=1;
+        history.events[0].tick=600;history.events[0].kind=SNAKES_CORE_EVENT_VORTEX_BURST;
+        history.events[0].x=1720;history.events[0].y=720;history.events[0].duration_ticks=14;
+        renderer.m_pendingHistoryCount=renderer.m_pendingHistoryHead=1;
+        auto *node=renderer.updatePaintNode(nullptr,nullptr);
+        const auto *geometry=static_cast<QSGGeometryNode *>(node)->geometry();
+        QVERIFY(geometry->vertexCount()>0);
+        const auto bytes=QByteArray(static_cast<const char *>(geometry->vertexData()),
+                                   geometry->vertexCount()*geometry->sizeOfVertex());
+        if (shader) {
+            const auto *v=static_cast<const snakes_core_shader_vertex *>(geometry->vertexData());
+            QCOMPARE(geometry->vertexCount(),12);
+            QCOMPARE(v[0].params[0],uint8_t(6)); // newest flash, then expanding ring
+            QVERIFY(std::abs(v[0].x-1720)>80); // five base radii, never zero
+        }
+        delete node;
+        node=renderer.updatePaintNode(nullptr,nullptr);
+        geometry=static_cast<QSGGeometryNode *>(node)->geometry();
+        QCOMPARE(QByteArray(static_cast<const char *>(geometry->vertexData()),
+                            geometry->vertexCount()*geometry->sizeOfVertex()),bytes);
+        ++renderer.m_renderEpoch; // reset/replay of an existing node uses the same ordering
+        node=renderer.updatePaintNode(node,nullptr);
+        geometry=static_cast<QSGGeometryNode *>(node)->geometry();
+        QCOMPARE(QByteArray(static_cast<const char *>(geometry->vertexData()),
+                            geometry->vertexCount()*geometry->sizeOfVertex()),bytes);
+        delete node;
+    }
+
+    void whirlpoolFixtureAndPacking()
+    {
+        SnakeRenderer renderer;renderer.m_shaderGeometryForTest=true;renderer.setSize({3440,1440});
+        auto frame=whirlpoolFrame();renderer.syncFrame(frame,palette,1,true);
+        auto *node=renderer.updatePaintNode(nullptr,nullptr);
+        const auto *g=static_cast<QSGGeometryNode *>(node)->geometry();
+        const auto *v=static_cast<const snakes_core_shader_vertex *>(g->vertexData());
+        int vortex=0,gems=0;
+        for(int i=0;i<g->vertexCount();++i) {vortex+=v[i].params[0]==19;gems+=v[i].params[0]==26 && v[i].params[1]==7;}
+        QCOMPARE(vortex,6);QCOMPARE(gems,18);
+        frame.items[0].x=10000;renderer.syncFrame(frame,palette,1,true);node=renderer.updatePaintNode(node,nullptr);
+        g=static_cast<QSGGeometryNode *>(node)->geometry();v=static_cast<const snakes_core_shader_vertex *>(g->vertexData());
+        vortex=0;for(int i=0;i<g->vertexCount();++i) vortex+=v[i].params[0]==19;
+        QCOMPARE(vortex,0);delete node;
     }
 
     void eventsFixtureAndChaosBudget()
@@ -2277,7 +2376,12 @@ private Q_SLOTS:
     static SnakeFrame referenceFrame(bool chaos)
     {
         auto frame=chaos?s3ChaosFrame():makeFrame(90,12,300);
-        if(chaos) maxInventory(frame);
+        if(chaos) {
+            maxInventory(frame);
+            snakes_core_item v{};v.kind=8;v.state=2;v.x=2900;v.y=720;v.radius=396;
+            v.life_ticks=30;v.charge_ticks=120;v.captured_value=60;
+            if(frame.items.size()==SNAKES_CORE_MAX_ITEMS) frame.items.back()=v; else frame.items.push_back(v);
+        }
         frame.info.world_width=7920;frame.info.world_height=1440;frame.itemRadius=37.8;
         // Keep all 14 snakes so the chaos fixture covers all 42 inventory slots.
         for(auto &s:frame.snakes) {
@@ -2321,17 +2425,21 @@ private Q_SLOTS:
             nodes[id]=renderers[id].updatePaintNode(nodes[id],nullptr);
         }
         std::array<qint64,2> geometryNs{},syncNs{};
-        QElapsedTimer timer;
+        const auto threadNs=[]() {
+            timespec t{};
+            if(clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t)!=0) return qint64(-1);
+            return qint64(t.tv_sec)*1000000000+t.tv_nsec;
+        };
         for(bool sync:{false,true}) for(int batch=0;batch<batches;++batch) for(int order=0;order<2;++order) {
             const int id=(batch+order)%2;
             auto &renderer=renderers[id];auto &frame=frames[id];
-            timer.start();
+            const qint64 start=threadNs();QVERIFY(start>=0);
             for(int j=0;j<block;++j) {
                 if(sync) renderer.syncFrame(frame,palette,1,true);
                 else renderer.presentFrame(frame.info.simulation_time,1);
                 nodes[id]=renderer.updatePaintNode(nodes[id],nullptr);
             }
-            (sync?syncNs:geometryNs)[id]+=timer.nsecsElapsed();
+            (sync?syncNs:geometryNs)[id]+=threadNs()-start;
         }
         for(int id=0;id<2;++id) {
             qInfo()<<"reference"<<(id==1?"chaos":"mature")<<"vertices"<<vertices[id]

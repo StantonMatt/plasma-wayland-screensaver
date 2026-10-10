@@ -8,6 +8,7 @@ pub(crate) mod flip;
 pub use inventory::{Inventory, INVENTORY_SLOTS, INVENTORY_WINDUP_TICKS};
 mod presentation;
 mod prism;
+pub(crate) mod whirlpool;
 pub(crate) mod events;
 pub(crate) mod venom;
 pub use presentation::{Mood, Glyph, FaceState, Bubble, Bulge, WorldEventState, MAX_BUBBLES, MAX_CONTENDERS};
@@ -300,11 +301,12 @@ pub struct FoodView {
     pub life_fraction: u8,
     /// Countdown used by the AI target cache; cold future payloads stay in Food.
     pub motion_ticks: u16,
+    pub captured_by:u16,
 }
 impl From<&Food> for FoodView {
     fn from(f: &Food) -> Self {
         Self {
-            motion_ticks:f.motion_ticks,
+            motion_ticks:f.motion_ticks,captured_by:f.captured_by,
             id: f.id,
             position: f.p,
             value: f.value,
@@ -339,6 +341,8 @@ pub struct World {
     pub(crate) segments: Vec<Segment>,
     pub(crate) food: Vec<Food>,
     pub(crate) items: Vec<Item>,
+    pub whirlpool_stats:whirlpool::WhirlpoolStats,
+    pub(crate) reduced_motion:bool,
     item_timer: u16,
     prism_timer: u16,
     event_schedule: events::Events,
@@ -392,6 +396,7 @@ impl World {
             MAX_SNAKES*MAX_SEGMENTS],
             food: Vec::with_capacity(MAX_FOOD),
             items: Vec::with_capacity(MAX_ITEMS),
+            whirlpool_stats:Default::default(),reduced_motion:false,
             item_timer: 0,
             prism_timer: 0,
             event_schedule: events::Events::default(),
@@ -544,6 +549,7 @@ impl World {
         self.consumptions.clear();
         self.food.clear();
         self.items.clear();
+        self.whirlpool_stats=Default::default();
         self.next_item = 1;
         self.last_item_kind = effects::EffectKind::None;
         self.item_timer = 0;
@@ -594,7 +600,7 @@ impl World {
         if !self.events_enabled() {self.clear_world_events();}
         else if !old.world_events {self.reset_events();}
         self.scale_world_events(old);
-        for item in &mut self.items { item.radius=config.base_radius()*2.1; }
+        for item in &mut self.items { item.radius=config.base_radius()*if item.vortex {whirlpool::RADIUS} else {2.1}; }
         self.prepare_storage();
         if old.deadly_walls!=config.deadly_walls {
             for i in 0..self.snakes.len() {
@@ -1025,7 +1031,7 @@ impl World {
         self.update_food(seconds);
         if self.events_enabled() {self.advance_world_events();}
         if self.config.rules==RuleSet::V2 {self.release_detached();}
-        if self.items_enabled() { self.advance_items_and_effects(); self.advance_prism(); }
+        if self.items_enabled() { self.advance_items_and_effects(); self.advance_prism(); self.advance_whirlpool(); }
         if self.config.rules==RuleSet::V2 {self.advance_presentation();}
         self.growth_slots = self.config.maximum_world_segments().saturating_sub(self.stats().total_segments as usize);
         let mut inputs = [Steering::default();
@@ -1160,7 +1166,7 @@ impl World {
             s.boost_paid += 1;
             Self::update_radius(s);
             // Keep every spent segment represented, even when the food cap is full.
-            if self.food.len() >= self.config.maximum_food() { let oldest=self.food.iter().position(|f|!matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed|FoodKind::Meteor)).unwrap_or(0);self.food.remove(oldest); }
+            if self.food.len() >= self.config.maximum_food() { let oldest=self.food.iter().position(|f|!matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed|FoodKind::Meteor)).unwrap_or(0);self.evict_food(oldest); }
             self.add_food(Food { p, value: 0.5, color, life: 8.0, kind: FoodKind::Pellet, ..Food::default() });
         }
     }
@@ -1206,6 +1212,7 @@ impl World {
             if self.config.rules==RuleSet::V2 && self.advance_meteor(i) {continue;}
             let f = &mut self.food[i];
             f.attraction = 0.0;
+            if f.captured_by!=0 {continue;}
             if f.life>0.0 && !(self.config.rules==RuleSet::V2 && f.kind==FoodKind::Prism && f.ripe_tick!=0) {
                 f.life-=seconds;
                 if f.life<=0.0 {
@@ -1243,6 +1250,10 @@ impl World {
     fn consume_food(&mut self, i: usize, owner: usize) {
         let f = self.food[i];
         if f.kind==FoodKind::Star {self.event_schedule.stats.stars_eaten+=1;}
+        if f.feast&whirlpool::ESSENCE_BIT!=0 {
+            if f.trail_index==owner as u32 && f.feast_len==self.snakes[owner].generation {self.whirlpool_stats.holder_eaten+=1;}
+            else {self.whirlpool_stats.rival_eaten+=1;}
+        }
         self.consumptions.push((f.id, owner as u32, self.snakes[owner].generation, f.p, f.value));
         #[cfg(feature = "parity")]
         self.parity_eat(owner, f);
@@ -1583,7 +1594,7 @@ impl World {
                 if f.owner>=0 || (pass==0 && f.feast>0) || (self.config.rules==RuleSet::V2 && matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed|FoodKind::Meteor)) {
                     continue;
                 }
-                self.food.remove(i);
+                self.evict_food(i);
                 needed-=1;
             }
         }

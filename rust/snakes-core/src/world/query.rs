@@ -64,6 +64,7 @@ impl World {
         copy.segments.clone_from(&self.segments);
         copy.food.clone_from(&self.food);
         copy.items.clone_from(&self.items);
+        copy.whirlpool_stats=self.whirlpool_stats;copy.reduced_motion=self.reduced_motion;
         copy.item_timer = self.item_timer;
         copy.prism_timer = self.prism_timer;
         copy.event_schedule = self.event_schedule;

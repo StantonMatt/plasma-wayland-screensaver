@@ -34,6 +34,9 @@ pub(super) struct Events {
 pub(crate) fn food_pickup_eligible(kind:FoodKind,tick:u64,ready:u64,captured:u16)->bool {
     kind!=FoodKind::Meteor && captured==0 && Item::endpoint_eligible(tick,ready,0,usize::MAX,true)
 }
+impl crate::FoodView {
+    pub fn pickup_eligible(self,tick:u64,ready:u64)->bool {food_pickup_eligible(self.kind,tick,ready,self.captured_by)}
+}
 impl World {
     pub(super) fn events_enabled(&self)->bool {self.config.rules==RuleSet::V2 && self.config.world_events}
     fn schedule_star(&mut self,tick:u64) {self.event_schedule.star_due=tick+5400+(self.rng.random()*3601.0) as u64;}
@@ -206,7 +209,7 @@ impl World {
                 while self.event_schedule.emitted<METEORS && age>=TELEGRAPH+(self.event_schedule.emitted as u64*5).div_ceil(2) {
                     let j=self.event_schedule.emitted;self.event_schedule.emitted+=1;
                     if self.food.len()>=self.config.maximum_food() {
-                        if let Some(i)=self.food.iter().position(|f|f.owner<0 && !matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed|FoodKind::Meteor)) {self.food.remove(i);}
+                        if let Some(i)=self.food.iter().position(|f|f.owner<0 && !matches!(f.kind,FoodKind::Prism|FoodKind::PrismSeed|FoodKind::Meteor)) {self.evict_food(i);}
                     }
                     if self.food.len()>=MAX_FOOD {continue;}
                     let plan=self.event_schedule.plans[j];let d=self.event_schedule.diagonal;

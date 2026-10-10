@@ -46,7 +46,7 @@ impl Renderer {
         let lifetime=if self.reduced_motion {27.0} else {45.0};
         let mut owners=0u32;
         for bubble in &info.bubbles[..(info.bubble_count as usize).min(3)] {
-            if bubble.glyph>10 || bubble.snake_id as usize>=MAX_SNAKES || owners&(1<<bubble.snake_id)!=0 {continue;}
+            if bubble.glyph>11 || bubble.snake_id as usize>=MAX_SNAKES || owners&(1<<bubble.snake_id)!=0 {continue;}
             let Some(s)=snakes.iter().find(|s|s.id==bubble.snake_id && s.generation==bubble.generation && s.alive!=0 && s.flags&flags::CORPSE==0 && s.segment_count>0 && snake_valid(s)) else {continue;};
             let age=(bubble.age_ticks as f64+extra).max(0.0);
             if age>=lifetime {continue;}
@@ -77,7 +77,7 @@ impl Renderer {
                 0=>self.items.get(s.target_item as usize).filter(|_|(s.target_item as usize)<self.item_count)
                     .map_or_else(||items::tint(Color::new(255,245,224,255),palette),|item|items::accent(item.kind,palette)),
                 1=>Color::new(183,205,222,255),2=>Color::new(255,105,55,255),
-                3=>Color::new(189,222,255,255),5..=10=>items::accent(bubble.glyph-4,palette),_=>Color::new(255,150,200,255),
+                3=>Color::new(189,222,255,255),5..=11=>items::accent(bubble.glyph-4,palette),_=>Color::new(255,150,200,255),
             };
             // Mood colours use greys on Mono; emote accents retain 12% chroma.
             let c=if bubble.glyph==0 || bubble.glyph>=5 {c} else {items::tint(c,palette)};
@@ -85,7 +85,7 @@ impl Renderer {
         }
     }
     pub(super) fn shader_races(&self,info:&FrameInfo,p:&Params,palette:&[Color],snakes:&[SnakeRecord],segments:&[SegmentRecord],sink:&mut SpriteSink<'_>) {
-        self.shader_race_items(info,p,palette,snakes,segments,sink,&self.items[..self.item_count.min(crate::MAX_CAPSULES)],self.item_radius,6);
+        self.shader_race_items(info,p,palette,snakes,segments,sink,&self.items[..self.item_count],self.item_radius,6);
     }
     pub(super) fn shader_prism_races(&self,info:&FrameInfo,p:&Params,palette:&[Color],snakes:&[SnakeRecord],segments:&[SegmentRecord],food:&[FoodRecord],sink:&mut SpriteSink<'_>) {
         let Some(f)=food.iter().find(|f|matches!(f.kind,3|4) && food_valid(f)) else {return;};
@@ -117,7 +117,7 @@ impl Renderer {
         let arena=P::new(info.world_width,info.world_height);let walls=p.deadly_walls!=0;
         let mut drawn=0;
         for item in items {
-            if !items::valid_item(item) || item_radius<=0.0 {continue;}
+            if !(1..=7).contains(&item.kind) || !items::valid_item(item) || item_radius<=0.0 {continue;}
             let pos=P::new(item.x as f64,item.y as f64);
             let etas=item.contender_etas;
             let contested=etas.iter().all(|v|v.is_finite() && *v>=0.0) && etas[0].max(etas[1])<=etas[0].min(etas[1])*1.18;

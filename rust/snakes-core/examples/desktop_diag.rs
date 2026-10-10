@@ -25,19 +25,37 @@ use snakes_core::{ai::{AiController,DesktopObservation},controller::{Controller,
 use super::{desktop_metrics::Metrics,death_leadups::Leadups,item_lifecycle::{lifecycle,EffectEpisode}};
 use std::{collections::{HashMap,VecDeque},io::{BufWriter,Write},fs::File,time::Instant};
 const ITEM_BIT:u64=1<<63;
-const MODES:[&str;12]=["wander","recovery","escape","coil","guard","vulture","standoff","venom","hunt","capsule","prism","food"];
+const MODES:[&str;14]=["wander","recovery","escape","coil","guard","vulture","standoff","venom","hunt","capsule","prism","food","whirlpool-holder","whirlpool-rival"];
 #[derive(Clone,Copy,Default)] struct Sample {generation:u32,turn:f64,position:Point,distance:f64,target:u64,mode:u8,ate:u64}
 struct Observer {inner:AiController,obs:[DesktopObservation;MAX_SNAKES],called:[bool;MAX_SNAKES]}
 impl Controller for Observer {
     fn delegate(&self,_id:u32)->Option<&dyn Controller> {Some(&self.inner)}
  fn steer(&mut self,w:&World,s:SnakeView<'_>)->Steering {let out=self.inner.steer(w,s);self.obs[s.id as usize]=self.inner.desktop_observation(s.id as usize);self.called[s.id as usize]=true;out}
 }
-#[derive(Default)] struct Counts {ticks:u64, modes:[u64;12],circles:[u64;12],recoveries:u64,progress_rejections:u64,
+#[derive(Default)] struct Counts {ticks:u64, modes:[u64;14],circles:[u64;14],recoveries:u64,progress_rejections:u64,
  near_wall:u64,invisible:u64,near_gap:u64,food:u64,intended:u64,food_value:f64,intended_value:f64,
  capsules:u64,caps_intended:u64,prisms:u64,prisms_intended:u64,targets:u64,target_dist:f64,
  selections:[u64;13],strategy:u64,direct_safe:u64,direct_viable:u64,viable_ignored:u64,
  safety_veto:u64,tracked:u64,behind:u64,length:u64,patch_intended:u64,cap_recent:u64,recover_caps:u64,recover_targets:u64,recover_progress:u64,venom_picks:u64,venom_used:u64}
 struct FoodRecord {claim:Option<(u32,u32,bool,bool,bool)>,kind:FoodKind}
+impl FoodRecord {
+ fn release(&mut self,f:FoodView) {if f.captured_by!=0 || f.vacuum_owner<0 {self.claim=None;}}
+}
+#[cfg(test)]
+mod claim_tests {
+ use super::*;
+ #[test]
+ fn whirlpool_revocation_resets_attribution_before_reclaim() {
+  let w=World::diagnostic_arena(Config::default(),&[(Point{x:500.0,y:500.0},0.0,24,0.0)],
+   &[Point{x:700.0,y:500.0}]).unwrap();
+  let mut f=w.foods().next().unwrap();
+  let mut rec=FoodRecord{claim:Some((0,1,true,true,true)),kind:f.kind};
+  f.captured_by=1;f.vacuum_owner=-1;rec.release(f);assert!(rec.claim.is_none());
+  f.captured_by=0;f.vacuum_owner=0;rec.release(f);
+  if rec.claim.is_none() {rec.claim=Some((0,1,false,false,false));}
+  assert_eq!(rec.claim,Some((0,1,false,false,false)));
+ }
+}
 fn near_gap(p:Point)->bool {p.x>5940.0 && ((p.y-195.0).abs()<60.0 || (p.y-1275.0).abs()<60.0 || (p.x-6000.0).abs()<60.0 && (p.y<195.0 || p.y>1275.0))}
 fn visible(p:Point)->bool {p.x<6000.0 || p.y>=195.0 && p.y<1275.0}
 fn replay(w:&World,obs:&[DesktopObservation;MAX_SNAKES],out:&mut BufWriter<File>) {
@@ -61,7 +79,7 @@ pub fn run() {
 let inner=AiController::new();assert_eq!(experiment,0,"policy experiments are not shipped");let mut ai=Observer {inner,obs:[DesktopObservation::default();MAX_SNAKES],called:[false;MAX_SNAKES]};
  if let Some(n)=giant {let (points,angle)=super::long_fixtures::spiral(&w,0,n);w.diagnostic_body(0,&points,angle).unwrap();}
  if giant.is_none() {for _ in 0..9000 {w.step(&mut ai);}}
- let initial_stats=w.stats();let mut metrics=Metrics::default();let mut leadups=Leadups::new(prefix);let mut lengths=super::length_metrics::LengthMetrics::new(&w,giant.map(|_|0));
+ let initial_stats=w.stats();let initial_brew=w.whirlpool_stats;let mut metrics=Metrics::default();let mut leadups=Leadups::new(prefix);let mut lengths=super::length_metrics::LengthMetrics::new(&w,giant.map(|_|0));
  let mut counts:Vec<Counts>=(0..w.snake_count()).map(|_|Counts::default()).collect();let mut foods:HashMap<u64,FoodRecord>=HashMap::new();let mut caps:HashMap<u64,u64>=HashMap::new();let mut cap_times=Vec::new();let mut prism_times=Vec::new();let mut prism_spawn:HashMap<u64,u64>=HashMap::new();
  let mut histories:Vec<VecDeque<Sample>>=(0..w.snake_count()).map(|_|VecDeque::with_capacity(301)).collect();let mut last_angle=[0.0;MAX_SNAKES];let mut last_circle=[0u64;MAX_SNAKES];let mut ate=[0u64;MAX_SNAKES];
  let mut times=Vec::with_capacity(minutes*1800);let mut recent:HashMap<(u64,u32,u32),u64>=HashMap::new();let mut events=BufWriter::new(File::create(format!("{prefix}.events.csv")).unwrap());writeln!(events,"tick,event,snake,item,kind,immediate,recent,last_target_age").unwrap();let mut spawn_count=0;let mut expiry=0;let mut sever=0;let mut cap_kind=[0u64;8];let mut venom_episode=std::array::from_fn::<_,MAX_SNAKES,_>(|id|w.snake(id).filter(|s|s.alive && s.effect_ticks>0)
@@ -82,7 +100,8 @@ let inner=AiController::new();assert_eq!(experiment,0,"policy experiments are no
   let intended=|id:usize,generation:u32,food_id:u64| (ai.called[id] && ai.obs[id].generation==generation && ai.obs[id].target==food_id) || pre_targets[id]==(generation,food_id);
   let patch=|id:usize,generation:u32,f:FoodView| {let d=ai.obs[id];ai.called[id] && d.generation==generation && matches!(d.mode,11|10) && w.distance_squared(d.goal,f.position)<(w.snake(id).unwrap().radius*6.0).powi(2)};
   
-  for f in w.foods().filter(|f|f.vacuum_owner>=0) {if let Some(rec)=foods.get_mut(&f.id) {if rec.claim.is_none() {let id=f.vacuum_owner as usize;let generation=w.snake(id).unwrap().generation;rec.claim=Some((id as u32,generation,intended(id,generation,f.id),patch(id,generation,f),metrics.deliberate(id,generation,f.id)));}}}
+  for f in w.foods() {if let Some(rec)=foods.get_mut(&f.id) {rec.release(f);}}
+  for f in w.foods().filter(|f|f.captured_by==0 && f.vacuum_owner>=0) {if let Some(rec)=foods.get_mut(&f.id) {if rec.claim.is_none() {let id=f.vacuum_owner as usize;let generation=w.snake(id).unwrap().generation;rec.claim=Some((id as u32,generation,intended(id,generation,f.id),patch(id,generation,f),metrics.deliberate(id,generation,f.id)));}}}
   let mut captured=Vec::new();
   for (food_id,id,generation,_,value) in w.consumption_events() {let id=id as usize;captured.push((food_id,id));let rec=foods.remove(&food_id);let deliberate=rec.as_ref().and_then(|r|r.claim).filter(|r|r.0==id as u32 && r.1==generation).map_or_else(||metrics.deliberate(id,generation,food_id),|r|r.4);metrics.deliberate+=u64::from(deliberate);let patch_targeted=rec.as_ref().and_then(|r|r.claim).filter(|r|r.0==id as u32 && r.1==generation).map_or_else(||food_before.iter().find(|f|f.id==food_id).is_some_and(|f|patch(id,generation,*f)),|r|r.3);let targeted=rec.as_ref().and_then(|r|r.claim).filter(|r|r.0==id as u32 && r.1==generation).map_or_else(||intended(id,generation,food_id),|r|r.2);let c=&mut counts[id];c.food+=1;c.intended+=u64::from(targeted);c.patch_intended+=u64::from(targeted || patch_targeted);c.food_value+=value;c.intended_value+=if targeted {value} else {0.0};ate[id]+=1;
    if rec.is_some_and(|r|matches!(r.kind,FoodKind::Prism|FoodKind::PrismSeed)) {c.prisms+=1;c.prisms_intended+=u64::from(targeted);if let Some(t)=prism_spawn.remove(&food_id) {prism_times.push((w.tick()-t) as f64/30.0);}}
@@ -113,7 +132,7 @@ let inner=AiController::new();assert_eq!(experiment,0,"policy experiments are no
    let turn=if let Some(last)=h.back() {last.turn+normalize_angle(s.angle-last_angle[id])} else {0.0};last_angle[id]=s.angle;
    h.push_back(Sample {generation:s.generation,turn,position:p,distance:d.distance,target:d.target,mode:d.mode,ate:ate[id]});if h.len()>301 {h.pop_front();}
    if h.len()==301 && tick as u64>=last_circle[id]+300 {let first=h.front().unwrap();let last=h.back().unwrap();let turn=(last.turn-first.turn).abs();let turning_radius=w.motion_limits(id,0.0).map_or(100.0,|(v,r)|v/r);let stationary=w.distance_squared(first.position,last.position)<(turning_radius*2.0).powi(2);let no_progress=first.target!=last.target || first.distance-last.distance<8.0;
-    if turn>=std::f64::consts::TAU && stationary && no_progress && first.ate==last.ate {let mut modes=[0usize;12];for e in h.iter(){modes[e.mode as usize]+=1;}let mode=(0..12).max_by_key(|i|modes[*i]).unwrap();c.circles[mode]+=1;last_circle[id]=tick as u64;}
+    if turn>=std::f64::consts::TAU && stationary && no_progress && first.ate==last.ate {let mut modes=[0usize;14];for e in h.iter(){modes[e.mode as usize]+=1;}let mode=(0..14).max_by_key(|i|modes[*i]).unwrap();c.circles[mode]+=1;last_circle[id]=tick as u64;}
    }
    if (0..1800).contains(&tick) || (36000..37800).contains(&tick) {if let Some(f)=&mut trace {writeln!(f,"{},{},{},{},{},{:.2},{},{},{},{},{:.3},{},{},{},{},{}",w.tick(),id,s.generation,MODES[d.mode as usize],d.target,d.distance,d.selected,d.direct_safe,d.direct_viable,d.tracking,d.turn_accum,d.recovery_started,d.progress_rejected,d.prey,d.prey_generation,d.venom_target).unwrap();}}
   }
@@ -122,6 +141,10 @@ let inner=AiController::new();assert_eq!(experiment,0,"policy experiments are no
   if ((0..1800).contains(&tick) || (36000..37800).contains(&tick)) && tick%3==0 {if let Some(f)=&mut replay_out {replay(&w,&ai.obs,f);}}
  }
  inventory.write(prefix);
+ let mut brew=w.whirlpool_stats;
+ brew.opened-=initial_brew.opened;brew.bursts-=initial_brew.bursts;brew.captured_value-=initial_brew.captured_value;
+ brew.shards-=initial_brew.shards;brew.holder_eaten-=initial_brew.holder_eaten;brew.rival_eaten-=initial_brew.rival_eaten;
+ println!("whirlpool={brew:?} average_v={:.3}",brew.captured_value/brew.bursts.max(1) as f64);
  for (label,count) in ["considered","growth","tail_wall","near_tail","size_or_phase","not_closing","ambush_geometry","prize_near_head","prize_behind","prize_tail_reachable","no_situation","tail_area","trial_wall","trial_cap","trial_short","trial_area","selected_other","selected_escape","selected_ambush","selected_loot","ambush_no_certified_win","escape_proposals","ambush_proposals","loot_proposals"].into_iter().zip(ai.inner.flip_decision_counts()) {println!("flip_decision {label}={count}");}
  times.sort_unstable_by(f64::total_cmp);cap_times.sort_unstable_by(f64::total_cmp);prism_times.sort_unstable_by(f64::total_cmp);
  let median=|xs:&[f64]|if xs.is_empty(){0.0}else{xs[xs.len()/2]};let total_ticks:u64=counts.iter().map(|c|c.ticks).sum();let food:u64=counts.iter().map(|c|c.food).sum();let intended:u64=counts.iter().map(|c|c.intended).sum();let pickups:u64=counts.iter().map(|c|c.capsules).sum();let caps_intended:u64=counts.iter().map(|c|c.caps_intended).sum();let circles:u64=counts.iter().map(|c|c.circles.iter().sum::<u64>()).sum();let strategy:u64=counts.iter().map(|c|c.strategy).sum();

@@ -254,6 +254,9 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
         m_drawOffsetX, m_drawOffsetY, m_interpolation,
         m_shaderTimeFrozen ? m_frozenShaderTime : m_simulationTime,
         uint32_t(m_deadlyWalls), uint32_t(m_developerMode)};
+    // Replay captures radii in retained effects, including after node recreation.
+    snakes_core_render_set_items(node->renderer.get(),
+        m_frame ? m_frame->items.data() : nullptr, m_frame ? m_frame->items.size() : 0, m_frame ? m_frame->itemRadius : 0);
     // GUI-side compact copies keep intermediate ticks until scene-graph sync. Feed
     // history without tessellation: zero scale exits after consuming history.
     // Kill flashes, corpse fade starts and boost trail samples keep their
@@ -290,8 +293,6 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
         }
     }
     auto *geometry = node->geometry();
-    snakes_core_render_set_items(node->renderer.get(),
-        m_frame ? m_frame->items.data() : nullptr, m_frame ? m_frame->items.size() : 0, m_frame ? m_frame->itemRadius : 0);
     snakes_core_render_output result{};
     const auto build = [&] {
         if (shader) return snakes_core_render_build_shader(node->renderer.get(), &info,

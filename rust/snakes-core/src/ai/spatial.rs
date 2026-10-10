@@ -648,7 +648,7 @@ impl Spatial {
         let dilated=clock.map(|c|c.elapsed().as_nanos());
         if let Some(t)=dilated {self.profile[1]+=t-inserted.unwrap();}
         for (i,f) in w.foods().enumerate() {
-            if f.kind==crate::FoodKind::Meteor || w.food[i].captured_by!=0 {continue;}
+            if !f.pickup_eligible(u64::MAX,0) {continue;}
             let key = self.key(f.position);
             if self.food_heads[key]==-1 {self.food_cells[self.food_count]=key as u16;self.food_count+=1;}
             self.food_next[i] = self.food_heads[key]; self.food_heads[key] = i as i32;

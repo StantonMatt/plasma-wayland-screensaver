@@ -506,10 +506,10 @@ pub unsafe extern "C" fn snakes_core_export_extras(handle: *const WorldHandle,
     if !buffer(items, item_capacity, w.items().len()) || !buffer(events, event_capacity, count) { return INVALID_ARGUMENT; }
     for (i,item) in w.items().enumerate() {
         unsafe { ptr::write(items.add(i), ItemRecord {id:item.id,x:item.position.x as f32,y:item.position.y as f32,
-            kind:item.kind as u8,reserved_byte:0,age_ticks:item.age_ticks,life_ticks:item.life_ticks,reserved:0,
+            kind:if item.vortex {8} else {item.kind as u8},reserved_byte:0,age_ticks:item.age_ticks,life_ticks:item.life_ticks,reserved:0,
             pickable_from_tick:item.pickable_from_tick,leader_snake_id:item.leader_snake_id,leader_eta:item.leader_eta,
             landing_ticks:item.pickable_from_tick.saturating_sub(w.tick()).min(u16::MAX as u64) as u16,
-            contender_count:item.contender_count,state:item.dropped as u8,contender_ids:item.contender_ids,contender_etas:item.contender_etas,
+            contender_count:item.contender_count,state:if item.vortex {2} else {item.dropped as u8},contender_ids:item.contender_ids,contender_etas:item.contender_etas,
             guard_snake_id:item.guard_snake_id,radius:item.radius as f32,captured_value:item.captured_value,
             charge_ticks:item.charge_ticks,owner_generation:item.owner_generation,owner_snake_id:item.owner_snake_id,reserved_v3:0,reserved_owner:0}); }
     }
@@ -1002,7 +1002,7 @@ pub unsafe extern "C" fn snakes_core_render_set_clock_rect(renderer:*mut RenderH
 /// Live exclusive renderer; items is a readable, aligned, disjoint array.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn snakes_core_render_set_items(renderer: *mut RenderHandle, items: *const ItemRecord, count: usize, radius: f64) -> i32 {
-    if !valid(renderer) || count>crate::MAX_ITEMS || (count>0 && (!valid(items) || !(0.0..=crate::render::NUMERIC_LIMIT).contains(&radius))) { return INVALID_ARGUMENT; }
+    if !valid(renderer) || count>crate::MAX_ITEMS || !(0.0..=crate::render::NUMERIC_LIMIT).contains(&radius) || (count>0 && !valid(items)) { return INVALID_ARGUMENT; }
     let records=if count==0 {&[]} else {unsafe {std::slice::from_raw_parts(items,count)}};
     if !records.iter().all(crate::render::items::valid_item) { return INVALID_ARGUMENT; }
     unsafe { &mut *renderer }.set_items(records,radius);
@@ -1047,5 +1047,70 @@ mod prism_tests {
         assert_eq!(prism_race_flags(&w,&f),0);
         w.faces[0].target_id=88 | (1<<63);w.faces[1].target_id=88 | (1<<63);
         let flags=prism_race_flags(&w,&f);assert_eq!(flags&15,1);assert_eq!((flags>>4)&15,2);assert_eq!(flags&256,0);
+    }
+}
+
+/// Set Calm's vortex transport without changing configuration record layout.
+/// # Safety
+/// Handle must be live and exclusively borrowed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snakes_core_set_reduced_motion(handle:*mut WorldHandle,enabled:u32)->i32 {
+    if !valid(handle) || enabled>1 {return INVALID_ARGUMENT;}
+    unsafe {&mut *handle}.world.set_reduced_motion(enabled!=0);OK
+}
+
+#[cfg(test)]
+mod whirlpool_render_tests {
+    use super::*;
+    #[test]
+    fn world_step_exports_burst_after_vortex_removal_for_compact_replay() {
+        use crate::{Item, Point, RuleSet, EventKind, effects::EffectKind};
+        use crate::controller::{ScriptedController, Steering};
+        let cfg=Config {rules:RuleSet::V2,world_events:false,width:3440.0,height:1440.0,..Default::default()};
+        let mut world=World::new(cfg).unwrap();world.food.clear();
+        world.open_whirlpool(0,Point {x:1720.0,y:720.0});
+        for snake in &mut world.snakes {snake.alive=false;snake.len=0;snake.respawn=1.0e6;} // isolate contact and deaths
+        world.items[0].age_ticks=149;world.items[0].charge_ticks=149;world.items[0].life_ticks=1;
+        for j in 0..3 {world.items.push(Item {id:100+j,kind:EffectKind::Surge,
+            position:Point {x:500.0+j as f64*200.0,y:300.0},life_ticks:750,radius:cfg.base_radius()*2.1,..Default::default()});}
+        let mut handle=WorldHandle {world,inputs:[None;MAX_SNAKES],scripted:true,ai:crate::ai::AiController::new()};
+        let mut items=[ItemRecord::default();crate::MAX_ITEMS];let mut events=[EventRecord::default();crate::MAX_EVENTS];
+        unsafe {assert_eq!(snakes_core_export_extras(&handle,items.as_mut_ptr(),items.len(),events.as_mut_ptr(),events.len()),OK);}
+        assert_eq!(items[0].kind,8);assert!(items[1..].iter().all(|v|v.kind==1));
+        handle.world.step(&mut ScriptedController::new(|_:u64,s:crate::SnakeView<'_>|Steering {desired_angle:s.angle,rush:0.0}));
+        assert!(handle.world.vortex().is_none());assert_eq!(handle.world.items.len(),3);
+        unsafe {assert_eq!(snakes_core_export_extras(&handle,items.as_mut_ptr(),items.len(),events.as_mut_ptr(),events.len()),OK);}
+        let count=handle.world.frame_events().len();
+        assert!(events[..count].iter().any(|e|e.kind==EventKind::VortexBurst as u8 && e.tick==handle.world.tick()));
+        for calm in [false,true] {for shader in [false,true] {
+            let mut replay=RenderHandle::new();let mut full=RenderHandle::new();
+            replay.reduced_motion=calm;full.reduced_motion=calm;
+            let radius=unsafe {snakes_core_item_radius(&handle)};
+            for r in [&mut replay,&mut full] {unsafe {assert_eq!(snakes_core_render_set_items(r,std::ptr::null(),0,radius),OK);}}
+            let mut i=FrameInfo {tick:handle.world.tick(),simulation_time:handle.world.simulation_time(),world_width:cfg.width,world_height:cfg.height,..Default::default()};
+            let mut p=RenderParams {viewport_width:cfg.width,viewport_height:cfg.height,scale_x:1.0,scale_y:1.0,presentation_time:i.simulation_time,deadly_walls:1,..Default::default()};
+            let hidden=RenderParams {scale_x:0.0,scale_y:0.0,..p};
+            let pal=[RenderColor {red:77,green:230,blue:255,alpha:255}];
+            let mut a=[ShaderRenderVertex::default();64];let mut b=a;
+            let mut ac=[RenderVertex::default();512];let mut bc=ac;
+            if shader {
+                replay.build_shader(&i,&[],&[],&[],&events[..count],&pal,&hidden,&mut []);
+                full.build_shader(&i,&[],&[],&[],&events[..count],&pal,&p,&mut b);
+            } else {
+                replay.build(&i,&[],&[],&[],&events[..count],&pal,&hidden,&mut []);
+                full.build(&i,&[],&[],&[],&events[..count],&pal,&p,&mut bc);
+            }
+            i.tick+=1;i.simulation_time+=crate::STEP_SECONDS;p.presentation_time=i.simulation_time;
+            if shader {
+                let n=replay.build_shader(&i,&[],&[],&[],&[],&pal,&p,&mut a).vertex_count;
+                let m=full.build_shader(&i,&[],&[],&[],&[],&pal,&p,&mut b).vertex_count;
+                assert_eq!(n,12);assert_eq!(n,m);assert_eq!(&a[..n],&b[..m]);
+                assert!((a[0].x-1720.0).abs()>0.0);
+            } else {
+                let n=replay.build(&i,&[],&[],&[],&[],&pal,&p,&mut ac).vertex_count;
+                let m=full.build(&i,&[],&[],&[],&[],&pal,&p,&mut bc).vertex_count;
+                assert!(n>0);assert_eq!(n,m);assert_eq!(&ac[..n],&bc[..m]);
+            }
+        }}
     }
 }

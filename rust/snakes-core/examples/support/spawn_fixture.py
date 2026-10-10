@@ -14,14 +14,21 @@ def enabled_kinds(source, kind):
 
 
 def singleton_items(source):
-    """Keep repeat exclusion in production, permit repeats in singleton fixtures."""
-    for old, new in [
-        ("filter(|&&k|k!=self.last_item_kind)",
-         "filter(|&&k|effects::ENABLED_KINDS.len()==1 || k!=self.last_item_kind)"),
-        ("if k==self.last_item_kind {continue;}",
-         "if effects::ENABLED_KINDS.len()>1 && k==self.last_item_kind {continue;}"),
-    ]:
-        if source.count(old) != 1:
-            raise ValueError(f"Expected one spawn exclusion hook: {old}")
-        source = source.replace(old, new)
+    """Change the marked repeat policy shared by both spawn predicates.
+
+    Other exclusions (including an active Whirlpool) remain production rules.
+    The marker and boolean declaration in items.rs are the tooling contract;
+    predicate formatting and additional exclusions do not affect the fixture.
+    """
+    marker = "// spawn-fixture: repeat-exclusion"
+    count = source.count(marker)
+    if count != 1:
+        raise ValueError(f"Expected one {marker} marker in items.rs, found {count}")
+    source, count = re.subn(
+        r"(?m)^([ \t]*// spawn-fixture: repeat-exclusion[ \t]*\n"
+        r"[ \t]*let\s+exclude_repeat\s*=\s*)true(\s*;)",
+        r"\g<1>effects::ENABLED_KINDS.len() > 1\g<2>", source)
+    if count != 1:
+        raise ValueError("Spawn fixture contract in items.rs requires the marker "
+                         "followed by `let exclude_repeat = true;` (once, unmodified)")
     return source

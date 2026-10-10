@@ -13,7 +13,7 @@ impl AiController {
         let offensive=aggression::level(w);
         let mut kinds=0u8;
         for slot in 0..inv.count as usize {
-            if inv.life[slot]>4 && (1..=6).contains(&inv.kinds[slot]) {kinds|=1<<inv.kinds[slot];}
+            if inv.life[slot]>4 && (1..=7).contains(&inv.kinds[slot]) {kinds|=1<<inv.kinds[slot];}
         }
         if kinds==0 {return;}
         let flip=kinds&(1<<EffectKind::Flip as u8)!=0;
@@ -22,11 +22,15 @@ impl AiController {
         let phase=kinds&(1<<EffectKind::Phase as u8)!=0;
         let surge=kinds&(1<<EffectKind::Surge as u8)!=0;
         let frost=kinds&(1<<EffectKind::Frost as u8)!=0;
+        let whirlpool=kinds&(1<<EffectKind::Whirlpool as u8)!=0;
+        let brew=if whirlpool && w.vortex().is_none() && !danger && baseline.steps>=5 {
+            self.whirlpool_nutrition(w,baseline.path[5])
+        } else {0.0};
         let magnet=kinds&(1<<EffectKind::Magnet as u8)!=0;
         let evaluate_venom=kinds&(1<<EffectKind::Venom as u8)!=0 && offensive>0.0;
         // A saved Phase in open space has zero utility. Its inventory cannot
         // use rival/food evidence, so don't prepare those queries for it.
-        if !flip && phase && !surge && !frost && !magnet && !evaluate_venom
+        if !whirlpool && !flip && phase && !surge && !frost && !magnet && !evaluate_venom
             && !(danger && baseline.steps>=4 || offensive>0.5 && state.track_goal && state.prey!=0 && baseline.steps<horizon) {return;}
         let head=s.segments[0].current;let r=s.radius;
         let mut close=0;let mut hunter=false;let mut venom=false;let mut venom_near=false;
@@ -63,6 +67,8 @@ impl AiController {
             if inv.life[slot]<=4 {continue;}
             let kind=EffectKind::from_byte(inv.kinds[slot]);let expiring=inv.life[slot]<=150;
             let score=match kind {
+                EffectKind::Whirlpool if brew>=Self::whirlpool_minimum(inv.life[slot])
+                    && (inv.life[slot]<=30 || self.essence.is_none() && self.whirlpool_audience(w,s,baseline.path[5]))=>100.0+brew*0.12,
                 EffectKind::Flip if flip_situation==1=>900.0,
                 EffectKind::Flip if flip_situation==2=>180.0*offensive,
                 EffectKind::Flip if flip_situation==3=>100.0*(0.3+offensive),
@@ -80,7 +86,7 @@ impl AiController {
                 _=>0.0,
             };
             // Avoid replacing a still useful effect merely to spend another.
-            let score=if !matches!(kind,EffectKind::Frost|EffectKind::Flip) && s.effect_ticks>30 && !danger {score*0.25} else {score};
+            let score=if !matches!(kind,EffectKind::Frost|EffectKind::Flip|EffectKind::Whirlpool) && s.effect_ticks>30 && !danger {score*0.25} else {score};
             let score=score+if score>0.0 && expiring {25.0} else {0.0};
             if score>value {value=score;chosen=Some(slot);}
         }
@@ -100,6 +106,10 @@ impl AiController {
             if kind==EffectKind::Flip {self.flip_note(if !trial.wall_safe {12} else if trial.capped {13} else {14});}
             return;
         }
+        // Use the checked completion endpoint, not the current head or a
+        // straight projection that ignores the selected turn and boost.
+        if kind==EffectKind::Whirlpool && self.whirlpool_nutrition(w,trial.path[5])
+            <Self::whirlpool_minimum(inv.life[slot]) {return;}
         if kind==EffectKind::Flip && flip_situation==2 && trial.flip_head_wins&ambush_mask==0 {
             self.flip_note(20);return;
         }

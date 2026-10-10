@@ -5,7 +5,7 @@ use snakes_core::{ai::DesktopObservation, *};
 struct Episode {generation:u32,target:u64,kind:u8,ticks:u64,start:f64,last:f64,path:f64,near:bool,bearing:f64,heading_change:f64}
 pub struct Metrics {
     episodes:[Episode;MAX_SNAKES], previous:[Episode;MAX_SNAKES],positions:[Point;MAX_SNAKES],
-    dwell:[Vec<f64>;3],efficiency:Vec<f64>,pub abandons:[u64;9],pub misses:u64,
+    dwell:[Vec<f64>;4],efficiency:Vec<f64>,pub abandons:[u64;9],pub misses:u64,
     pub deliberate:u64,pub escapes:u64,pub competitive:u64,pub retained:u64,
     drift:[Vec<f64>;4],pub short_goals:u64,pub goals:u64,pub deaths_by_length:[[u64;5];3],
 }

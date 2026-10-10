@@ -389,3 +389,45 @@ fn zero_allocations_full_inventory_flip_pickup_and_ordered_forecasts() {
     ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
     assert_eq!(w.faces[0].flip_tick,2);assert_eq!(w.snakes[0].effect_kind,3);
 }
+
+#[test]
+fn whirlpool_capture_burst_and_ai_allocate_nothing() {
+    let mut w=World::new(Config {rules:RuleSet::V2,world_events:false,..Default::default()}).unwrap();
+    let p=w.segments[0].current;w.open_whirlpool(0,p);
+    let mut ai=ai::AiController::new();
+    ENABLED.with(|e|e.set(true));COUNT.with(|c|c.set(0));
+    w.step_n(&mut ai,160);
+    ENABLED.with(|e|e.set(false));let count=COUNT.with(|c|c.get());
+    assert_eq!(count,0);assert_eq!(w.whirlpool_stats.bursts,1);assert!(w.vortex().is_none());
+}
+
+#[test]
+fn whirlpool_stored_placement_and_feast_ai_allocate_nothing() {
+    let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,width:4000.0,height:2000.0,
+        deadly_walls:false,self_collisions:true,store_power_ups:true,world_events:false,..Default::default()},
+        &[(Point{x:1500.0,y:1000.0},0.0,24,0.0)],&[]).unwrap();
+    w.snakes[0].inventory=Inventory {kinds:[7,0,0],life:[1800,0,0],count:1,..Default::default()};
+    for i in 0..10 {w.food.push(world::Food {id:100+i,p:Point{x:1580.0,y:1000.0},
+        value:5.0,life:100.0,original_life:100.0,owner:-1,size:2.0,kind:FoodKind::Shard,..Default::default()});}
+    let mut ai=ai::AiController::new();
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    w.step_n(&mut ai,180);
+    ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
+    assert_eq!(w.whirlpool_stats.opened,1);assert_eq!(w.whirlpool_stats.bursts,1);
+}
+
+#[test]
+fn whirlpool_late_capture_release_and_ai_forecasts_allocate_nothing() {
+    let mut w=World::diagnostic_arena(Config {rules:RuleSet::V2,width:4000.0,height:2000.0,
+        deadly_walls:false,self_collisions:true,world_events:false,..Default::default()},
+        &[(Point{x:1500.0,y:1000.0},0.0,24,0.0)],&[]).unwrap();
+    let center=Point{x:1800.0,y:1000.0};w.open_whirlpool(0,center);
+    w.items[0].age_ticks=134;w.items[0].life_ticks=16;
+    w.food.push(world::Food {id:100,p:Point{x:center.x-w.items[0].radius-5.0,y:center.y},
+        velocity:Point{x:60.0,y:0.0},value:2.0,life:100.0,original_life:100.0,owner:-1,size:2.0,kind:FoodKind::Shard,..Default::default()});
+    let mut ai=ai::AiController::new();
+    COUNT.with(|c|c.set(0));ENABLED.with(|e|e.set(true));
+    w.step_n(&mut ai,40);
+    ENABLED.with(|e|e.set(false));assert_eq!(COUNT.with(Cell::get),0);
+    assert_eq!(w.whirlpool_stats.bursts,1);
+}

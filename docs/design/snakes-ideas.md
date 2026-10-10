@@ -334,8 +334,8 @@ Ranking is fun to watch per unit of cost and risk. Ticks are the 30 Hz simulatio
 
 | Element | Vertices | Fragment | CPU / sim |
 |---|---|---|---|
-| Vortex | 6 (new kind 19) | 3 log-spiral arms (one `atan`, one `log`), dashed rim, core glow growing with V, charge ramp over the last 20%; about 30 ALU, additive, arms at alpha 0.32 or less | about 12 flops per captured food per tick (at most about 190 food) |
-| Burst | 2 effect quads (ring, small flash, alpha 0.6 or less) | existing | the shards are ordinary food |
+| Vortex | 6 (new kind 19) | 3 log-spiral arms (one `atan`, one `log`), dashed rim, core glow growing with √V; additive, arms at alpha 0.42 or less, core up to 0.9 (prototype levels), 1 s swell then a 0.4 s inhale | about 12 flops per captured food per tick (at most about 190 food) |
+| Burst | 2 effect quads | ring sweeps 2 r to 12 r (quad 12.5 r), alpha 0.6 or less; flash half-white 3 r to 5 r, alpha 0.6 or less, 0.47 s | the shards are ordinary food |
 
 **Fill.** The vortex quad is the largest new primitive. At base radius 18 on 4K it is about 790 px across (0.63 MPix, additive). That is why it ranks last and carries its own GPU gate (section 6).
 
@@ -348,7 +348,7 @@ Ranking is fun to watch per unit of cost and risk. Ticks are the 30 Hz simulatio
 ## 4. Readability, safety and Calm
 
 - **Clock.** Bubbles are never drawn inside the clock's rectangle (renderer only; the sim is unaffected). The shipped scrim covers everything else. Nightfall improves readability.
-- **Photosensitivity.** Nothing flashes above 3 Hz over more than a small area. The largest new flash is the Whirlpool burst glow: 5 base radii, alpha 0.6 or less, 0.45 s. The contest pulse is 1.1 Hz, and the frozen shiver is a 0.05-head-unit offset, not a brightness change.
+- **Photosensitivity.** Nothing flashes above 3 Hz over more than a small area. The largest new flash is the Whirlpool burst glow: 5 base radii, alpha 0.6 or less, 0.47 s. The contest pulse is 1.1 Hz, and the frozen shiver is a 0.05-head-unit offset, not a brightness change.
 - **Density caps.** Bubbles 3, contest arcs 6, orphans 2, meteors 24, vortex 1, effect quads 8 (unchanged).
 - **Calm (reduced motion), in one rule.** Shader time freezes (no spin, shimmer, shiver, wriggle, streak or jitter), discrete events play 40% shorter, and information stays visible: moods, the ripening ring, the drop-in target, contest arcs and the night dimming.
 - **Mono and Pastel.** New accents follow the spec's rule (88% toward grey on Mono, 30% toward white on Pastel). Mood colours (angry orange, scared white, frozen ice) fall back to white-greys on Mono, so shape carries the meaning.
