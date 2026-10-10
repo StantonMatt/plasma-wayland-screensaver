@@ -80,6 +80,7 @@ fn incoming_capsule_is_visible_for_thirty_ticks_before_pickup() {
     let item=w.items[0];assert_eq!(item.pickable_from_tick,31);
     let p=item.position;w.segments[0].current=p;
     for tick in 0..30 {w.tick=tick;w.pickup_items();assert_eq!(w.items.len(),1);}
-    w.tick=30;w.pickup_items();assert!(w.items.is_empty());
+    w.tick=30;w.pickup_items();assert_eq!(w.capsule_count(),0);
+    assert_eq!(w.vortex().is_some(),item.kind==EffectKind::Whirlpool);
     assert_eq!(w.faces[0].happy_ticks,45);
 }

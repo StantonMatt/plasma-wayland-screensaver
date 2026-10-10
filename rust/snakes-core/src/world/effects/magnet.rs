@@ -15,7 +15,7 @@ impl EffectHook for Magnet {
         let reach2 = (snake.radius * 24.0).powi(2);
         let mut density = 0.0;
         for food in world.foods() {
-            if food.vacuum_owner < 0 && world.distance_squared(position, food.position) <= reach2 {
+            if food.pickup_eligible(u64::MAX,0) && food.vacuum_owner < 0 && world.distance_squared(position, food.position) <= reach2 {
                 density += food.value.min(2.0);
                 if density >= 16.0 { break; }
             }

@@ -3059,3 +3059,174 @@ fn flip_classic_wave_reverses_overlapping_front_and_calm_clock_without_allocatio
         assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
     }
 }
+
+#[test]
+fn whirlpool_quad_culls_wraps_and_burst_ages_in_calm_without_allocations() {
+    let mut r=RenderHandle::new();let mut i=info();let mut p=params();let pal=palette();
+    let mut out=vec![ShaderRenderVertex::default();4096];
+    let mut v=ItemRecord{kind:8,state:2,x:400.0,y:300.0,radius:99.0,life_ticks:75,charge_ticks:75,captured_value:20.0,..Default::default()};
+    r.set_items(&[v],9.45);
+    COUNT.with(|c|c.set(Some(0)));
+    let n=r.build_shader(&i,&[],&[],&[],&[],&pal,&p,&mut out).vertex_count;
+    let allocations=COUNT.with(|c|c.replace(None).unwrap());assert_eq!(allocations,0);
+    assert_eq!(n,6);assert_eq!(out[0].params[0],19);
+    v.x=10000.0;r.set_items(&[v],9.45);assert_eq!(r.build_shader(&i,&[],&[],&[],&[],&pal,&p,&mut out).vertex_count,0);
+    v.x=1.0;p.deadly_walls=0;r.set_items(&[v],9.45);
+    assert_eq!(r.build_shader(&i,&[],&[],&[],&[],&pal,&p,&mut out).vertex_count,12);
+    r.set_items(&[],9.45);r.reduced_motion=true;
+    i.tick+=1;i.simulation_time+=1.0/30.0;p.presentation_time=i.simulation_time;
+    let e=EventRecord{tick:i.tick,x:400.0,y:300.0,kind:11,duration_ticks:14,value:20.0,..Default::default()};
+    assert_eq!(r.build_shader(&i,&[],&[],&[],&[e],&pal,&p,&mut out).vertex_count,12);
+    i.tick+=8;i.simulation_time+=8.0/30.0;p.presentation_time=i.simulation_time;
+    assert_eq!(r.build_shader(&i,&[],&[],&[],&[],&pal,&p,&mut out).vertex_count,0);
+}
+
+#[test]
+fn whirlpool_brew_lies_under_food_and_its_burst_ring_reaches_the_rivals() {
+    let mut r=RenderHandle::new();let mut i=info();let mut p=params();let pal=palette();
+    let mut out=vec![ShaderRenderVertex::default();4096];
+    let base=18.0_f32;
+    let mut v=ItemRecord{kind:8,state:2,x:1720.0,y:720.0,radius:22.0*base,life_ticks:75,charge_ticks:75,captured_value:25.0,..Default::default()};
+    r.set_items(&[v],base as f64*2.1);
+    let f=FoodRecord{x:1740.0,y:730.0,size:6.0,..Default::default()};
+    assert_eq!(r.build_shader(&i,&[],&[],&[f],&[],&pal,&p,&mut out).vertex_count,12);
+    assert!(out[..6].iter().all(|q|q.params[0]==19),"brew is emitted before food");
+    assert!(out[6..12].iter().all(|q|q.params[0]!=19));
+    assert_eq!(out[0].params[2],255,"V=25 (46-shard cap) fills the core byte");
+    v.captured_value=4.0;r.set_items(&[v],base as f64*2.1);
+    r.build_shader(&i,&[],&[],&[],&[],&pal,&p,&mut out);
+    assert_eq!(out[0].params[2],102,"core byte is sqrt(V)/5");
+    r.set_items(&[],base as f64*2.1);
+    i.tick+=1;i.simulation_time+=1.0/30.0;p.presentation_time=i.simulation_time;
+    let e=EventRecord{tick:i.tick,x:1720.0,y:720.0,kind:11,duration_ticks:14,value:25.0,..Default::default()};
+    let n=r.build_shader(&i,&[],&[],&[],&[e],&pal,&p,&mut out).vertex_count;
+    assert_eq!(n,12);
+    let ring:Vec<_>=out[..n].iter().filter(|q|q.params[0]==12).collect();
+    assert_eq!(ring.len(),6);
+    let half=ring.iter().map(|q|(q.x-1720.0).abs()).fold(0.0_f32,f32::max);
+    assert!((half-12.5*base).abs()<0.01,"ring quad covers 12.5 base radii, got {half}");
+    assert!(ring.iter().all(|q|(q.across.abs()-12.5).abs()<1e-4 && q.params[2]==2));
+    let flash:Vec<_>=out[..n].iter().filter(|q|q.params[0]==6).collect();
+    assert!(flash.iter().all(|q|(q.across.abs()-5.0).abs()<1e-4 && q.params[2]==2));
+}
+
+#[test]
+fn whirlpool_capsule_races_cover_four_records_in_every_dispatch_path() {
+    let (mut i,mut s,b,mut capsules)=s1_fixture();
+    i.bubble_count=0;
+    capsules[0].contender_count=0;capsules[1].contender_count=0;
+    // Even adversarial vortex race metadata must not consume the capsule budget.
+    let vortex=ItemRecord {kind:8,state:2,radius:396.0,x:1500.0,y:720.0,
+        life_ticks:75,contender_count:2,contender_ids:[0,1],contender_etas:[1.0,1.0],..Default::default()};
+    let mut expected=[ShaderRenderVertex::default();4096];let mut actual=expected;
+    for path in 0..3 {
+        s[0].face_flags=if path==1 {4} else if path==2 {16} else {0};
+        i.world_event.kind=if path==2 {1} else {0};i.world_event.phase=if path==2 {1} else {0};
+        let mut reference=RenderHandle::new();let mut renderer=RenderHandle::new();
+        reference.set_items(&capsules,12.0);renderer.set_items(&[vortex,capsules[0],capsules[1],capsules[2]],12.0);
+        let n=reference.build_shader(&i,&s,&b,&[],&[],&palette(),&params(),&mut expected).vertex_count;
+        let m=renderer.build_shader(&i,&s,&b,&[],&[],&palette(),&params(),&mut actual).vertex_count;
+        let a:Vec<_>=actual[..m].iter().filter(|v|v.params[0]==17).collect();
+        let e:Vec<_>=expected[..n].iter().filter(|v|v.params[0]==17).collect();
+        assert_eq!(e.len(),12);assert_eq!(a,e,"race dispatch path {path}");
+    }
+}
+
+#[test]
+fn whirlpool_classic_brew_precedes_food_snakes_and_gems() {
+    let mut renderer=RenderHandle::new();
+    let vortex=ItemRecord {kind:8,state:2,radius:99.0,x:200.0,y:200.0,life_ticks:75,..Default::default()};
+    renderer.set_items(&[vortex],16.8);
+    let s=SnakeRecord {inv_count:1,inv_kind:[7,0,0],inv_life:[255,0,0],..snake()};
+    let food=FoodRecord {x:210.0,y:210.0,size:4.0,captured_by:1,..Default::default()};
+    let mut out=[RenderVertex::default();4096];let mut brew=out;
+    let mut only_brew=RenderHandle::new();only_brew.set_items(&[vortex],16.8);
+    let count=only_brew.build(&info(),&[],&[],&[],&[],&palette(),&params(),&mut brew).vertex_count;
+    assert!(count>0);
+    let total=renderer.build(&info(),&[s],&body(),&[food],&[],&palette(),&params(),&mut out).vertex_count;
+    assert!(total>count);assert_eq!(&out[..count],&brew[..count],"brew must precede captured food, body, head and pips");
+    let brew_color=brew[0].color;
+    assert!(out[count..total].iter().all(|v|v.color!=brew_color),"brew must not be emitted again in capsule pass");
+}
+
+#[test]
+fn whirlpool_classic_stroke_crosses_seam_and_viewport_admission() {
+    let i=info();let r=396.0;
+    let v=ItemRecord {kind:8,state:2,radius:r as f32,x:(i.world_width-r-0.5) as f32,y:720.0,life_ticks:75,..Default::default()};
+    let p=RenderParams {presentation_time:0.0,deadly_walls:0,..params()};
+    let mut out=[RenderVertex::default();4096];let mut renderer=RenderHandle::new();renderer.set_items(&[v],37.8);
+    let n=renderer.build(&i,&[],&[],&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert!(out[..n].iter().any(|v|v.x>i.world_width as f32),"outer stroke crosses right seam");
+    assert!(out[..n].iter().any(|v|v.x>0.0 && v.x<1.0),"opposite-edge stroke copy must be admitted");
+    let shifted=ItemRecord {x:(-r-0.5) as f32,..v};renderer.set_items(&[shifted],37.8);
+    let n=renderer.build(&i,&[],&[],&[],&[],&palette(),&RenderParams {deadly_walls:1,..p},&mut out).vertex_count;
+    assert!(n>0,"stroke reaches viewport even though centre + radius is outside");
+}
+
+#[test]
+fn whirlpool_numeric_fields_and_empty_snapshot_radius_are_bounded() {
+    let valid=ItemRecord {kind:8,state:2,radius:396.0,x:100.0,y:100.0,life_ticks:75,captured_value:25.0,..Default::default()};
+    let mut renderer=RenderHandle::new();let mut shader=[ShaderRenderVertex::default();4096];let mut classic=[RenderVertex::default();4096];
+    let p=RenderParams {scale_x:2.0,scale_y:2.0,..params()};
+    for field in 0..2 {for bad in [f32::NAN,f32::INFINITY,f32::NEG_INFINITY,f32::MAX,-1.0,1.0e9_f32*2.0] {
+        let mut v=valid;if field==0 {v.radius=bad;} else {v.captured_value=bad;}
+        unsafe {assert_eq!(snakes_core_render_set_items(&mut renderer,&v,1,37.8),INVALID_ARGUMENT,"field={field}, value={bad}");}
+        // Direct Rust calls also skip malformed records rather than projecting them.
+        renderer.set_items(&[v],37.8);
+        assert_eq!(renderer.build_shader(&info(),&[],&[],&[],&[],&palette(),&p,&mut shader).vertex_count,0);
+        assert_eq!(renderer.build(&info(),&[],&[],&[],&[],&palette(),&p,&mut classic).vertex_count,0);
+    }}
+    for radius in [f64::NAN,f64::INFINITY,f64::MAX,-1.0,2.0e9] {
+        unsafe {assert_eq!(snakes_core_render_set_items(&mut renderer,std::ptr::null(),0,radius),INVALID_ARGUMENT);}
+    }
+    renderer.set_items(&[ItemRecord {radius:1.0e9,captured_value:1.0e9,..valid}],37.8);
+    let n=renderer.build_shader(&info(),&[],&[],&[],&[],&palette(),&p,&mut shader).vertex_count;
+    assert!(n>0 && shader[..n].iter().all(|v|v.x.is_finite() && v.y.is_finite()));
+    let n=renderer.build(&info(),&[],&[],&[],&[],&palette(),&p,&mut classic).vertex_count;
+    assert!(classic[..n].iter().all(|v|v.x.is_finite() && v.y.is_finite()));
+}
+
+#[test]
+fn whirlpool_pickup_ring_does_not_alias_crown_body_wave() {
+    let i=info();let p=RenderParams {presentation_time:20.1,..params()};
+    let s=SnakeRecord {segment_count:40,..snake()};
+    let b:[SegmentRecord;40]=std::array::from_fn(|j|SegmentRecord {x:1200.0-j as f32*9.44,y:500.0,previous_x:1200.0-j as f32*9.44,previous_y:500.0});
+    let mut out=[ShaderRenderVertex::default();4096];
+    for kind in 1..=7 {
+        let mut r=RenderHandle::new();
+        let e=EventRecord {tick:i.tick,kind:2,other_snake_id:kind,x:1200.0,y:500.0,..Default::default()};
+        let n=r.build_shader(&i,&[s],&b,&[],&[e],&palette(),&p,&mut out).vertex_count;
+        let lit:Vec<_>=out[..n].iter().filter(|v|v.params[0]==0 && v.params[3]>0).collect();
+        if kind<=5 {
+            assert!(!lit.is_empty());
+            for v in lit {let flags=v.params[2];let origin=((flags>>1)&1)|((flags>>3)&6);assert_eq!(origin,kind as u8);}
+        } else {assert!(lit.is_empty(),"Flip and Whirlpool do not use pickup body waves");}
+        if kind==7 {assert!(out[..n].iter().any(|v|v.params[0]==12 && v.color.red==51 && v.color.green==224 && v.color.blue==200),"teal activation ring remains");}
+    }
+    let mut r=RenderHandle::new();
+    let n=r.build_shader(&i,&[SnakeRecord {flags:flags::LEADER,..s}],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+    assert!(out[..n].iter().any(|v|v.params[0]==0 && v.params[3]>0 && (((v.params[2]>>1)&1)|((v.params[2]>>3)&6))==7));
+}
+
+#[test]
+fn zero_allocations_rendering_four_items_and_replaying_whirlpool_history() {
+    let (mut i,mut s,b,capsules)=s1_fixture();let pal=palette();let mut p=params();
+    let vortex=ItemRecord {kind:8,state:2,x:500.0,y:400.0,radius:99.0,captured_value:20.0,life_ticks:75,..Default::default()};
+    let items=[vortex,capsules[0],capsules[1],capsules[2]];
+    let mut renderer=RenderHandle::new();let mut shader=[ShaderRenderVertex::default();8192];let mut classic=[RenderVertex::default();16384];
+    COUNT.with(|c|c.set(Some(0)));
+    for tick in 0..1000 {
+        i.tick+=1;i.simulation_time+=snakes_core::STEP_SECONDS;p.presentation_time=i.simulation_time;
+        renderer.reduced_motion=tick%2==0;
+        s[0].face_flags=match tick%3 {0=>0,1=>4,_=>16};
+        i.world_event.kind=if tick%3==2 {1} else {0};i.world_event.phase=if tick%3==2 {1} else {0};
+        renderer.set_items(&[],16.8); // completed burst snapshot contains no vortex
+        let hidden=RenderParams {scale_x:0.0,scale_y:0.0,..p};
+        let e=EventRecord {tick:i.tick,kind:11,duration_ticks:14,x:500.0,y:400.0,..Default::default()};
+        renderer.build_shader(&i,&s,&b,&[],if tick%16==0 {std::slice::from_ref(&e)} else {&[]},&pal,&hidden,&mut []);
+        renderer.set_items(&items,16.8);
+        assert!(renderer.build_shader(&i,&s,&b,&[],&[],&pal,&p,&mut shader).vertex_count<shader.len());
+        assert!(renderer.build(&i,&s,&b,&[],&[],&pal,&p,&mut classic).vertex_count<classic.len());
+    }
+    assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
+}

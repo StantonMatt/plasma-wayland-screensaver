@@ -291,6 +291,7 @@ void SnakeSimulation::applySettings(const Configuration &settings)
 
 void SnakeSimulation::setPaused(bool paused)
 {
+    if (m_world) snakes_core_set_reduced_motion(m_world.get(), uint32_t(paused));
     if (m_paused == paused) return;
     m_paused = paused;
     m_accumulator = 0;

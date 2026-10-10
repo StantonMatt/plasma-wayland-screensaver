@@ -30,6 +30,7 @@ impl AiController {
             return;
         }
         let Some(f)=self.target_food(*state) else {state.set_target(0);state.waypoint=None;return;};
+        if f.kind==crate::FoodKind::Meteor {self.whirlpool_orbit(w,s,state);return;}
         if f.id==events::ID && w.starfall_landed()
             && w.distance_squared(s.segments[0].current,f.position)<=f.size*f.size {
             state.set_target(0);state.prey=0;state.clear_attacks(s.angle);state.track_goal=false;
@@ -52,6 +53,7 @@ impl AiController {
         if f.id!=events::ID {self.guard_capsule(w,s,state);}
     }
     pub(super) fn vulture_seed(&self,w:&World,s:SnakeView<'_>,state:&mut State) {
+        if self.whirlpool_orbit(w,s,state) {return;}
         let Some(f)=self.target_food(*state).filter(|f|f.kind==crate::FoodKind::PrismSeed) else {
             if state.vulturing {state.turn_accum=0.0;state.waypoint=None;state.best_distance=f64::MAX;state.last_progress=w.tick();
                 state.commit_until=0;state.turn_sign=0;state.track_goal=true;}
@@ -110,7 +112,7 @@ impl AiController {
     pub(super) fn guard_capsule(&self,w:&World,s:SnakeView<'_>,state:&mut State) {
         if w.config().store_power_ups && s.inventory.count<3 {state.guarding=false;return;}
         let Some(f)=self.target_food(*state).filter(|f|f.id & target::ITEM_BIT!=0 && f.id!=events::ID) else {state.guarding=false;return;};
-        if w.items().any(|item|item.id==f.id & !target::ITEM_BIT && item.kind==crate::effects::EffectKind::Flip) {state.guarding=false;return;}
+        if w.items().any(|item|item.id==f.id & !target::ITEM_BIT && (item.kind==crate::effects::EffectKind::Flip || item.vortex)) {state.guarding=false;return;}
         let (speed,turn)=self.motion[s.id as usize].at(0);
         let radius=(6.0*s.radius).max(speed/turn*1.15);
         let near=w.distance_squared(s.segments[0].current,f.position)<(15.0*s.radius).powi(2);

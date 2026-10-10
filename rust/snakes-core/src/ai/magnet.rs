@@ -18,7 +18,7 @@ pub(super) fn food_bonus(world: &World, snake: SnakeView<'_>, food: impl Into<Ta
 
 pub(super) fn food_bonus_effect(food:impl Into<TargetFood>,effect:super::forecast::Effect)->f64 {
     let food=food.into();
-    if !effect.is(EffectKind::Magnet) {return 0.0;}
+    if food.vacuum_owner==i32::MAX || !effect.is(EffectKind::Magnet) {return 0.0;}
     if food.kind==FoodKind::Prism {2.0} else if food.feast_id!=0 {1.5} else {0.0}
 }
 

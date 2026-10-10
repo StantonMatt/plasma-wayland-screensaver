@@ -391,12 +391,23 @@ impl Renderer {
                 self.effect(Effect {p:P::new(e.x as f64,e.y as f64),time,radius,
                     color:if e.kind==7 && e.other_snake_id==5 {0x80000005} else {e.other_snake_id},kind:if e.kind==2 {12} else if e.kind==7 && e.other_snake_id==5 {6} else {13},active:true,
                     snake_id:e.snake_id,generation:0,duration_ticks:if e.kind==7 && e.other_snake_id==6 {if self.reduced_motion {(u32::from(e.duration_ticks)*3/5) as u16} else {e.duration_ticks}} else if e.kind==7 && e.other_snake_id==5 {e.duration_ticks} else if e.kind==14 {9} else if e.kind==15 {if self.reduced_motion {5} else {8}} else {0},seed:e.tick as u8});
-                if e.kind==2 && e.other_snake_id!=6 && (e.snake_id as usize)<MAX_SNAKES {
+                // Only capsule kinds 1..5 have pickup body waves. Flip uses a
+                // separate event; Whirlpool keeps its teal ring without taking
+                // origin 7, which is reserved for the leader crown.
+                if e.kind==2 && (1..=5).contains(&e.other_snake_id) && (e.snake_id as usize)<MAX_SNAKES {
                     let waves=&mut self.waves[e.snake_id as usize];
                     waves[1]=waves[0];waves[0]=Wave {time,active:true,kind:e.other_snake_id as u8,..Wave::default()};
                 }
             }
-            if e.kind==crate::EventKind::Nova as u8 && e.value.is_finite() && e.value>0.0 {
+            if e.kind==crate::EventKind::VortexBurst as u8 && e.duration_ticks>0 {
+                let duration=if self.reduced_motion {(e.duration_ticks as u32*3/5).max(1) as u16} else {e.duration_ticks};
+                for kind in [12,6] {
+                    self.effects[self.effect_head]=Effect {time,p:P::new(e.x as f64,e.y as f64),radius:self.item_radius/2.1,
+                        color:if kind==6 {0x80000007} else {7},kind,active:true,duration_ticks:duration,seed:0,..Effect::default()};
+                    self.effect_head=(self.effect_head+1)%self.effects.len();
+                }
+            }
+            if e.kind==crate::EventKind::Nova as u8 && nonnegative(e.value as f64) && e.value>0.0 {
                 self.effect(Effect {p:P::new(e.x as f64,e.y as f64),time,radius:e.value as f64,
                     color:0x80000005,kind:18,active:true,snake_id:e.snake_id,generation:e.generation,
                     seed:e.tick as u8,duration_ticks:e.duration_ticks});
@@ -454,6 +465,11 @@ impl Renderer {
         let white_crown=white_crown_palette(palette);
         let mut sink=SpriteSink { out:output,count:0,view };
         self.shader_world_event(info,p,palette,&mut sink);
+        // The brew lies under food and snakes (prototype order): bodies and captured
+        // food stay crisp over its additive light.
+        for item in &self.items[..self.item_count] {
+            if item.state==2 && items::valid_item(item) {self.shader_vortex(item,info,p,palette,&mut sink);}
+        }
         // Share event colour/scale across the shower; ordinary food never
         // enters the larger event sprite path.
         let mut event_gold=None;
@@ -798,9 +814,9 @@ impl Renderer {
         let event_race=info.world_event.kind==1 && info.world_event.phase!=0 && snakes.iter().any(|s|s.alive!=0 && s.face_flags&48!=0);
         if event_race {self.shader_event_races(info,p,palette,snakes,segments,&mut sink);}
         if snakes.iter().any(|s|s.alive!=0 && s.face_flags&4!=0) {
-            self.shader_race_items(info,p,palette,snakes,segments,&mut sink,&self.items[..self.item_count.min(crate::MAX_CAPSULES)],self.item_radius,if event_race {2} else {4});
+            self.shader_race_items(info,p,palette,snakes,segments,&mut sink,&self.items[..self.item_count],self.item_radius,if event_race {2} else {4});
             self.shader_prism_races(info,p,palette,snakes,segments,food,&mut sink);
-        } else if event_race {self.shader_race_items(info,p,palette,snakes,segments,&mut sink,&self.items[..self.item_count.min(crate::MAX_CAPSULES)],self.item_radius,4);}
+        } else if event_race {self.shader_race_items(info,p,palette,snakes,segments,&mut sink,&self.items[..self.item_count],self.item_radius,4);}
         else {self.shader_races(info,p,palette,snakes,segments,&mut sink);}
         self.shader_bubbles(info,p,palette,snakes,segments,&mut sink);
         self.shader_orphans(info,p,palette,&mut sink);
@@ -809,12 +825,12 @@ impl Renderer {
             let e=self.effects[(self.effect_head+self.effects.len()-1-age_index)%self.effects.len()];
             let duration=if e.duration_ticks>0 {e.duration_ticks as f64*crate::STEP_SECONDS} else {(if e.kind==6 { 0.5 } else if e.kind==9 { 0.28 } else if e.kind>=12 {0.5} else { 0.6 })*motion_scale};let age=event_time(info,p,self.reduced_motion)-e.time;
             if !e.active || !(0.0..duration).contains(&age) || (e.duration_ticks>0 && age+1e-9>=duration) { continue; }
-            let extent=if e.kind==18 {1.05} else if e.kind==6 && e.duration_ticks>0 {FROST_CRACK} else if e.kind==6 { IMPACT } else { RING };
+            let extent=if e.kind==18 {1.05} else if e.kind==6 && e.color==0x80000007 {5.0} else if e.kind==12 && e.color==7 && e.duration_ticks>0 {WHIRL_RING} else if e.kind==6 && e.duration_ticks>0 {FROST_CRACK} else if e.kind==6 { IMPACT } else { RING };
             let r=e.radius*scale*extent;let (xs,ys)=copies(e.p,e.p,P::new(r/sx,r/sy),arena,walls);
             for x in xs.first..=xs.last { for y in ys.first..=ys.last {
                 if effect_budget.full() {continue;}
                 let before=sink.count;
-                sink.effect_sprite(map(e.p+P::new(x as f64*xs.extent,y as f64*ys.extent)),r,extent,if e.kind>=12 || e.color&0x80000000!=0 {items::accent(e.color as u8,palette)} else {color(e.color)},[e.kind,if e.kind==7 && white_crown { e.seed|64 } else if e.kind==7 { e.seed&!64 } else { e.seed },if e.kind==6 && e.duration_ticks>0 {1} else {0},(age/duration*255.0).round() as u8]);
+                sink.effect_sprite(map(e.p+P::new(x as f64*xs.extent,y as f64*ys.extent)),r,extent,if e.kind>=12 || e.color&0x80000000!=0 {items::accent(e.color as u8,palette)} else {color(e.color)},[e.kind,if e.kind==7 && white_crown { e.seed|64 } else if e.kind==7 { e.seed&!64 } else { e.seed },if e.color==0x80000007 || e.kind==12 && e.color==7 && e.duration_ticks>0 {2} else if e.kind==6 && e.duration_ticks>0 {1} else {0},(age/duration*255.0).round() as u8]);
                 effect_budget.emitted(before,sink.count);
             }}
         }

@@ -1870,3 +1870,81 @@ ordinary builds; no diagnostic observers run in the CPU benchmark.
 (including initial area), proposed Flip rollouts, initial area, and follow-through.
 Area is a subset of admission time, so those two entries must not be summed.
 Profiling is opt-in; ordinary benchmarks run with these clocks disabled.
+
+## Whirlpool (0.20.0)
+
+Whirlpool is held kind 7. Placement queries absorbed nutrition through the
+existing food grid inside 21 base radii (the outer edge of the 22-radius pull
+cannot finish absorbing before cutoff). Holders shortlist five dense forward
+cells within 3.5 seconds of travel, reject body-blocked approaches, and use the
+ordinary wall/body/self rollouts to navigate. Death shards and boost pellets
+count by nutrition; Starfall stars/meteors and prism prizes never count.
+A holder opens when the selected five-movement completion endpoint covers at
+least 18 units and a live rival can reach the orbit in 3.5 seconds. During the
+final 150 inventory ticks the threshold becomes 15 units; during the final
+30 ticks positive nutrition permits a safe expiry use.
+Holders finish an existing burst feast before planning another brew, except
+for safe expiry use. Danger defers use. The changed inventory rollout checks the actual completion
+endpoint and the full safe continuation before admission.
+
+The vortex is a persistent multi-prize target; single-capsule loser admission
+does not apply. Rivals value arrivals through the first twelve seconds of
+burst feeding rather than cutting interest off at the vortex deadline. Holder
+orbits start at 9 base radii; rivals at 12..15 according to aggression. Motion
+and self-tail clearance can increase those radii. During the final 45 ticks,
+the rings tighten toward 70% of their initial radius while retaining both
+physical floors, preparing heads to intercept the burst. Tangent goals use the
+existing vulture policy and shared wall admission; physical rollouts retain
+Frost/Nightfall/Surge/Phase/Flip timelines. Deliberate orbits skip anti-circling
+recovery. During the final 75 brew ticks, hunters can nominate a committed
+orbiter for the normal checked cut-off planner without requiring a fictitious
+straight race to the center. A target change resets orbit handedness/deadlines.
+
+Food forecasts share discrete capture and pull transport with rollout valuation.
+The quiet tail retains captures until the burst deadline. Absorbed particles
+remain unavailable under their original identity; surviving particles are
+released at their pulled position and require fresh contact. Vortex capture
+revokes provisional vacuum ownership without revoking prior consumption.
+Opportunities and cached physical rollouts use this same lifecycle; future
+burst shard identities enter the target cache when World creates them.
+
+Burst shards retain a bounded cached index span and a strategic feast bonus.
+Discovery bypasses the ordinary 64-food cap only while these shards exist;
+Discovery uses each shard's remaining lifetime as its arrival deadline.
+Heads track their moving positions, share the prism policy for approaching
+prizes behind their heading, and prioritize feeding over a new ordinary hunt.
+Checked captures receive the existing prism continuity reward. Existing
+threat avoidance and physical safety admission still apply.
+Nearby brews and burst shards use physical rollouts for moving-body admission,
+like other nearby event prizes, rather than rejecting an occupied brew center
+through the static route grid. Diagnostic inventory metrics count distinct
+holder/rival orbiters and the
+number of observed vortexes with at least one rival.
+
+The shared food endpoint gate excludes captured food from the hot target cache,
+food grid, Magnet valuation, direct contacts and Flip loot queries. World-owned
+brews and predicted inventory completions carry capture deadlines/positions in
+the same ordered participant timeline. Completion preserves each holder's active
+effect and opens at its own endpoint, before field contact. Field activation
+uses the capsule position. A captured target cannot earn a future rollout award.
+No per-tick heap storage, new dependency or ABI record size is introduced.
+
+Food availability follows the observed movement clock: movement one uses the
+already-updated food position; subsequent movements apply discrete damping,
+wall bounce or wrapping before vortex capture. New capture ends at age 138,
+while earlier captures remain unavailable until burst. Rollouts transport
+vacuum claims separately from completed consumption, so a later brew revokes
+claim utility without revoking food already eaten. This transport is enabled
+only when an observed or pending Whirlpool can affect the rollout; target
+records retain their 64-byte cache limit and use stable food indices.
+
+A new activation at movement n opens at age zero after feeding. It first pulls
+at n + 1, stops pulling at n + 138, and bursts at n + 150 before feeding;
+surviving captures and the newly created shards are edible on that burst frame.
+An existing vortex observed after its update instead has deadline
+`life_ticks + 1`. Food valuation retains the predecessor brew when a new one
+opens on the burst frame, preserving absorbed identities and transported
+survivor positions. Rollout feeding uses the head and brew from before item
+completion, including a same-tick Flip or Frost, with or without a brew.
+Field capsules and collisions use the completed endpoints. The retained history is fixed-size and bounded by the
+138-movement physical rollout (shorter than a new brew's lifetime).

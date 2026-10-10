@@ -10,6 +10,7 @@ mod frost;
 mod inventory;
 mod shader;
 pub(crate) mod items;
+mod whirlpool;
 pub use shader::ShaderVertex;
 use geometry::{P, Sink, delta, wrap, copies, visible, prepare};
 use crate::ffi::{SnakeRecord, SegmentRecord, FoodRecord, ItemRecord, EventRecord, FrameInfo};
@@ -342,6 +343,9 @@ impl Renderer {
             circles: &circles
         };
         self.classic_world_event(info,p,palette,&mut sink);
+        for item in &self.items[..self.item_count] {
+            if item.kind==8 && items::valid_item(item) {self.classic_vortex(item,info,p,palette,&mut sink);}
+        }
         for f in food {
             if !food_valid(f) { continue; }
             if self.classic_event_food(f,info,p,palette,&mut sink) {continue;}

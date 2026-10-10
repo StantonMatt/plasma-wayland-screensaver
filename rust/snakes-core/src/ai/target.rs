@@ -12,12 +12,12 @@ pub(super) const ITEM_BIT: u64 = 1 << 63;
 #[derive(Clone,Copy,Debug)]
 pub(super) struct TargetFood {
     pub id:u64,pub position:Point,pub value:f64,pub size:f64,
-    pub vacuum_owner:i32,pub feast_id:u64,pub kind:crate::FoodKind,pub motion_ticks:u16,pub item_kind:u8,
+    pub vacuum_owner:i32,pub feast_id:u64,pub kind:crate::FoodKind,pub motion_ticks:u16,pub item_kind:u8,pub food_index:u16,
 }
 impl From<FoodView> for TargetFood {
     fn from(f:FoodView)->Self {
-        Self {id:f.id,position:f.position,value:f.value,size:f.size,vacuum_owner:f.vacuum_owner,
-            feast_id:f.feast_id,kind:f.kind,motion_ticks:f.motion_ticks,item_kind:0}
+        Self {id:f.id,position:f.position,value:f.value,size:f.size,vacuum_owner:if f.captured_by!=0 {i32::MAX} else {f.vacuum_owner},
+            feast_id:f.feast_id,kind:f.kind,motion_ticks:f.motion_ticks,item_kind:0,food_index:u16::MAX}
     }
 }
 const _:()=assert!(std::mem::size_of::<Option<TargetFood>>()<=64);
@@ -54,10 +54,11 @@ impl Contact {
         let item = f.id & ITEM_BIT != 0;
         let ordinary = s.radius * if item { 1.3 } else { 3.0 } + f.size;
         let magnet = if !item {s.radius * effects::modifiers(effects::EffectKind::Magnet as u8,1).food_reach + f.size} else {ordinary};
-        Self { kind:f.kind,zone:f.id==super::events::ID,ordinary, magnet, effects:track,item,held_item:f.item_kind==effects::EffectKind::Flip as u8,alive:s.alive,guarding:s.face.guarding && !track.store,ready_step:if item || f.kind==crate::FoodKind::PrismSeed {f.motion_ticks as usize} else {0},
+        Self {kind:f.kind,zone:f.id==super::events::ID || (item && f.kind==crate::FoodKind::Meteor),ordinary, magnet, effects:track,item,held_item:f.item_kind==effects::EffectKind::Flip as u8,alive:s.alive,guarding:s.face.guarding && !track.store,ready_step:if item || f.kind==crate::FoodKind::PrismSeed {f.motion_ticks as usize} else {0},
             claimed: !item && f.vacuum_owner == s.id as i32,
-            available: f.kind!=crate::FoodKind::Meteor && (item || f.vacuum_owner < 0 || f.vacuum_owner == s.id as i32) }
+            available: (item || f.kind!=crate::FoodKind::Meteor) && (item || f.vacuum_owner < 0 || f.vacuum_owner == s.id as i32) }
     }
+    pub(super) fn without_claim(mut self)->Self {self.claimed=false;self}
     pub(super) fn with_guard(mut self,guarding:bool)->Self {self.guarding=guarding && !self.effects.store;self}
     #[inline]
     pub(super) fn reach(self, step: usize) -> f64 {
@@ -109,6 +110,8 @@ impl super::AiController {
     pub(super) fn capsule_contender(&self,w:&World,s:SnakeView<'_>,state:super::State)->Option<usize> {
         if s.traits.aggression<0.2 {return None;}
         let f=self.target_food(state)?;
+        let brew=f.kind==crate::FoodKind::Meteor && f.item_kind==7;
+        if brew && w.vortex().is_none_or(|v|v.life_ticks>75) {return None;}
         let eta=self.target_arrival(w,s,f);
         let mut best=f64::MAX;let mut contender=None;
         for (other,r) in self.rivals.iter().enumerate() {
@@ -121,7 +124,8 @@ impl super::AiController {
             let rival_eta=self.target_arrival(w,rival,f);
             let committed=self.states[other].generation==rival.generation && self.states[other].target==f.id;
             if !(committed || bearing<0.65) || rival_eta>=best {continue;}
-            if eta>rival_eta {
+            let orbiter=brew && committed && self.states[other].vulturing;
+            if eta>rival_eta && !orbiter {
                 // Trailing denial needs a point at least three radii ahead of
                 // the leader that we can reach before it. Cutoff rollouts then
                 // certify the physical crossing, tail payments and safe exit.
@@ -142,6 +146,10 @@ impl super::AiController {
     /// bodies, scratch storage or RNG are needed.
     pub(super) fn capsule_value(&self,w:&World,s:SnakeView<'_>,item:&crate::Item,eta:f64)->f64 {
         use effects::EffectKind;
+        if item.kind==EffectKind::Whirlpool {
+            if w.config().store_power_ups && s.inventory.count>=3 {return 0.0;}
+            return (4.0+0.12*self.whirlpool_nutrition(w,item.position))*18.0/(1.0+eta*0.03);
+        }
         if w.config().store_power_ups || item.kind==EffectKind::Flip {
             if s.inventory.count>=3 {return 0.0;}
             // Storage preserves the active effect and makes every kind useful.

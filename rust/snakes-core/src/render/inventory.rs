@@ -86,7 +86,7 @@ impl History {
             if e.tick>info.tick || cutoff.is_some_and(|t|e.tick<=t) || !coordinate32(e.x) || !coordinate32(e.y) {continue;}
             let Some(s)=snakes.iter().find(|s|s.id==e.snake_id && s.generation==e.generation && snake_valid(s)) else {continue;};
             let time=info.simulation_time-(info.tick-e.tick) as f64*crate::STEP_SECONDS;
-            if e.kind==crate::EventKind::Nova as u8 && e.value.is_finite() && e.value>0.0 {
+            if e.kind==crate::EventKind::Nova as u8 && nonnegative(e.value as f64) && e.value>0.0 {
                 self.has_novas=true;
                 self.novas[self.nova_head]=Nova {motion:Motion {time,origin:P::new(e.x as f64,e.y as f64),active:true,..Motion::default()},radius:e.value as f64,duration:e.duration_ticks as f64*crate::STEP_SECONDS,tick:e.tick,owner:s.id};
                 self.nova_head=(self.nova_head+1)%self.novas.len();
@@ -254,7 +254,7 @@ fn pips(h:&History,s:&SnakeRecord,points:&[P],info:&FrameInfo,p:&Params,calm:boo
     let mut out=[Pip::default();3];let mut count=0;let mut flying=None;
     if s.alive!=0 && s.flags&flags::CORPSE==0 {
         for slot in 0..(s.inv_count as usize).min(3) {
-            let kind=s.inv_kind[slot];if !(1..=6).contains(&kind) {continue;}
+            let kind=s.inv_kind[slot];if !(1..=7).contains(&kind) {continue;}
             let mut distance=OFFSETS[slot];let slide=held.slide[slot];
             if slide.active {distance=slide.from+(distance-slide.from)*close((now-slide.time)/if calm {0.15} else {0.25});}
             if s.inv_windup>0 && slot+1>s.inv_windup as usize && held.use_motion.active {
@@ -316,7 +316,7 @@ pub(super) fn shader_pips(h:&mut History,s:&SnakeRecord,points:&[P],r:f64,info:&
         }
         let mut pips=[Pip::default();3];let mut n=0;
         for slot in 0..(s.inv_count as usize).min(3) {
-            if !(1..=6).contains(&s.inv_kind[slot]) {continue;}
+            if !(1..=7).contains(&s.inv_kind[slot]) {continue;}
             pips[n]=Pip {pos:cache.positions[slot],kind:s.inv_kind[slot],life:s.inv_life[slot],scale:1.0,anim:0};n+=1;
         }
         (pips,n)

@@ -18,11 +18,11 @@ struct Before {generation:u32,kinds:[u8;3],life:[u16;3],flags:u32}
 struct Use {situation:u8,generation:u32,kind:u8,trap:bool,expiry:bool,at:u64}
 pub struct InventoryMetrics {
     before:[Before;MAX_SNAKES],pending:[Use;MAX_SNAKES],instant:[Use;MAX_SNAKES],phase:[Use;MAX_SNAKES],
-    stored:[u64;7],used:[u64;7],fizzled:[u64;7],situations:[[u64;7];7],
+    stored:[u64;8],used:[u64;8],fizzled:[u64;8],situations:[[u64;7];8],
     flip:[Use;MAX_SNAKES],flip_situations:[u64;4],escape_survived:u64,ambush_wins:u64,
-    phase_trapped:u64,phase_survived:u64,unused_phase_deaths:u64,dropped:[u64;7],
+    phase_trapped:u64,phase_survived:u64,unused_phase_deaths:u64,dropped:[u64;8],orbits:[(u32,u64);MAX_SNAKES],holder_orbiters:u64,rival_orbiters:u64,brew_id:u64,brew_rival_seen:bool,brews_observed:u64,brews_with_rivals:u64,
 }
-impl Default for InventoryMetrics {fn default()->Self {Self {flip:[Use::default();MAX_SNAKES],flip_situations:[0;4],escape_survived:0,ambush_wins:0,before:[Before::default();MAX_SNAKES],pending:[Use::default();MAX_SNAKES],instant:[Use::default();MAX_SNAKES],phase:[Use::default();MAX_SNAKES],stored:[0;7],used:[0;7],fizzled:[0;7],situations:[[0;7];7],phase_trapped:0,phase_survived:0,unused_phase_deaths:0,dropped:[0;7]}}}
+impl Default for InventoryMetrics {fn default()->Self {Self {flip:[Use::default();MAX_SNAKES],flip_situations:[0;4],escape_survived:0,ambush_wins:0,before:[Before::default();MAX_SNAKES],pending:[Use::default();MAX_SNAKES],instant:[Use::default();MAX_SNAKES],phase:[Use::default();MAX_SNAKES],stored:[0;8],used:[0;8],fizzled:[0;8],situations:[[0;7];8],phase_trapped:0,phase_survived:0,unused_phase_deaths:0,dropped:[0;8],orbits:[(0,0);MAX_SNAKES],holder_orbiters:0,rival_orbiters:0,brew_id:0,brew_rival_seen:false,brews_observed:0,brews_with_rivals:0}}}
 impl InventoryMetrics {
     pub fn before(&mut self,w:&World) {for s in w.snakes() {self.before[s.id as usize]=Before {generation:s.generation,kinds:s.inventory.kinds,life:s.inventory.life,flags:s.flags};}}
     pub fn after(&mut self,w:&World,obs:&[DesktopObservation;MAX_SNAKES]) {
@@ -39,7 +39,7 @@ impl InventoryMetrics {
             w.config().rules==RuleSet::V2 && w.config().power_ups));
         for e in events {
             let k=e.other_snake_id as usize;let id=e.snake_id as usize;
-            if k>=7 {continue;}
+            if k>=8 {continue;}
             match e.kind {
                 EventKind::Stash=>self.stored[k]+=1,
                 EventKind::Fizzle=>self.fizzled[k]+=1,
@@ -70,6 +70,19 @@ impl InventoryMetrics {
             }
             if id<MAX_SNAKES {inventory[id].apply(e,collisions.iter().any(|c|c.victim==e.snake_id && c.generation==e.generation));}
         }
+        if let Some(v)=w.vortex() {if self.brew_id!=v.id {
+            self.brew_id=v.id;self.brew_rival_seen=false;self.brews_observed+=1;
+        }}
+        for (id,d) in obs.iter().enumerate() {
+            if d.target_kind==3 && matches!(d.mode,12|13) && self.orbits[id]!=(d.generation,d.target) {
+                self.orbits[id]=(d.generation,d.target);
+                if d.mode==12 {self.holder_orbiters+=1;} else {self.rival_orbiters+=1;
+                    if d.target&!(1<<63)==self.brew_id && !self.brew_rival_seen {
+                        self.brew_rival_seen=true;self.brews_with_rivals+=1;
+                    }
+                }
+            }
+        }
         for e in collisions {if inventory[e.victim as usize].carries(3,e.generation) {self.unused_phase_deaths+=1;}}
         for collision in collisions {if collision.reason==DeathReason::Head {for id in 0..w.snake_count() {
             let flip=self.flip[id];
@@ -94,9 +107,11 @@ impl InventoryMetrics {
         }
     }
     pub fn write(&self,prefix:&str) {
+        println!("whirlpool_holder_orbiters={} whirlpool_rival_orbiters={}",self.holder_orbiters,self.rival_orbiters);
+        println!("whirlpool_brews_observed={} whirlpool_brews_with_rivals={}",self.brews_observed,self.brews_with_rivals);
         let mut out=BufWriter::new(File::create(format!("{prefix}.inventory.csv")).unwrap());
         writeln!(out,"kind,stored,used,fizzled,dropped,trapped,contest,cutoff,fleeing,food,expiry,other").unwrap();
-        for k in 1..7 {let a=self.situations[k];writeln!(out,"{k},{},{},{},{},{},{},{},{},{},{},{}",self.stored[k],self.used[k],self.fizzled[k],self.dropped[k],a[0],a[1],a[2],a[3],a[4],a[5],a[6]).unwrap();}
+        for k in 1..8 {let a=self.situations[k];writeln!(out,"{k},{},{},{},{},{},{},{},{},{},{},{}",self.stored[k],self.used[k],self.fizzled[k],self.dropped[k],a[0],a[1],a[2],a[3],a[4],a[5],a[6]).unwrap();}
         println!("inventory flip_escape={} flip_ambush={} flip_loot={} flip_other={} escape_survived_1s={} ambush_head_wins_1s={}",self.flip_situations[1],self.flip_situations[2],self.flip_situations[3],self.flip_situations[0],self.escape_survived,self.ambush_wins);
         println!("inventory phase_trapped={} phase_survived_1s={} unused_phase_deaths={}",self.phase_trapped,self.phase_survived,self.unused_phase_deaths);
     }

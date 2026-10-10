@@ -37,16 +37,13 @@ opens the latest GitHub release instead.
 > It does not authenticate, lock input, protect running applications, or replace
 > Plasma's lock screen. Anyone who dismisses it can use the session.
 
-## Slithering Snakes 0.19.0
+## Slithering Snakes 0.20.0
 
-Flip is a held power-up with an orange opposed-arrow gem and false eyes on the
-tail. A snake can use it to swap head and tail for escapes, ambushes and loot
-U-turns, then briefly looks dizzy. It uses the same three inventory slots,
-four-tick wind-up, one-minute shelf life and death drops as the other stored
-items. Flip stays held when saving other
-power-ups is turned off.
-
-Render busy scenes faster.
+Whirlpool is a teal spiral power-up. With storage on, a snake saves it and
+opens a vortex near food when it chooses. With storage off, the vortex opens
+at the capsule. It gathers ordinary food for five seconds and bursts into
+essence shards. The holder circles nearer the core, while rivals orbit
+outside and race the burst. Prism fruit and Starfall food stay outside the brew.
 
 ## Architecture
 

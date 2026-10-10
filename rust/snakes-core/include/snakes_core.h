@@ -90,6 +90,7 @@ extern "C" {
 #define SNAKES_CORE_GLYPH_VENOM 8u
 #define SNAKES_CORE_GLYPH_FROST 9u
 #define SNAKES_CORE_GLYPH_FLIP 10u
+#define SNAKES_CORE_GLYPH_WHIRLPOOL 11u
 #define SNAKES_CORE_FOOD_PRISM_SEED 4u
 #define SNAKES_CORE_FOOD_METEOR 5u
 #define SNAKES_CORE_FOOD_STAR 6u
@@ -200,14 +201,14 @@ typedef struct snakes_core_item {
     uint32_t leader_snake_id; /* best ETA committed racer, UINT32_MAX if none */
     float leader_eta; /* seconds, distance/speed + abs(heading error)/turn rate */
     uint16_t landing_ticks; /* max(pickable_from_tick - frame.tick, 0), <=30 */
-    uint8_t contender_count, state; /* <=2; state reserved for vortex phase */
+    uint8_t contender_count, state; /* <=2; state 0 capsule, 1 death drop, 2 vortex */
     uint32_t contender_ids[2]; /* two nearest committed heads; unused UINT32_MAX */
     float contender_etas[2]; /* seconds; unused +infinity; leader may be outside */
     uint32_t guard_snake_id; /* held-effect guard, UINT32_MAX if none */
     float radius; /* physical capsule / vortex radius, world units */
-    float captured_value; /* reserved Whirlpool absorbed nutrition */
-    uint16_t charge_ticks, reserved_v3; /* vortex remaining charge; reserved zero */
-    uint32_t owner_generation; /* reserved vortex owner lifetime identity */
+    float captured_value; /* Whirlpool absorbed nutrition */
+    uint16_t charge_ticks, reserved_v3; /* vortex elapsed charge (0..150); reserved zero */
+    uint32_t owner_generation; /* vortex owner lifetime identity */
     uint32_t owner_snake_id, reserved_owner; /* UINT32_MAX when absent; reserved zero */
 } snakes_core_item;
 typedef struct snakes_core_event {
@@ -316,6 +317,8 @@ typedef struct snakes_core_shader_vertex {
 /* Local monitor pixels; empty width/height disables clock exclusion. */
 int32_t snakes_core_render_set_clock_rect(snakes_core_renderer *renderer,
     double x, double y, double width, double height);
+/* Calm uses straight inward vortex transport; no ABI record changes. */
+int32_t snakes_core_set_reduced_motion(snakes_core_world *world, uint32_t enabled);
 int32_t snakes_core_render_set_reduced_motion(snakes_core_renderer *renderer, uint32_t enabled);
 int32_t snakes_core_render_build_shader(snakes_core_renderer *renderer,
     const snakes_core_frame_info *info,
