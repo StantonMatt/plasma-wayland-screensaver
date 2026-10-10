@@ -1,3 +1,11 @@
+plasma-visual-screensaver (0.20.0-1) unstable; urgency=medium
+
+  * Add Whirlpool, a stored power-up that opens a food-gathering vortex.
+  * Pull ordinary food inward for five seconds, then burst into essence shards.
+  * Orbit the brew and race its burst, with teal spiral gems and vortex arms.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Fri, 09 Oct 2026 22:27:47 -0300
+
 plasma-visual-screensaver (0.19.0-1) resolute; urgency=medium
 
   * Add Flip, a held power-up that swaps a snake's head and tail.
