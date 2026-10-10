@@ -36,8 +36,13 @@ OverlayManager::OverlayManager(Configuration *configuration, QObject *parent)
     , m_animationState(this)
 {
     registerSnakeTypes();
+    m_seasonOverride = qEnvironmentVariable("PVS_SEASON");
+    m_seasonTimer.setSingleShot(true);
+    m_seasonTimer.setTimerType(Qt::PreciseTimer); // Never sample the date before midnight.
+    connect(&m_seasonTimer, &QTimer::timeout, this, &OverlayManager::refreshSeasonDate);
     connect(m_configuration, &Configuration::changed, this, [this] {
         if (!m_visible) return;
+        updateSeason();
         configureSnakeRenderSharing();
         if (m_sharedSnakeSimulation) m_sharedSnakeSimulation->applySettings(*m_configuration);
         else for (auto *simulation : std::as_const(m_snakeSimulations)) simulation->applySettings(*m_configuration);
@@ -69,6 +74,7 @@ bool OverlayManager::show()
     if (m_teardownPending || m_pendingViewDeletions != 0) return false;
 
     m_visible = true;
+    refreshSeasonDate();
     m_inputGraceTimer.start();
     qApp->installEventFilter(this);
     m_animationEpochMs = QDateTime::currentMSecsSinceEpoch();
@@ -89,6 +95,7 @@ void OverlayManager::hide()
     if (m_teardownPending) return;
     m_teardownPending = true;
     m_visible = false;
+    m_seasonTimer.stop();
     m_mappingViews.clear();
     m_animationState.stop();
     m_ballArenaScreen = nullptr;
@@ -110,6 +117,25 @@ void OverlayManager::hide()
     if (m_pendingViewDeletions == 0) {
         QTimer::singleShot(0, this, &OverlayManager::finishTeardown);
     }
+}
+
+void OverlayManager::updateSeason()
+{
+    const Season season = seasonFor(m_seasonDate, m_configuration->seasonalThemes(), m_seasonOverride);
+    if (m_season == season) return;
+    m_season = season;
+    for (auto *view : std::as_const(m_views)) {
+        if (auto *root = view->rootObject()) root->setProperty("season", int(m_season));
+    }
+}
+
+void OverlayManager::refreshSeasonDate()
+{
+    if (!m_visible) return;
+    const auto now = QDateTime::currentDateTime();
+    m_seasonDate = now.date();
+    updateSeason();
+    m_seasonTimer.start(int(millisecondsToSeasonMidnight(now)));
 }
 
 bool OverlayManager::isVisible() const
@@ -198,6 +224,7 @@ bool OverlayManager::addScreen(QScreen *screen)
         {QStringLiteral("clockSpeed"), m_configuration->clockSpeed()},
         {QStringLiteral("frameRate"), m_configuration->frameRate()},
         {QStringLiteral("reducedMotion"), m_configuration->reducedMotion()},
+        {QStringLiteral("season"), int(m_season)},
         {QStringLiteral("monitorBehavior"), m_configuration->monitorBehavior()},
         {QStringLiteral("seed"), seed},
         {QStringLiteral("animationEpochMs"), sharedMotion

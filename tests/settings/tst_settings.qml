@@ -137,6 +137,19 @@ TestCase {
         compare(combo.currentIndex, 4)
     }
 
+    function test_seasonalCheckbox() {
+        const appearance = page("appearance")
+        const check = find(it => it.objectName === "seasonalThemesCheckBox", appearance)
+        win.write("visualModule", "snakes")
+        verify(check.visible)
+        verify(check.checked)
+        check.checked = false
+        check.toggled()
+        compare(testConfig.seasonalThemes, false)
+        win.write("visualModule", "bounce")
+        verify(!check.visible)
+    }
+
     function test_optionsFollowSelectedAnimation() {
         page("appearance")
         win.write("visualModule", "snakes")

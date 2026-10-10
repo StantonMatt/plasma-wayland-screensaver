@@ -10,7 +10,7 @@ layout(location=5) in vec3 waveLight;
 layout(location=6) in float phaseFade;
 layout(location=0) out vec4 fragColor;
 layout(binding=1) uniform sampler2D iconAtlas;
-layout(std140,binding=0) uniform buf { mat4 matrix; float opacity; float time; vec2 light; float animationTime; float motionScale; float paletteMode; float ambient; } ub;
+layout(std140,binding=0) uniform buf { mat4 matrix; float opacity; float time; vec2 light; float animationTime; float motionScale; float paletteMode; float ambient; float season; } ub;
 // Geometry contract: literal constants are also read at Rust compile time by
 // render/shader/bounds.rs. UV mapping, extrusion and copy selection share these values.
 const float BOUNDS_AA = 0.04; // effect coordinates: 7 body radii per unit
@@ -19,6 +19,7 @@ const float BOUNDS_FOOD_AA = 0.8;
 const float BOUNDS_BODY = 2.5;
 const float BOUNDS_BREATH = 1.028;
 const float BOUNDS_HEAD_BACK = 1.0;
+const float BOUNDS_HEAD_HAT_BACK = 1.3;
 const float BOUNDS_HEAD_BOOST_BACK = 2.3;
 const float BOUNDS_HEAD_FRONT = 2.9;
 const float BOUNDS_HEAD_SIDE = 1.75;
@@ -109,6 +110,67 @@ vec3 spectral(float h) {
     k=mix(k,vec3(1),0.2);
     if(ub.paletteMode==1.0) return vec3(0.86);
     return ub.paletteMode==2.0?mix(k,vec3(1),0.3):k;
+}
+
+// ===== Halloween (season 1). Colours are sRGB, like every other literal here.
+const vec3 H_PUMPKIN=vec3(1.0,0.459,0.094);      // #ff7518
+const vec3 H_PUMPKIN_DEEP=vec3(0.62,0.20,0.03);  // #9e3308 crease/shade
+const vec3 H_PUMPKIN_LIT=vec3(1.0,0.70,0.36);    // #ffb35c highlight
+const vec3 H_UNRIPE=vec3(0.58,0.78,0.26);        // #94c742
+const vec3 H_STEM=vec3(0.36,0.43,0.17);          // #5c6e2b
+const vec3 H_CANDLE=vec3(1.0,0.78,0.30);         // #ffc74d
+const vec3 H_CANDLE_CORE=vec3(1.0,0.95,0.74);    // #fff2bd
+const vec3 H_FLAME=vec3(1.0,0.45,0.08);          // #ff7314
+const vec3 H_VIOLET=vec3(0.61,0.42,1.0);         // #9b6bff
+bool halloween() { return ub.season==1.0; }
+// Palette-mode rule for seasonal colours: Mono greys (shape carries it), Pastel +30%
+// white. Near-black tones (luminance < 0.16) stay dark in Pastel so cut-outs stay cut-outs.
+vec3 hallow(vec3 c) {
+    float l=dot(c,vec3(0.2126,0.7152,0.0722));
+    if(ub.paletteMode==1.0) return vec3(l);
+    return ub.paletteMode==2.0 && l>=0.16?mix(c,vec3(1),0.3):c;
+}
+// Candle flicker: three slow sines (0.97, 1.54, 2.44 Hz), +-19% peak, 1.0 in Calm.
+float candle(float seed) {
+    if(ub.motionScale!=1.0) return 1.0;
+    float t=ub.time;
+    return 1.0+0.09*sin(t*6.1+seed)+0.06*sin(t*9.7+seed*1.7)+0.04*sin(t*15.3+seed*2.3);
+}
+// Front-view pumpkin, unit radius (width 2.0, height 1.72), y down. <0 inside.
+float pumpkinSd(vec2 q) {
+    q.y-=0.04;
+    float c=ellipse(q,vec2(0.50,0.84));
+    float s=ellipse(vec2(abs(q.x)-0.40,q.y+0.02),vec2(0.60,0.78));
+    return min(c,s);
+}
+float stemSd(vec2 q) {
+    vec2 s=q-vec2(0.05,-0.93);
+    s=mat2(0.966,0.259,-0.259,0.966)*s;           // 15 degree lean
+    return length(max(abs(s)-vec2(0.06,0.13),0.0))-0.05;
+}
+// Ribbed skin without crease lines: five lobes as a cosine across the width
+// (bright at x = 0 and +-0.8, darker at +-0.4), a radial falloff and a top-left highlight.
+vec3 pumpkinSkin(vec2 q,vec3 tone) {
+    float rr=length(q/vec2(1.0,0.86));
+    float ribs=0.88+0.12*cos(q.x*7.853982);
+    vec3 skin=tone*ribs*mix(1.0,0.70,smoothstep(0.50,1.0,rr));
+    return mix(skin,mix(tone,hallow(H_PUMPKIN_LIT),0.6),falloff(length(q-vec2(-0.34,-0.38))/0.45)*0.7);
+}
+// Carved face (atlas tile 13): + inside the openings, in tile SDF units (1 = 8 tile px).
+float faceSample(vec2 q,float extent) {
+    vec2 uv=clamp(q/extent,-1.0,1.0)*0.5+0.5;
+    return (texture(iconAtlas,(vec2(1.0,3.0)*32.0+vec2(0.5)+uv*31.0)/128.0).r-0.5)*float(max(abs(q.x),abs(q.y))<extent);
+}
+// Equilateral triangle centred on its centroid, apex along +x, circumradius r. <0 inside.
+float eqTri(vec2 p,float r) {
+    const float k=1.7320508;
+    float h=r*0.8660254;            // half side
+    p=vec2(p.y,p.x);                // apex +y in iq's form
+    p.x=abs(p.x)-h;
+    p.y=p.y+h/k;
+    if(p.x+k*p.y>0.0) p=vec2(p.x-k*p.y,-k*p.x-p.y)/2.0;
+    p.x-=clamp(p.x,-2.0*h,0.0);
+    return -length(p)*sign(p.y);
 }
 float hexagon(vec2 p,float r) {
     const vec3 k=vec3(-0.8660254,0.5,0.5773503);
@@ -529,18 +591,46 @@ void main() {
         blink*=mix(1.0,lid,intensity);
         float socket=mask(ellipse(eye,vec2(er*1.12,er*1.12*max(0.3,blink))));
         float iris=mask(ellipse(eye,vec2(er,er*blink)));
+        // Halloween: Calm, Sleepy and Hunting eyes burn like candles; Calm and Hunting
+        // are carved triangles (apex toward the tail, the face language's "up").
+        bool candleEye=halloween() && mood<=2;
+        bool lantern=candleEye && mood!=1;
+        float flick=candleEye?candle(seed*3.0):1.0;
+        if(candleEye) {
+            vec2 gaze=vec2((float(int(packed.w+0.5)&7)-3.0)/3.0*0.18,(float((int(packed.w+0.5)>>3)&7)-3.0)/3.0*0.35*sign(p.y));
+            if(lantern) gaze*=vec2(0.40,0.50);
+            float hot=1.0-clamp(length(eye-gaze)/(er*0.85),0.0,1.0);
+            vec3 flame=mood==2?mix(hallow(vec3(0.95,0.22,0.04)),hallow(vec3(1.0,0.70,0.28)),smoothstep(0.1,0.9,hot))
+                               :mix(mix(hallow(H_FLAME),hallow(H_CANDLE),smoothstep(0.0,0.5,hot)),hallow(H_CANDLE_CORE),smoothstep(0.5,1.0,hot));
+            irisColor=mono || ub.paletteMode==1.0?mix(vec3(0.62),vec3(1.0),smoothstep(0.2,1.0,hot)):flame;
+            irisColor*=mix(1.0,flick,0.6);
+            // Jack-o'-lantern glow around each eye, flickering with the candle.
+            vec3 eg=(mood==2?hallow(vec3(1.0,0.32,0.06)):hallow(H_FLAME))*falloff(length(eye)/0.95)*0.16*flick;
+            rgb+=eg;glow+=eg;
+        }
+        if(lantern) {
+            vec2 apex=vec2(-1.0,0.0);
+            float sq=max(blink,0.08);
+            vec2 es=vec2(eye.x,eye.y/sq);
+            vec2 te=vec2(dot(es,apex),dot(es,vec2(-apex.y,apex.x)));
+            float tri=eqTri(te,er*1.30)*sq;
+            socket=mask(tri-0.06*sq);
+            iris=mask(tri);
+        }
         vec3 eyeshine=irisColor*falloff(length(eye)/0.6)*0.5*night;
+        if(lantern) eyeshine=irisColor*falloff(length(eye)/0.7)*0.62*night*flick;
         glow+=eyeshine;over+=eyeshine;
         if(mood==5) {socket*=1.0-intensity;iris*=1.0-intensity;}
         vec3 skin=rgb;vec3 dark=vec3(0.016,0.02,0.04);
         rgb=mix(rgb,vec3(0.016,0.02,0.04),socket);rgb=mix(rgb,irisColor,iris);
         int look=int(packed.w+0.5);
         vec2 offset=vec2((float(look&7)-3.0)/3.0*0.18,(float((look>>3)&7)-3.0)/3.0*0.35);
-        vec2 pupil=eye-offset*vec2(1,sign(p.y));
+        vec2 pupil=eye-offset*vec2(1,sign(p.y))*(lantern?vec2(0.40,0.50):vec2(1.0));
         if((trapped||mood==3) && moving) pupil-=vec2(sin(t*31.0+sign(p.y))*0.05,cos(t*27.0+sign(p.y))*0.04)*intensity;
         float pd=ellipse(pupil,vec2(mix(0.075,pupilWidth,intensity),mix(0.20,pupilHeight,intensity)*er/0.30*blink));
         if(roundPupil) pd=mix(pd,length(pupil)-0.06,intensity);
         float pupilMask=mask(pd)*iris*step(0.4,blink);
+        if(lantern && mood!=2) pupilMask=0.0;
         if(mood==5) {
             // Forward/lateral coordinates: closed arcs bulge toward the tail.
             vec2 a=eye-vec2(0.12,0.0); vec2 q=vec2(abs(a.y),-a.x);
@@ -553,7 +643,7 @@ void main() {
             pupilMask=mix(pupilMask,spiral,intensity);
         }
         rgb=mix(rgb,vec3(0.02,0.024,0.043),pupilMask);
-        rgb=mix(rgb,white,mask(length(eye-vec2(-0.055,(ly*0.10-0.06)*sign(p.y)))-0.065)*iris*0.9*(1.0-intensity*float(mood==5 || mood==7)));
+        if(!lantern) rgb=mix(rgb,white,mask(length(eye-vec2(-0.055,(ly*0.10-0.06)*sign(p.y)))-0.065)*iris*0.9*(1.0-intensity*float(mood==5 || mood==7)));
         if(mood==4) {
             // Rear lid and V brows pointing at the snout.
             float bd=(-0.05*er-0.55*eye.y-eye.x)*0.8762;
@@ -566,7 +656,29 @@ void main() {
             rgb=mix(rgb,dark,mask(abs(ld)-0.035)*mask(length(eye)-er*1.15)*0.75*intensity);
         }
         float crownCover=0.0;
-        if(leader) {
+        if(leader && halloween()) {
+            // Witch hat: brim across the head, cone and bent tip toward the tail.
+            // Sits where the crown sits: behind the eyes, tip over the back of the head.
+            vec2 hp=p;
+            float brim=ellipse(hp-vec2(-0.12,0.0),vec2(0.25,0.92));
+            float cone=sdTriangle(hp,vec2(-0.12,-0.50),vec2(-0.12,0.50),vec2(-0.80,0.12));
+            float tip=sdTriangle(hp,vec2(-0.76,0.00),vec2(-0.72,0.25),vec2(-0.98,0.36));
+            float crown=min(cone-0.02,tip-0.02);
+            float hat=min(brim,crown);
+            float fill=mask(hat);
+            float rim=mask(abs(hat)-0.05)*0.95;
+            float coneRim=mask(abs(crown)-0.04)*mask(brim)*0.9;
+            vec3 cloth=hallow(vec3(0.20,0.11,0.33));
+            vec3 brimCloth=hallow(mix(vec3(0.20,0.11,0.33),H_VIOLET,0.45));
+            rgb=mix(rgb,brimCloth,mask(brim));
+            rgb=mix(rgb,cloth,mask(crown));
+            rgb=mix(rgb,mix(cloth,white,0.22),mask(max(crown,-hp.y-0.05))*fill);  // lit side, 22% white
+            rgb=mix(rgb,hallow(vec3(1.0,0.86,0.40)),mask(length((hp-vec2(-0.36,0.0))/vec2(0.07,0.09))-1.0)*0.95);
+            rgb=mix(rgb,hallow(H_VIOLET)*0.55,coneRim);
+            rgb=mix(rgb,hallow(H_VIOLET),rim);
+            glow+=hallow(H_VIOLET)*falloff(length(hp-vec2(-0.25,0.0))/0.75)*(0.34+0.10*sin(t*3.0));
+            crownCover=max(fill,rim);
+        } else if(leader) {
             // bowed band + 3 backward spikes, dark-gold outline, additive crown glow.
             float bx=0.03-0.09*(1.0-min(1.0,(p.y/0.8)*(p.y/0.8)));
             float band=max(abs(p.x-bx)-0.08,abs(p.y)-0.8);
@@ -683,6 +795,23 @@ void main() {
         vec3 light=c*(arms+rim+glowOut)+mix(c,white,0.6)*glowHot;
         fragColor=vec4(min(light,vec3(0.9))*ub.opacity,0);return;
     }
+    if(kind==25 && packed.y>0.5 && halloween()) {
+        // coord in bat units: atlas tile 12 spans +-1.0; byte z = flap phase; colour alpha carries fade.
+        bool still=ub.motionScale!=1.0;
+        float flap=still?1.0:0.70+0.30*sin(t*15.7+packed.z/255.0*6.283185);   // 2.5 Hz
+        vec2 q=vec2(coord.x,coord.y/flap)*1.15;
+        float tile=texture(iconAtlas,((vec2(0.0,3.0)*32.0+vec2(0.5)+(clamp(q,-1.0,1.0)*0.5+0.5)*31.0)/128.0)).r-0.5;
+        float aa=max(fwidth(tile),0.02);
+        float inside=smoothstep(-aa,aa,tile)*float(max(abs(q.x),abs(q.y))<1.0);
+        float rim=smoothstep(-aa,aa,tile)*(1.0-smoothstep(0.10,0.22,tile))*float(max(abs(q.x),abs(q.y))<1.0);
+        vec2 e=vec2(abs(q.x)-0.07,q.y+0.17);
+        float eyes=mask(length(e)-0.04);
+        vec3 rgb=hallow(vec3(0.06,0.035,0.10));
+        rgb=mix(rgb,hallow(H_VIOLET),rim*0.9);
+        rgb=mix(rgb,hallow(H_CANDLE),eyes);
+        vec3 g=hallow(H_VIOLET)*falloff(length(coord)/1.0)*0.16+hallow(H_FLAME)*falloff(length(e)/0.18)*0.6;
+        fragColor=composite(rgb,max(inside,eyes),g,vec3(0),base.a);return;
+    }
     if(kind==25) {
         // Venom stump / severed-end glow: prototype radial glow, additive.
         fragColor=vec4(itemAccent(4)*falloff(length(coord))*base.a*ub.opacity,0);return;
@@ -740,7 +869,20 @@ void main() {
     float tw=0.85+0.15*sin(t*2.2+phase);
     float px=clamp(length(vec2(dFdx(p.x),dFdy(p.x))),0.0001,BOUNDS_FOOD_PIXEL);
     vec3 rgb=c;float core=0.0;vec3 glow=vec3(0);vec3 over=vec3(0);
-    if(kind==2) {                     // spark
+    bool sweet=halloween() && kind==2 && fract(phase*0.4774648+0.13)<(1.0/3.0);
+    if(sweet) {
+        float a=phase*3.0;vec2 q=mat2(cos(a),-sin(a),sin(a),cos(a))*p;
+        float candy=length(q)-0.95;
+        vec2 w=vec2(abs(q.x),q.y);
+        float flare=0.16+0.60*clamp((w.x-0.80)/1.15,0.0,1.0);
+        float wrapper=max(max(0.80-w.x,w.x-1.95),abs(w.y)-flare);
+        float candyMask=mask(candy),wrapMask=mask(wrapper)*(1.0-candyMask);
+        core=max(candyMask,wrapMask*0.9);
+        float stripe=coverage(abs(fract((q.x*0.7+q.y*0.7)*0.62+0.25)-0.5)*1.6-0.22,max(px*0.8,0.06));
+        vec3 sweetColor=mix(mix(c,white,0.15),white,stripe*0.70);
+        rgb=mix(mix(c,white,0.50),sweetColor,candyMask/max(core,0.0001));
+        glow=c*0.38*tw*falloff(r/4.6);
+    } else if(kind==2) {                     // spark
         core=mask(r-1.05);
         rgb=mix(mix(c,white,0.20),white,mask(length(p-vec2(-0.15,-0.20))-0.45)*0.85);
         glow=c*0.42*tw*falloff(r/4.6);
@@ -750,6 +892,13 @@ void main() {
             float twinkleCross=(1.0-smoothstep(0.4*px,1.0*px,min(abs(p.x),abs(p.y))))*step(max(abs(p.x),abs(p.y)),4.5*a);
             over+=white*twinkleCross*0.75*a*(1.0-core);
         }
+    } else if(kind==3 && halloween()) {   // essence bat
+        bool still=ub.motionScale!=1.0;
+        float flap=still?1.0:0.78+0.22*sin(t*8.2+phase*7.0);
+        vec2 q=vec2(p.x,(p.y-(still?0.0:0.16*sin(t*4.1+phase*3.0)))/flap);
+        core=atlasMask(12,q,2.4);
+        rgb=mix(c,white,0.30);
+        glow=c*(0.40+0.10*sin(t*2.0+phase))*falloff(r/4.4);
     } else if(kind==3) {              // essence shard: slim spinning rhombus with a lit facet
         float a=t*0.8+phase;vec2 q=mat2(cos(a),-sin(a),sin(a),cos(a))*p;
         float dd=abs(q.x)/0.85+abs(q.y)/1.6;
@@ -760,6 +909,26 @@ void main() {
     } else if(kind==4) {              // spent pellet
         core=mask(r-1.0)*0.55;
         glow=c*0.16*falloff(r/3.0);
+    } else if(packed.w>254.5 && halloween()) {   // pumpkin seed: a green bud ripening to orange
+        float progress=packed.z/255.0;
+        float angle=mod(atan(p.x+0.000001,-p.y)+6.283185,6.283185);
+        float hw=max(0.10,0.9*px);
+        float ring=1.0-smoothstep(hw,hw+px,abs(r-2.7));
+        float fill=step(angle,progress*6.283185)*step(0.001,progress);
+        vec3 ember=mix(hallow(vec3(0.80,0.20,0.05)),hallow(H_CANDLE),angle/6.283185);
+        vec3 track=hallow(vec3(0.20,0.13,0.27));
+        over+=(ember*fill*0.95+track*(1.0-fill))*ring;
+        float ea=progress*6.283185;
+        vec2 tip=vec2(sin(ea),-cos(ea))*2.7;
+        float td=length(p-tip);float fl=candle(phase*5.0);
+        over+=(mix(hallow(H_CANDLE_CORE),white,0.3)*mask(td-max(0.17,1.1*px))*0.9+hallow(H_FLAME)*falloff(td/0.95)*0.60*fl)
+            *step(0.001,progress)*step(progress,0.999);
+        float sr=0.35+0.45*progress;vec2 q=p/sr;
+        float body=mask(pumpkinSd(q)*sr),stem=mask(stemSd(q)*sr);
+        core=max(body,stem);
+        vec3 tone=mix(hallow(H_UNRIPE),hallow(H_PUMPKIN),smoothstep(0.20,0.95,progress));
+        rgb=mix(pumpkinSkin(q,tone),hallow(H_STEM),stem*(1.0-body*0.5));
+        glow=mix(hallow(vec3(0.55,0.75,0.30)),hallow(vec3(1.0,0.58,0.20)),progress)*(0.14+0.26*progress)*falloff(r/4.0);
     } else if(packed.w>254.5) {       // prism seed: p is in prism visual units (Rust scales the quad 1.6x)
         float progress=packed.z/255.0;
         float angle=mod(atan(p.x+0.000001,-p.y)+6.283185,6.283185);   // 0 at top, clockwise
@@ -778,6 +947,56 @@ void main() {
         float g=clamp(length(p-vec2(-0.30,-0.35)*sr)/(1.25*sr),0.0,1.0);
         rgb=mix(white,vec3(0.80,0.84,0.92),smoothstep(0.2,1.0,g));
         glow=vec3(0.80,0.86,1.0)*(0.18+0.32*progress)*falloff(r/4.0);
+    } else if(halloween()) {          // ripe jack-o'-lantern (kind 8); packed.w = ripe age
+        bool moving=ub.motionScale==1.0;
+        float pop=packed.w/254.0;
+        float spin=moving?t*0.12:0.0;
+        float grow=moving?1.0+0.16*sin(min(pop/0.45,1.0)*3.14159)*(1.0-pop)-0.15*(1.0-smoothstep(0.0,0.12,pop)):1.0;
+        float R=1.0*grow;vec2 q=p/R;
+        float body=mask(pumpkinSd(q)*R),stem=mask(stemSd(q)*R);
+        core=max(body,stem);
+        float fl=candle(phase*6.283185);
+        // Ignition: the carved face lights over the first 0.35 of the pop, overshooting 25%.
+        float lit=moving?smoothstep(0.0,0.35,pop)*(1.0+0.25*sin(clamp((pop-0.2)/0.5,0.0,1.0)*3.14159)):smoothstep(0.0,0.5,pop);
+        vec3 skin=pumpkinSkin(q,hallow(H_PUMPKIN));
+        vec2 fq=q-vec2(0.0,0.10);
+        float fd=faceSample(fq,1.06);
+        float faw=max(fwidth(fd),0.02);
+        float face=smoothstep(-faw,faw,fd)*body;
+        float carve=smoothstep(-faw,faw,fd+0.11)*body;   // cut edge, about 1 px outside each opening
+        float hot=1.0-clamp(length(fq*vec2(0.8,1.15))/0.80,0.0,1.0);
+        vec3 flame=mix(mix(hallow(H_FLAME),hallow(H_CANDLE),smoothstep(0.0,0.55,hot)),hallow(H_CANDLE_CORE),smoothstep(0.55,1.0,hot));
+        vec3 dark=hallow(vec3(0.14,0.04,0.0));
+        rgb=mix(skin,dark,carve);
+        rgb=mix(rgb,mix(dark,flame*fl,clamp(lit,0.0,1.25)),face);
+        rgb=mix(rgb,hallow(H_STEM),stem*(1.0-body*0.5));
+        rgb=mix(rgb,hallow(vec3(0.14,0.04,0.0)),mask(abs(pumpkinSd(q)*R+0.035)-0.035)*body*0.75);
+        // Candle light spills onto the skin around the carving.
+        over+=hallow(H_CANDLE)*falloff(length(fq)/0.95)*0.12*lit*fl*(1.0-carve)*body;
+        float life=packed.z/255.0*30.0;
+        float drain=clamp(life/5.0,0.0,1.0);
+        float ra=mod(atan(p.x+0.000001,-p.y)+6.283185,6.283185);
+        float hw=max(0.11,0.9*px);
+        float halo=(1.0-smoothstep(hw,hw+px,abs(r-1.75)))*step(ra,drain*6.283185+0.0001);
+        // Orange-to-violet halo, turning slowly.
+        float k=0.5+0.5*cos(ra-spin*6.283185);
+        over+=mix(hallow(H_VIOLET),hallow(vec3(1.0,0.55,0.12)),k)*halo*0.95*(1.0-core);
+        float rot=moving?t*0.25:0.2;
+        float sector=6.283185/8.0;
+        float a8=atan(p.y,p.x)+rot;
+        float idx=floor(a8/sector+0.5);
+        float local=a8-idx*sector;
+        vec2 rq=vec2(cos(local),sin(local))*r;
+        float longRay=mod(idx,2.0)==0.0?1.0:0.0;
+        float len=mix(2.35,2.85,longRay);
+        float ray=mask(line(rq,vec2(2.05,0.0),vec2(len,0.0),max(0.07,0.6*px)));
+        over+=mix(hallow(H_VIOLET),hallow(H_CANDLE),longRay)*ray*(0.55+0.3*longRay)*(1.0-core);
+        float shockRadius=1.75+2.4*pop;
+        float shockOuter=min(hw+px,BOUNDS_FOOD-shockRadius);
+        float shockInner=shockOuter<hw+px?min(hw,shockOuter*0.5):hw;
+        float shock=(1.0-smoothstep(shockInner,shockOuter,abs(r-shockRadius)))*(1.0-pop)*step(pop,0.999);
+        over+=mix(hallow(H_CANDLE_CORE),hallow(H_FLAME),0.4)*shock*0.8;
+        glow=hallow(vec3(1.0,0.56,0.20))*(0.80*tw*fl+0.5*(1.0-pop))*falloff(r/4.6)*0.75;
     } else {                          // ripe prism fruit (kind 8); packed.w = ripe age, 0..254 over ~1 s
         bool moving=ub.motionScale==1.0;
         float pop=packed.w/254.0;

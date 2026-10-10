@@ -20,6 +20,7 @@ Item {
         simulation: root.context ? root.context.snakeSimulation : null
         scaleToViewport: root.context && root.context.monitorBehavior === "synchronized"
         developerMode: root.context && root.context.developerMode === true
+        season: root.context ? root.context.season : 0
         shaderTimeFrozen: root.reducedMotion
         clockRect: root.context ? root.context.clockRect : Qt.rect(0, 0, 0, 0)
     }

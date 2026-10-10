@@ -37,14 +37,14 @@ opens the latest GitHub release instead.
 > It does not authenticate, lock input, protect running applications, or replace
 > Plasma's lock screen. Anyone who dismisses it can use the session.
 
-## Slithering Snakes 0.21.0
+## Slithering Snakes 0.22.0
 
-Trapped snakes now fight their way out with what they hold. When a snake is
-boxed in, it checks each stored power-up as an escape: Venom bites through
-the blocking body, Phase slips through it, Frost freezes the snakes closing
-in, Surge outruns a closing gap and Flip reverses out. It spends the
-cheapest item that gets it out alive and keeps its items when a free path
-exists.
+Halloween arrives from October 24 to November 1. The prize seed grows into a
+pumpkin and lights up as a jack-o'-lantern, calm and hunting snakes get
+candle-lit lantern eyes, the leader wears a witch's hat, some sparks become
+wrapped sweets and essence shards flutter as tiny bats. At Nightfall the
+lanterns glow brighter and a few bats cross the sky. Turn it off with
+Seasonal themes under Colors.
 
 ## Architecture
 

@@ -227,11 +227,13 @@ QSGNode *SnakeRenderer::updatePaintNode(QSGNode *oldNode,
     // Freeze procedural animation at the same boundary for both geometry formats.
     // Rust advances event lifetimes from simulation time while this clock is frozen.
     snakes_core_render_set_reduced_motion(node->renderer.get(), uint32_t(m_shaderTimeFrozen));
+    snakes_core_render_set_season(node->renderer.get(), uint32_t(m_season));
     snakes_core_render_set_clock_rect(node->renderer.get(), m_clockRect.x(), m_clockRect.y(),
                                      qMax(0.0, m_clockRect.width()), qMax(0.0, m_clockRect.height()));
     const qreal animationTime = m_shaderTimeFrozen ? m_frozenShaderTime : m_shaderTime;
     if (shader) {
         auto *material = static_cast<SnakeMaterial *>(node->material());
+        material->season = float(m_season);
         material->time = float(animationTime);
         material->animationTime = float(animationTime);
         material->ambient = m_frame && std::isfinite(m_frame->info.ambient) && m_frame->info.ambient > 0
