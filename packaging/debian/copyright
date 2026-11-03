@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: Plasma Visual Screensaver
 Upstream-Contact: Matthew Stanton <stantonmatthewj@gmail.com>
-Source: https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver
+Source: https://gitlab.com/StantonMatt/plasma-wayland-screensaver
 
 Files: *
 Copyright: 2026 Matthew Stanton

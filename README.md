@@ -8,7 +8,7 @@ event.
 ## Install on Kubuntu 26.04
 
 Download the `.deb` and its `.sha256` file from the
-[latest GitLab Release](https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver/-/releases/permalink/latest).
+[latest GitLab Release](https://gitlab.com/StantonMatt/plasma-wayland-screensaver/-/releases/permalink/latest).
 In the download directory, verify and install it with:
 
 ```bash

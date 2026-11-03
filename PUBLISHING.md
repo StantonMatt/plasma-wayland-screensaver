@@ -12,7 +12,7 @@ formats record the Rust standard library's source version in `Static-Built-Using
 ## GitLab setup
 
 The public project is hosted at
-<https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver>.
+<https://gitlab.com/StantonMatt/plasma-wayland-screensaver>.
 `.gitlab-ci.yml` uses an Ubuntu 26.04 image on the `ci-public` Docker runner.
 Enable Issues and the package registry, keep `main` protected from force pushes,
 and require successful MR pipelines before merging. A full-history secret scan
@@ -82,7 +82,7 @@ normal manual build/test pipelines. Do not republish until the release path has
 been verified. Downloads are available at:
 
 ```text
-https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver/-/releases/permalink/latest
+https://gitlab.com/StantonMatt/plasma-wayland-screensaver/-/releases/permalink/latest
 https://gitlab.com/api/v4/projects/88430057/packages/generic/plasma-visual-screensaver/<tag>/<filename>
 ```
 

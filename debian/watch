@@ -1,6 +1,6 @@
 Version: 5
 
-Source: https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver/-/tags
-Matching-Pattern: /stantonmatthewj/plasma-wayland-screensaver/-/archive/v@ANY_VERSION@/plasma-wayland-screensaver-v[0-9.]+\.tar\.gz(?:\?ref_type=tags)?
+Source: https://gitlab.com/StantonMatt/plasma-wayland-screensaver/-/tags
+Matching-Pattern: /StantonMatt/plasma-wayland-screensaver/-/archive/v@ANY_VERSION@/plasma-wayland-screensaver-v[0-9.]+\.tar\.gz(?:\?ref_type=tags)?
 Filename-Mangle: s%.*/archive/v@ANY_VERSION@/.*%@PACKAGE@-$1.tar.gz%
 Searchmode: plain
