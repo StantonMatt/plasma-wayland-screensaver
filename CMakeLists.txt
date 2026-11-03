@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 project(plasma-visual-screensaver
         VERSION 0.21.0
         DESCRIPTION "Non-locking visual screensaver for KDE Plasma Wayland"
-        HOMEPAGE_URL "https://github.com/StantonMatt/plasma-wayland-screensaver"
+        HOMEPAGE_URL "https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver"
         LANGUAGES CXX)
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/changelog"
@@ -29,7 +29,14 @@ include(KDECMakeSettings)
 include(KDECompilerSettings NO_POLICY_SCOPE)
 include(FeatureSummary)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core DBus Gui Qml Quick QuickControls2 ShaderTools)
+set(PVS_RELEASE_FORGE "gitlab" CACHE STRING "Release host: gitlab or github")
+set_property(CACHE PVS_RELEASE_FORGE PROPERTY STRINGS gitlab github)
+if(NOT PVS_RELEASE_FORGE MATCHES "^(gitlab|github)$")
+    message(FATAL_ERROR "PVS_RELEASE_FORGE must be gitlab or github")
+endif()
+configure_file(src/releaseconfig.h.in generated/releaseconfig.h @ONLY)
+
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core DBus Gui Network Qml Quick QuickControls2 ShaderTools)
 find_package(KF6 6.0 REQUIRED COMPONENTS Config IdleTime)
 find_package(LayerShellQt REQUIRED)
 

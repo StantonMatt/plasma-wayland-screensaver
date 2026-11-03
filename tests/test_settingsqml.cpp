@@ -34,6 +34,7 @@ public:
 Q_SIGNALS:
     void monitorCountChanged();
     void previewFailed(const QString &reason);
+    void updateCenterFinished(const QString &destination);
 private:
     int m_monitorCount = 3;
     QString m_updateResult = QStringLiteral("discover");

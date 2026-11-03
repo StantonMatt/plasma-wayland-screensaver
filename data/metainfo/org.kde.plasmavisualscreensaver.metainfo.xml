@@ -13,8 +13,8 @@
     <p>This application is decorative and is not a security boundary.</p>
   </description>
   <launchable type="desktop-id">org.kde.plasmavisualscreensaver.desktop</launchable>
-  <url type="homepage">https://github.com/StantonMatt/plasma-wayland-screensaver</url>
-  <url type="bugtracker">https://github.com/StantonMatt/plasma-wayland-screensaver/issues</url>
+  <url type="homepage">https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver</url>
+  <url type="bugtracker">https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver/-/issues</url>
   <content_rating type="oars-1.1"/>
   <provides>
     <binary>plasma-visual-screensaver</binary>

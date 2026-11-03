@@ -9,19 +9,17 @@ Install the README's build dependencies, including the distribution's `rustc`
 and `cargo` (1.93 or newer), before running the release helper. Both package
 formats record the Rust standard library's source version in `Static-Built-Using`.
 
-## One-time GitHub setup
+## GitLab setup
 
-1. Make the repository public when it is ready for general access. Standard
-   GitHub-hosted runners are free for public repositories.
-2. Enable **Issues** so the bug-report URL in the AppStream metadata works.
-3. Keep the repository's default `GITHUB_TOKEN` permission read-only. The tag
-   workflow requests `contents: write` only for its release job.
-4. Optionally protect `main` and require the **Kubuntu 26.04 package** check.
-5. Optionally enable immutable releases. The workflow uploads all artifacts as
-   part of the release creation, so it is compatible with that mode.
+The public project is hosted at
+<https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver>.
+`.gitlab-ci.yml` uses an Ubuntu 26.04 image on the `ci-public` Docker runner.
+Enable Issues and the package registry, keep `main` protected from force pushes,
+and require successful MR pipelines before merging. A full-history secret scan
+must precede making a private mirror public.
 
-The repository is intentionally not made public by the build scripts. Changing
-visibility is a maintainer decision.
+Releases use the job's `CI_JOB_TOKEN`; no personal token is stored in CI.
+Generic package downloads and release links must remain publicly accessible.
 
 ## Prepare a release
 
@@ -54,24 +52,39 @@ git tag -a v0.21.0 -m "Plasma Visual Screensaver 0.21.0"
 git push origin v0.21.0
 ```
 
-The **Publish release** workflow then:
+The **release** GitLab job then:
 
 - verifies that the tag and project versions match;
-- builds on GitHub's Ubuntu 26.04 runner;
+- builds on Ubuntu 26.04 using the `ci-public` runner;
 - runs unit tests and metadata/QML validation;
 - generates the `.deb` and SHA-256 checksum; and
-- creates a GitHub Release with generated release notes and both files.
+- uploads both files to the generic package registry, then creates a GitLab
+  Release with commit notes and public asset links.
 
-After the GitHub release is verified, publish the matching signed source
+After the GitLab release is verified, publish the matching signed source
 package to the automatic-update PPA using the process in [PPA.md](PPA.md).
-GitHub distributes a directly installable `.deb`; Launchpad independently
+GitLab distributes a directly installable `.deb`; Launchpad independently
 rebuilds the source and provides the repository metadata used by automatic
 updates.
 
-If any step fails, no release is published. Fix the issue, delete the failed
-local and remote tag, complete review again, then recreate the tag on the fixed
-commit. Never move a tag for an already published release; increment the Debian
-package revision or project version instead.
+Publication happens only after build and validation succeed. A failed upload can
+leave a package without a Release. Retries reuse byte-identical uploads and
+refuse to replace differing bytes; inspect a conflict before retrying. Never
+move a tag for an already published release; increment the version instead.
+
+For migration of an existing tag that predates `.gitlab-ci.yml`, run a manual
+web pipeline on the reviewed migration branch with `RELEASE_TAG=v0.21.0`.
+The release job archives and builds that exact tag, checks its CMake version,
+and publishes it with the current release helper. Release dates preserve the
+original tag timestamp so backfilling an older tag cannot make it latest.
+Keep `RELEASE_TAG` empty for
+normal manual build/test pipelines. Do not republish until the release path has
+been verified. Downloads are available at:
+
+```text
+https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver/-/releases/permalink/latest
+https://gitlab.com/api/v4/projects/88430057/packages/generic/plasma-visual-screensaver/<tag>/<filename>
+```
 
 ## Verify the published release
 
@@ -88,7 +101,30 @@ monitor, and the background process starts after logging out and back in.
 
 ## Current distribution scope
 
-The generated package targets the architecture of the GitHub runner (`amd64`)
+The generated package targets the architecture of the GitLab runner (`amd64`)
 and Kubuntu 26.04. Supporting other Ubuntu releases, Debian, ARM64, Flatpak, or
 a signed APT repository should be treated as separate tested distribution
 targets rather than assuming binary compatibility.
+
+## If moving back to GitHub
+
+`.github/` is the inactive GitHub configuration and must stay untouched during
+this migration. If GitHub is restored, keep `.github/workflows` in sync by hand
+before enabling Actions again. The original workflows retain GitHub release
+creation and baseline downloads. Restore `origin` to the SSH GitHub remote
+(`git@github.com:StantonMatt/plasma-wayland-screensaver.git`); keep GitLab as a
+second remote.
+
+Build with `-DPVS_RELEASE_FORGE=github` to resolve updates through
+`https://api.github.com/repos/StantonMatt/plasma-wayland-screensaver/releases/latest`
+instead of GitLab's URL-encoded project releases API. `gitlab` is the default;
+change that CMake default to `github` for the preserved release workflows.
+The standalone baseline downloader also accepts `RELEASE_FORGE=github` and
+`GITHUB_REPOSITORY`. Restore homepage/issue URLs, Debian upstream metadata and
+`debian/watch` when moving the current host back. The previous watch file is
+available in Git history.
+
+For Actions, keep the default `GITHUB_TOKEN` read-only; the preserved tag
+workflow requests `contents: write` to create the Release. Enable Issues and
+private vulnerability reporting as appropriate. The old public release URL is
+<https://github.com/StantonMatt/plasma-wayland-screensaver/releases/latest>.

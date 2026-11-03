@@ -2,7 +2,10 @@
 #pragma once
 
 #include <QObject>
+#include <QNetworkAccessManager>
+#include <QPointer>
 #include <QString>
+#include <QUrl>
 #include <memory>
 
 #include "configuration.h"
@@ -12,6 +15,7 @@
 #include "screensaverstatemachine.h"
 
 class QQmlApplicationEngine;
+class QNetworkReply;
 
 class ApplicationController final : public QObject
 {
@@ -40,13 +44,14 @@ public Q_SLOTS:
     Q_SCRIPTABLE void Preview();
     Q_SCRIPTABLE void PreviewDebug();
     Q_SCRIPTABLE void Quit();
-    // Returns "discover", "releases", or "failed" for the settings UI.
-    Q_INVOKABLE QString openUpdateCenter() const;
+    // Returns "discover" or "checking"; asynchronous lookup emits its result.
+    Q_INVOKABLE QString openUpdateCenter();
 
 Q_SIGNALS:
     void screensaverActiveChanged();
     void monitorCountChanged();
     void previewFailed(const QString &reason);
+    void updateCenterFinished(const QString &destination);
 
 private Q_SLOTS:
     void activate(bool preview);
@@ -58,6 +63,9 @@ private Q_SLOTS:
 private:
     void requestDismissal(const char *reason);
 
+    QNetworkAccessManager m_updateNetwork;
+    QPointer<QNetworkReply> m_updateReply;
+    QUrl m_updateApiUrl;
     Configuration m_configuration;
     IdleMonitor m_idleMonitor;
     Inhibitor m_inhibitor;

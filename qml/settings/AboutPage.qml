@@ -9,7 +9,7 @@ Kirigami.AboutPage {
     id: page
 
     required property var settings
-    // "" (nothing yet), "discover", "releases" or "failed".
+    // "" (nothing yet), "checking", "discover", "releases" or "failed".
     property string updateState: ""
 
     title: qsTr("About")
@@ -24,8 +24,8 @@ Kirigami.AboutPage {
         componentName: "plasma-visual-screensaver",
         programLogo: "org.kde.plasmavisualscreensaver",
         shortDescription: qsTr("Decorative screensaver for Plasma on Wayland. It doesn't lock your session."),
-        homepage: "https://github.com/StantonMatt/plasma-wayland-screensaver",
-        bugAddress: "https://github.com/StantonMatt/plasma-wayland-screensaver/issues",
+        homepage: "https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver",
+        bugAddress: "https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver/-/issues",
         version: page.settings.controller.applicationVersion,
         otherText: "",
         authors: [ { name: "Matthew Stanton", task: "", emailAddress: "", webAddress: "", ocsUsername: "" } ],
@@ -35,6 +35,11 @@ Kirigami.AboutPage {
         copyrightStatement: "© Matthew Stanton",
         desktopFileName: "org.kde.plasmavisualscreensaver"
     })
+
+    Connections {
+        target: page.settings.controller
+        function onUpdateCenterFinished(destination) { page.updateState = destination }
+    }
 
     Kirigami.Heading {
         Kirigami.FormData.isSection: true
@@ -47,6 +52,7 @@ Kirigami.AboutPage {
         QQC2.Button {
             text: qsTr("Check for Updates")
             icon.name: "system-software-update"
+            enabled: page.updateState !== "checking"
             onClicked: page.updateState = page.settings.controller.openUpdateCenter()
         }
     }
@@ -65,9 +71,11 @@ Kirigami.AboutPage {
         type: page.updateState === "failed" ? Kirigami.MessageType.Error : Kirigami.MessageType.Positive
         text: page.updateState === "failed"
               ? qsTr("Couldn't open Discover or the release page.")
+              : page.updateState === "checking"
+                ? qsTr("Checking for updates…")
               : page.updateState === "discover"
                 ? qsTr("Discover is open. Updates for this app appear there.")
-                : qsTr("The GitHub release page is open. Download the latest version there.")
+                : qsTr("The release page is open. Download the latest version there.")
         showCloseButton: true
         onVisibleChanged: if (!visible) page.updateState = ""
     }

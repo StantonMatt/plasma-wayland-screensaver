@@ -8,5 +8,5 @@ that export, overlays the current Debian packaging, builds the source package,
 and runs source linting.
 
 The PPA version has the form UPSTREAM-REVISIONppaN~resoluteN. It deliberately
-sorts later than the matching GitHub binary package so a user can migrate from
+sorts later than the matching GitLab binary package so a user can migrate from
 the standalone .deb to the PPA without a downgrade.

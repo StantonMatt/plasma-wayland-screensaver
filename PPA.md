@@ -37,7 +37,7 @@ here as recovery and maintainer-transfer documentation.
    ```
 
 Launchpad accepts only signed source packages. It does not accept the prebuilt
-`.deb` from GitHub Releases.
+`.deb` from GitLab Releases.
 
 ## Build and inspect a PPA source package
 
@@ -87,7 +87,7 @@ version:
 Use a PPA version such as `0.21.0-1ppa1~resolute1`. Increase `ppa1` when
 re-uploading changed packaging for the same app version; Launchpad never
 accepts the same source version twice. The PPA version is deliberately newer
-than the corresponding standalone `0.21.0-1` GitHub package, allowing existing
+than the corresponding standalone `0.21.0-1` GitLab package, allowing existing
 users to migrate without a forced downgrade.
 
 Build, sign, lint, and upload with:
@@ -119,7 +119,7 @@ sudo apt update
 sudo apt install plasma-visual-screensaver
 ```
 
-The final command upgrades an existing GitHub `.deb` installation in place.
+The final command upgrades an existing standalone `.deb` installation in place.
 Afterward, Discover and Ubuntu's normal update tools automatically offer newer
 PPA builds. The service uses the upgraded executable at the next login; users
 can restart it immediately with:
