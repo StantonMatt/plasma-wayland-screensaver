@@ -91,7 +91,9 @@ multi-output-presentation:
     - >-
       apt-get install --yes --no-install-recommends
       ./.ci/dist/*.deb kwin-wayland mesa-vulkan-drivers libvulkan1
-      libgl1-mesa-dri dbus python3 qt6-wayland ca-certificates
+      libgl1-mesa-dri dbus python3 qt6-wayland ca-certificates libcap2-bin
+    # Virtual KWin needs no real-time priority; cap_sys_nice exceeds Docker's bounding set.
+    - setcap -r /usr/bin/kwin_wayland
   script:
     - mkdir -p .ci/frame-timing
     - python3 scripts/download-release-baseline.py .ci
