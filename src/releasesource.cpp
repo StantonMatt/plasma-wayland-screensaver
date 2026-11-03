@@ -6,10 +6,7 @@
 QUrl ReleaseSource::latestApi(const QString &forge)
 {
     if (forge == QStringLiteral("gitlab")) {
-        const QByteArray project = QUrl::toPercentEncoding(
-            QStringLiteral("stantonmatthewj/plasma-wayland-screensaver"));
-        return QUrl(QStringLiteral("https://gitlab.com/api/v4/projects/%1/releases/permalink/latest")
-                        .arg(QString::fromLatin1(project)));
+        return QUrl(QStringLiteral("https://gitlab.com/api/v4/projects/88430057/releases/permalink/latest"));
     }
     if (forge == QStringLiteral("github")) {
         return QUrl(QStringLiteral("https://api.github.com/repos/StantonMatt/plasma-wayland-screensaver/releases/latest"));

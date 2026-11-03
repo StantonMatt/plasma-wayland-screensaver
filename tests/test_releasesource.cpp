@@ -9,7 +9,7 @@ private Q_SLOTS:
     void forgeEndpoints()
     {
         QCOMPARE(ReleaseSource::latestApi(QStringLiteral("gitlab")).toEncoded(), QByteArray(
-            "https://gitlab.com/api/v4/projects/stantonmatthewj%2Fplasma-wayland-screensaver/releases/permalink/latest"));
+            "https://gitlab.com/api/v4/projects/88430057/releases/permalink/latest"));
         QCOMPARE(ReleaseSource::latestApi(QStringLiteral("github")), QUrl(QStringLiteral(
             "https://api.github.com/repos/StantonMatt/plasma-wayland-screensaver/releases/latest")));
         QVERIFY(ReleaseSource::latestApi(QStringLiteral("unknown")).isEmpty());
@@ -22,8 +22,8 @@ private Q_SLOTS:
         QTest::addColumn<QByteArray>("json");
         QTest::addColumn<QString>("expected");
         QTest::newRow("gitlab") << QStringLiteral("gitlab")
-            << QByteArray("{\"_links\":{\"self\":\"https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver/-/releases/v0.21.0\"}}")
-            << QStringLiteral("https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver/-/releases/v0.21.0");
+            << QByteArray("{\"_links\":{\"self\":\"https://gitlab.com/StantonMatt/plasma-wayland-screensaver/-/releases/v0.21.0\"}}")
+            << QStringLiteral("https://gitlab.com/StantonMatt/plasma-wayland-screensaver/-/releases/v0.21.0");
         QTest::newRow("github") << QStringLiteral("github")
             << QByteArray("{\"html_url\":\"https://github.com/StantonMatt/plasma-wayland-screensaver/releases/tag/v0.21.0\"}")
             << QStringLiteral("https://github.com/StantonMatt/plasma-wayland-screensaver/releases/tag/v0.21.0");

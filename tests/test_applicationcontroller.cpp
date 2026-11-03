@@ -424,7 +424,7 @@ private Q_SLOTS:
         QVERIFY(server.listen(QHostAddress::LocalHost));
         const QUrl page(QStringLiteral("https://") +
                         (QStringLiteral(PVS_RELEASE_FORGE) == QStringLiteral("gitlab")
-                             ? QStringLiteral("gitlab.com/stantonmatthewj/plasma-wayland-screensaver/-/releases/v0.21.0")
+                             ? QStringLiteral("gitlab.com/StantonMatt/plasma-wayland-screensaver/-/releases/v0.21.0")
                              : QStringLiteral("github.com/StantonMatt/plasma-wayland-screensaver/releases/tag/v0.21.0")));
         const QByteArray body = QJsonDocument(QJsonObject{
             {QStringLiteral("_links"), QJsonObject{{QStringLiteral("self"), page.toString()}}},
