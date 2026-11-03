@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "applicationcontroller.h"
+#include "releasesource.h"
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <KIdleTime>
 #include <QDesktopServices>
 #include <QFile>
@@ -415,13 +420,74 @@ private Q_SLOTS:
         QDesktopServices::setUrlHandler(QStringLiteral("https"), this,
                                        canOpenRelease ? "captureReleasePage" : "missingReleaseHandler");
         ApplicationController controller;
-        QCOMPARE(controller.openUpdateCenter(), expected);
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        const QUrl page(QStringLiteral("https://") +
+                        (QStringLiteral(PVS_RELEASE_FORGE) == QStringLiteral("gitlab")
+                             ? QStringLiteral("gitlab.com/stantonmatthewj/plasma-wayland-screensaver/-/releases/v0.21.0")
+                             : QStringLiteral("github.com/StantonMatt/plasma-wayland-screensaver/releases/tag/v0.21.0")));
+        const QByteArray body = QJsonDocument(QJsonObject{
+            {QStringLiteral("_links"), QJsonObject{{QStringLiteral("self"), page.toString()}}},
+            {QStringLiteral("html_url"), page.toString()},
+        }).toJson(QJsonDocument::Compact);
+        connect(&server, &QTcpServer::newConnection, this, [&] {
+            auto *socket = server.nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, socket, [socket, body] {
+                socket->readAll();
+                socket->write("HTTP/1.1 200 OK\r\nContent-Length: " + QByteArray::number(body.size())
+                              + "\r\nConnection: close\r\n\r\n" + body);
+                socket->disconnectFromHost();
+            });
+        });
+        controller.m_updateApiUrl = QUrl(QStringLiteral("http://127.0.0.1:%1/latest").arg(server.serverPort()));
+        QSignalSpy finished(&controller, &ApplicationController::updateCenterFinished);
+        QCOMPARE(controller.openUpdateCenter(), expected == QStringLiteral("discover")
+                     ? expected : QStringLiteral("checking"));
+        if (expected != QStringLiteral("discover")) {
+            // Repeated clicks reuse the pending lookup, without opening twice.
+            QCOMPARE(controller.openUpdateCenter(), QStringLiteral("checking"));
+            QTRY_COMPARE(finished.count(), 1);
+            QCOMPARE(finished.first().first().toString(), expected);
+        }
         const bool openedRelease = expected == QStringLiteral("releases");
         QCOMPARE(m_releaseCount, openedRelease ? 1 : 0);
         if (openedRelease) {
-            QCOMPARE(m_openedRelease, QUrl(QStringLiteral(
-                "https://github.com/StantonMatt/plasma-wayland-screensaver/releases/latest")));
+            QCOMPARE(m_openedRelease, page);
         }
+    }
+
+    void updateLookupRejectsInvalidResponses_data()
+    {
+        QTest::addColumn<QByteArray>("response");
+        QTest::newRow("not-found") << QByteArray("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+        QTest::newRow("malformed") << QByteArray("HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nbroken");
+    }
+
+    void updateLookupRejectsInvalidResponses()
+    {
+        QFETCH(QByteArray, response);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        const QByteArray originalPath = qgetenv("PATH");
+        const auto restore = qScopeGuard([&] { qputenv("PATH", originalPath); });
+        qputenv("PATH", directory.path().toUtf8());
+        QTcpServer server;
+        QVERIFY(server.listen(QHostAddress::LocalHost));
+        connect(&server, &QTcpServer::newConnection, this, [&] {
+            auto *socket = server.nextPendingConnection();
+            connect(socket, &QTcpSocket::readyRead, socket, [socket, response] {
+                socket->readAll();
+                socket->write(response);
+                socket->disconnectFromHost();
+            });
+        });
+        ApplicationController controller;
+        controller.m_updateApiUrl = QUrl(QStringLiteral("http://127.0.0.1:%1/latest").arg(server.serverPort()));
+        QSignalSpy finished(&controller, &ApplicationController::updateCenterFinished);
+        QCOMPARE(controller.openUpdateCenter(), QStringLiteral("checking"));
+        QTRY_COMPARE(finished.count(), 1);
+        QCOMPARE(finished.first().first().toString(), QStringLiteral("failed"));
+        QVERIFY(!controller.m_updateReply);
     }
 
     void noUsableScreenReportsPreviewFailure()

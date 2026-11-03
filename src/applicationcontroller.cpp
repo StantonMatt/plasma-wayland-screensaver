@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "applicationcontroller.h"
+#include "releasesource.h"
+#include <QNetworkReply>
+#include <QNetworkRequest>
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -16,6 +19,8 @@
 
 ApplicationController::ApplicationController(QObject *parent)
     : QObject(parent)
+    , m_updateNetwork(this)
+    , m_updateApiUrl(ReleaseSource::latestApi())
     , m_overlays(&m_configuration, this)
 {
     connect(qGuiApp, &QGuiApplication::screenAdded, this, &ApplicationController::monitorCountChanged);
@@ -170,8 +175,9 @@ void ApplicationController::Quit()
     });
 }
 
-QString ApplicationController::openUpdateCenter() const
+QString ApplicationController::openUpdateCenter()
 {
+    if (m_updateReply) return QStringLiteral("checking");
     const QString discover = QStandardPaths::findExecutable(QStringLiteral("plasma-discover"));
     if (!discover.isEmpty()) {
         const QStringList arguments = {
@@ -184,14 +190,22 @@ QString ApplicationController::openUpdateCenter() const
         qWarning() << "Could not start KDE Discover from" << discover;
     }
 
-    const QUrl releasesUrl(QStringLiteral(
-        "https://github.com/StantonMatt/plasma-wayland-screensaver/releases/latest"));
-    if (QDesktopServices::openUrl(releasesUrl)) {
-        return QStringLiteral("releases");
-    }
-
-    qWarning() << "Could not open the Plasma Visual Screensaver update page";
-    return QStringLiteral("failed");
+    QNetworkRequest request(m_updateApiUrl);
+    request.setTransferTimeout(10000);
+    request.setRawHeader("Accept", "application/json");
+    request.setRawHeader("User-Agent", "plasma-visual-screensaver");
+    auto *reply = m_updateNetwork.get(request);
+    m_updateReply = reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        const QUrl page = reply->error() == QNetworkReply::NoError
+            ? ReleaseSource::releasePage(reply->readAll()) : QUrl();
+        m_updateReply.clear();
+        reply->deleteLater();
+        const bool opened = !page.isEmpty() && QDesktopServices::openUrl(page);
+        if (!opened) qWarning() << "Could not open the Plasma Visual Screensaver update page";
+        Q_EMIT updateCenterFinished(opened ? QStringLiteral("releases") : QStringLiteral("failed"));
+    });
+    return QStringLiteral("checking");
 }
 
 void ApplicationController::activate(bool preview)

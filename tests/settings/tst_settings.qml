@@ -424,12 +424,26 @@ TestCase {
         verify(find(it => it.text === "Discover is open. Updates for this app appear there." && it.visible, about))
         testController.updateResult = "releases"
         mouseClick(button)
-        verify(find(it => it.text === "The GitHub release page is open. Download the latest version there." && it.visible, about))
+        verify(find(it => it.text === "The release page is open. Download the latest version there." && it.visible, about))
         verify(!findAll(about, it => it.text === "Discover is open. Updates for this app appear there." && it.visible).length)
         testController.updateResult = "failed"
         mouseClick(button)
         compare(testController.updateChecks, 3)
         verify(find(it => it.text === "Couldn't open Discover or the release page." && it.visible, about))
+    }
+
+    function test_updateLookupWaitsForCompletion() {
+        const about = page("about")
+        const button = find(it => it.text === "Check for Updates", about)
+        testController.updateResult = "checking"
+        mouseClick(button)
+        compare(about.updateState, "checking")
+        verify(!button.enabled)
+        verify(find(it => it.text === "Checking for updates…" && it.visible, about))
+        testController.updateCenterFinished("releases")
+        compare(about.updateState, "releases")
+        verify(button.enabled)
+        verify(find(it => it.text === "The release page is open. Download the latest version there." && it.visible, about))
     }
 
     function test_updateResultReopensAfterDismissal() {

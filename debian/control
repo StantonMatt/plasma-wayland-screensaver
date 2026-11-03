@@ -25,9 +25,9 @@ Build-Depends:
  qml6-module-qtquick-shapes,
  rustc (>= 1.93)
 Standards-Version: 4.7.3
-Homepage: https://github.com/StantonMatt/plasma-wayland-screensaver
-Vcs-Browser: https://github.com/StantonMatt/plasma-wayland-screensaver
-Vcs-Git: https://github.com/StantonMatt/plasma-wayland-screensaver.git
+Homepage: https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver
+Vcs-Browser: https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver
+Vcs-Git: https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver.git
 
 Package: plasma-visual-screensaver
 Architecture: any

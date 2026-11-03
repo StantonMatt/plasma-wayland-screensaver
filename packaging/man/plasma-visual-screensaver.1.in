@@ -35,4 +35,4 @@ Per-user settings managed through KDE's configuration system.
 .BR systemsettings (1)
 .SH BUGS
 Report bugs at
-<https://github.com/StantonMatt/plasma-wayland-screensaver/issues>.
+<https://gitlab.com/stantonmatthewj/plasma-wayland-screensaver/-/issues>.

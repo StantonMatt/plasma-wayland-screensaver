@@ -12,7 +12,9 @@ required.
 
 ## Reporting a vulnerability
 
-For vulnerabilities within the application's stated boundary, use GitHub's
-private vulnerability reporting feature if it is enabled for the repository.
-Otherwise contact the maintainer at `stantonmatthewj@gmail.com` before opening
-a public issue. Include affected versions, reproduction steps, and impact.
+For vulnerabilities within the application's stated boundary, contact the
+maintainer at `stantonmatthewj@gmail.com` before opening a public GitLab issue.
+Include affected versions, reproduction steps, and impact.
+
+If moving back to GitHub, private vulnerability reporting can be enabled there;
+email remains available.

@@ -1,3 +1,7 @@
+add_executable(test-releasesource test_releasesource.cpp)
+target_link_libraries(test-releasesource PRIVATE ReleaseSource Qt6::Test)
+add_test(NAME release-source COMMAND test-releasesource)
+
 # ABI records must explicitly initialize fields added by future ABI revisions.
 add_executable(test-eglworkaround test_eglworkaround.cpp)
 target_include_directories(test-eglworkaround PRIVATE ../src)
@@ -158,6 +162,8 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_test(NAME egl-drain-exports
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/check-egldrain-exports.py"
         "$<TARGET_FILE:plasma-visual-screensaver>")
+add_test(NAME release-migration
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_release_migration.py")
 add_test(NAME frame-timing-gate
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_frame_timing.py")
 add_test(NAME frame-timing-comparison
@@ -208,12 +214,12 @@ add_executable(test-applicationcontroller
     ../src/configuration.cpp ../src/configuration.h
     ../src/resources.qrc)
 target_include_directories(test-applicationcontroller PRIVATE ../src)
-target_link_libraries(test-applicationcontroller PRIVATE GraphicsBackend SnakeMaterial
+target_link_libraries(test-applicationcontroller PRIVATE GraphicsBackend SnakeMaterial ReleaseSource Qt6::Network
     Qt6::DBus Qt6::Quick Qt6::QuickControls2 Qt6::Test KF6::ConfigCore KF6::IdleTime
     LayerShellQt::Interface SnakesCore::snakes_core)
 add_test(NAME application-controller COMMAND test-applicationcontroller
     settingsQmlDependenciesAreAvailable reportsRealInhibitorFailureOnlyForPreview exposesReactiveMonitorCount
-    settingsWindowLoadsFromResources mapsTechnicalInhibitorErrors busyPreviewReportsFailure updateCenterReportsDestination
+    settingsWindowLoadsFromResources mapsTechnicalInhibitorErrors busyPreviewReportsFailure updateCenterReportsDestination updateLookupRejectsInvalidResponses
     logsActivationSourceAndDismissalReason dismissalGatesIdleAndPreview freshIdleIntervalResetsOnResume freshIntervalAloneDoesNotActivate mappingResumeDoesNotDismiss
     pendingResumeRearmIsInvalidated teardownReconcilesIdleConfiguration)
 add_test(NAME application-controller-no-screens COMMAND test-applicationcontroller

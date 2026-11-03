@@ -1,3 +1,8 @@
+add_library(ReleaseSource STATIC releasesource.cpp releasesource.h)
+set_target_properties(ReleaseSource PROPERTIES AUTOMOC OFF)
+target_include_directories(ReleaseSource PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_BINARY_DIR}/generated")
+target_link_libraries(ReleaseSource PUBLIC Qt6::Core)
+
 # Share the material and baked resource pack with renderer integration tests.
 # RHI's public headers have limited compatibility and Debian ships them in
 # qt6-base-private-dev. Only these headers are needed; link the public QtGui.
@@ -72,6 +77,8 @@ set(screensaver_sources
 add_executable(plasma-visual-screensaver ${screensaver_sources})
 target_link_libraries(plasma-visual-screensaver PRIVATE
     GraphicsBackend
+    ReleaseSource
+    Qt6::Network
     SnakeMaterial
     SnakesCore::snakes_core
     Qt6::Core
