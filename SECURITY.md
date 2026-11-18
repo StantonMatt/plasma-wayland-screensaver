@@ -13,8 +13,7 @@ required.
 ## Reporting a vulnerability
 
 For vulnerabilities within the application's stated boundary, contact the
-maintainer at `stantonmatthewj@gmail.com` before opening a public GitLab issue.
+maintainer at `stantonmatthewj@gmail.com` before opening a public GitHub issue.
 Include affected versions, reproduction steps, and impact.
 
-If moving back to GitHub, private vulnerability reporting can be enabled there;
-email remains available.
+Email remains available for private reports.

@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 project(plasma-visual-screensaver
         VERSION 0.21.0
         DESCRIPTION "Non-locking visual screensaver for KDE Plasma Wayland"
-        HOMEPAGE_URL "https://gitlab.com/StantonMatt/plasma-wayland-screensaver"
+        HOMEPAGE_URL "https://github.com/StantonMatt/plasma-wayland-screensaver"
         LANGUAGES CXX)
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/changelog"
@@ -29,7 +29,7 @@ include(KDECMakeSettings)
 include(KDECompilerSettings NO_POLICY_SCOPE)
 include(FeatureSummary)
 
-set(PVS_RELEASE_FORGE "gitlab" CACHE STRING "Release host: gitlab or github")
+set(PVS_RELEASE_FORGE "github" CACHE STRING "Release host: gitlab or github")
 set_property(CACHE PVS_RELEASE_FORGE PROPERTY STRINGS gitlab github)
 if(NOT PVS_RELEASE_FORGE MATCHES "^(gitlab|github)$")
     message(FATAL_ERROR "PVS_RELEASE_FORGE must be gitlab or github")

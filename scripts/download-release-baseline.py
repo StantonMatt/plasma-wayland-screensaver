@@ -11,7 +11,7 @@ import urllib.request
 
 
 def download_baseline(directory):
-    forge = os.environ.get("RELEASE_FORGE", "gitlab")
+    forge = os.environ.get("RELEASE_FORGE", "github")
     if forge == "gitlab":
         api = os.environ.get("CI_API_V4_URL", "https://gitlab.com/api/v4")
         project = os.environ.get("CI_PROJECT_ID", "88430057")

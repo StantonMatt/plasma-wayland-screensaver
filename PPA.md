@@ -37,7 +37,7 @@ here as recovery and maintainer-transfer documentation.
    ```
 
 Launchpad accepts only signed source packages. It does not accept the prebuilt
-`.deb` from GitLab Releases.
+`.deb` from GitHub Releases.
 
 ## Build and inspect a PPA source package
 
@@ -87,7 +87,7 @@ version:
 Use a PPA version such as `0.21.0-1ppa1~resolute1`. Increase `ppa1` when
 re-uploading changed packaging for the same app version; Launchpad never
 accepts the same source version twice. The PPA version is deliberately newer
-than the corresponding standalone `0.21.0-1` GitLab package, allowing existing
+than the corresponding standalone `0.21.0-1` GitHub package, allowing existing
 users to migrate without a forced downgrade.
 
 Build, sign, lint, and upload with:
