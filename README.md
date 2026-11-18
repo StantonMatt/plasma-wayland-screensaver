@@ -8,7 +8,7 @@ event.
 ## Install on Kubuntu 26.04
 
 Download the `.deb` and its `.sha256` file from the
-[latest GitLab Release](https://gitlab.com/StantonMatt/plasma-wayland-screensaver/-/releases/permalink/latest).
+[latest GitHub Release](https://github.com/StantonMatt/plasma-wayland-screensaver/releases/latest).
 In the download directory, verify and install it with:
 
 ```bash
@@ -31,7 +31,7 @@ Settings are retained across upgrades in
 The **About** page shows the installed application version. Its
 **Check for Updates** button opens KDE Discover's system update page, where PPA
 updates can be reviewed and installed. If Discover is unavailable, the button
-opens the latest GitLab release instead.
+opens the latest GitHub release instead.
 
 > **Security notice:** this is a decorative overlay on an **unlocked** session.
 > It does not authenticate, lock input, protect running applications, or replace
@@ -278,12 +278,11 @@ Artifacts are written to `dist/`. Install the generated package with:
 sudo apt install ./dist/plasma-visual-screensaver_*.deb
 ```
 
-GitLab CI runs this same process on pushes to `main`, merge requests, and manual
-web pipelines. A `v*` tag matching the CMake project version publishes the verified
-`.deb` and checksum to the public generic package registry and a GitLab Release.
-See [PUBLISHING.md](PUBLISHING.md) for
-the complete maintainer checklist. `.github/workflows/` is the inactive GitHub
-version and remains unchanged; see the switch-back instructions there.
+GitHub Actions runs this process on pushes to `main`, pull requests, and manual
+dispatches. The release workflow also builds on pull requests without publishing.
+A `v*` tag matching the CMake project version publishes the verified `.deb` and
+checksum as GitHub Release assets. See [PUBLISHING.md](PUBLISHING.md) for the
+complete maintainer checklist.
 
 ## Updating and uninstalling the package
 
@@ -339,7 +338,7 @@ usage. Initial five seconds are excluded from frame metrics. Reanalyze saved CSV
 and logs with `--summarize-only --output-dir PATH` (use `--warmup` to override the
 exclusion period).
 
-CI compares the freshly built package (A) against the latest GitLab release (B)
+CI compares the freshly built package (A) against the latest GitHub release (B)
 on the same runner for both forced Vulkan (lavapipe) and OpenGL (llvmpipe).
 The release is extracted to a separate prefix without replacing the installed
 candidate. Four 30-second runs use three 640×360 outputs in B/A/A/B order, each

@@ -172,7 +172,7 @@ class MigrationTest(unittest.TestCase):
         self.assertFalse(self.uploads)
         self.assertIsNone(self.release)
 
-    def test_github_baseline_is_selectable(self):
+    def test_github_baseline_is_default(self):
         self.publish()
         asset = self.release['assets']['links'][0]
         response = {'tag_name': 'v1.0.0', 'assets': [
@@ -184,7 +184,8 @@ class MigrationTest(unittest.TestCase):
                 return io.BytesIO(json.dumps(response).encode())
             return real_open(url, *args, **kwargs)
 
-        with patch.dict(os.environ, {'RELEASE_FORGE': 'github'}), patch.object(baseline.urllib.request, 'urlopen', side_effect=urlopen):
+        with patch.dict(os.environ), patch.object(baseline.urllib.request, 'urlopen', side_effect=urlopen):
+            os.environ.pop('RELEASE_FORGE', None)
             target = self.directory / 'github'
             baseline.download_baseline(target)
         self.assertTrue((target / 'release-prefix/usr/bin/plasma-visual-screensaver').exists())
