@@ -19,7 +19,7 @@ impl Config {
     pub fn valid(&self) -> bool {
         self.abi_version == super::ABI_VERSION
             && self.struct_size as usize == size_of::<Self>()
-            && self.visual == 1
+            && (1..=3).contains(&self.visual)
             && self.palette <= 5
             && self.reduced_motion <= 1
             && self.density.is_finite()

@@ -20,6 +20,13 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.23.0" date="2026-11-20">
+      <description>
+        <p>Constellation, Starfield, Ribbons and Kaleidoscope are now drawn on
+        the GPU. They use far less CPU and keep a steady frame rate on large
+        multi-monitor setups, with the same look.</p>
+      </description>
+    </release>
     <release version="0.22.0" date="2026-11-20">
       <description>
         <p>Aurora is now drawn on the GPU and uses about 97% less CPU with the

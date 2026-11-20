@@ -35,14 +35,21 @@ qt_add_shaders(SnakeMaterial snakes_shaders
     FILES shaders/snake.vert shaders/snake.frag)
 
 # Generic procedural-visual item and per-window material resources.
-add_library(VisualRenderer STATIC visualrenderer.cpp visualrenderer.h visualmaterial.cpp visualmaterial.h)
+add_library(VisualRenderer STATIC visualrenderer.cpp visualrenderer.h visualmaterial.cpp visualmaterial.h
+    strokerenderer.cpp strokerenderer.h strokematerial.cpp strokematerial.h)
 target_include_directories(VisualRenderer PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_include_directories(VisualRenderer SYSTEM PUBLIC "${SNAKES_QT_RHI_INCLUDE_DIR}")
 target_link_libraries(VisualRenderer PUBLIC Qt6::Quick SnakesCore::snakes_core)
 qt_add_shaders(VisualRenderer visuals_shaders
     GLSL "100es,300es,310es,320es,120,130,140,150,330"
     HLSL "50" MSL "12" PREFIX "/visuals"
-    FILES shaders/aurora.vert shaders/aurora.frag shaders/visual-data.vert shaders/visual-data.frag)
+    FILES shaders/aurora.vert shaders/aurora.frag shaders/visual-data.vert shaders/visual-data.frag
+        shaders/visual-primitives.vert shaders/visual-primitives.frag shaders/visual-plain.vert)
+
+qt_add_shaders(VisualRenderer strokes_shaders
+    GLSL "100es,300es,310es,320es,120,130,140,150,330"
+    HLSL "50" MSL "12" PREFIX "/visuals"
+    FILES shaders/strokes.vert shaders/strokes.frag)
 
 add_library(EglDrain STATIC egldrain.cpp egldrain.h)
 set_target_properties(EglDrain PROPERTIES AUTOMOC OFF)

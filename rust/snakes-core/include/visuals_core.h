@@ -6,11 +6,14 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-#define VISUALS_CORE_ABI_VERSION 1u
+#define VISUALS_CORE_ABI_VERSION 2u
 #define VISUALS_CORE_AURORA 1u
+#define VISUALS_CORE_CONSTELLATION 2u
+#define VISUALS_CORE_STARFIELD 3u
+#define VISUALS_CORE_MAX_PRIMITIVES 3916u
 #define VISUALS_CORE_MAX_BANDS 9u
 // Palette IDs: ocean=0, spectrum=1, ember=2, forest=3, mono=4, pastel=5.
-// v1 records are frozen. Incompatible layouts require a new ABI version.
+// v2 adds primitive techniques; Aurora record layouts are unchanged. Incompatible layouts require a new ABI version.
 typedef struct visuals_core visuals_core;
 typedef struct {
     uint32_t abi_version, struct_size, visual, palette;
@@ -33,6 +36,19 @@ typedef struct {
     // Negative origins/gaps/insets are valid. Aurora retains local mapping.
     double world_bounds[4], viewport_origin[2];
 } visuals_core_request;
+// Three RGBA32F texels per ordered primitive. No retained caller pointers.
+// shape = half width/radius, kind (0 butt line, 1 disc, 2 radial disc), 0, 0.
+typedef struct { float geometry[4], color[4], shape[4]; } visuals_core_primitive;
+typedef struct { float position[2], local[2], color[4], shape[4]; } visuals_core_vertex;
+// Capacity is records/vertices, unlike the Aurora byte-capacity API.
+// Required record capacity: Constellation 3916, Starfield 356. Errors leave output untouched.
+int32_t visuals_core_primitives(visuals_core *, const visuals_core_request *,
+    visuals_core_primitive *, size_t capacity, uint32_t *count);
+int32_t visuals_core_primitive_vertices(const visuals_core_primitive *, size_t count,
+    float fringe, visuals_core_vertex *, size_t capacity);
+int32_t visuals_core_primitive_raster(const visuals_core_primitive *, size_t count,
+    float viewport_width, float viewport_height, uint32_t width, uint32_t height,
+    uint8_t *pixels, size_t capacity);
 uint32_t visuals_core_abi_version(void);
 // Null/error returns on invalid records. No caller pointers are retained.
 visuals_core *visuals_core_create(const visuals_core_config *config);
@@ -46,6 +62,10 @@ int32_t visuals_core_raster(const visuals_core_snapshot *frame, uint32_t width,
                            uint32_t height, uint8_t *rgba, size_t capacity);
 #ifdef __cplusplus
 }
+static_assert(sizeof(visuals_core_primitive) == 48);
+static_assert(offsetof(visuals_core_primitive, shape) == 32);
+static_assert(sizeof(visuals_core_vertex) == 48);
+static_assert(offsetof(visuals_core_vertex, color) == 16);
 static_assert(sizeof(visuals_core_config) == 64);
 static_assert(alignof(visuals_core_config) == 8);
 static_assert(offsetof(visuals_core_config, density) == 16);

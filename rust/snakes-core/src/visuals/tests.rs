@@ -160,3 +160,179 @@ fn abi_rejects_invalid_and_short_records_without_writes() {
         visuals_core_destroy(std::ptr::null_mut());
     }
 }
+#[test]
+fn primitive_frozen_qml_records_and_clock() {
+    let mut out = vec![primitives::Primitive::default(); primitives::MAX_RECORDS];
+    let mut core = std::ptr::null_mut();
+    let mut count = 0u32;
+    let mut frames = 0;
+    let mut records = 0;
+    for line in include_str!("../../../../tests/parity/primitives/fixtures.tsv")
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+    {
+        let f: Vec<_> = line.split_whitespace().collect();
+        let num = |i: usize| f[i].parse::<f64>().unwrap();
+        if f[0] == "F" {
+            unsafe { visuals_core_destroy(core) };
+            let c = Config {
+                visual: if f[1] == "Constellation" { 2 } else { 3 },
+                density: num(2),
+                scale: num(3),
+                speed: num(4),
+                trails: num(5),
+                seed: num(6) as i32,
+                palette: num(10) as u32,
+                reduced_motion: num(11) as u32,
+                ..config()
+            };
+            core = unsafe { visuals_core_create(&c) };
+            assert!(!core.is_null());
+            let request = Request {
+                width: num(7),
+                height: num(8),
+                presentation_ns: (num(9) * 1e9).round() as i64,
+                advance: 1,
+                ..Request::default()
+            };
+            assert_eq!(
+                unsafe {
+                    visuals_core_primitives(core, &request, out.as_mut_ptr(), out.len(), &mut count)
+                },
+                0
+            );
+            close(unsafe { (*core).phase }, num(12));
+            assert_eq!(count, num(13) as u32);
+            frames += 1;
+        } else {
+            let p = out[num(1) as usize];
+            let close_float = |a: f32, b: f64| {
+                assert!(
+                    (a as f64 - b).abs() <= 2e-6f64.max(b.abs() * 2e-7),
+                    "{a} != {b} in {line}"
+                );
+            };
+            for (a, i) in p.geometry.iter().zip(2..6) {
+                close_float(*a, num(i));
+            }
+            let rgb = u32::from_str_radix(&f[6][1..], 16).unwrap();
+            for (k, shift) in [16, 8, 0].iter().enumerate() {
+                close_float(p.color[k], ((rgb >> shift) & 255) as f64 / 255.0);
+            }
+            close_float(p.color[3], num(7));
+            close_float(p.shape[0], num(8));
+            assert_eq!(p.shape[1], num(9) as f32);
+            records += 1;
+        }
+    }
+    unsafe { visuals_core_destroy(core) };
+    assert_eq!(frames, 216);
+    assert_eq!(records, 33120);
+}
+#[test]
+fn primitive_abi_capacity_pause_reconfigure_and_fallback() {
+    unsafe {
+        let mut c = Config {
+            visual: 2,
+            ..config()
+        };
+        let core = visuals_core_create(&c);
+        let mut out = vec![primitives::Primitive::default(); primitives::MAX_RECORDS];
+        let mut count = 9999;
+        let mut request = Request {
+            width: 640.0,
+            height: 360.0,
+            presentation_ns: 12_500_000_000,
+            advance: 1,
+            ..Request::default()
+        };
+        assert_eq!(
+            visuals_core_primitives(core, &request, out.as_mut_ptr(), out.len() - 1, &mut count),
+            -1
+        );
+        assert_eq!(count, 9999);
+        assert_eq!(
+            visuals_core_primitives(core, &request, out.as_mut_ptr(), out.len(), &mut count),
+            0
+        );
+        let moving = out[..count as usize].to_vec();
+        c.reduced_motion = 1;
+        assert_eq!(visuals_core_configure(core, &c), 0);
+        request.presentation_ns += 123_000_000_000;
+        assert_eq!(
+            visuals_core_primitives(core, &request, out.as_mut_ptr(), out.len(), &mut count),
+            0
+        );
+        assert_eq!(moving, out[..count as usize]);
+        // Old Canvas keeps phase when seed changes, including while paused.
+        let held_phase = (*core).phase;
+        c.seed = -1197;
+        assert_eq!(visuals_core_configure(core, &c), 0);
+        assert_eq!((*core).phase, held_phase);
+        c.visual = 3;
+        c.reduced_motion = 0;
+        assert_eq!(visuals_core_configure(core, &c), 0);
+        request.advance = 0;
+        assert_eq!(
+            visuals_core_primitives(core, &request, out.as_mut_ptr(), out.len(), &mut count),
+            0
+        );
+        assert_eq!((*core).phase, 0.0);
+        assert_eq!(count, 217);
+        assert_eq!(out[count as usize - 1].shape[1], 2.0);
+        let mut vertices = vec![primitives::Vertex::default(); count as usize * 6];
+        assert_eq!(
+            visuals_core_primitive_vertices(
+                out.as_ptr(),
+                count as usize,
+                1.0,
+                vertices.as_mut_ptr(),
+                vertices.len() - 1
+            ),
+            -1
+        );
+        assert_eq!(
+            visuals_core_primitive_vertices(
+                out.as_ptr(),
+                count as usize,
+                1.0,
+                vertices.as_mut_ptr(),
+                vertices.len()
+            ),
+            0
+        );
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v.position.iter().all(|x| x.is_finite()))
+        );
+        let mut pixels = vec![0; 640 * 360 * 4];
+        assert_eq!(
+            visuals_core_primitive_raster(
+                out.as_ptr(),
+                count as usize,
+                640.0,
+                360.0,
+                640,
+                360,
+                pixels.as_mut_ptr(),
+                pixels.len()
+            ),
+            0
+        );
+        assert!(
+            pixels
+                .chunks_exact(4)
+                .all(|p| p[..3].iter().all(|v| *v <= p[3]))
+        );
+        assert!(pixels.iter().any(|v| *v != 0));
+        request.width = f64::NAN;
+        let saved = out[0];
+        assert_eq!(
+            visuals_core_primitives(core, &request, out.as_mut_ptr(), out.len(), &mut count),
+            -1
+        );
+        assert_eq!(out[0], saved);
+        visuals_core_destroy(core);
+    }
+}

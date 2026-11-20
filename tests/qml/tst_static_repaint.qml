@@ -36,6 +36,15 @@ TestCase {
             }
             function presentFrame(phase) { ++paints }
             function setViewport(bounds, origin) {}
+            function configureConstellation(d, scale, motion, trail, colors, randomSeed, reduced, epoch) {
+                configure(d, scale, motion, trail, colors, randomSeed)
+            }
+            function configureStrokes(visual, d, scale, motion, trail, colors, randomSeed, reduced, epoch) {
+                configure(d, scale, motion, trail, colors, randomSeed)
+            }
+            function configureStarfield(d, scale, motion, trail, colors, randomSeed, reduced, epoch) {
+                configure(d, scale, motion, trail, colors, randomSeed)
+            }
             function configureAurora(d, scale, motion, trail, colors, randomSeed, reduced, epoch) {
                 configure(d, scale, motion, trail, colors, randomSeed)
             }
@@ -57,7 +66,9 @@ TestCase {
         tryVerify(function() { return !grabImage(visual).equals(before) })
     }
     function test_pausedNativeSettingsRequestPaint_data() {
-        return [{tag: "Fireflies", visual: "Fireflies"}, {tag: "Aurora", visual: "Aurora"}]
+        return [{tag: "Fireflies", visual: "Fireflies"}, {tag: "Aurora", visual: "Aurora"},
+                {tag: "Constellation", visual: "Constellation"}, {tag: "Starfield", visual: "Starfield"},
+                {tag: "Ribbons", visual: "Ribbons"}, {tag: "Kaleidoscope", visual: "Kaleidoscope"}]
     }
     function test_pausedNativeSettingsRequestPaint(data) {
         const component = Qt.createComponent("../../qml/visuals/" + data.visual + ".qml")
@@ -104,37 +115,5 @@ TestCase {
     function cleanup() {
         paintSpy.target = null
         paintSpy.clear()
-    }
-    function test_staticInputsRepaint_data() {
-        const rows = []
-        const visuals = ["Starfield", "Constellation", "Kaleidoscope", "Ribbons"]
-        const inputs = ["animationDensity", "animationScale", "animationSpeed",
-                        "trailAmount", "animationPalette", "seed", "reducedMotion", "context"]
-        for (const visual of visuals)
-            for (const input of inputs)
-                rows.push({tag: visual + "-" + input, visual: visual, input: input})
-        return rows
-    }
-    function test_staticInputsRepaint(data) {
-        const component = Qt.createComponent("../../qml/visuals/" + data.visual + ".qml")
-        compare(component.status, Component.Ready, component.errorString())
-        const visual = createTemporaryObject(component, this, {
-            width: width, height: height, context: visualContext, reducedMotion: true
-        })
-        verify(visual !== null)
-        paintSpy.target = visual
-        verify(paintSpy.valid)
-        visual.requestPaint()
-        tryVerify(function() { return paintSpy.count > 0 })
-        // Finish initial upload before clearing the spy; a delayed initial
-        // paint must not masquerade as invalidation by the changed input.
-        grabImage(visual)
-        paintSpy.clear()
-        if (data.input === "seed") visual.seed = 27
-        else if (data.input === "reducedMotion") visual.reducedMotion = false
-        else if (data.input === "context") visual.context = null
-        else if (data.input === "animationPalette") visualContext.animationPalette = "ember"
-        else visualContext[data.input] += 25
-        tryVerify(function() { return paintSpy.count > 0 })
     }
 }

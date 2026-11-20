@@ -3,6 +3,7 @@
 #include "snakesimulation.h"
 #include "snakerenderer.h"
 #include "visualrenderer.h"
+#include "strokerenderer.h"
 #include "configuration.h"
 #include "presentationclock.h"
 #include <QGuiApplication>
@@ -20,18 +21,19 @@ class OverlaySnakesTest final : public QObject
 {
     Q_OBJECT
 private Q_SLOTS:
-    void auroraUsesNativeRendererInEveryMonitorMode_data()
+    void proceduralVisualUsesNativeRendererInEveryMonitorMode_data()
     {
-        QTest::addColumn<QString>("mode");
-        for (const char *mode : {"independent", "synchronized", "seamless"})
-            QTest::newRow(mode) << QString::fromLatin1(mode);
+        QTest::addColumn<QString>("mode");QTest::addColumn<QString>("visual");
+        for (const char *visual : {"aurora","constellation","starfield"})
+            for (const char *mode : {"independent", "synchronized", "seamless"})
+                QTest::newRow(qPrintable(QString::fromLatin1(visual)+QStringLiteral("-")+QString::fromLatin1(mode))) << QString::fromLatin1(mode) << QString::fromLatin1(visual);
     }
-    void auroraUsesNativeRendererInEveryMonitorMode()
+    void proceduralVisualUsesNativeRendererInEveryMonitorMode()
     {
-        QFETCH(QString, mode);
+        QFETCH(QString, mode);QFETCH(QString, visual);
         QTemporaryDir dir;
         Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
-        settings.setVisualModule(QStringLiteral("aurora"));
+        settings.setVisualModule(visual);
         settings.setMonitorBehavior(mode);
         settings.setReducedMotion(true);
         OverlayManager manager(&settings);
@@ -39,7 +41,7 @@ private Q_SLOTS:
         auto *screen = QGuiApplication::primaryScreen();
         auto *view = manager.m_views.value(screen);
         QVERIFY(view);
-        auto *root = view->rootObject()->findChild<QQuickItem *>(QStringLiteral("auroraVisualRoot"));
+        auto *root = view->rootObject()->findChild<QQuickItem *>(visual+QStringLiteral("VisualRoot"));
         QVERIFY(root);
         auto *renderer = root->findChild<VisualRenderer *>();
         QVERIFY(renderer);
@@ -49,6 +51,45 @@ private Q_SLOTS:
         QVERIFY(clock);
         clock->presentationTick(1234567890123LL);
         QCOMPARE(renderer->m_presentationNs,1234567890123LL);
+        QCOMPARE(root->property("seed").toInt(), mode == QStringLiteral("independent") ? int(qHash(screen->name())) : 1);
+        for (auto *child : root->findChildren<QQuickItem *>()) QVERIFY(!child->inherits("QQuickCanvasItem"));
+        manager.hide();
+        QTRY_VERIFY(manager.m_pendingViewDeletions == 0);
+    }
+
+    void strokesUseNativeRendererInEveryMonitorMode_data()
+    {
+        QTest::addColumn<QString>("visual");
+        QTest::addColumn<QString>("mode");
+        for (const char *visual : {"ribbons", "kaleidoscope"})
+            for (const char *mode : {"independent", "synchronized", "seamless"})
+                QTest::newRow(qPrintable(QString::fromLatin1(visual) + QStringLiteral("-") + QString::fromLatin1(mode)))
+                    << QString::fromLatin1(visual) << QString::fromLatin1(mode);
+    }
+    void strokesUseNativeRendererInEveryMonitorMode()
+    {
+        QFETCH(QString, visual);
+        QFETCH(QString, mode);
+        QTemporaryDir dir;
+        Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
+        settings.setVisualModule(visual);
+        settings.setMonitorBehavior(mode);
+        settings.setReducedMotion(true);
+        OverlayManager manager(&settings);
+        QVERIFY(manager.show());
+        auto *screen = QGuiApplication::primaryScreen();
+        auto *view = manager.m_views.value(screen);
+        QVERIFY(view);
+        auto *root = view->rootObject()->findChild<QQuickItem *>(visual + QStringLiteral("VisualRoot"));
+        QVERIFY(root);
+        auto *renderer = root->findChild<StrokeRenderer *>();
+        QVERIFY(renderer);
+        QCOMPARE(root->property("nativeRenderer").value<QObject *>(), static_cast<QObject *>(renderer));
+        QCOMPARE(renderer->size(), root->size());
+        auto *clock = manager.m_presentationClocks.value(screen);
+        QVERIFY(clock);
+        clock->presentationTick(1234567890123LL);
+        QCOMPARE(renderer->m_presentationNs, 1234567890123LL);
         QCOMPARE(root->property("seed").toInt(), mode == QStringLiteral("independent") ? int(qHash(screen->name())) : 1);
         for (auto *child : root->findChildren<QQuickItem *>()) QVERIFY(!child->inherits("QQuickCanvasItem"));
         manager.hide();

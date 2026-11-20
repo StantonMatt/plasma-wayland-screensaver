@@ -36,7 +36,7 @@ def worker(args):
         environment = dict(os.environ, WAYLAND_DISPLAY='aurora-gpu', QT_QPA_PLATFORM='wayland', QSG_RHI_BACKEND='opengl',
             QSG_INFO='1', VISUALS_REQUIRE_GPU='1', VISUALS_CAPTURE_DIR=str(args.output), QT_SCALE_FACTOR=str(args.scale))
         with (args.output / 'gpu-tests.log').open('w') as log:
-            result = subprocess.run([str(args.build / 'bin/test-visualrenderer')], env=environment,
+            result = subprocess.run([str(args.build / 'bin' / args.test_binary)], env=environment,
                 stdout=log, stderr=subprocess.STDOUT, timeout=180)
         print((args.output / 'gpu-tests.log').read_text())
         return result.returncode
@@ -49,6 +49,7 @@ def main():
     p.add_argument('--build', required=True, type=Path)
     p.add_argument('--output', required=True, type=Path)
     p.add_argument('--scale', type=float, default=1)
+    p.add_argument('--test-binary', default='test-visualrenderer', choices=('test-visualrenderer', 'test-strokerenderer'))
     p.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     args = p.parse_args()
     args.output = args.output.resolve()
@@ -74,7 +75,7 @@ def main():
 <auth>EXTERNAL</auth><policy context="default"><allow send_destination="*"/><allow receive_sender="*"/>
 <allow own="*"/></policy></busconfig>''')
         process = subprocess.Popen(['dbus-run-session', '--config-file=' + str(bus), '--', sys.executable,
-            str(Path(__file__).resolve()), '--worker', '--build', str(args.build), '--output', str(args.output), '--scale', str(args.scale)],
+            str(Path(__file__).resolve()), '--worker', '--build', str(args.build), '--output', str(args.output), '--scale', str(args.scale), '--test-binary', args.test_binary],
             env=env, start_new_session=True)
         def interrupted(signum, frame):
             if process.poll() is None:
