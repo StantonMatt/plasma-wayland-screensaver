@@ -238,7 +238,7 @@ add_executable(test-applicationcontroller
     ../src/configuration.cpp ../src/configuration.h
     ../src/resources.qrc)
 target_include_directories(test-applicationcontroller PRIVATE ../src)
-target_link_libraries(test-applicationcontroller PRIVATE GraphicsBackend SnakeMaterial ReleaseSource Qt6::Network
+target_link_libraries(test-applicationcontroller PRIVATE GraphicsBackend SnakeMaterial VisualRenderer ReleaseSource Qt6::Network
     Qt6::DBus Qt6::Quick Qt6::QuickControls2 Qt6::Test KF6::ConfigCore KF6::IdleTime
     LayerShellQt::Interface SnakesCore::snakes_core)
 add_test(NAME application-controller COMMAND test-applicationcontroller
@@ -260,3 +260,11 @@ target_include_directories(test-settingsqml PRIVATE ../src)
 target_link_libraries(test-settingsqml PRIVATE Qt6::Quick Qt6::Qml Qt6::QuickTest KF6::ConfigCore)
 add_test(NAME settings-qml COMMAND test-settingsqml -input "${CMAKE_CURRENT_SOURCE_DIR}/settings")
 set_tests_properties(settings-qml PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+
+add_executable(test-visualrenderer test_visualrenderer.cpp)
+target_link_libraries(test-visualrenderer PRIVATE VisualRenderer Qt6::Qml Qt6::Test)
+target_compile_definitions(test-visualrenderer PRIVATE
+    AURORA_ORACLE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/parity/aurora/oracle/Aurora.qml")
+add_test(NAME visual-renderer COMMAND test-visualrenderer)
+set_tests_properties(visual-renderer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+add_test(NAME aurora-parity-record COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/aurora/record.py" --check)

@@ -3,6 +3,7 @@
 
 #include "configuration.h"
 #include "fireflyrenderer.h"
+#include "visualrenderer.h"
 #include "presentationclock.h"
 #include "snakerenderer.h"
 #include "snakesimulation.h"
@@ -242,6 +243,23 @@ bool OverlayManager::addScreen(QScreen *screen)
                         [fireflyRoot, renderer] { renderer->setHeight(fireflyRoot->height()); });
                 fireflyRoot->setProperty("nativeRenderer",
                                          QVariant::fromValue(static_cast<QObject *>(renderer)));
+            }
+        }
+    }
+
+    if (m_configuration->visualModule() == QStringLiteral("aurora")) {
+        if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
+            if (auto *auroraRoot = rootItem->findChild<QQuickItem *>(QStringLiteral("auroraVisualRoot"))) {
+                auto *renderer = new VisualRenderer(auroraRoot);
+                connect(presentationClock, &PresentationClock::presentationTick,
+                        renderer, &VisualRenderer::presentAt);
+                renderer->setParentItem(auroraRoot);
+                renderer->setSize(auroraRoot->size());
+                connect(auroraRoot, &QQuickItem::widthChanged, renderer,
+                        [auroraRoot, renderer] { renderer->setWidth(auroraRoot->width()); });
+                connect(auroraRoot, &QQuickItem::heightChanged, renderer,
+                        [auroraRoot, renderer] { renderer->setHeight(auroraRoot->height()); });
+                auroraRoot->setProperty("nativeRenderer", QVariant::fromValue(static_cast<QObject *>(renderer)));
             }
         }
     }
