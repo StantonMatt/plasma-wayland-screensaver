@@ -1,3 +1,11 @@
+plasma-visual-screensaver (0.24.0-1) unstable; urgency=medium
+
+  * Bounce and Matrix are drawn on the GPU, with Bounce's physics and
+    Matrix's streams computed in Rust. Independent Bounce no longer stutters
+    on large multi-monitor setups, and both use far less CPU.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Fri, 20 Nov 2026 18:30:00 -0300
+
 plasma-visual-screensaver (0.23.0-1) unstable; urgency=medium
 
   * Constellation, Starfield, Ribbons and Kaleidoscope are drawn on the GPU
