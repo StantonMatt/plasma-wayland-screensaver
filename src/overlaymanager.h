@@ -23,6 +23,7 @@ class OverlayManager final : public QObject
 {
     Q_OBJECT
     friend class OverlaySnakesTest;
+    friend class ApplicationControllerTest;
 
 public:
     explicit OverlayManager(Configuration *configuration, QObject *parent = nullptr);
