@@ -1,3 +1,11 @@
+plasma-visual-screensaver (0.23.0-1ppa1~resolute1) resolute; urgency=medium
+
+  * Constellation, Starfield, Ribbons and Kaleidoscope are drawn on the GPU
+    with their animation computed in Rust. They use far less CPU and hold
+    a steady frame rate on large multi-monitor setups, with the same look.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Fri, 20 Nov 2026 18:00:00 -0300
+
 plasma-visual-screensaver (0.22.0-1ppa1~resolute1) resolute; urgency=medium
 
   * Aurora is drawn on the GPU with its animation computed in Rust, using
