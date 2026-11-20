@@ -4,6 +4,7 @@
 #include "snakerenderer.h"
 #include "visualrenderer.h"
 #include "strokerenderer.h"
+#include "matrixrenderer.h"
 #include "configuration.h"
 #include "presentationclock.h"
 #include <QGuiApplication>
@@ -116,6 +117,22 @@ private Q_SLOTS:
         renderer->presentAt(1234567890123LL);
         QCOMPARE(renderer->m_primitiveCount, 0u);
         QTRY_VERIFY(view.isNull());
+    }
+
+    void matrixUsesNativeRendererInEveryMonitorMode_data() {
+        QTest::addColumn<QString>("mode");
+        for(const char *mode:{"independent","synchronized","seamless"})QTest::newRow(mode)<<QString::fromLatin1(mode);
+    }
+    void matrixUsesNativeRendererInEveryMonitorMode() {
+        QFETCH(QString,mode);QTemporaryDir dir;Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
+        settings.setVisualModule(QStringLiteral("matrix"));settings.setMonitorBehavior(mode);settings.setReducedMotion(true);
+        OverlayManager manager(&settings);QVERIFY(manager.show());auto *screen=QGuiApplication::primaryScreen();auto *view=manager.m_views.value(screen);QVERIFY(view);
+        auto *root=view->rootObject()->findChild<QQuickItem *>(QStringLiteral("matrixVisualRoot"));QVERIFY(root);
+        auto *renderer=root->findChild<MatrixRenderer *>();QVERIFY(renderer);QCOMPARE(root->property("nativeRenderer").value<QObject *>(),static_cast<QObject *>(renderer));QCOMPARE(renderer->size(),root->size());
+        manager.m_presentationClocks.value(screen)->presentationTick(1234567890123LL);QCOMPARE(renderer->m_presentationNs,1234567890123LL);
+        QCOMPARE(root->property("seed").toInt(),mode==QStringLiteral("independent")?int(qHash(screen->name())):1);
+        QCOMPARE(root->findChildren<QQuickItem *>().size(),1); // No Repeater/Text/FrameClock per-column bindings.
+        manager.hide();QTRY_VERIFY(manager.m_pendingViewDeletions==0);
     }
 
     void mappingMotionHasGraceButDeliberateInputDismisses()

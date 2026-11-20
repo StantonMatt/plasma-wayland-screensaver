@@ -8,6 +8,8 @@ Build-Depends:
  dbus-daemon,
  debhelper-compat (= 13),
  extra-cmake-modules (>= 6.0),
+ fonts-dejavu-mono,
+ fonts-noto-cjk,
  libkf6config-dev (>= 6.0),
  libkf6idletime-dev (>= 6.0),
  liblayershellqtinterface-dev,

@@ -147,3 +147,51 @@ fn bounce_first_and_steady_frames_allocate_nothing() {
         unsafe { visuals_bounce_destroy(core) };
     }
 }
+
+#[test]
+fn matrix_first_and_steady_frames_allocate_nothing() {
+    use snakes_core::visuals::matrix::*;
+    let config = Config {
+        abi_version: ABI_VERSION,
+        struct_size: size_of::<Config>() as u32,
+        visual: VISUAL,
+        palette: 0,
+        density: 100.0,
+        scale: 0.25,
+        speed: 3.0,
+        trails: 1.0,
+        seed: 1,
+        reduced_motion: 0,
+        epoch_ns: 0,
+    };
+    unsafe {
+        let core = visuals_matrix_create(&config);
+        assert!(!core.is_null());
+        let mut layout = Layout::default();
+        assert_eq!(visuals_matrix_get_layout(core, 3440.0, &mut layout), 0);
+        let mut columns = vec![Column::default(); layout.column_count as usize];
+        assert_eq!(
+            visuals_matrix_columns(core, 3440.0, 13.0, columns.as_mut_ptr(), columns.len()),
+            0
+        );
+        let mut offsets = vec![0.0; columns.len() * 4];
+        let mut request = Request {
+            width: 3440.0,
+            height: 1440.0,
+            advance: 1,
+            ..Request::default()
+        };
+        COUNT.with(|c| c.set(0));
+        ENABLED.with(|e| e.set(true));
+        for frame in 0..1000 {
+            request.presentation_ns = frame * 16_666_667;
+            assert_eq!(
+                visuals_matrix_frame(core, &request, offsets.as_mut_ptr(), columns.len()),
+                0
+            );
+        }
+        ENABLED.with(|e| e.set(false));
+        assert_eq!(COUNT.with(Cell::get), 0);
+        visuals_matrix_destroy(core);
+    }
+}

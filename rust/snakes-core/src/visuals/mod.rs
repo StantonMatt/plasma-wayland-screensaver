@@ -4,6 +4,7 @@
 //! single-threaded; the GUI builds snapshots, render threads own immutable copies.
 pub mod aurora;
 pub mod bounce;
+pub mod matrix;
 pub mod palette;
 pub mod phase;
 pub mod primitives;

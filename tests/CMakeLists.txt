@@ -290,3 +290,10 @@ target_compile_definitions(test-bouncerenderer PRIVATE BOUNCE_ORACLE_PATH="${CMA
 add_test(NAME visual-bounce-renderer COMMAND test-bouncerenderer)
 set_tests_properties(visual-bounce-renderer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
 add_test(NAME visual-bounce-parity-record COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/bounce/record.py" --check)
+
+add_executable(test-matrixrenderer test_matrixrenderer.cpp)
+target_link_libraries(test-matrixrenderer PRIVATE VisualRenderer Qt6::Qml Qt6::Test)
+target_compile_definitions(test-matrixrenderer PRIVATE MATRIX_ORACLE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/parity/matrix/oracle")
+add_test(NAME visual-matrix-renderer COMMAND test-matrixrenderer)
+set_tests_properties(visual-matrix-renderer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+add_test(NAME visual-matrix-parity-record COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/matrix/record.py" --check)

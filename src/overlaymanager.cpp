@@ -5,6 +5,7 @@
 #include "fireflyrenderer.h"
 #include "visualrenderer.h"
 #include "strokerenderer.h"
+#include "matrixrenderer.h"
 #include "presentationclock.h"
 #include "snakerenderer.h"
 #include "snakesimulation.h"
@@ -294,6 +295,19 @@ bool OverlayManager::addScreen(QScreen *screen)
                 connect(visualRoot, &QQuickItem::heightChanged, renderer,
                         [visualRoot, renderer] { renderer->setHeight(visualRoot->height()); });
                 visualRoot->setProperty("nativeRenderer", QVariant::fromValue(static_cast<QObject *>(renderer)));
+            }
+        }
+    }
+
+    if (m_configuration->visualModule() == QStringLiteral("matrix")) {
+        if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
+            if (auto *root = rootItem->findChild<QQuickItem *>(QStringLiteral("matrixVisualRoot"))) {
+                auto *renderer = new MatrixRenderer(root);
+                connect(presentationClock, &PresentationClock::presentationTick, renderer, &MatrixRenderer::presentAt);
+                renderer->setSize(root->size());
+                connect(root, &QQuickItem::widthChanged, renderer, [root, renderer] {renderer->setWidth(root->width());});
+                connect(root, &QQuickItem::heightChanged, renderer, [root, renderer] {renderer->setHeight(root->height());});
+                root->setProperty("nativeRenderer", QVariant::fromValue(static_cast<QObject *>(renderer)));
             }
         }
     }
