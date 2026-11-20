@@ -20,6 +20,13 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.22.0" date="2026-11-20">
+      <description>
+        <p>Aurora is now drawn on the GPU and uses about 97% less CPU with the
+        same look. The screen no longer dims or locks under the overlay when
+        the portal inhibitor is unavailable.</p>
+      </description>
+    </release>
     <release version="0.21.0" date="2026-10-10">
       <description>
         <p>Trapped snakes now use their held power-ups to escape: Venom bites
