@@ -24,7 +24,7 @@ private Q_SLOTS:
     void proceduralVisualUsesNativeRendererInEveryMonitorMode_data()
     {
         QTest::addColumn<QString>("mode");QTest::addColumn<QString>("visual");
-        for (const char *visual : {"aurora","constellation","starfield"})
+        for (const char *visual : {"aurora","constellation","starfield","bounce"})
             for (const char *mode : {"independent", "synchronized", "seamless"})
                 QTest::newRow(qPrintable(QString::fromLatin1(visual)+QStringLiteral("-")+QString::fromLatin1(mode))) << QString::fromLatin1(mode) << QString::fromLatin1(visual);
     }
@@ -94,6 +94,28 @@ private Q_SLOTS:
         for (auto *child : root->findChildren<QQuickItem *>()) QVERIFY(!child->inherits("QQuickCanvasItem"));
         manager.hide();
         QTRY_VERIFY(manager.m_pendingViewDeletions == 0);
+    }
+
+    void bounceRendererOutlivesSharedStateUntilDeferredViewDeletion()
+    {
+        QTemporaryDir dir;
+        Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
+        settings.setVisualModule(QStringLiteral("bounce"));
+        settings.setMonitorBehavior(QStringLiteral("synchronized"));
+        settings.setReducedMotion(true);
+        settings.setShowClock(false);
+        auto manager = std::make_unique<OverlayManager>(&settings);
+        QVERIFY(manager->show());
+        QPointer<QQuickView> view = manager->m_views.value(QGuiApplication::primaryScreen());
+        QVERIFY(view);
+        QPointer<VisualRenderer> renderer = view->rootObject()->findChild<VisualRenderer *>();
+        QVERIFY(renderer);
+        QVERIFY(renderer->m_primitiveCount > 0);
+        manager.reset(); // Shared state dies now; the view is deleteLater-owned.
+        QVERIFY(renderer);
+        renderer->presentAt(1234567890123LL);
+        QCOMPARE(renderer->m_primitiveCount, 0u);
+        QTRY_VERIFY(view.isNull());
     }
 
     void mappingMotionHasGraceButDeliberateInputDismisses()

@@ -280,3 +280,13 @@ target_compile_definitions(test-strokerenderer PRIVATE
 add_test(NAME visual-stroke-renderer COMMAND test-strokerenderer)
 set_tests_properties(visual-stroke-renderer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent-strokes-test-bus;DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent-strokes-system-bus")
 add_test(NAME visual-strokes-parity-record COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/strokes/record.py" --check)
+
+# Bounce keeps independent Rust physics and AnimationState shared-world compatibility.
+qt6_wrap_cpp(bounce_frozen_moc parity/bounce/oracle/animationstate.h OPTIONS -DAnimationState=FrozenAnimationState)
+set_source_files_properties(${bounce_frozen_moc} PROPERTIES COMPILE_DEFINITIONS "AnimationState=FrozenAnimationState")
+add_executable(test-bouncerenderer test_bouncerenderer.cpp ../src/animationstate.cpp ${bounce_frozen_moc})
+target_link_libraries(test-bouncerenderer PRIVATE VisualRenderer Qt6::Qml Qt6::Test)
+target_compile_definitions(test-bouncerenderer PRIVATE BOUNCE_ORACLE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/parity/bounce/oracle/Bounce.qml")
+add_test(NAME visual-bounce-renderer COMMAND test-bouncerenderer)
+set_tests_properties(visual-bounce-renderer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+add_test(NAME visual-bounce-parity-record COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/bounce/record.py" --check)

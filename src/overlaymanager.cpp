@@ -250,10 +250,23 @@ bool OverlayManager::addScreen(QScreen *screen)
 
     if (m_configuration->visualModule() == QStringLiteral("aurora")
         || m_configuration->visualModule() == QStringLiteral("constellation")
-        || m_configuration->visualModule() == QStringLiteral("starfield")) {
+        || m_configuration->visualModule() == QStringLiteral("starfield")
+        || m_configuration->visualModule() == QStringLiteral("bounce")) {
         if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
             if (auto *visualRoot = rootItem->findChild<QQuickItem *>(m_configuration->visualModule() + QStringLiteral("VisualRoot"))) {
                 auto *renderer = new VisualRenderer(visualRoot);
+                if (m_configuration->visualModule() == QStringLiteral("bounce")) {
+                    connect(presentationClock, &PresentationClock::frameTick,
+                            renderer, &VisualRenderer::presentBounceDelta);
+                    const QPointer<AnimationState> state(&m_animationState);
+                    renderer->setBounceSource([state](qint64 ns, visuals_bounce_ball *out, size_t capacity) {
+                        if (!state) return size_t(0);
+                        std::array<AnimationState::BallSnapshot,20> balls;
+                        const auto count=state->ballSnapshotAt(ns,balls.data(),std::min(capacity,balls.size()));
+                        for (size_t i=0;i<count;++i) out[i]={balls[i].x,balls[i].y,balls[i].vx,balls[i].vy,balls[i].size};
+                        return count;
+                    });
+                }
                 connect(presentationClock, &PresentationClock::presentationTick,
                         renderer, &VisualRenderer::presentAt);
                 renderer->setParentItem(visualRoot);

@@ -25,6 +25,8 @@ TestCase {
 
     Constellation { id: constellation; anchors.fill: parent; reducedMotion: true }
     Starfield { id: starfield; anchors.fill: parent; reducedMotion: true }
+    Bounce { id: bounce; anchors.fill: parent; reducedMotion: true }
+    function test_bounceUsesSceneGraphNodes() { verify(!containsCanvas(bounce)) }
     function test_primitiveVisualsUseSceneGraphNodes() {
         verify(!containsCanvas(constellation));verify(!containsCanvas(starfield))
     }

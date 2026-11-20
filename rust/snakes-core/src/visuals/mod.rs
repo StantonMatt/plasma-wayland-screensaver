@@ -3,6 +3,7 @@
 //! Callers own output memory; handles retain no borrowed pointers. A handle is
 //! single-threaded; the GUI builds snapshots, render threads own immutable copies.
 pub mod aurora;
+pub mod bounce;
 pub mod palette;
 pub mod phase;
 pub mod primitives;

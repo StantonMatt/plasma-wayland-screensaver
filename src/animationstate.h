@@ -48,6 +48,9 @@ public:
     Q_INVOKABLE void setClockSize(qreal width, qreal height);
     void advance(qreal seconds);
     void advanceTo(qint64 presentationNanoseconds);
+    struct BallSnapshot { qreal x, y, vx, vy, size; };
+    // Allocation-free native projection of the same retained/interpolated frame.
+    size_t ballSnapshotAt(qint64 presentationNanoseconds, BallSnapshot *out, size_t capacity) const;
     Q_INVOKABLE QVariantList ballsAt(qint64 presentationNanoseconds) const;
     Q_INVOKABLE QPointF clockAt(qint64 presentationNanoseconds) const;
     QRectF bounds() const { return m_screenRegion.boundingRect(); }

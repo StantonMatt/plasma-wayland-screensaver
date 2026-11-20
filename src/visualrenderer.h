@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "visuals_core.h"
+#include "visuals_bounce.h"
+#include <functional>
 #include <QQuickItem>
 #include <memory>
 #include <optional>
@@ -12,6 +14,7 @@ class VisualRenderer final : public QQuickItem
 {
     Q_OBJECT
     friend class VisualRendererTest;
+    friend class BounceRendererTest;
     friend class OverlaySnakesTest;
 public:
     explicit VisualRenderer(QQuickItem *parent=nullptr);
@@ -21,7 +24,13 @@ public:
         const QString &palette, int seed, bool reducedMotion, double epochMs);
     Q_INVOKABLE void configureStarfield(int density, qreal scale, qreal speed, qreal trails,
         const QString &palette, int seed, bool reducedMotion, double epochMs);
+    Q_INVOKABLE void configureBounce(int density, qreal scale, qreal speed, qreal trails,
+        const QString &palette, int seed, bool reducedMotion, double epochMs,
+        int count, qreal gravity, qreal elasticity, bool collisions, int mode);
+    using BounceSource=std::function<size_t(qint64, visuals_bounce_ball *, size_t)>;
+    void setBounceSource(BounceSource source) { m_bounceSource=std::move(source); }
     Q_INVOKABLE void setViewport(const QRectF &worldBounds, const QPointF &origin);
+    void presentBounceDelta(qreal deltaSeconds);
     Q_INVOKABLE void presentAt(qint64 presentationNanoseconds);
 protected:
     QSGNode *updatePaintNode(QSGNode *, UpdatePaintNodeData *) override;
@@ -31,6 +40,10 @@ private:
         const QString &palette, int seed, bool reducedMotion, double epochMs);
     void captureSnapshot(bool advance);
     QSGNode *updatePrimitives(QSGNode *);
+    std::unique_ptr<visuals_bounce,decltype(&visuals_bounce_destroy)> m_bounce{nullptr,visuals_bounce_destroy};
+    visuals_bounce_settings m_bounceSettings{VISUALS_BOUNCE_ABI_VERSION,sizeof(visuals_bounce_settings),1,0,0,100,0,0};
+    BounceSource m_bounceSource;
+    qreal m_bounceDeltaSeconds=0;
     std::vector<visuals_core_primitive> m_primitives;
     uint32_t m_primitiveCount=0;
     bool m_plainInUse=false;

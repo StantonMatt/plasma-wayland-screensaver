@@ -199,15 +199,20 @@ pub fn vertices(records: &[Primitive], fringe: f32, out: &mut [Vertex]) {
             ([x, y], [1.0, 0.0], radius)
         };
         for (v, c) in quad.iter_mut().zip(CORNERS) {
-            let local = [c[0] * (half + fringe), c[1] * (radius + fringe)];
+            let scaled = kind >= 3.0 && x2 > 0.0 && y2 > 0.0;
+            let scale = if scaled { [x2, y2] } else { [1.0, 1.0] };
+            let local = [
+                c[0] * (half + fringe / scale[0]),
+                c[1] * (radius + fringe / scale[1]),
+            ];
             *v = Vertex {
                 position: [
-                    center[0] + axis[0] * local[0] - axis[1] * local[1],
-                    center[1] + axis[1] * local[0] + axis[0] * local[1],
+                    center[0] + (axis[0] * local[0] - axis[1] * local[1]) * scale[0],
+                    center[1] + (axis[1] * local[0] + axis[0] * local[1]) * scale[1],
                 ],
                 local,
                 color: p.color,
-                shape: [radius, half, kind, 0.0],
+                shape: [radius, half, kind, if scaled { 1.0 } else { 0.0 }],
             };
         }
     }
@@ -254,8 +259,19 @@ pub fn raster(
             for x in ((minx * sx).floor().max(0.0) as usize)
                 ..((maxx * sx).ceil().max(0.0) as usize).min(width)
             {
-                let px = (x as f32 + 0.5) / sx - x1;
-                let py = (y as f32 + 0.5) / sy - y1;
+                let scale = if p.shape[1] >= 3.0 && x2 > 0.0 && y2 > 0.0 {
+                    [x2, y2]
+                } else {
+                    [1.0, 1.0]
+                };
+                let px = ((x as f32 + 0.5) / sx - x1) / scale[0];
+                let py = ((y as f32 + 0.5) / sy - y1) / scale[1];
+                let distance = px.hypot(py);
+                let pixel = if distance > 0.0 {
+                    aa * (px / scale[0]).hypot(py / scale[1]) / distance
+                } else {
+                    aa / scale[0].min(scale[1])
+                };
                 let r = p.shape[0];
                 let coverage = if p.shape[1] == 0.0 {
                     if len == 0.0 {
@@ -265,15 +281,43 @@ pub fn raster(
                         ((r - (px * dy - py * dx).abs() / len) / aa + 0.5).clamp(0.0, 1.0)
                             * ((along.min(len - along)) / aa + 0.5).clamp(0.0, 1.0)
                     }
-                } else if p.shape[1] == 1.0 {
-                    ((r - px.hypot(py)) / aa + 0.5).clamp(0.0, 1.0)
+                } else if p.shape[1] == 1.0 || p.shape[1] >= 3.0 {
+                    ((r - px.hypot(py)) / pixel + 0.5).clamp(0.0, 1.0)
                 } else {
                     (1.0 - px.hypot(py) / r).clamp(0.0, 1.0)
                 };
-                let alpha = p.color[3] * coverage;
+                let mut rgb = p.color;
+                let mut opacity = p.color[3];
+                if p.shape[1] == 3.0 {
+                    let focus = [-0.30 * r, -0.40 * r];
+                    let q = [px - focus[0], py - focus[1]];
+                    let dr = 1.12 * r - 1.0;
+                    let a = focus[0] * focus[0] + focus[1] * focus[1] - dr * dr;
+                    let b = 2.0 * (q[0] * focus[0] + q[1] * focus[1] - dr);
+                    let c = q[0] * q[0] + q[1] * q[1] - 1.0;
+                    let t =
+                        ((-b - (b * b - 4.0 * a * c).max(0.0).sqrt()) / (2.0 * a)).clamp(0.0, 1.0);
+                    for k in 0..3 {
+                        rgb[k] = if t < 0.22 {
+                            1.0 + (rgb[k] - 1.0) * t / 0.22
+                        } else {
+                            rgb[k] + ([19.0, 27.0, 69.0][k] / 255.0 - rgb[k]) * (t - 0.22) / 0.78
+                        };
+                    }
+                } else if p.shape[1] == 4.0 {
+                    let ring = ((px.hypot(py) - (r - ((r * 0.05).max(1.0) / aa).round() * aa))
+                        / pixel
+                        + 0.5)
+                        .clamp(0.0, 1.0);
+                    opacity = 1.0 + (128.0 / 255.0 - 1.0) * ring;
+                    for v in &mut rgb[..3] {
+                        *v = (*v + (128.0 / 255.0 - *v) * ring) / opacity;
+                    }
+                }
+                let alpha = opacity * coverage;
                 let dest = &mut pixels[(y * width + x) * 4..][..4];
                 for k in 0..4 {
-                    let src = if k == 3 { 1.0 } else { p.color[k] };
+                    let src = if k == 3 { 1.0 } else { rgb[k] };
                     dest[k] = (src * alpha * 255.0 + dest[k] as f32 * (1.0 - alpha)).round() as u8;
                 }
             }
