@@ -23,6 +23,18 @@ with tempfile.TemporaryDirectory(prefix='primitives-record-') as tmp:
                 else:records+=1
     assert frames==216 and records>10000, (frames,records)
     output='\n'.join(rows)+'\n';target=here/'fixtures.tsv'
-    if '--check' in sys.argv:assert target.read_text()==output,'Primitive fixtures changed'
+    if '--check' in sys.argv:
+        # JavaScript Math results may differ in the last bits between CPUs/libm builds,
+        # so compare numbers with a tight tolerance rather than byte-for-byte.
+        def same(a,b):
+            if a==b:return True
+            try:x,y=float(a),float(b)
+            except ValueError:return False
+            return abs(x-y)<=1e-9+1e-12*max(abs(x),abs(y))
+        expected=target.read_text().splitlines();actual=output.splitlines()
+        assert len(expected)==len(actual),'Primitive fixtures changed: row count'
+        for number,(e,a) in enumerate(zip(expected,actual),1):
+            ef,af=e.split('\t'),a.split('\t')
+            assert len(ef)==len(af) and all(map(same,ef,af)),f'Primitive fixtures changed at row {number}:\n expected {e}\n actual   {a}'
     else:target.write_text(output)
     print(f'Frozen primitives oracle: {frames} frames, {records} records '+('verified' if '--check' in sys.argv else 'recorded'))
