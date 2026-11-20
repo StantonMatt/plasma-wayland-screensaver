@@ -45,6 +45,9 @@ TestCase {
             function configureStarfield(d, scale, motion, trail, colors, randomSeed, reduced, epoch) {
                 configure(d, scale, motion, trail, colors, randomSeed)
             }
+            function configureMatrix(d, scale, motion, trail, colors, randomSeed, reduced, epoch) {
+                configure(d, scale, motion, trail, colors, randomSeed)
+            }
             function configureAurora(d, scale, motion, trail, colors, randomSeed, reduced, epoch) {
                 configure(d, scale, motion, trail, colors, randomSeed)
             }
@@ -52,7 +55,7 @@ TestCase {
     }
 
     function test_sceneGraphStaticInputs_data() {
-        return [{tag: "Orbs", visual: "Orbs"}, {tag: "Matrix", visual: "Matrix"}]
+        return [{tag: "Orbs", visual: "Orbs"}]
     }
     function test_sceneGraphStaticInputs(data) {
         const component = Qt.createComponent("../../qml/visuals/" + data.visual + ".qml")
@@ -68,7 +71,7 @@ TestCase {
     function test_pausedNativeSettingsRequestPaint_data() {
         return [{tag: "Fireflies", visual: "Fireflies"}, {tag: "Aurora", visual: "Aurora"},
                 {tag: "Constellation", visual: "Constellation"}, {tag: "Starfield", visual: "Starfield"},
-                {tag: "Ribbons", visual: "Ribbons"}, {tag: "Kaleidoscope", visual: "Kaleidoscope"}]
+                {tag: "Ribbons", visual: "Ribbons"}, {tag: "Kaleidoscope", visual: "Kaleidoscope"}, {tag: "Matrix", visual: "Matrix"}]
     }
     function test_pausedNativeSettingsRequestPaint(data) {
         const component = Qt.createComponent("../../qml/visuals/" + data.visual + ".qml")

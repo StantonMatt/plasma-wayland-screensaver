@@ -49,7 +49,7 @@ def main():
     p.add_argument('--build', required=True, type=Path)
     p.add_argument('--output', required=True, type=Path)
     p.add_argument('--scale', type=float, default=1)
-    p.add_argument('--test-binary', default='test-visualrenderer', choices=('test-visualrenderer', 'test-strokerenderer'))
+    p.add_argument('--test-binary', default='test-visualrenderer', choices=('test-visualrenderer', 'test-strokerenderer', 'test-bouncerenderer', 'test-matrixrenderer'))
     p.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     args = p.parse_args()
     args.output = args.output.resolve()

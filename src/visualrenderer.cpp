@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <cstring>
+#include <array>
 #include "visualrenderer.h"
 #include "visualmaterial.h"
 #include <QDateTime>
@@ -40,6 +41,11 @@ void VisualRenderer::configureStarfield(int density,qreal scale,qreal speed,qrea
     const QString &palette,int seed,bool reduced,double epochMs) {
     configure(VISUALS_CORE_STARFIELD,density,scale,speed,trails,palette,seed,reduced,epochMs);
 }
+void VisualRenderer::configureBounce(int density,qreal scale,qreal speed,qreal trails,
+    const QString &palette,int seed,bool reduced,double epochMs,int count,qreal gravity,qreal elasticity,bool collisions,int mode) {
+    m_bounceSettings={VISUALS_BOUNCE_ABI_VERSION,sizeof(visuals_bounce_settings),uint32_t(count),uint32_t(mode),gravity,elasticity,uint32_t(collisions),0};
+    configure(VISUALS_BOUNCE_VISUAL,density,scale,speed,trails,palette,seed,reduced,epochMs);
+}
 void VisualRenderer::configure(uint32_t visual,int density,qreal scale,qreal speed,qreal trails,
     const QString &palette,int seed,bool reduced,double epochMs) {
     if (!std::isfinite(epochMs) || std::abs(epochMs)>1e13) return;
@@ -53,11 +59,15 @@ void VisualRenderer::configure(uint32_t visual,int density,qreal scale,qreal spe
     const qint64 epochNs=m_epochMs && *m_epochMs==epochMs ? m_config.epoch_ns : qint64(mappedEpoch);
     visuals_core_config config{VISUALS_CORE_ABI_VERSION,sizeof(visuals_core_config),visual,
         uint32_t(index<0 ? 0 : index),double(density),scale,speed,trails,seed,uint32_t(reduced),epochNs};
-    if (!m_core) m_core.reset(visuals_core_create(&config));
+    if (visual==VISUALS_BOUNCE_VISUAL) {
+        if (!m_bounce) m_bounce.reset(visuals_bounce_create(&config,&m_bounceSettings));
+        else if (visuals_bounce_configure(m_bounce.get(),&config,&m_bounceSettings)!=0) return;
+        if (!m_bounce) return;
+    } else if (!m_core) m_core.reset(visuals_core_create(&config));
     else if (visuals_core_configure(m_core.get(),&config)!=0) return;
-    if (!m_core) return;
+    if (!m_core && !m_bounce) return;
     m_config=config; m_epochMs=epochMs;
-    if (visual!=VISUALS_CORE_AURORA) m_primitives.resize(visual==VISUALS_CORE_CONSTELLATION ? VISUALS_CORE_MAX_PRIMITIVES : 356);
+    if (visual!=VISUALS_CORE_AURORA) m_primitives.resize(visual==VISUALS_CORE_CONSTELLATION ? VISUALS_CORE_MAX_PRIMITIVES : visual==VISUALS_BOUNCE_VISUAL ? VISUALS_BOUNCE_MAX_RECORDS : 356);
     captureSnapshot(false);
 }
 void VisualRenderer::setViewport(const QRectF &bounds,const QPointF &origin) {
@@ -68,14 +78,27 @@ void VisualRenderer::setViewport(const QRectF &bounds,const QPointF &origin) {
 void VisualRenderer::presentAt(qint64 ns) {
     if (ns<0) return;
     m_presentationNs=ns; m_hasPresentation=true;
+    // Independent Bounce consumes the clock's explicit frame delta, including
+    // the first tick, on frameTick immediately after this presentation signal.
+    if (m_config.visual!=VISUALS_BOUNCE_VISUAL || m_bounceSettings.mode) captureSnapshot(true);
+}
+void VisualRenderer::presentBounceDelta(qreal seconds) {
+    if (m_config.visual!=VISUALS_BOUNCE_VISUAL || m_bounceSettings.mode) return;
+    m_bounceDeltaSeconds=seconds;
     captureSnapshot(true);
+    m_bounceDeltaSeconds=0;
 }
 void VisualRenderer::captureSnapshot(bool advance) {
-    if (!m_core || width()<=0 || height()<=0) return;
+    if ((!m_core && !m_bounce) || width()<=0 || height()<=0) return;
     const visuals_core_request request{width(),height(),m_presentationNs,uint32_t(advance && m_hasPresentation),0,
         {m_worldBounds.x(),m_worldBounds.y(),m_worldBounds.width(),m_worldBounds.height()},
         {m_viewportOrigin.x(),m_viewportOrigin.y()}};
-    const int result=m_config.visual==VISUALS_CORE_AURORA
+    std::array<visuals_bounce_ball,20> shared{};
+    const size_t sharedCount=m_config.visual==VISUALS_BOUNCE_VISUAL && m_bounceSettings.mode && m_bounceSource
+        ? m_bounceSource(m_config.reduced_motion ? 0 : m_presentationNs,shared.data(),shared.size()) : 0;
+    const int result=m_config.visual==VISUALS_BOUNCE_VISUAL
+        ? visuals_bounce_frame(m_bounce.get(),&request,m_bounceDeltaSeconds,shared.data(),sharedCount,m_primitives.data(),m_primitives.size(),&m_primitiveCount)
+        : m_config.visual==VISUALS_CORE_AURORA
         ? visuals_core_frame(m_core.get(),&request,&m_snapshot,sizeof(m_snapshot))
         : visuals_core_primitives(m_core.get(),&request,m_primitives.data(),m_primitives.size(),&m_primitiveCount);
     if (result==0) update();
@@ -150,7 +173,7 @@ QSGNode *VisualRenderer::updatePrimitives(QSGNode *old) {
     if (root && (root->shader!=shader || root->plain!=plain)) {delete root;root=nullptr;}
     if (!root) {
         root=new VisualNode;root->shader=shader;root->plain=plain;root->visual=m_config.visual;
-        qInfo("Visuals %s: %s",m_config.visual==VISUALS_CORE_CONSTELLATION ? "Constellation" : "Starfield",
+        qInfo("Visuals %s: %s",m_config.visual==VISUALS_CORE_CONSTELLATION ? "Constellation" : m_config.visual==VISUALS_BOUNCE_VISUAL ? "Bounce" : "Starfield",
             shader ? "GPU RGBA32F primitive records" : plain ? "Rust plain geometry fallback" : "Rust RGBA image fallback (software/no primitive pipeline)");
         if (shader || plain) {
             auto *node=new QSGGeometryNode;

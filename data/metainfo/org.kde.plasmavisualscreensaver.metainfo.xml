@@ -20,6 +20,13 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.24.0" date="2026-11-20">
+      <description>
+        <p>Bounce and Matrix are now drawn on the GPU. Independent Bounce no
+        longer stutters on large multi-monitor setups, and both use far less
+        CPU.</p>
+      </description>
+    </release>
     <release version="0.23.0" date="2026-11-20">
       <description>
         <p>Constellation, Starfield, Ribbons and Kaleidoscope are now drawn on

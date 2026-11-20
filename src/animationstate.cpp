@@ -356,6 +356,18 @@ AnimationState::Frame AnimationState::sample(qint64 presentationNanoseconds) con
     return result;
 }
 
+size_t AnimationState::ballSnapshotAt(qint64 presentationNanoseconds, BallSnapshot *out, size_t capacity) const
+{
+    const auto frame = presentationNanoseconds ? sample(presentationNanoseconds)
+        : m_history[(m_historyHead + historySize - 1) % historySize];
+    const size_t count = std::min(size_t(frame.count), capacity);
+    for (size_t i=0; i<count; ++i) {
+        const auto &b=frame.balls[i];
+        out[i]={b.position.x(),b.position.y(),b.velocity.x(),b.velocity.y(),b.size.width()};
+    }
+    return count;
+}
+
 QVariantList AnimationState::ballsAt(qint64 presentationNanoseconds) const
 {
     const auto frame = sample(presentationNanoseconds);

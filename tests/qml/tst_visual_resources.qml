@@ -25,8 +25,15 @@ TestCase {
 
     Constellation { id: constellation; anchors.fill: parent; reducedMotion: true }
     Starfield { id: starfield; anchors.fill: parent; reducedMotion: true }
+    Bounce { id: bounce; anchors.fill: parent; reducedMotion: true }
+    function test_bounceUsesSceneGraphNodes() { verify(!containsCanvas(bounce)) }
     function test_primitiveVisualsUseSceneGraphNodes() {
         verify(!containsCanvas(constellation));verify(!containsCanvas(starfield))
+    }
+    Matrix { id: matrix; anchors.fill: parent; reducedMotion: true }
+    function test_matrixHasNoPerColumnQmlItems() {
+        compare(matrix.children.length, 0)
+        verify(!containsCanvas(matrix))
     }
     function containsCanvas(item) {
         if (item instanceof Canvas)

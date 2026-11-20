@@ -23,8 +23,12 @@ void main() {
         halfLength=len*0.5;center=(g.xy+g.zw)*0.5;
     }
     vec2 corner=positionBounds/ub.viewport.xy*2.0-1.0;
-    local=corner*(vec2(halfLength,s.x)+ub.info.w);
-    shape=vec4(s.x,halfLength,s.y,0);
-    vec2 position=center+axis*local.x+vec2(-axis.y,axis.x)*local.y;
+    // ABI v2 kinds 1/2 ignore geometry.zw. Scaling is extension-only.
+    bool scaled=s.y>=3.0 && g.z>0.0 && g.w>0.0;
+    vec2 scale=scaled ? g.zw : vec2(1);
+    local=corner*(vec2(halfLength,s.x)+vec2(ub.info.w)/scale);
+    shape=vec4(s.x,halfLength,s.y,scaled ? 1.0 : 0.0);
+    vec2 offset=(axis*local.x+vec2(-axis.y,axis.x)*local.y)*scale;
+    vec2 position=center+offset;
     gl_Position=ub.matrix*vec4(position,0,1);
 }
