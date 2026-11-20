@@ -18,6 +18,9 @@ TestCase {
     }
 
     Aurora { id: aurora; anchors.fill: parent; reducedMotion: true }
+    Ribbons { id: ribbons; anchors.fill: parent; reducedMotion: true }
+    Kaleidoscope { id: kaleidoscope; anchors.fill: parent; reducedMotion: true }
+    function test_strokesUseSceneGraphNodes() { verify(!containsCanvas(ribbons)); verify(!containsCanvas(kaleidoscope)) }
     function test_auroraUsesSceneGraphNodes() { verify(!containsCanvas(aurora)) }
 
     Constellation { id: constellation; anchors.fill: parent; reducedMotion: true }

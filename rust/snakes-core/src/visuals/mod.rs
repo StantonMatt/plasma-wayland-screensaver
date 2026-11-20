@@ -8,6 +8,7 @@ pub mod phase;
 pub mod primitives;
 pub mod random;
 pub mod settings;
+pub mod strokes;
 use settings::Config;
 pub const ABI_VERSION: u32 = 2;
 #[repr(C)]

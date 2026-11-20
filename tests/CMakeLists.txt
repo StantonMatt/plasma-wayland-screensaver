@@ -271,3 +271,12 @@ set_tests_properties(visual-renderer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=off
 add_test(NAME aurora-parity-record COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/aurora/record.py" --check)
 
 add_test(NAME visual-primitives-parity-record COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/primitives/record.py" --check)
+# Curved strokes and additive RGBA8 layer extension.
+add_executable(test-strokerenderer test_strokerenderer.cpp)
+target_link_libraries(test-strokerenderer PRIVATE VisualRenderer Qt6::Qml Qt6::Test)
+target_compile_definitions(test-strokerenderer PRIVATE
+    STROKES_SOURCE_PATH="${PROJECT_SOURCE_DIR}/qml/visuals"
+    STROKES_ORACLE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/parity/strokes/oracle")
+add_test(NAME visual-stroke-renderer COMMAND test-strokerenderer)
+set_tests_properties(visual-stroke-renderer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent-strokes-test-bus;DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent-strokes-system-bus")
+add_test(NAME visual-strokes-parity-record COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/strokes/record.py" --check)

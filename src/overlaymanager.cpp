@@ -4,6 +4,7 @@
 #include "configuration.h"
 #include "fireflyrenderer.h"
 #include "visualrenderer.h"
+#include "strokerenderer.h"
 #include "presentationclock.h"
 #include "snakerenderer.h"
 #include "snakesimulation.h"
@@ -256,6 +257,24 @@ bool OverlayManager::addScreen(QScreen *screen)
                 connect(presentationClock, &PresentationClock::presentationTick,
                         renderer, &VisualRenderer::presentAt);
                 renderer->setParentItem(visualRoot);
+                renderer->setSize(visualRoot->size());
+                connect(visualRoot, &QQuickItem::widthChanged, renderer,
+                        [visualRoot, renderer] { renderer->setWidth(visualRoot->width()); });
+                connect(visualRoot, &QQuickItem::heightChanged, renderer,
+                        [visualRoot, renderer] { renderer->setHeight(visualRoot->height()); });
+                visualRoot->setProperty("nativeRenderer", QVariant::fromValue(static_cast<QObject *>(renderer)));
+            }
+        }
+    }
+
+    if (m_configuration->visualModule() == QStringLiteral("ribbons")
+        || m_configuration->visualModule() == QStringLiteral("kaleidoscope")) {
+        if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
+            const auto name = m_configuration->visualModule() + QStringLiteral("VisualRoot");
+            if (auto *visualRoot = rootItem->findChild<QQuickItem *>(name)) {
+                auto *renderer = new StrokeRenderer(visualRoot);
+                connect(presentationClock, &PresentationClock::presentationTick,
+                        renderer, &StrokeRenderer::presentAt);
                 renderer->setSize(visualRoot->size());
                 connect(visualRoot, &QQuickItem::widthChanged, renderer,
                         [visualRoot, renderer] { renderer->setWidth(visualRoot->width()); });
