@@ -15,7 +15,8 @@ jobs:
     runs-on: ubuntu-26.04
     needs: kubuntu-package
     # Four 30s measurements plus bounded release download and dependency installation.
-    timeout-minutes: 12
+    # The kwin-wayland install alone took over 12 minutes on slow Azure mirrors.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
