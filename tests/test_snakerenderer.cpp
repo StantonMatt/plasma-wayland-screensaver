@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "snakes_atlas.h"
 #include "snakerenderer.h"
 #include "configuration.h"
 #include "snakematerial.h"
@@ -272,6 +273,19 @@ class SnakeRendererTest final : public QObject
         return frame;
     }
 private Q_SLOTS:
+    void seasonalAtlasTiles()
+    {
+        const auto pixel = [](int tile, int x, int y) {
+            return snakesIconAtlas[(tile / 4 * 32 + 15 + y) * 128 + tile % 4 * 32 + 15 + x];
+        };
+        QVERIFY(pixel(12, 0, 0) > 127); // bat body
+        QVERIFY(pixel(12, 9, -5) > 127); // wing
+        QVERIFY(pixel(12, 10, 10) < 127); // outside silhouette
+        QVERIFY(pixel(13, -5, -4) > 127); // carved left eye
+        QVERIFY(pixel(13, 5, -4) > 127); // carved right eye
+        QVERIFY(pixel(13, 0, 4) < 127); // top tooth is skin
+        QVERIFY(pixel(13, 0, 7) > 127); // opening below the tooth
+    }
     void bakedShaderResourceLayout()
     {
         const auto vertex = vertexShader(), fragment = fragmentShader();
@@ -280,7 +294,7 @@ private Q_SLOTS:
             {"matrix", offsetof(Uniforms, matrix)}, {"opacity", offsetof(Uniforms, opacity)},
             {"time", offsetof(Uniforms, time)}, {"light", offsetof(Uniforms, light)},
             {"animationTime", offsetof(Uniforms, animationTime)},
-            {"motionScale", offsetof(Uniforms, motionScale)}, {"paletteMode", offsetof(Uniforms, paletteMode)}, {"ambient", offsetof(Uniforms, ambient)}};
+            {"motionScale", offsetof(Uniforms, motionScale)}, {"paletteMode", offsetof(Uniforms, paletteMode)}, {"ambient", offsetof(Uniforms, ambient)}, {"season", offsetof(Uniforms, season)}};
         for (const auto &shader : {vertex, fragment}) {
             const auto description = shader.description();
             QVERIFY(description.isValid());
@@ -1516,6 +1530,64 @@ private:
         return frame;
     }
 
+    static SnakeFrame halloweenFrame(bool night, bool gazeAhead = false)
+    {
+        auto frame = facesFrame(false);
+        frame.snakes.resize(9);
+        frame.items.clear(); frame.info.bubble_count = 0;
+        frame.info.world_width = 3440; frame.info.world_height = 1440;
+        frame.itemRadius = 18 * 2.1;
+        for (auto &point : frame.segments) {
+            point.x *= 2.4; point.y *= 2.25;
+            point.previous_x = point.x; point.previous_y = point.y;
+        }
+        for (auto &snake : frame.snakes) snake.radius = 18;
+        frame.snakes[0].flags |= SNAKES_CORE_LEADER;
+        if (gazeAhead) {
+            for (auto &snake : frame.snakes) {
+                if (snake.mood == SNAKES_CORE_MOOD_CALM || snake.mood == SNAKES_CORE_MOOD_HUNTING) {
+                    snake.pupil_x = 0.18; snake.pupil_y = 0;
+                }
+            }
+        }
+        for (int k = 0; k < 8; ++k) {
+            snakes_core_food food{};
+            food.id = k; food.x = 360 + k * 370; food.y = 720; food.size = 18 * 0.62;
+            food.kind = k < 4 ? SNAKES_CORE_FOOD_PRISM_SEED : SNAKES_CORE_FOOD_PRISM;
+            food.life_fraction = k < 4 ? uint8_t(k * 84) : 250;
+            food.ripe_tick = k < 4 ? 660 : uint64_t(600 - (k - 4) * 10);
+            food.phase = float(k); frame.food.push_back(food);
+        }
+        for (int k = 0; k < 24; ++k) {
+            snakes_core_food food{};
+            food.id = 20 + k; food.x = 160 + k * 132; food.y = k % 2 ? 1180 : 1050;
+            food.kind = k % 2 ? SNAKES_CORE_FOOD_SHARD : SNAKES_CORE_FOOD_SPARK;
+            food.color_index = k % 6; food.phase = float(k * 0.63); food.size = 5.8; food.life_fraction = 255;
+            frame.food.push_back(food);
+        }
+        snakes_core_snake feastSnake{};
+        feastSnake.id = 9; feastSnake.generation = 1; feastSnake.alive = 1;
+        feastSnake.radius = 18; feastSnake.segment_count = 80; feastSnake.color_index = 3;
+        feastSnake.segment_offset = frame.segments.size(); feastSnake.target_item = 255;
+        feastSnake.mood = SNAKES_CORE_MOOD_HAPPY; feastSnake.mood_intensity = 255;
+        feastSnake.bulges[0] = {570, 90, 0, 0.35f};
+        for (int j = 0; j < 80; ++j) {
+            const float x = 3000 - j * 18 * 1.18;
+            const float y = 480 + 26 * std::sin(j * 0.15);
+            frame.segments.push_back({x,y,x,y});
+        }
+        frame.snakes.push_back(feastSnake);
+        snakes_core_event feast{};
+        feast.tick = 570; feast.snake_id = 9; feast.generation = 1;
+        feast.kind = SNAKES_CORE_EVENT_FEAST; feast.duration_ticks = 90;
+        frame.events.push_back(feast);
+        if (night) {
+            frame.info.world_event.night = 1;
+            frame.info.ambient = 0.28f;
+        }
+        return frame;
+    }
+
     static SnakeFrame venomFrame()
     {
         SnakeFrame frame;
@@ -2167,6 +2239,39 @@ private Q_SLOTS:
         QCOMPARE(bubbleGlyphPixels(image,frame,0),9);
     }
 
+    void halloweenFixtureExportsForwardGaze()
+    {
+        // These are the exact head payloads used by the forward-gaze and timed
+        // blink captures. Keep the maximum AI forward gaze and centred y;
+        // a centred x gaze would hide the Hunting slit regression.
+        for (const auto &name : {QStringLiteral("pastel"), QStringLiteral("ember"), QStringLiteral("mono")}) {
+            SnakeRenderer renderer;
+            renderer.m_shaderGeometryForTest = true;
+            renderer.setSeason(1);
+            renderer.setSize({3440,1440});
+            const auto frame = halloweenFrame(false, true);
+            renderer.syncFrame(frame, SnakeSimulation::colors(name), 1, true);
+            auto *node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr, nullptr));
+            QVERIFY(node);
+            const auto *geometry = node->geometry();
+            const auto *vertices = static_cast<const snakes_core_shader_vertex *>(geometry->vertexData());
+            int calm = 0, hunting = 0;
+            for (int i = 0; i < geometry->vertexCount(); ++i) {
+                const auto &v = vertices[i];
+                if (v.params[0] != 1) continue;
+                const auto mood = (v.params[2] >> 1) & 15;
+                if (mood != SNAKES_CORE_MOOD_CALM && mood != SNAKES_CORE_MOOD_HUNTING) continue;
+                QCOMPARE(v.params[3] & 7, 6); // +0.18 (before lantern-specific shader scaling)
+                QCOMPARE((v.params[3] >> 3) & 7, 3); // y = 0
+                QCOMPARE((v.params[1] >> 2) & 15, 15); // full intent
+                if (mood == SNAKES_CORE_MOOD_CALM) ++calm; else ++hunting;
+            }
+            QCOMPARE(calm, 6);
+            QCOMPARE(hunting, 6);
+            delete node;
+        }
+    }
+
     void captureShaderFixture_data()
     {
         QTest::addColumn<bool>("rejectPipeline");
@@ -2199,6 +2304,11 @@ private Q_SLOTS:
         QTest::newRow("events-mono") << false << false << false << true << false << false << false << false << false << true << false;
         QTest::newRow("inventory") << false << false << false << false << false << false << false << false << false << false << true;
         QTest::newRow("inventory-mono") << false << false << false << true << false << false << false << false << false << false << true;
+        QTest::newRow("halloween") << false << false << false << false << false << false << false << false << false << false << false;
+        QTest::newRow("halloween-mono") << false << false << false << true << false << false << false << false << false << false << false;
+        QTest::newRow("halloween-night") << false << false << false << false << false << false << false << false << false << false << false;
+        QTest::newRow("halloween-hunting-gaze-ahead") << false << false << false << false << false << false << false << false << false << false << false;
+        QTest::newRow("halloween-blink") << false << false << false << false << false << false << false << false << false << false << false;
     }
 
     void captureShaderFixture()
@@ -2214,17 +2324,22 @@ private Q_SLOTS:
         QFETCH(bool, frost);
         QFETCH(bool, events);
         QFETCH(bool, inventory);
-        const auto colors = SnakeSimulation::colors(monoPalette ? QStringLiteral("mono") : QStringLiteral("ocean"));
+        const bool halloween = QByteArray(QTest::currentDataTag()).startsWith("halloween");
+        if (halloween) seasonalAtlasTiles();
+        const bool halloweenNight = QByteArray(QTest::currentDataTag()) == "halloween-night";
+        const auto capturePalette = qEnvironmentVariable("SNAKES_CAPTURE_PALETTE");
+        const auto colors = SnakeSimulation::colors(monoPalette ? QStringLiteral("mono") : !capturePalette.isEmpty() ? capturePalette : QStringLiteral("ocean"));
         const auto path = qEnvironmentVariable("SNAKES_CAPTURE_PATH");
         if (path.isEmpty()) QSKIP("Set SNAKES_CAPTURE_PATH to capture the RHI fixture");
         QQuickWindow window;
-        window.resize((giant || events) ? 3440 : (venom || frost || inventory) ? 1920 : 1280, (giant || events) ? 1440 : (venom || frost || inventory) ? 1080 : 720);
+        window.resize((giant || events || halloween) ? 3440 : (venom || frost || inventory) ? 1920 : 1280, (giant || events || halloween) ? 1440 : (venom || frost || inventory) ? 1080 : 720);
         window.setColor(Qt::black);
         // The borrowed snapshot outlives the item and every render-thread sync.
         SnakeFrame frame;
         SnakeFrame adultFrame;
         SnakeRenderer adultRenderer(window.contentItem());
         SnakeRenderer renderer(window.contentItem());
+        if (halloween) renderer.setSeason(1);
         if (rejectPipeline) {
             if (window.rendererInterface()->graphicsApi() != QSGRendererInterface::OpenGL)
                 QSKIP("The intentional driver compile failure fixture requires OpenGL");
@@ -2243,15 +2358,15 @@ private Q_SLOTS:
             };
         }
         if (classic) renderer.m_shaderSupportCheck=[](QQuickWindow *) { return false; };
-        renderer.setSize((giant || events) ? QSizeF(3440,1440) : (venom || frost || inventory) ? QSizeF(1920,1080) : QSizeF(1280, 720));
-        frame = inventory ? inventoryFrame() : events ? eventsFrame() : frost ? frostFrame() : giant ? giantFrame() : venom ? venomFrame() : prism ? prismFrame() : faces ? facesFrame(false) : powerups ? powerupsFrame() : anatomyFrame();
+        renderer.setSize((giant || events || halloween) ? QSizeF(3440,1440) : (venom || frost || inventory) ? QSizeF(1920,1080) : QSizeF(1280, 720));
+        frame = halloween ? halloweenFrame(halloweenNight, QByteArray(QTest::currentDataTag()).endsWith("gaze-ahead") || QByteArray(QTest::currentDataTag()).endsWith("blink")) : inventory ? inventoryFrame() : events ? eventsFrame() : frost ? frostFrame() : giant ? giantFrame() : venom ? venomFrame() : prism ? prismFrame() : faces ? facesFrame(false) : powerups ? powerupsFrame() : anatomyFrame();
         if (faces) {
             adultFrame = facesFrame(true);
             adultRenderer.setSize({1280,720});
             adultRenderer.syncFrame(adultFrame,colors,1,true);
         }
         // Capture the R8 atlas and capsule contours through a real RHI path.
-        for (uint8_t kind = 1; !powerups && !faces && !prism && !venom && !giant && !frost && !events && !inventory && kind <= 3; ++kind) {
+        for (uint8_t kind = 1; !powerups && !faces && !prism && !venom && !giant && !frost && !events && !inventory && !halloween && kind <= 3; ++kind) {
             snakes_core_item item{};
             item.id = kind; item.kind = kind;
             item.x = 180 + (kind - 1) * 400; item.y = 650;
@@ -2287,11 +2402,11 @@ private Q_SLOTS:
             ++renderer.m_pendingHistoryCount;
         }
         renderer.syncFrame(frame, colors, 1, true);
-        if ((prism || venom || frost || events || inventory) && qEnvironmentVariableIsSet("REAL_CALM")) renderer.setShaderTimeFrozen(true);
+        if ((prism || venom || frost || events || inventory || halloween) && qEnvironmentVariableIsSet("REAL_CALM")) renderer.setShaderTimeFrozen(true);
         // Export the production geometry for surfaceless shader captures when
         // a sandbox cannot create a native Wayland or X11 window.
         const auto vertexDump = qEnvironmentVariable("SNAKES_VERTEX_DUMP_PATH");
-        if ((frost || events || inventory) && !vertexDump.isEmpty()) {
+        if ((frost || events || inventory || halloween) && !vertexDump.isEmpty()) {
             renderer.m_shaderGeometryForTest = true;
             auto *node = static_cast<QSGGeometryNode *>(renderer.updatePaintNode(nullptr, nullptr));
             QVERIFY(node);
@@ -2402,6 +2517,8 @@ private Q_SLOTS:
         std::array<int,2> vertices{};
         for(int id=0;id<2;++id) {
             auto &renderer=renderers[id];auto &frame=frames[id];
+            if (qEnvironmentVariable("PVS_SEASON") == QStringLiteral("halloween")) renderer.setSeason(1);
+            if (qEnvironmentVariableIsSet("HALLOWEEN_BENCH_NIGHT")) {frame.info.world_event.night=1;frame.info.ambient=0.28f;}
             renderer.m_shaderGeometryForTest=true;renderer.setSize({7920,1440});
             renderer.syncFrame(frame,palette,1,true);
             nodes[id]=renderer.updatePaintNode(nullptr,nullptr);
@@ -2447,6 +2564,74 @@ private Q_SLOTS:
                    <<"sync_build_ns"<<double(syncNs[id])/(batches*block);
             delete nodes[id];
         }
+    }
+
+    void seasonalPairedGeometryGate_data()
+    {
+        QTest::addColumn<bool>("chaos");
+        QTest::newRow("mature") << false;
+        QTest::newRow("chaos") << true;
+    }
+    void seasonalPairedGeometryGate()
+    {
+        QFETCH(bool, chaos);
+        std::array<SnakeRenderer,2> renderers;
+        std::array<SnakeFrame,2> frames{referenceFrame(chaos),referenceFrame(chaos)};
+        std::array<QSGNode *,2> nodes{};
+        std::array<int,2> vertices{};
+        for(int id=0;id<2;++id) {
+            auto &renderer=renderers[id];auto &frame=frames[id];
+            renderer.setSeason(id);
+            frame.info.world_event.night=1;frame.info.ambient=0.28f;
+            renderer.m_shaderGeometryForTest=true;renderer.setSize({7920,1440});
+            renderer.syncFrame(frame,palette,1,true);
+            nodes[id]=renderer.updatePaintNode(nullptr,nullptr);
+            if(chaos) {
+                frame.info.tick=601;frame.info.simulation_time=601.0/30;
+                frame.snakes[10].segment_count=71;frame.snakes[10].stump_ticks=48;
+                snakes_core_event sever{};sever.tick=601;sever.kind=SNAKES_CORE_EVENT_SEVER;
+                sever.snake_id=10;sever.other_snake_id=11;sever.generation=1;
+                sever.cut_index=71;sever.duration_ticks=33;frame.events.push_back(sever);
+                renderer.syncFrame(frame,palette,1,true);
+                nodes[id]=renderer.updatePaintNode(nodes[id],nullptr);
+            }
+            vertices[id]=static_cast<QSGGeometryNode *>(nodes[id])->geometry()->vertexCount();
+            QVERIFY(vertices[id]<=(chaos?10236+18:9600+18));
+        }
+        QVERIFY(vertices[1] <= vertices[0] + 18);
+        // Short alternating blocks balance CPU frequency/scheduling drift between
+        // mature and chaos. Retain both warmed nodes and their effect histories.
+        constexpr int batches=100,block=1000;
+        for(int j=0;j<5000;++j) for(int id=0;id<2;++id) {
+            renderers[id].presentFrame(frames[id].info.simulation_time,1);
+            nodes[id]=renderers[id].updatePaintNode(nodes[id],nullptr);
+        }
+        std::array<qint64,2> geometryNs{},syncNs{};
+        const auto threadNs=[]() {
+            timespec t{};
+            if(clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t)!=0) return qint64(-1);
+            return qint64(t.tv_sec)*1000000000+t.tv_nsec;
+        };
+        for(bool sync:{false,true}) for(int batch=0;batch<batches;++batch) for(int order=0;order<2;++order) {
+            const int id=(batch+order)%2;
+            auto &renderer=renderers[id];auto &frame=frames[id];
+            const qint64 start=threadNs();QVERIFY(start>=0);
+            for(int j=0;j<block;++j) {
+                if(sync) renderer.syncFrame(frame,palette,1,true);
+                else renderer.presentFrame(frame.info.simulation_time,1);
+                nodes[id]=renderer.updatePaintNode(nodes[id],nullptr);
+            }
+            (sync?syncNs:geometryNs)[id]+=threadNs()-start;
+        }
+        for(int id=0;id<2;++id) {
+            qInfo()<<"seasonal"<<(chaos?"chaos":"mature")<<"season"<<id<<"vertices"<<vertices[id]
+                   <<"geometry_ns"<<double(geometryNs[id])/(batches*block)
+                   <<"sync_build_ns"<<double(syncNs[id])/(batches*block);
+            delete nodes[id];
+        }
+        const double ratio = double(geometryNs[1])/geometryNs[0];
+        qInfo() << "seasonal paired geometry ratio" << ratio;
+        QVERIFY2(ratio <= (chaos ? 1.20 : 1.05), "Halloween renderer exceeded the paired CPU budget");
     }
 
     void benchmarkMatureGeometry()

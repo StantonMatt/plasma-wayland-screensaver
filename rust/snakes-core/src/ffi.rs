@@ -975,8 +975,19 @@ pub unsafe extern "C" fn snakes_core_render_build_shader(
     status
 }
 
+/// Select the render-only theme without changing ABI records or world state.
+/// Unknown values select no theme.
+/// # Safety
+/// The handle must be live and exclusively borrowed for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn snakes_core_render_set_season(renderer: *mut RenderHandle, season:u32) -> i32 {
+    if !valid(renderer) {return INVALID_ARGUMENT;}
+    unsafe { &mut *renderer }.season=if season==1 {1} else {0};
+    OK
+}
+
 /// Freeze procedural shader motion separately in the host; this shortens
-/// renderer-managed discrete waves and dissolves. Classic output is unaffected.
+/// renderer-managed discrete waves and dissolves.
 /// # Safety
 /// The handle must be live and exclusively borrowed for the duration of the call.
 #[unsafe(no_mangle)]

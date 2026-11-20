@@ -243,6 +243,7 @@ Body along coordinates count from the tail. The four params bytes mean:
 | Impact / succession / boost ring | 6 / 7 / 9 | event seed | reserved | normalized effect age |
 | Prism / PrismSeed (S2) | 8 | phase | ripe life / seed progress | 255 seed; 0..254 ripe age over 1 s (0.6 s in Calm) |
 | Acid glow (S3, colour alpha = strength) | 25 | 0 | 0 | 0 |
+| Halloween Nightfall bat (colour alpha = fade) | 25 | 1 | flap phase | 0 |
 
 Kinds 11–31 were reserved for item and power-up sprites in R2; subsequent
 allocations are documented below. No atlas is needed until R3.
@@ -915,3 +916,30 @@ reset invalidate them. Projection and displaced-curve normals still update on
 every draw. The caches add approximately 3.2 KiB per renderer and no allocation.
 Regression comparisons cover viewport gaps, partial output capacity, both wrap
 policies, intact/dissolving pieces, Calm, topology changes and cache eviction.
+
+### Seasonal presentation
+
+The additive ABI-v4 `snakes_core_render_set_season` setter selects 0 (none)
+or 1 (Halloween); unknown values select none. All world and vertex records
+are unchanged. The material uniform `season` is at std140 offset 96, with
+a 112-byte upload buffer. The existing food and head quads carry the
+pumpkin, eyes, hat, sweets and essence bat branches; atlas tiles 12 and 13
+are the bat silhouette and carved face. Feast uses a static seasonal hue
+table and includes the season in its colour-cache key. At Nightfall the
+renderer adds at most three six-vertex bats (plus shared wrap copies),
+seeded only from the world tick with no simulation RNG or heap allocation.
+They respect local clock exclusion and are omitted in reduced motion.
+
+Lantern eyes keep both the candle hot spot and Hunting pupil inside the
+triangle by scaling gaze by (0.40, 0.50); the socket rim scales with blink
+squash (`0.06 * sq`). Pastel lifts colours 30% toward white only at
+luminance >= 0.16, preserving the dark seed timer track. The witch hat has a lighter
+violet brim, a dark cone with a 22% white lit side, no orange band and a small
+gold dot. Ripe pumpkins have a dark outline seam and 75% of the original
+lantern glow; buds retain their original shading.
+
+Only the Halloween leader's ordinary head quad extends back to 1.3 head units
+(`BOUNDS_HEAD_HAT_BACK`), covering the bent tip, dilation, outline and head AA.
+Boost/Surge retain their larger 2.3-unit rear bound; other heads retain 1.0.
+UVs and extrusion share the selected bound, while the unchanged conservative
+wrap radius contains all rear bounds. The neck fade remains at -1.0 to -0.55.

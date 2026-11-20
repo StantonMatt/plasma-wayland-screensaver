@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Generate the 128x128 R8 icon SDF. Standard library only, build-time only.
 
-32px padded tiles: six items, one reserved item, then !, ?, anger, Zz, heart.
+32px padded tiles: six items, one reserved item, then !, ?, anger, Zz, heart, bat, carved pumpkin face.
 Distances are encoded as 0.5 - distance / 8 pixels (positive inside).
 """
 import math
@@ -34,7 +34,44 @@ def _quad(p0, c, p2, n=10):
 _ANGER = _quad((3.6, 11.5), (3.6, 3.6), (11.5, 3.6))
 
 
+def _bat_points():
+    # Right half, traced from the top of the head clockwise to the centre bottom,
+    # then mirrored. Units are tile pixels (tile centre 0, content within +-12).
+    right = [(0.0, -3.4), (0.9, -4.2), (1.6, -6.8), (2.3, -3.8), (3.2, -3.2)]
+    right += _quad((3.2, -3.2), (7.0, -6.8), (12.0, -6.6), 8)[1:]          # leading edge
+    right += _quad((12.0, -6.6), (12.0, -3.0), (10.8, -0.4), 4)[1:]        # wing tip
+    right += _quad((10.8, -0.4), (9.2, -3.8), (7.6, 0.8), 6)[1:]           # scallop 1
+    right += _quad((7.6, 0.8), (6.0, -2.6), (4.4, 1.8), 6)[1:]             # scallop 2
+    right += _quad((4.4, 1.8), (3.4, -0.4), (2.2, 2.2), 5)[1:]             # scallop 3
+    right += [(1.4, 4.6), (0.0, 5.6)]                                      # body
+    left = [(-x, y) for x, y in reversed(right[1:-1])]
+    return right + left
+
+
+_BAT = _bat_points()
+
+
+def _face(x, y):
+    # Positive-outside SDF of the carved openings, as in the base script.
+    eye_l = polygon(x, y, [(-8.4, -1.2), (-2.6, -1.2), (-5.5, -7.4)])
+    eye_r = polygon(x, y, [(2.6, -1.2), (8.4, -1.2), (5.5, -7.4)])
+    nose = polygon(x, y, [(-1.4, 1.4), (1.4, 1.4), (0.0, -1.2)])
+    upper = _quad((-9.6, 2.0), (0.0, 5.0), (9.6, 2.0), 10)
+    lower = _quad((9.6, 2.0), (0.0, 15.4), (-9.6, 2.0), 12)[1:-1]
+    mouth = polygon(x, y, upper + lower)
+    # One tooth hangs from the top lip, two rise from the bottom lip.
+    tooth_top = polygon(x, y, [(-1.2, 2.0), (1.2, 2.0), (1.2, 5.8), (-1.2, 5.8)])
+    tooth_bl = polygon(x, y, [(-6.4, 11.0), (-4.0, 11.0), (-4.0, 5.6), (-6.4, 5.6)])
+    tooth_br = polygon(x, y, [(4.0, 11.0), (6.4, 11.0), (6.4, 5.6), (4.0, 5.6)])
+    mouth = max(mouth, -tooth_top, -tooth_bl, -tooth_br)
+    return min(eye_l, eye_r, nose, mouth)
+
+
 def icon(kind, x, y):
+    if kind == 12:
+        return polygon(x, y, _BAT)
+    if kind == 13:
+        return _face(x, y)
     if kind == 0:
         return polygon(x, y, [(2, -11), (-8, 2), (-1, 2), (-3, 11), (8, -3), (1, -3)])
     if kind == 1:

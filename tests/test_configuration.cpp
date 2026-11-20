@@ -15,6 +15,33 @@ class ConfigurationTest final : public QObject
     Q_OBJECT
 
 private Q_SLOTS:
+    void seasonalAppearanceRoundTrip()
+    {
+        QTemporaryDir dir;
+        const auto path = dir.filePath(QStringLiteral("settingsrc"));
+        Configuration config(path);
+        QVERIFY(config.seasonalThemes());
+        QCOMPARE(config.defaults(QStringLiteral("appearance")).value(QStringLiteral("seasonalThemes")).toBool(), true);
+        QVERIFY(!config.defaults(QStringLiteral("general")).contains(QStringLiteral("seasonalThemes")));
+        const auto original = config.snapshot(QStringLiteral("appearance"));
+        config.apply({{QStringLiteral("seasonalThemes"), false}});
+        QVERIFY(!config.seasonalThemes());
+        config.save();
+        Configuration restored(path);
+        QVERIFY(!restored.seasonalThemes());
+        KConfig disk(path, KConfig::SimpleConfig);
+        QVERIFY(!KConfigGroup(&disk, QStringLiteral("General")).readEntry("SeasonalThemes", true));
+        restored.restoreDefaults(QStringLiteral("general"));
+        QVERIFY(!restored.seasonalThemes());
+        restored.restoreDefaults(QStringLiteral("appearance"));
+        QVERIFY(restored.seasonalThemes());
+        config.apply(original);
+        QVERIFY(config.seasonalThemes());
+        config.setVisualModule(QStringLiteral("snakes"));
+        config.setSeasonalThemes(false);
+        config.setVisualModule(QStringLiteral("aurora"));
+        QVERIFY(!config.seasonalThemes()); // global appearance key, not an animation profile
+    }
     void defaultsAndValidation()
     {
         QTemporaryDir directory;

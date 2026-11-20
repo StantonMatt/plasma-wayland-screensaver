@@ -63,6 +63,8 @@ set(screensaver_sources
     inhibitor.h
     overlaymanager.cpp
     overlaymanager.h
+    season.cpp
+    season.h
     presentationclock.cpp
     presentationclock.h
     screensaverstatemachine.cpp

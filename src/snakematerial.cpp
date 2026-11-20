@@ -120,6 +120,10 @@ public:
             std::memcpy(data->data() + offsetof(SnakeMaterial::UniformData, paletteMode), &material->paletteMode, 4);
             changed = true;
         }
+        if (!old || std::memcmp(data->constData() + offsetof(SnakeMaterial::UniformData, season), &material->season, 4) != 0) {
+            std::memcpy(data->data() + offsetof(SnakeMaterial::UniformData, season), &material->season, 4);
+            changed = true;
+        }
         if (!old || std::memcmp(data->constData() + offsetof(SnakeMaterial::UniformData, ambient), &material->ambient, 4) != 0) {
             std::memcpy(data->data() + offsetof(SnakeMaterial::UniformData, ambient), &material->ambient, 4);
             changed = true;
@@ -145,6 +149,7 @@ int SnakeMaterial::compare(const QSGMaterial *other) const
     const auto *material = static_cast<const SnakeMaterial *>(other);
     if (animationTime != material->animationTime) return animationTime < material->animationTime ? -1 : 1;
     if (motionScale != material->motionScale) return motionScale < material->motionScale ? -1 : 1;
+    if (season != material->season) return season < material->season ? -1 : 1;
     if (ambient != material->ambient) return ambient < material->ambient ? -1 : 1;
     return paletteMode < material->paletteMode ? -1 : paletteMode > material->paletteMode ? 1 : 0;
 }

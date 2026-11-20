@@ -30,7 +30,7 @@ pub(super) struct Wave { pub(super) time: f64, pub(super) active: bool, pub(supe
 // One shared rainbow scratch buffer; retain only the last completed colour
 // sample. A redraw at the same event age does not repeat exponentials/rounds.
 #[derive(Clone,Copy,PartialEq)]
-pub(super) struct RainbowSample {id:u32,n:usize,time:f64,calm:bool,base:Color,palette:Color,frozen:bool,waves:[Wave;2]}
+pub(super) struct RainbowSample {season:u8,id:u32,n:usize,time:f64,calm:bool,base:Color,palette:Color,frozen:bool,waves:[Wave;2]}
 
 #[inline(always)]
 fn wave_flags(origin:u8)->u8 { ((origin&1)<<1)|((origin&6)<<3) }
@@ -579,12 +579,12 @@ impl Renderer {
             let body_kind=if phase_progress<255 {6} else {active_kind};
             let phase_bits=wave_flags(((phase_progress as u16*7+127)/255) as u8);
             let flags=s.flags as u8;let c=frost::ice(color(s.color_index),s.flags,palette);
-            let sample=RainbowSample {id:s.id,n,time:event_time(info,p,self.reduced_motion),calm:self.reduced_motion,
+            let sample=RainbowSample {season:self.season,id:s.id,n,time:event_time(info,p,self.reduced_motion),calm:self.reduced_motion,
                 base:color(s.color_index),palette:palette.first().copied().unwrap_or_default(),frozen:s.flags&flags::FROZEN!=0,waves:self.waves[id]};
             let rainbow=if s.alive==0 || corpse || !self.waves[id].iter().any(|w|w.active && w.kind==8) {false}
                 else if self.rainbow_sample==Some(sample) {true}
                 else {
-                    let active=prism::rainbow(s,self.waves[id],info,p,self.reduced_motion,palette,color(s.color_index),&mut self.rainbow[..n]);
+                    let active=prism::rainbow(self.season,s,self.waves[id],info,p,self.reduced_motion,palette,color(s.color_index),&mut self.rainbow[..n]);
                     if active && sample.frozen {for c in &mut self.rainbow[..n] {*c=frost::ice(*c,s.flags,palette);}}
                     self.rainbow_sample=if active {Some(sample)} else {None};active
                 };
@@ -768,7 +768,9 @@ impl Renderer {
             if len<0.001 { continue; }let forward=forward/len;let side=P::new(-forward.y,forward.x);
             let hr=r*if tier==0 { 1.24 } else { 1.14 };
             let boosting=s.flags&flags::BOOSTING!=0;
-            let back=if boosting || active_kind==1 { HEAD_BOOST_BACK } else { HEAD_BACK };
+            let back=if boosting || active_kind==1 { HEAD_BOOST_BACK }
+                else if self.season==1 && s.flags&flags::LEADER!=0 { HEAD_HAT_BACK }
+                else { HEAD_BACK };
             let half_width=if boosting || active_kind==1 { HEAD_BOOST_SIDE } else { HEAD_SIDE };
             let half_length=(HEAD_FRONT+back)*0.5;let offset=(HEAD_FRONT-back)*0.5;
             // UV stores head units: x forward, y across; tongue included in this quad.
@@ -786,6 +788,8 @@ impl Renderer {
             let flare=self.waves[id].iter().any(|w|w.active && (0.0..0.5*motion_scale).contains(&(event_time(info,p,self.reduced_motion)-w.time)));
             let head_flags=(flags & 65) | (mood<<1) | ((jaw&4)<<5) | if active_kind==3 {flags::PHASED as u8} else {0};
             let params=[if active_kind==4 {if s.flags&flags::STRIKE!=0 {24} else {23}} else if active_kind==1 {28} else if phase_progress<255 {29+((phase_progress as u16*226+127)/255) as u8} else {1},tier|(intensity<<2)|if white_crown {64} else {0}|if flare {128} else {0},head_flags,look];
+            // HEAD_FRONT also contains HEAD_HAT_BACK/HEAD_BOOST_BACK (bounds
+            // regression), so this radius covers the full quad for every angle.
             let margin=P::new(hr*(HEAD_FRONT*HEAD_FRONT+half_width*half_width).sqrt()/sx,hr*(HEAD_FRONT*HEAD_FRONT+half_width*half_width).sqrt()/sy);let (xs,ys)=copies(head,head,margin,arena,walls);
             for x in xs.first..=xs.last { for y in ys.first..=ys.last {
                 let shift=P::new(x as f64*xs.extent*sx,y as f64*ys.extent*sy);
@@ -818,6 +822,7 @@ impl Renderer {
             self.shader_prism_races(info,p,palette,snakes,segments,food,&mut sink);
         } else if event_race {self.shader_race_items(info,p,palette,snakes,segments,&mut sink,&self.items[..self.item_count],self.item_radius,4);}
         else {self.shader_races(info,p,palette,snakes,segments,&mut sink);}
+        self.shader_season_bats(info,p,&mut sink);
         self.shader_bubbles(info,p,palette,snakes,segments,&mut sink);
         self.shader_orphans(info,p,palette,&mut sink);
         let mut effect_budget=EffectBudget::default();

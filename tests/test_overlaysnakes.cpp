@@ -19,6 +19,48 @@ class OverlaySnakesTest final : public QObject
 {
     Q_OBJECT
 private Q_SLOTS:
+    void seasonalMidnightSwitchAndOverride()
+    {
+        const QByteArray previous = qgetenv("PVS_SEASON");
+        const bool wasSet = qEnvironmentVariableIsSet("PVS_SEASON");
+        qputenv("PVS_SEASON", "auto");
+        QTemporaryDir dir;
+        Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
+        settings.setVisualModule(QStringLiteral("none"));
+        OverlayManager manager(&settings);
+        QVERIFY(manager.show());
+        QVERIFY(manager.m_seasonTimer.isSingleShot());
+        QCOMPARE(manager.m_seasonTimer.timerType(), Qt::PreciseTimer);
+        QVERIFY(manager.m_seasonTimer.isActive());
+        auto *root = manager.m_views.constBegin().value()->rootObject();
+        QVERIFY(root);
+        // Drive the same cached-date update used by the midnight callback.
+        manager.m_seasonDate = QDate(2026,10,23); manager.updateSeason();
+        QCOMPARE(root->property("season").toInt(), 0);
+        manager.m_seasonDate = QDate(2026,10,24); manager.updateSeason();
+        QCOMPARE(root->property("season").toInt(), 1);
+        settings.setSeasonalThemes(false);
+        QCOMPARE(root->property("season").toInt(), 0);
+        settings.setSeasonalThemes(true);
+        QCOMPARE(root->property("season").toInt(), 1);
+        manager.m_seasonDate = QDate(2026,11,2); manager.updateSeason();
+        QCOMPARE(root->property("season").toInt(), 0);
+        qputenv("PVS_SEASON", "halloween");
+        manager.updateSeason();
+        QCOMPARE(root->property("season").toInt(), 0); // override is sampled once
+        manager.m_seasonTimer.setInterval(1); manager.m_seasonTimer.start();
+        QTRY_VERIFY(manager.m_seasonTimer.interval() > 1000); // timeout re-arms at next midnight
+        QCOMPARE(manager.m_seasonDate, QDate::currentDate());
+        manager.hide();
+        QVERIFY(!manager.m_seasonTimer.isActive());
+        OverlayManager forced(&settings);
+        settings.setSeasonalThemes(false);
+        QVERIFY(forced.show());
+        QCOMPARE(forced.m_views.constBegin().value()->rootObject()->property("season").toInt(), 1);
+        forced.hide();
+        if (wasSet) qputenv("PVS_SEASON", previous); else qunsetenv("PVS_SEASON");
+    }
+
     void mappingMotionHasGraceButDeliberateInputDismisses()
     {
         QTemporaryDir dir;

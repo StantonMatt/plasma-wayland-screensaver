@@ -11,6 +11,7 @@ class SnakeRenderer : public QQuickItem
     Q_PROPERTY(SnakeSimulation *simulation READ simulation WRITE setSimulation NOTIFY simulationChanged)
     Q_PROPERTY(bool scaleToViewport READ scaleToViewport WRITE setScaleToViewport)
     Q_PROPERTY(bool shaderTimeFrozen READ shaderTimeFrozen WRITE setShaderTimeFrozen)
+    Q_PROPERTY(int season READ season WRITE setSeason)
     Q_PROPERTY(QRectF clockRect READ clockRect WRITE setClockRect)
     Q_PROPERTY(bool developerMode READ developerMode WRITE setDeveloperMode)
     Q_PROPERTY(qreal drawOffsetX READ drawOffsetX WRITE setDrawOffsetX)
@@ -35,6 +36,8 @@ public:
     void setScaleToViewport(bool enabled);
     bool developerMode() const { return m_developerMode; }
     void setDeveloperMode(bool enabled);
+    int season() const { return m_season; }
+    void setSeason(int season) { season = season == 1 ? 1 : 0; if (m_season == season) return; m_season = season; update(); }
     QRectF clockRect() const { return m_clockRect; }
     void setClockRect(const QRectF &rect) { if (m_clockRect == rect) return; m_clockRect = rect; update(); }
     bool shaderTimeFrozen() const { return m_shaderTimeFrozen; }
@@ -71,6 +74,7 @@ private:
     qreal m_worldToViewX = 1;
     qreal m_worldToViewY = 1;
     QRectF m_clockRect;
+    int m_season = 0;
     qreal m_drawOffsetX = 0;
     qreal m_drawOffsetY = 0;
     bool m_deadlyWalls = true;

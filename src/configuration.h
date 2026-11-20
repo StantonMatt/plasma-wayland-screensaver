@@ -38,6 +38,7 @@ class Configuration final : public QObject
     Q_PROPERTY(QString clockMovement READ clockMovement WRITE setClockMovement NOTIFY changed)
     Q_PROPERTY(QString clockSpeed READ clockSpeed WRITE setClockSpeed NOTIFY changed)
     Q_PROPERTY(int frameRate READ frameRate WRITE setFrameRate NOTIFY changed)
+    Q_PROPERTY(bool seasonalThemes READ seasonalThemes WRITE setSeasonalThemes NOTIFY changed)
     Q_PROPERTY(bool reducedMotion READ reducedMotion WRITE setReducedMotion NOTIFY changed)
     Q_PROPERTY(QString monitorBehavior READ monitorBehavior WRITE setMonitorBehavior NOTIFY changed)
     Q_PROPERTY(bool coverPanels READ coverPanels WRITE setCoverPanels NOTIFY changed)
@@ -71,6 +72,7 @@ public:
     QString clockMovement() const;
     QString clockSpeed() const;
     int frameRate() const;
+    bool seasonalThemes() const;
     bool reducedMotion() const;
     QString monitorBehavior() const;
     bool coverPanels() const;
@@ -100,6 +102,7 @@ public:
     void setClockMovement(const QString &value);
     void setClockSpeed(const QString &value);
     void setFrameRate(int value);
+    void setSeasonalThemes(bool value);
     void setReducedMotion(bool value);
     void setMonitorBehavior(const QString &value);
     void setCoverPanels(bool value);
@@ -156,6 +159,7 @@ private:
     QString m_clockMovement;
     QString m_clockSpeed;
     int m_frameRate = {};
+    bool m_seasonalThemes = true;
     bool m_reducedMotion = {};
     QString m_monitorBehavior;
     bool m_coverPanels = {};

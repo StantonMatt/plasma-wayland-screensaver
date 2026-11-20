@@ -179,6 +179,7 @@ pub struct Renderer {
     wave_origins: Vec<u8>,
     taper_lengths: [usize;MAX_SNAKES],
     pub reduced_motion: bool,
+    pub season: u8,
     items: [ItemRecord;crate::MAX_ITEMS],
     item_count: usize,
     item_radius: f64,
@@ -231,6 +232,7 @@ impl Renderer {
             wave_origins: vec![0;MAX_SEGMENTS],
             taper_lengths: [0;MAX_SNAKES],
             reduced_motion: false,
+            season: 0,
             items: [ItemRecord::default();crate::MAX_ITEMS],
             item_count: 0,
             item_radius: 0.0,
@@ -358,7 +360,7 @@ impl Renderer {
             };
             let raw_size = world_size*scale;
             let size = raw_size*if matches!(f.kind,3|4) {shader::PRISM_VISUAL} else {1.0};
-            let c = color(f.color_index);
+            let c = if self.season==1 && matches!(f.kind,3|4) {faces::palette_accent(Color::new(255,117,24,255),palette)} else {color(f.color_index)};
             let pos = P::new(f.x as f64, f.y as f64);
             // Include minimum-sized highlights and the entire vacuum streak,
             // whose endpoint may cross a seam even when the halo does not.
@@ -416,7 +418,7 @@ impl Renderer {
                         for j in 0..12 {
                             let a=(j as f64/12.0*std::f64::consts::TAU)-std::f64::consts::FRAC_PI_2;
                             let b=((j+1) as f64/12.0*std::f64::consts::TAU)-std::f64::consts::FRAC_PI_2;
-                            let tint=items::tint(prism::HUES[j/2],palette).alpha(if j as f64/12.0<progress {210} else {45});
+                            let tint=(if self.season==1 {faces::palette_accent(Color::new(204,51,13,255),palette)} else {items::tint(prism::HUES[j/2],palette)}).alpha(if j as f64/12.0<progress {210} else {45});
                             sink.segment(center+P::new(a.cos(),a.sin())*(size*2.7),center+P::new(b.cos(),b.sin())*(size*2.7),(size*0.08).max(0.5),tint);
                         }
                     } else if !pellet {
@@ -446,7 +448,7 @@ impl Renderer {
                     (center,if flip {6} else {w.kind},trail)
                 } else { (0.0,0,0.0) }
             });
-            let rainbow=prism::rainbow(s,self.waves[s.id as usize],info,p,self.reduced_motion,palette,
+            let rainbow=prism::rainbow(self.season,s,self.waves[s.id as usize],info,p,self.reduced_motion,palette,
                 color(s.color_index),&mut self.rainbow[..n]);
             if rainbow && s.flags&flags::FROZEN!=0 {for c in &mut self.rainbow[..n] {*c=frost::ice(*c,s.flags,palette);}}
             let gulp_centers=prism::centers(s,info,p,self.reduced_motion);
@@ -673,6 +675,7 @@ impl Renderer {
                                     let mix=|a:u8,b:u8|(a as f64+(b as f64-a as f64)*intensity).round() as u8;
                                     Color::new(mix(calm.red,active.red),mix(calm.green,active.green),mix(calm.blue,active.blue),255)
                                 };
+                                let white=if self.season==1 && mood<=2 {faces::palette_accent(if mood==2 {Color::new(255,90,31,255)} else {Color::new(255,154,60,255)},palette)} else {white};
                                 let active_pupil=if matches!(mood,3|6) {0.12} else if matches!(mood,2|4) {0.30} else {0.48};
                                 let pupil=0.48+(active_pupil-0.48)*intensity;
                                 if info.ambient>0.0 && info.ambient<1.0 {sink.disc(eye,eye_r*2.0,white.alpha(((1.0-info.ambient)/0.72*80.0) as u8).fade(fade),8);}

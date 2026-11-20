@@ -3230,3 +3230,153 @@ fn zero_allocations_rendering_four_items_and_replaying_whirlpool_history() {
     }
     assert_eq!(COUNT.with(|c|c.replace(None).unwrap()),0);
 }
+
+#[test]
+fn halloween_bats_are_tick_deterministic_bounded_and_allocation_free() {
+    let mut r=RenderHandle::new();let mut other=RenderHandle::new();
+    let mut f=info();f.world_width=7920.0;f.world_height=1440.0;f.world_event.night=1.0;
+    let mut p=params();p.viewport_width=f.world_width;
+    let mut out=[ShaderRenderVertex::default();128];let mut expected=[ShaderRenderVertex::default();128];
+    unsafe {
+        assert_eq!(snakes_core_render_set_season(std::ptr::null_mut(),1),INVALID_ARGUMENT);
+        assert_eq!(snakes_core_render_set_season(&mut r,2),OK);
+    }
+    assert_eq!(r.build_shader(&f,&[],&[],&[],&[],&[],&p,&mut out).vertex_count,0);
+    unsafe {assert_eq!(snakes_core_render_set_season(&mut r,1),OK);}
+    other.season=1;
+    let n=r.build_shader(&f,&[],&[],&[],&[],&[],&p,&mut out).vertex_count;
+    assert!(n>0 && n<=18 && n%6==0);
+    let mut different=p;different.presentation_time=999.0;
+    let m=other.build_shader(&f,&[],&[],&[],&[],&[],&different,&mut expected).vertex_count;
+    assert_eq!(n,m);assert_eq!(out[..n],expected[..m],"world tick, not presentation time, owns bat position");
+    for v in &out[..n] {assert_eq!(v.params[0..2],[25,1]);assert_eq!(v.params[3],0);}
+    // A second monitor uses the same world flight, transformed into its viewport.
+    different.viewport_width=3960.0;different.offset_x=-3960.0;
+    let m=other.build_shader(&f,&[],&[],&[],&[],&[],&different,&mut expected).vertex_count;
+    for copy in expected[..m].chunks_exact(6) {
+        assert!(out[..n].chunks_exact(6).any(|a|a[0].params==copy[0].params && a[0].color==copy[0].color
+            && (a[0].x-copy[0].x-3960.0).abs()<0.001 && a[0].y==copy[0].y));
+    }
+    COUNT.with(|c|c.set(Some(0)));
+    for tick in 600..1800 {
+        f.tick=tick;
+        let n=r.build_shader(&f,&[],&[],&[],&[],&[],&p,&mut out).vertex_count;
+        assert!(n<=18 && n%6==0);
+    }
+    let allocations=COUNT.with(|c|c.replace(None).unwrap());assert_eq!(allocations,0);
+    r.reduced_motion=true;
+    assert_eq!(r.build_shader(&f,&[],&[],&[],&[],&[],&p,&mut out).vertex_count,0);
+    r.reduced_motion=false;f.world_event.night=0.0;
+    assert_eq!(r.build_shader(&f,&[],&[],&[],&[],&[],&p,&mut out).vertex_count,0);
+    f.world_event.night=1.0;
+    r.set_clock_rect([0.0,0.0,7920.0,1440.0]);
+    assert_eq!(r.build_shader(&f,&[],&[],&[],&[],&[],&p,&mut out).vertex_count,0);
+    r.set_clock_rect([0.0;4]);r.reset();assert_eq!(r.season,1);
+    // Crossing the world seam generates the same complete quad on both sides.
+    let mut found=false;
+    for tick in 0..2000 {
+        f.tick=tick;p.deadly_walls=1;
+        let walls=r.build_shader(&f,&[],&[],&[],&[],&[],&p,&mut out).vertex_count;
+        p.deadly_walls=0;
+        let wraps=other.build_shader(&f,&[],&[],&[],&[],&[],&p,&mut expected).vertex_count;
+        if wraps>walls {found=true;break;}
+    }
+    assert!(found,"deterministic flight fixture crosses a seam");
+}
+
+#[test]
+fn halloween_feast_invalidates_cached_colours_without_changing_geometry() {
+    let mut r=RenderHandle::new();let mut s=snake();s.segment_count=48;
+    let b:Vec<_>=(0..48).map(|i|SegmentRecord{x:600.0-i as f32*7.0,y:300.0,previous_x:600.0-i as f32*7.0,previous_y:300.0}).collect();
+    let mut a=[ShaderRenderVertex::default();1024];let mut h=a;let mut restored=a;
+    let feast=EventRecord {tick:585,snake_id:0,generation:1,kind:10,duration_ticks:55,..Default::default()};
+    let pal=palette();let p=params();let f=info();
+    let n=r.build_shader(&f,&[s],&b,&[],&[feast],&pal,&p,&mut a).vertex_count;
+    r.season=1;
+    assert_eq!(r.build_shader(&f,&[s],&b,&[],&[],&pal,&p,&mut h).vertex_count,n);
+    assert_ne!(a[..n],h[..n]);
+    for (a,h) in a[..n].iter().zip(&h[..n]) {assert_eq!((a.x,a.y,a.params),(h.x,h.y,h.params));}
+    r.season=0;
+    assert_eq!(r.build_shader(&f,&[s],&b,&[],&[],&pal,&p,&mut restored).vertex_count,n);
+    assert_eq!(a[..n],restored[..n]);
+}
+
+#[test]
+fn halloween_keeps_food_head_payloads_and_classic_shapes() {
+    let mut r=RenderHandle::new();let mut a=[ShaderRenderVertex::default();1024];let mut h=a;
+    let mut s=snake();s.segment_count=8;s.flags=flags::LEADER;s.face_flags=FACE_OBSERVED;s.mood_intensity=255;
+    let b:[SegmentRecord;8]=std::array::from_fn(|j|SegmentRecord{x:600.0-j as f32*8.0,y:500.0,previous_x:600.0-j as f32*8.0,previous_y:500.0});
+    let food:[FoodRecord;4]=std::array::from_fn(|j|FoodRecord {id:j as u64,x:1000.0+j as f32*100.0,y:600.0,size:6.0,
+        kind:[0,1,3,4][j],life_fraction:128,ripe_tick:580,phase:j as f32,..Default::default()});
+    let pal=palette();let f=info();let p=params();
+    let n=r.build_shader(&f,&[s],&b,&food,&[],&pal,&p,&mut a).vertex_count;
+    r.season=1;
+    assert_eq!(r.build_shader(&f,&[s],&b,&food,&[],&pal,&p,&mut h).vertex_count,n);
+    for (a,h) in a[..n].iter().zip(&h[..n]) {
+        assert_eq!((a.params,a.color),(h.params,h.color));
+        if a.params[0]==1 {
+            assert_eq!(a.along,h.along);
+            assert_eq!(h.across,if a.across<0.0 {-1.3} else {a.across});
+        } else {assert_eq!(a,h,"non-head seasonal geometry stays identical");}
+    }
+    for (kind,count) in [(1,6),(2,6),(3,6),(8,12)] {assert_eq!(h[..n].iter().filter(|v|v.params[0]==kind).count(),count);}
+    let mut before=[RenderVertex::default();8192];let mut after=before;
+    r.season=0;
+    let n=r.build(&f,&[s],&b,&food,&[],&pal,&p,&mut before).vertex_count;
+    r.season=1;
+    assert_eq!(r.build(&f,&[s],&b,&food,&[],&pal,&p,&mut after).vertex_count,n);
+    assert_ne!(before[..n],after[..n]);
+    for (a,h) in before[..n].iter().zip(&after[..n]) {assert_eq!((a.x,a.y),(h.x,h.y));}
+}
+
+
+#[test]
+fn halloween_hat_quad_preserves_units_wraps_and_boost_bounds_without_allocations() {
+    let mut out=[ShaderRenderVertex::default();4096];
+    for season in [0,1] {
+        for (flags,effect_kind) in [(0,0),(flags::LEADER,0),(flags::BOOSTING,0),
+            (flags::BOOSTING|flags::LEADER,0),(flags::LEADER,1)] {
+            for reduced in [false,true] {
+                for (x,y,angle,walls) in [(600.0,500.0,0.0,1),(2.0,2.0,0.7,0),(3438.0,1438.0,2.3,0)] {
+                    let s=SnakeRecord {flags,effect_kind,effect_ticks:if effect_kind==1 {90} else {0},angle,
+                        face_flags:FACE_OBSERVED,mood_intensity:255,..snake()};
+                    let b:[SegmentRecord;3]=std::array::from_fn(|j|SegmentRecord {
+                        x:x-j as f32*8.0*angle.cos() as f32,y:y-j as f32*8.0*angle.sin() as f32,
+                        previous_x:x-j as f32*8.0*angle.cos() as f32,previous_y:y-j as f32*8.0*angle.sin() as f32});
+                    let p=RenderParams {scale_x:0.8,scale_y:1.2,deadly_walls:walls,
+                        viewport_width:3440.0*0.8,viewport_height:1440.0*1.2,..params()};
+                    let mut r=RenderHandle::new();r.season=season;
+                    unsafe {assert_eq!(snakes_core_render_set_reduced_motion(&mut r,reduced as u32),OK);}
+                    let n=r.build_shader(&info(),&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count;
+                    let back=if flags&flags::BOOSTING!=0 || effect_kind==1 {2.3}
+                        else if season==1 && flags&flags::LEADER!=0 {1.3} else {1.0};
+                    let side=if flags&flags::BOOSTING!=0 || effect_kind==1 {2.5} else {1.75};
+                    let hr=8.0_f64*(0.8_f64*1.2).sqrt()*1.24;
+                    let a=(angle.sin()*1.2).atan2(angle.cos()*0.8);
+                    let mut count=0;
+                    for q in out[..n].chunks_exact(6).filter(|q|q[0].params[0]==if effect_kind==1 {28} else {1}) {
+                        count+=1;
+                        assert_eq!(q[0].across,-back as f32);
+                        assert_eq!(q[1].across,2.9);
+                        assert_eq!(q[0].along,-side as f32);
+                        // Reconstruct the head centre from each UV corner: same
+                        // physical units under anisotropic scaling and rotation.
+                        let origin=|v:&ShaderRenderVertex| (v.x as f64-hr*(v.across as f64*a.cos()-v.along as f64*a.sin()),
+                            v.y as f64-hr*(v.across as f64*a.sin()+v.along as f64*a.cos()));
+                        let head=origin(&q[0]);
+                        for v in q {
+                            let at=origin(v);
+                            assert!((at.0-head.0).abs()<0.0005 && (at.1-head.1).abs()<0.0005);
+                        }
+                    }
+                    assert_eq!(count,if walls!=0 {1} else {4},"season={season}, flags={flags}, effect={effect_kind}");
+                    COUNT.with(|c|c.set(Some(0)));
+                    for _ in 0..30 {
+                        assert_eq!(r.build_shader(&info(),&[s],&b,&[],&[],&palette(),&p,&mut out).vertex_count,n);
+                    }
+                    assert_eq!(COUNT.with(|c|c.replace(None)),Some(0));
+                }
+            }
+        }
+    }
+}

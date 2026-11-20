@@ -19,6 +19,52 @@ fn meteor(f:&FoodRecord,info:&FrameInfo,p:&Params,calm:bool)->(P,P,f64) {
     (if calm {landing} else {origin+d*q},d,if calm {(q/0.6).min(1.0)} else {1.0})
 }
 impl Renderer {
+    pub(super) fn shader_season_bats(&self,info:&FrameInfo,p:&Params,sink:&mut SpriteSink<'_>) {
+        let night=info.world_event.night as f64;
+        if self.season!=1 || self.reduced_motion || !night.is_finite() || night<=0.05 {return;}
+        let u=((night-0.4)/0.5).clamp(0.0,1.0);
+        let night_fade=u*u*(3.0-2.0*u);
+        if night_fade<=0.0 {return;}
+        let interval=(900.0/(info.world_width*info.world_height/1.0e6)).round().clamp(60.0,300.0) as u64;
+        let slot=info.tick/interval;
+        let radius=if self.item_radius>0.0 {self.item_radius/2.1} else {18.0};
+        let scale=(p.scale_x*p.scale_y).sqrt();
+        let arena=P::new(info.world_width,info.world_height);
+        for previous in 0..3 {
+            let Some(k)=slot.checked_sub(previous) else {continue;};
+            let ticks=info.tick-k*interval;
+            if ticks>=180 {continue;}
+            let age=ticks as f64*crate::STEP_SECONDS;
+            let fade=(age/0.5).min(1.0)*((6.0-age)/0.5).min(1.0)*night_fade;
+            if fade<=0.0 {continue;}
+            // Stateless SplitMix64; never consume simulation random state.
+            let mut state=k;
+            let h:[f64;7]=std::array::from_fn(|_| {
+                state=state.wrapping_add(0x9e3779b97f4a7c15);
+                let mut z=state;
+                z=(z^(z>>30)).wrapping_mul(0xbf58476d1ce4e5b9);
+                z=(z^(z>>27)).wrapping_mul(0x94d049bb133111eb);
+                ((z^(z>>31))>>11) as f64*(1.0/9007199254740992.0)
+            });
+            let angle=(h[3]-0.5)*0.5;
+            let direction=P::new(angle.cos()*if h[2]<0.5 {-1.0} else {1.0},angle.sin());
+            let side=P::new(-direction.y,direction.x);
+            let phase=std::f64::consts::TAU*h[5];
+            let pos=P::new(h[0]*arena.x,(0.12+0.76*h[1])*arena.y)
+                +direction*((6.0+3.0*h[4])*radius*(age-3.0))
+                +side*(1.6*radius*(1.9*age+phase).sin());
+            let extent=(1.8+0.4*h[6])*radius*scale;
+            let (xs,ys)=copies(pos,pos,P::new(extent/p.scale_x,extent/p.scale_y),arena,p.deadly_walls!=0);
+            for x in xs.first..=xs.last {for y in ys.first..=ys.last {
+                let v=pos+P::new(x as f64*xs.extent,y as f64*ys.extent);
+                let center=P::new(v.x*p.scale_x+p.offset_x,v.y*p.scale_y+p.offset_y);
+                let [cx,cy,cw,ch]=self.clock_rect;
+                if cw>0.0 && ch>0.0 && center.x+extent>=cx && center.x-extent<=cx+cw
+                    && center.y+extent>=cy && center.y-extent<=cy+ch {continue;}
+                sink.sprite(center,extent,Color::new(255,255,255,255).fade(fade),[25,1,(h[5]*255.0) as u8,0]);
+            }}
+        }
+    }
     pub(super) fn shader_world_event(&self,info:&FrameInfo,p:&Params,palette:&[Color],sink:&mut SpriteSink<'_>) {
         let e=info.world_event;
         if e.kind!=1 || e.phase==0 || !coordinate32(e.x) || !coordinate32(e.y) || !(0.0..=info.world_width.hypot(info.world_height)).contains(&(e.radius as f64)) || e.radius==0.0 {return;}

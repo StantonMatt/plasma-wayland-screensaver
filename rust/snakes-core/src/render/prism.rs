@@ -3,6 +3,9 @@
 use super::*;
 pub(super) const HUES:[Color;6]=[Color {red:255,green:100,blue:120,alpha:255},Color {red:255,green:180,blue:90,alpha:255},
     Color {red:245,green:240,blue:120,alpha:255},Color {red:120,green:245,blue:170,alpha:255},Color {red:100,green:205,blue:255,alpha:255},Color {red:195,green:145,blue:255,alpha:255}];
+pub(super) const HALLOWEEN_HUES:[Color;6]=[Color {red:255,green:117,blue:24,alpha:255},Color {red:255,green:179,blue:71,alpha:255},
+    Color {red:182,green:240,blue:74,alpha:255},Color {red:155,green:107,blue:255,alpha:255},Color {red:208,green:92,blue:255,alpha:255},Color {red:239,green:62,blue:54,alpha:255}];
+pub(super) fn hues(season:u8)-> &'static [Color;6] {if season==1 {&HALLOWEEN_HUES} else {&HUES}}
 pub(super) fn centers(s:&SnakeRecord,info:&FrameInfo,p:&Params,calm:bool)->[(f64,f64);2] {
     let mut result=[(-100.0,0.0);2];
     if s.alive==0 || s.flags&flags::CORPSE!=0 {return result;}
@@ -30,12 +33,13 @@ pub(super) fn widen(normals:&mut [P],centers:[(f64,f64);2]) {
         }
     }
 }
-pub(super) fn rainbow(s:&SnakeRecord,waves:[shader::Wave;2],info:&FrameInfo,p:&Params,calm:bool,palette:&[Color],base:Color,out:&mut [Color])->bool {
+pub(super) fn rainbow(season:u8,s:&SnakeRecord,waves:[shader::Wave;2],info:&FrameInfo,p:&Params,calm:bool,palette:&[Color],base:Color,out:&mut [Color])->bool {
     // Rides the bulge: 2-segment front, full-strength 5 segments behind it, then a
     // 5-segment exponential rainbow wake toward the head;
     // continuous hue, then a 0.5 s fade once the bulge leaves the tail.
     // Colour alpha carries the light weight (0..255) for the brightness byte.
     if s.alive==0 || s.flags&flags::CORPSE!=0 || out.is_empty() {return false;}
+    let hues=hues(season);
     const WAKE_FADE:f64=0.5;
     let scale=if calm {0.6} else {1.0};
     let time=event_time(info,p,calm);
@@ -59,7 +63,7 @@ pub(super) fn rainbow(s:&SnakeRecord,waves:[shader::Wave;2],info:&FrameInfo,p:&P
             if light<=out[i].alpha {continue;}
             let h=(d/11.0-if calm {0.0} else {age*0.3}).rem_euclid(1.0)*6.0;
             let k=h.floor() as usize;let f=h-k as f64;
-            let (a,b)=(HUES[k%6],HUES[(k+1)%6]);
+            let (a,b)=(hues[k%6],hues[(k+1)%6]);
             let lerp=|x:u8,y:u8|x as f64+(y as f64-x as f64)*f;
             let hue=items::tint(Color::new(lerp(a.red,b.red).round() as u8,lerp(a.green,b.green).round() as u8,lerp(a.blue,b.blue).round() as u8,255),palette);
             let m=0.9*weight;
@@ -75,7 +79,7 @@ mod tests {
     fn feast_colors(age:f64, calm:bool, palette:&[Color])->(bool,[Color;80]) {
         let base=Color::new(240,240,240,255);
         let mut out=[base;80];
-        let active=rainbow(&SnakeRecord {alive:1,segment_count:80,..Default::default()},
+        let active=rainbow(0,&SnakeRecord {alive:1,segment_count:80,..Default::default()},
             [shader::Wave {active:true,kind:8,time:0.0,duration_ticks:90},shader::Wave::default()],
             &FrameInfo {simulation_time:age,..FrameInfo::default()},
             &Params {presentation_time:age,..Params::default()},calm,palette,base,&mut out);
@@ -139,10 +143,10 @@ mod tests {
         let waves=[shader::Wave {active:true,kind:8,time:0.0,duration_ticks:90},shader::Wave {active:true,kind:8,time:-0.2,duration_ticks:90}];
         let base=Color::new(240,240,240,255);
         let mut both=[base;80];let mut older=[base;80];
-        assert!(rainbow(&s,waves,&FrameInfo::default(),&p,false,&[],base,&mut both));
-        assert!(rainbow(&s,[waves[1],shader::Wave::default()],&FrameInfo::default(),&p,false,&[],base,&mut older));
+        assert!(rainbow(0,&s,waves,&FrameInfo::default(),&p,false,&[],base,&mut both));
+        assert!(rainbow(0,&s,[waves[1],shader::Wave::default()],&FrameInfo::default(),&p,false,&[],base,&mut older));
         for j in 0..80 {assert_eq!(both[j].alpha,normal[j].alpha.max(older[j].alpha));}
-        assert!(!rainbow(&s,waves,&FrameInfo::default(),&p,false,&[],base,&mut []));
+        assert!(!rainbow(0,&s,waves,&FrameInfo::default(),&p,false,&[],base,&mut []));
     }
     #[test]
     fn feast_does_not_override_corpse_flash_or_dead_colours() {
@@ -152,7 +156,7 @@ mod tests {
         for (alive,flags) in [(0,0),(1,flags::CORPSE)] {
             let s=SnakeRecord {alive,flags,segment_count:26,..Default::default()};
             let mut colors=[base;26];
-            assert!(!rainbow(&s,waves,&FrameInfo::default(),&p,false,&[],base,&mut colors));
+            assert!(!rainbow(0,&s,waves,&FrameInfo::default(),&p,false,&[],base,&mut colors));
             assert_eq!(colors,[base;26]);
         }
     }
@@ -172,17 +176,17 @@ mod tests {
             let center=centers(&s,&info,&p,calm)[0].0;
             assert!((center-(n-1) as f64*0.5).abs()<0.00001);
             let mut out=[base;83];
-            assert!(rainbow(&s,[wave,shader::Wave::default()],&info,&p,calm,&[],base,&mut out[..n as usize]));
+            assert!(rainbow(0,&s,[wave,shader::Wave::default()],&info,&p,calm,&[],base,&mut out[..n as usize]));
             // Front and wake stay centred on the same travelling gulp.
             assert_eq!(out[center.floor() as usize].alpha,153);
             assert!(out[(center+2.0).ceil() as usize].alpha==0);
             let info=FrameInfo {simulation_time:20.0+3.25*scale,..info};
             let p=Params {presentation_time:if calm {19.0} else {info.simulation_time},..p};
-            assert!(rainbow(&s,[wave,shader::Wave::default()],&info,&p,calm,&[],base,&mut out[..n as usize]));
+            assert!(rainbow(0,&s,[wave,shader::Wave::default()],&info,&p,calm,&[],base,&mut out[..n as usize]));
             assert!(out[n as usize-1].alpha.abs_diff(77)<=1,"tail fade uses ingestion duration: n={n}, calm={calm}");
             let info=FrameInfo {simulation_time:20.0+3.5*scale+0.0001,..info};
             let p=Params {presentation_time:if calm {19.0} else {info.simulation_time},..p};
-            assert!(!rainbow(&s,[wave,shader::Wave::default()],&info,&p,calm,&[],base,&mut out[..n as usize]));
+            assert!(!rainbow(0,&s,[wave,shader::Wave::default()],&info,&p,calm,&[],base,&mut out[..n as usize]));
         }}
     }
     #[test]
@@ -192,12 +196,12 @@ mod tests {
         let info=FrameInfo::default();let p=Params {presentation_time:2.0,..Default::default()};
         let short=shader::Wave {time:0.0,active:true,kind:8,duration_ticks:30};
         let long=shader::Wave {duration_ticks:90,..short};
-        assert!(!rainbow(&s,[short,shader::Wave::default()],&info,&p,false,&[],base,&mut out));
-        assert!(rainbow(&s,[short,long],&info,&p,false,&[],base,&mut out));
+        assert!(!rainbow(0,&s,[short,shader::Wave::default()],&info,&p,false,&[],base,&mut out));
+        assert!(rainbow(0,&s,[short,long],&info,&p,false,&[],base,&mut out));
         let both=out;
-        assert!(rainbow(&s,[long,shader::Wave::default()],&info,&p,false,&[],base,&mut out));
+        assert!(rainbow(0,&s,[long,shader::Wave::default()],&info,&p,false,&[],base,&mut out));
         assert_eq!(both,out);
-        assert!(!rainbow(&s,[shader::Wave {duration_ticks:0,..long};2],&info,&p,false,&[],base,&mut out));
+        assert!(!rainbow(0,&s,[shader::Wave {duration_ticks:0,..long};2],&info,&p,false,&[],base,&mut out));
     }
     #[test]
     fn overlapping_gulps_cap_width_expire_and_calm_shortens_duration() {

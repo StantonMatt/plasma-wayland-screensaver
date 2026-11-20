@@ -90,6 +90,7 @@ bool Configuration::showClock() const { return m_showClock; }
 QString Configuration::clockMovement() const { return m_clockMovement; }
 QString Configuration::clockSpeed() const { return m_clockSpeed; }
 int Configuration::frameRate() const { return m_frameRate; }
+bool Configuration::seasonalThemes() const { return m_seasonalThemes; }
 bool Configuration::reducedMotion() const { return m_reducedMotion; }
 QString Configuration::monitorBehavior() const { return m_monitorBehavior; }
 bool Configuration::coverPanels() const { return m_coverPanels; }
@@ -212,6 +213,7 @@ void Configuration::setFrameRate(int value)
                                           });
     update(m_frameRate, closest == fixedRates.cend() ? 30 : *closest);
 }
+void Configuration::setSeasonalThemes(bool value) { update(m_seasonalThemes, value); }
 void Configuration::setReducedMotion(bool value) { update(m_reducedMotion, value); }
 void Configuration::setMonitorBehavior(const QString &value)
 {
@@ -310,6 +312,9 @@ void Configuration::apply(const QVariantMap &settings)
     if (settings.contains(QStringLiteral("frameRate"))) {
         setFrameRate(settings.value(QStringLiteral("frameRate")).toInt());
     }
+    if (settings.contains(QStringLiteral("seasonalThemes"))) {
+        setSeasonalThemes(settings.value(QStringLiteral("seasonalThemes")).toBool());
+    }
     if (settings.contains(QStringLiteral("reducedMotion"))) {
         setReducedMotion(settings.value(QStringLiteral("reducedMotion")).toBool());
     }
@@ -350,6 +355,7 @@ QVariantMap Configuration::defaults(const QString &page) const
         {QStringLiteral("clockMovement"), QStringLiteral("bounce")},
         {QStringLiteral("clockSpeed"), QStringLiteral("normal")},
         {QStringLiteral("frameRate"), 30},
+        {QStringLiteral("seasonalThemes"), true},
         {QStringLiteral("reducedMotion"), false},
         {QStringLiteral("monitorBehavior"), QStringLiteral("independent")},
         {QStringLiteral("coverPanels"), true}
@@ -463,6 +469,7 @@ void Configuration::save()
     general.writeEntry("ClockMovement", m_clockMovement);
     general.writeEntry("ClockSpeed", m_clockSpeed);
     general.writeEntry("FrameRate", m_frameRate);
+    general.writeEntry("SeasonalThemes", m_seasonalThemes);
     general.writeEntry("ReducedMotion", m_reducedMotion);
     general.writeEntry("MonitorBehavior", m_monitorBehavior);
     general.writeEntry("CoverPanels", m_coverPanels);

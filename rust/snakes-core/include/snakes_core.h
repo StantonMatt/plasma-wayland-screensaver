@@ -319,6 +319,8 @@ int32_t snakes_core_render_set_clock_rect(snakes_core_renderer *renderer,
     double x, double y, double width, double height);
 /* Calm uses straight inward vortex transport; no ABI record changes. */
 int32_t snakes_core_set_reduced_motion(snakes_core_world *world, uint32_t enabled);
+/* Additive ABI-v4 render-only theme setter. 0 = none, 1 = Halloween; unknown = 0. */
+int32_t snakes_core_render_set_season(snakes_core_renderer *renderer, uint32_t season);
 int32_t snakes_core_render_set_reduced_motion(snakes_core_renderer *renderer, uint32_t enabled);
 int32_t snakes_core_render_build_shader(snakes_core_renderer *renderer,
     const snakes_core_frame_info *info,

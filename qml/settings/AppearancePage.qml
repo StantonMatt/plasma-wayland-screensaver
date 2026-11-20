@@ -105,6 +105,14 @@ Kirigami.ScrollablePage {
                 onActivated: value => page.settings.write("animationPalette", value)
             }
 
+            QQC2.CheckBox {
+                objectName: "seasonalThemesCheckBox"
+                visible: page.visual === "snakes"
+                text: qsTr("Seasonal themes")
+                checked: page.config.seasonalThemes
+                onToggled: page.settings.write("seasonalThemes", checked)
+            }
+
             ValueSlider {
                 Kirigami.FormData.label: qsTr("%1:").arg(page.animation.speed || "")
                 visible: page.visual !== "none"

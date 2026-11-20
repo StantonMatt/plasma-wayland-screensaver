@@ -25,6 +25,7 @@ Item {
     required property string clockMovement
     required property string clockSpeed
     required property int frameRate
+    property int season: 0
     required property bool reducedMotion
     required property string monitorBehavior
     required property int seed

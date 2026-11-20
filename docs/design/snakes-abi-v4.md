@@ -119,3 +119,14 @@ exists; simultaneous completions or full-inventory contacts fizzle excess uses.
 Glyph 11 is the Whirlpool bubble. GPU sprite kind 19 is the vortex, with
 viewport culling, wrap copies and monotonic charge. Burst rings/flash use the
 existing event budget and simulation clock, including Calm.
+
+## Seasonal renderer setter (0.22.0)
+
+`snakes_core_render_set_season(renderer, season)` is additive to ABI v4.
+It selects render-only presentation: 0 = none, 1 = Halloween. Values above
+1 select none until a future theme is implemented. Null/misaligned handles
+return `SNAKES_CORE_INVALID_ARGUMENT`. Render reset retains this setting,
+like reduced motion and clock exclusion. No records, vertex layouts,
+simulation state or ABI version change. Nightfall bats use sprite kind 25
+with byte y = 1 (acid glow keeps y = 0), z = flap phase and colour alpha
+= fade; byte w remains zero.
