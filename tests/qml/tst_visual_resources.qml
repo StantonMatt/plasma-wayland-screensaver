@@ -20,6 +20,11 @@ TestCase {
     Aurora { id: aurora; anchors.fill: parent; reducedMotion: true }
     function test_auroraUsesSceneGraphNodes() { verify(!containsCanvas(aurora)) }
 
+    Constellation { id: constellation; anchors.fill: parent; reducedMotion: true }
+    Starfield { id: starfield; anchors.fill: parent; reducedMotion: true }
+    function test_primitiveVisualsUseSceneGraphNodes() {
+        verify(!containsCanvas(constellation));verify(!containsCanvas(starfield))
+    }
     function containsCanvas(item) {
         if (item instanceof Canvas)
             return true

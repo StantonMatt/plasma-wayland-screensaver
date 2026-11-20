@@ -5,10 +5,11 @@
 pub mod aurora;
 pub mod palette;
 pub mod phase;
+pub mod primitives;
 pub mod random;
 pub mod settings;
 use settings::Config;
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Band {
@@ -42,6 +43,7 @@ pub struct Request {
 pub struct Core {
     config: Config,
     phase: f64,
+    seeds: primitives::Seeds,
 }
 
 #[unsafe(no_mangle)]
@@ -49,7 +51,7 @@ pub extern "C" fn visuals_core_abi_version() -> u32 {
     ABI_VERSION
 }
 /// # Safety
-/// `config` must point to a readable v1 Config record.
+/// `config` must point to a readable v2 Config record.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn visuals_core_create(config: *const Config) -> *mut Core {
     let Some(config) = (unsafe { config.as_ref() }) else {
@@ -60,7 +62,8 @@ pub unsafe extern "C" fn visuals_core_create(config: *const Config) -> *mut Core
     }
     Box::into_raw(Box::new(Core {
         config: *config,
-        phase: phase::initial(config.seed),
+        phase: initial_phase(config),
+        seeds: primitives::Seeds::new(config.seed),
     }))
 }
 /// # Safety
@@ -74,7 +77,12 @@ pub unsafe extern "C" fn visuals_core_configure(core: *mut Core, config: *const 
         return -1;
     }
     if core.config.seed != config.seed {
-        core.phase = phase::initial(config.seed);
+        core.seeds = primitives::Seeds::new(config.seed);
+    }
+    if core.config.visual != config.visual
+        || (config.visual == 1 && core.config.seed != config.seed)
+    {
+        core.phase = initial_phase(config);
     }
     core.config = *config;
     0
@@ -103,32 +111,12 @@ pub unsafe extern "C" fn visuals_core_frame(
     };
     if out.is_null()
         || out_capacity < size_of::<Frame>()
-        || !request.width.is_finite()
-        || !request.height.is_finite()
-        || request.width <= 0.0
-        || request.height <= 0.0
-        || request.width > 65536.0
-        || request.height > 65536.0
-        || request.advance > 1
-        || request.reserved != 0
-        || request
-            .world_bounds
-            .iter()
-            .chain(request.viewport_origin.iter())
-            .any(|v| !v.is_finite())
-        || request.world_bounds[2] < 0.0
-        || request.world_bounds[3] < 0.0
+        || core.config.visual != 1
+        || !request.valid()
     {
         return -1;
     }
-    if request.advance != 0 && core.config.reduced_motion == 0 {
-        core.phase = phase::aurora(
-            core.config.seed,
-            core.config.speed,
-            core.config.epoch_ns,
-            request.presentation_ns,
-        );
-    }
+    core.advance(request);
     unsafe { out.write(aurora::frame(&core.config, core.phase, request)) };
     0
 }
@@ -168,6 +156,79 @@ pub unsafe extern "C" fn visuals_core_raster(
     );
     0
 }
+fn initial_phase(config: &Config) -> f64 {
+    if config.visual == 1 {
+        phase::initial(config.seed)
+    } else {
+        0.0
+    }
+}
+impl Request {
+    fn valid(&self) -> bool {
+        self.width.is_finite()
+            && self.height.is_finite()
+            && self.width > 0.0
+            && self.height > 0.0
+            && self.width <= 65536.0
+            && self.height <= 65536.0
+            && self.advance <= 1
+            && self.reserved == 0
+            && self
+                .world_bounds
+                .iter()
+                .chain(self.viewport_origin.iter())
+                .all(|v| v.is_finite())
+            && self.world_bounds[2] >= 0.0
+            && self.world_bounds[3] >= 0.0
+    }
+}
+impl Core {
+    fn advance(&mut self, request: &Request) {
+        if request.advance != 0 && self.config.reduced_motion == 0 {
+            let elapsed =
+                (request.presentation_ns as i128 - self.config.epoch_ns as i128) as f64 * 1e-9;
+            self.phase = match self.config.visual {
+                1 => phase::aurora(
+                    self.config.seed,
+                    self.config.speed,
+                    self.config.epoch_ns,
+                    request.presentation_ns,
+                ),
+                2 => elapsed * 0.35,
+                _ => elapsed * 0.12,
+            };
+        }
+    }
+}
+/// # Safety
+/// Exclusive live handle, readable request; output is caller-owned aligned records.
+/// Capacity is records (not bytes). Count and output are untouched on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn visuals_core_primitives(
+    core: *mut Core,
+    request: *const Request,
+    out: *mut primitives::Primitive,
+    capacity: usize,
+    count: *mut u32,
+) -> i32 {
+    let (Some(core), Some(request)) = (unsafe { core.as_mut() }, unsafe { request.as_ref() })
+    else {
+        return -1;
+    };
+    if core.config.visual == 1
+        || !request.valid()
+        || out.is_null()
+        || count.is_null()
+        || capacity < primitives::capacity(core.config.visual)
+    {
+        return -1;
+    }
+    core.advance(request);
+    let records = unsafe { std::slice::from_raw_parts_mut(out, capacity) };
+    let n = primitives::frame(&core.config, &core.seeds, core.phase, request, records);
+    unsafe { count.write(n as u32) };
+    0
+}
 const _: () = {
     assert!(size_of::<Config>() == 64);
     assert!(std::mem::offset_of!(Config, epoch_ns) == 56);
@@ -181,3 +242,70 @@ const _: () = {
 };
 #[cfg(test)]
 mod tests;
+/// # Safety
+/// Input/output buffers valid for count records and count*6 vertices. No overlap.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn visuals_core_primitive_vertices(
+    records: *const primitives::Primitive,
+    count: usize,
+    fringe: f32,
+    out: *mut primitives::Vertex,
+    capacity: usize,
+) -> i32 {
+    if records.is_null()
+        || out.is_null()
+        || count > primitives::MAX_RECORDS
+        || capacity < count * 6
+        || !fringe.is_finite()
+        || fringe <= 0.0
+    {
+        return -1;
+    }
+    primitives::vertices(
+        unsafe { std::slice::from_raw_parts(records, count) },
+        fringe,
+        unsafe { std::slice::from_raw_parts_mut(out, count * 6) },
+    );
+    0
+}
+/// # Safety
+/// Readable records; pixels writable for capacity bytes, no overlap. RGBA8 premultiplied.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn visuals_core_primitive_raster(
+    records: *const primitives::Primitive,
+    count: usize,
+    viewport_width: f32,
+    viewport_height: f32,
+    width: u32,
+    height: u32,
+    pixels: *mut u8,
+    capacity: usize,
+) -> i32 {
+    let Some(bytes) = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+    else {
+        return -1;
+    };
+    if records.is_null()
+        || pixels.is_null()
+        || count > primitives::MAX_RECORDS
+        || bytes > capacity
+        || width == 0
+        || height == 0
+        || !viewport_width.is_finite()
+        || !viewport_height.is_finite()
+        || viewport_width <= 0.0
+        || viewport_height <= 0.0
+    {
+        return -1;
+    }
+    primitives::raster(
+        unsafe { std::slice::from_raw_parts(records, count) },
+        [viewport_width, viewport_height],
+        unsafe { std::slice::from_raw_parts_mut(pixels, bytes) },
+        width as usize,
+        height as usize,
+    );
+    0
+}

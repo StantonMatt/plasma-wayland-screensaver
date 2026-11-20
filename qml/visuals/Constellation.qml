@@ -1,59 +1,44 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+pragma ComponentBehavior: Bound
 import QtQuick
-import "VisualUtils.js" as Utils
 
-VisualCanvas {
-    id: canvas
-    onPaint: {
-        const painter = getContext("2d")
-        painter.reset()
-        painter.clearRect(0, 0, width, height)
-        const density = context ? context.animationDensity : 50
-        const scale = context ? context.animationScale / 100 : 1
-        const speed = context ? context.animationSpeed / 100 : 1
-        const glow = context ? context.trailAmount / 100 : 0.35
-        const palette = Utils.colors(context ? context.animationPalette : "ocean")
-        const count = Math.round(16 + density * 0.72)
-        const points = []
-        for (let i = 0; i < count; ++i) {
-            const baseX = Utils.random(i * 5 + 1, seed) * width
-            const baseY = Utils.random(i * 5 + 2, seed) * height
-            points.push({
-                x: Utils.positiveModulo(baseX + Math.sin(phase * speed + i) * width * 0.025, width),
-                y: Utils.positiveModulo(baseY + Math.cos(phase * speed * 0.73 + i) * height * 0.035, height)
-            })
-        }
-        const linkDistance = Math.min(width, height) * (0.09 + density * 0.0008)
-        painter.lineWidth = Math.max(0.5, scale)
-        for (let i = 0; i < points.length; ++i) {
-            for (let j = i + 1; j < points.length; ++j) {
-                const dx = points[i].x - points[j].x
-                const dy = points[i].y - points[j].y
-                const distance = Math.sqrt(dx * dx + dy * dy)
-                if (distance < linkDistance) {
-                    painter.globalAlpha = (1 - distance / linkDistance) * (0.12 + glow * 0.42)
-                    painter.strokeStyle = palette[(i + j) % palette.length]
-                    painter.beginPath()
-                    painter.moveTo(points[i].x, points[i].y)
-                    painter.lineTo(points[j].x, points[j].y)
-                    painter.stroke()
-                }
-            }
-        }
-        for (let i = 0; i < points.length; ++i) {
-            painter.globalAlpha = 0.65 + Math.sin(phase * 2 + i) * 0.25
-            painter.fillStyle = palette[i % palette.length]
-            painter.beginPath()
-            painter.arc(points[i].x, points[i].y, (1.5 + i % 3) * scale, 0, Math.PI * 2)
-            painter.fill()
+Item {
+    id: root
+    objectName: "constellationVisualRoot"
+    property var context
+    property var nativeRenderer: null
+    property int frameRate: 30
+    property bool reducedMotion: false
+    property int seed: 1
+    property double animationEpochMs: Date.now()
+    readonly property real density: context ? context.animationDensity : 50
+    readonly property real sizeScale: context ? context.animationScale / 100 : 1
+    readonly property real motionSpeed: context ? context.animationSpeed / 100 : 1
+    readonly property real glowAmount: context ? context.trailAmount / 100 : 0.35
+    readonly property string paletteName: context ? context.animationPalette : "ocean"
+    readonly property rect worldBounds: context && context.virtualWidth !== undefined
+        ? Qt.rect(context.virtualX, context.virtualY, context.virtualWidth, context.virtualHeight)
+        : Qt.rect(0, 0, width, height)
+    readonly property point viewportOrigin: context && context.screenX !== undefined
+        ? Qt.point(context.screenX, context.screenY) : Qt.point(0, 0)
+    clip: true
+
+    function syncRenderer() {
+        if (nativeRenderer) {
+            nativeRenderer.setViewport(worldBounds, viewportOrigin)
+            nativeRenderer.configureConstellation(density, sizeScale, motionSpeed, glowAmount,
+                                           paletteName, seed, reducedMotion, animationEpochMs)
         }
     }
-    FrameClock {
-        presentationClock: canvas.context ? canvas.context.presentationClock : null
-        running: !canvas.reducedMotion
-        onTick: function(deltaSeconds) {
-            canvas.phase = (Date.now() - canvas.animationEpochMs) * 0.00035
-            canvas.requestPaint()
-        }
-    }
+    onWorldBoundsChanged: syncRenderer()
+    onViewportOriginChanged: syncRenderer()
+    onNativeRendererChanged: syncRenderer()
+    onDensityChanged: syncRenderer()
+    onSizeScaleChanged: syncRenderer()
+    onMotionSpeedChanged: syncRenderer()
+    onGlowAmountChanged: syncRenderer()
+    onPaletteNameChanged: syncRenderer()
+    onSeedChanged: syncRenderer()
+    onReducedMotionChanged: syncRenderer()
+    onAnimationEpochMsChanged: syncRenderer()
 }

@@ -42,7 +42,8 @@ target_link_libraries(VisualRenderer PUBLIC Qt6::Quick SnakesCore::snakes_core)
 qt_add_shaders(VisualRenderer visuals_shaders
     GLSL "100es,300es,310es,320es,120,130,140,150,330"
     HLSL "50" MSL "12" PREFIX "/visuals"
-    FILES shaders/aurora.vert shaders/aurora.frag shaders/visual-data.vert shaders/visual-data.frag)
+    FILES shaders/aurora.vert shaders/aurora.frag shaders/visual-data.vert shaders/visual-data.frag
+        shaders/visual-primitives.vert shaders/visual-primitives.frag shaders/visual-plain.vert)
 
 add_library(EglDrain STATIC egldrain.cpp egldrain.h)
 set_target_properties(EglDrain PROPERTIES AUTOMOC OFF)

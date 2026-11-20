@@ -247,19 +247,21 @@ bool OverlayManager::addScreen(QScreen *screen)
         }
     }
 
-    if (m_configuration->visualModule() == QStringLiteral("aurora")) {
+    if (m_configuration->visualModule() == QStringLiteral("aurora")
+        || m_configuration->visualModule() == QStringLiteral("constellation")
+        || m_configuration->visualModule() == QStringLiteral("starfield")) {
         if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
-            if (auto *auroraRoot = rootItem->findChild<QQuickItem *>(QStringLiteral("auroraVisualRoot"))) {
-                auto *renderer = new VisualRenderer(auroraRoot);
+            if (auto *visualRoot = rootItem->findChild<QQuickItem *>(m_configuration->visualModule() + QStringLiteral("VisualRoot"))) {
+                auto *renderer = new VisualRenderer(visualRoot);
                 connect(presentationClock, &PresentationClock::presentationTick,
                         renderer, &VisualRenderer::presentAt);
-                renderer->setParentItem(auroraRoot);
-                renderer->setSize(auroraRoot->size());
-                connect(auroraRoot, &QQuickItem::widthChanged, renderer,
-                        [auroraRoot, renderer] { renderer->setWidth(auroraRoot->width()); });
-                connect(auroraRoot, &QQuickItem::heightChanged, renderer,
-                        [auroraRoot, renderer] { renderer->setHeight(auroraRoot->height()); });
-                auroraRoot->setProperty("nativeRenderer", QVariant::fromValue(static_cast<QObject *>(renderer)));
+                renderer->setParentItem(visualRoot);
+                renderer->setSize(visualRoot->size());
+                connect(visualRoot, &QQuickItem::widthChanged, renderer,
+                        [visualRoot, renderer] { renderer->setWidth(visualRoot->width()); });
+                connect(visualRoot, &QQuickItem::heightChanged, renderer,
+                        [visualRoot, renderer] { renderer->setHeight(visualRoot->height()); });
+                visualRoot->setProperty("nativeRenderer", QVariant::fromValue(static_cast<QObject *>(renderer)));
             }
         }
     }

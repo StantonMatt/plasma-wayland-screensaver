@@ -36,6 +36,12 @@ TestCase {
             }
             function presentFrame(phase) { ++paints }
             function setViewport(bounds, origin) {}
+            function configureConstellation(d, scale, motion, trail, colors, randomSeed, reduced, epoch) {
+                configure(d, scale, motion, trail, colors, randomSeed)
+            }
+            function configureStarfield(d, scale, motion, trail, colors, randomSeed, reduced, epoch) {
+                configure(d, scale, motion, trail, colors, randomSeed)
+            }
             function configureAurora(d, scale, motion, trail, colors, randomSeed, reduced, epoch) {
                 configure(d, scale, motion, trail, colors, randomSeed)
             }
@@ -57,7 +63,8 @@ TestCase {
         tryVerify(function() { return !grabImage(visual).equals(before) })
     }
     function test_pausedNativeSettingsRequestPaint_data() {
-        return [{tag: "Fireflies", visual: "Fireflies"}, {tag: "Aurora", visual: "Aurora"}]
+        return [{tag: "Fireflies", visual: "Fireflies"}, {tag: "Aurora", visual: "Aurora"},
+                {tag: "Constellation", visual: "Constellation"}, {tag: "Starfield", visual: "Starfield"}]
     }
     function test_pausedNativeSettingsRequestPaint(data) {
         const component = Qt.createComponent("../../qml/visuals/" + data.visual + ".qml")
@@ -107,7 +114,7 @@ TestCase {
     }
     function test_staticInputsRepaint_data() {
         const rows = []
-        const visuals = ["Starfield", "Constellation", "Kaleidoscope", "Ribbons"]
+        const visuals = ["Kaleidoscope", "Ribbons"]
         const inputs = ["animationDensity", "animationScale", "animationSpeed",
                         "trailAmount", "animationPalette", "seed", "reducedMotion", "context"]
         for (const visual of visuals)
