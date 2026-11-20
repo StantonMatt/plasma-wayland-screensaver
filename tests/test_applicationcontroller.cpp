@@ -362,6 +362,10 @@ private Q_SLOTS:
         QVERIFY(controller.m_overlays.inputGraceActive());
         controller.m_idleMonitor.watchForResume();
         QTRY_VERIFY(watching);
+        // The grace window is wall-clock time from show(); slow runners can use
+        // it up before this point, so restart it as a fresh mapping would.
+        controller.m_overlays.m_inputGraceTimer.start();
+        QVERIFY(controller.m_overlays.inputGraceActive());
         backendResume(controller.m_idleMonitor);
         QVERIFY(!watching);
         QCOMPARE(controller.m_stateMachine.state(), ScreensaverStateMachine::State::Active);
