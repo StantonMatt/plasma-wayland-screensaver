@@ -74,6 +74,30 @@ add_executable(test-statemachine
 target_link_libraries(test-statemachine PRIVATE Qt6::Core Qt6::Test)
 add_test(NAME state-machine COMMAND test-statemachine)
 
+add_executable(test-inhibitor
+    test_inhibitor.cpp
+    ../src/inhibitor.cpp
+    ../src/inhibitor.h
+)
+target_link_libraries(test-inhibitor PRIVATE Qt6::Core Qt6::DBus Qt6::Test)
+find_program(DBUS_RUN_SESSION_EXECUTABLE dbus-run-session REQUIRED)
+# No service directories: installed portals must not auto-activate on this bus.
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/inhibitor-bus.conf" "
+<busconfig>
+  <type>session</type>
+  <listen>unix:tmpdir=/tmp</listen>
+  <policy context=\"default\">
+    <allow own=\"*\"/>
+    <allow send_destination=\"*\"/>
+    <allow receive_sender=\"*\"/>
+  </policy>
+</busconfig>
+")
+add_test(NAME inhibitor COMMAND "${DBUS_RUN_SESSION_EXECUTABLE}"
+    --config-file "${CMAKE_CURRENT_BINARY_DIR}/inhibitor-bus.conf"
+    -- $<TARGET_FILE:test-inhibitor>)
+set_tests_properties(inhibitor PROPERTIES TIMEOUT 30)
+
 add_executable(test-configuration
     test_configuration.cpp
     ../src/configuration.cpp
