@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Allocation-free 30 Hz mechanics, with control policy supplied by the caller.
 mod math;
+pub mod visuals;
 mod rng;
 mod render;
 pub mod shape;

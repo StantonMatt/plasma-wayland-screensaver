@@ -34,6 +34,16 @@ qt_add_shaders(SnakeMaterial snakes_shaders
     PREFIX "/snakes"
     FILES shaders/snake.vert shaders/snake.frag)
 
+# Generic procedural-visual item and per-window material resources.
+add_library(VisualRenderer STATIC visualrenderer.cpp visualrenderer.h visualmaterial.cpp visualmaterial.h)
+target_include_directories(VisualRenderer PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(VisualRenderer SYSTEM PUBLIC "${SNAKES_QT_RHI_INCLUDE_DIR}")
+target_link_libraries(VisualRenderer PUBLIC Qt6::Quick SnakesCore::snakes_core)
+qt_add_shaders(VisualRenderer visuals_shaders
+    GLSL "100es,300es,310es,320es,120,130,140,150,330"
+    HLSL "50" MSL "12" PREFIX "/visuals"
+    FILES shaders/aurora.vert shaders/aurora.frag shaders/visual-data.vert shaders/visual-data.frag)
+
 add_library(EglDrain STATIC egldrain.cpp egldrain.h)
 set_target_properties(EglDrain PROPERTIES AUTOMOC OFF)
 target_link_libraries(EglDrain PUBLIC ${CMAKE_DL_LIBS})
@@ -77,6 +87,7 @@ set(screensaver_sources
 add_executable(plasma-visual-screensaver ${screensaver_sources})
 target_link_libraries(plasma-visual-screensaver PRIVATE
     GraphicsBackend
+    VisualRenderer
     ReleaseSource
     Qt6::Network
     SnakeMaterial
@@ -102,7 +113,7 @@ install(TARGETS plasma-visual-screensaver ${KDE_INSTALL_TARGETS_DEFAULT_ARGS})
 function(link_snake_material_consumers)
     foreach(consumer test-snakerenderer test-snakesimulation test-snakesqml test-overlaysnakes)
         if(TARGET ${consumer})
-            target_link_libraries(${consumer} PRIVATE SnakeMaterial)
+            target_link_libraries(${consumer} PRIVATE SnakeMaterial VisualRenderer)
         endif()
     endforeach()
 endfunction()

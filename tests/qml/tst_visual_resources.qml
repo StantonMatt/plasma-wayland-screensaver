@@ -17,6 +17,9 @@ TestCase {
         context: null
     }
 
+    Aurora { id: aurora; anchors.fill: parent; reducedMotion: true }
+    function test_auroraUsesSceneGraphNodes() { verify(!containsCanvas(aurora)) }
+
     function containsCanvas(item) {
         if (item instanceof Canvas)
             return true
