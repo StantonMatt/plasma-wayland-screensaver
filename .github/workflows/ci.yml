@@ -31,10 +31,19 @@ jobs:
           name: plasma-visual-screensaver-${{ github.sha }}
           path: ${{ runner.temp }}/package
 
+      - name: Restore downloaded packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          # A new key each run saves fresh downloads; restore the newest one.
+          key: apt-multi-output-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: apt-multi-output-
+
       - name: Install binary and private compositor dependencies
+        env:
+          APT_ARCHIVES: ${{ runner.temp }}/apt-archives
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
+          ./scripts/ci-apt-install.sh \
             "$RUNNER_TEMP"/package/*.deb kwin-wayland mesa-vulkan-drivers \
             libvulkan1 libgl1-mesa-dri dbus python3 qt6-wayland
 
@@ -97,10 +106,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Restore downloaded packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/apt-archives
+          # A new key each run saves fresh downloads; restore the newest one.
+          key: apt-build-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: apt-build-
+
       - name: Install build and validation dependencies
+        env:
+          APT_ARCHIVES: ${{ runner.temp }}/apt-archives
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
+          ./scripts/ci-apt-install.sh \
             appstream build-essential cargo rustc cmake debhelper desktop-file-utils \
             devscripts dpkg-dev extra-cmake-modules libkf6config-dev \
             libkf6idletime-dev liblayershellqtinterface-dev lintian ninja-build qt6-base-dev qt6-base-private-dev \
