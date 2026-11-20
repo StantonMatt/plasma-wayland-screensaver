@@ -26,9 +26,10 @@ private Q_SLOTS:
     void onPortalResponse(uint response, const QVariantMap &results);
 
 private:
-    enum class Backend { None, Portal, PowerManagement };
+    enum class Backend { None, Portal, Fallback };
     bool beginPortalAcquire();
     bool acquirePowerManagement();
+    bool acquireScreenSaver();
     bool connectPortalResponse(const QString &path);
     void disconnectPortalResponse();
     void finishWithPowerManagementFallback();
@@ -37,6 +38,9 @@ private:
     QDBusObjectPath m_portalHandle;
     QString m_portalResponsePath;
     uint m_powerCookie = 0;
+    uint m_screenSaverCookie = 0;
+    bool m_powerHeld = false;
+    bool m_screenSaverHeld = false;
     QString m_lastError;
     bool m_acquiring = false;
 };
