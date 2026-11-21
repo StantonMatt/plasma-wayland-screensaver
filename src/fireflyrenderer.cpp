@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "fireflyrenderer.h"
+#include "visuals/fireflies/legacysoftware.h"
 
 #include <QColor>
 #include <QPointF>
@@ -137,8 +138,13 @@ void FireflyRenderer::presentFrame(qreal phase)
 QSGNode *FireflyRenderer::updatePaintNode(QSGNode *oldNode,
                                           UpdatePaintNodeData *)
 {
-    auto *node = static_cast<QSGGeometryNode *>(oldNode);
-    if (!node) {
+    LegacyFireflySoftwareNode *raster = nullptr;
+    if (window() && window()->rendererInterface()->graphicsApi() == QSGRendererInterface::Software) {
+        raster = oldNode ? static_cast<LegacyFireflySoftwareNode *>(oldNode) : new LegacyFireflySoftwareNode(window());
+        raster->begin();
+    }
+    auto *node = raster ? nullptr : static_cast<QSGGeometryNode *>(oldNode);
+    if (!raster && !node) {
         node = new QSGGeometryNode;
         auto *geometry = new QSGGeometry(QSGGeometry::defaultAttributes_ColoredPoint2D(), 0);
         geometry->setDrawingMode(QSGGeometry::DrawTriangles);
@@ -155,7 +161,14 @@ QSGNode *FireflyRenderer::updatePaintNode(QSGNode *oldNode,
     QVector<Vertex> vertices;
     const int count = std::lround(12 + m_density * 0.75);
     // Two glow discs and one core disc, each made of 12 triangles.
-    vertices.reserve(count * circleSides * 9);
+    if (!raster)
+        vertices.reserve(count * circleSides * 9);
+    const auto drawDisc = [&](QPointF centre, qreal radius, const QColor &colour, int peak, int edge) {
+        if (raster)
+            raster->disc(centre, radius, colour, peak, edge);
+        else
+            appendGlowDisc(vertices, centre, radius, colour, peak, edge);
+    };
     const QVector<QColor> colors = palette(m_paletteName);
     const qreal viewportWidth = width();
     const qreal viewportHeight = height();
@@ -180,14 +193,16 @@ QSGNode *FireflyRenderer::updatePaintNode(QSGNode *oldNode,
             const QColor color = colors[index % colors.size()];
             const QPointF center(centerX, centerY);
 
-            appendGlowDisc(vertices, center, haloRadius, color,
-                           std::lround(pulse * 34.0), 0);
-            appendGlowDisc(vertices, center, haloRadius * 0.46, color,
-                           std::lround(pulse * 78.0), 0);
-            appendGlowDisc(vertices, center, coreRadius, QColor("#fffbd0"), 224, 150);
+            drawDisc(center, haloRadius, color, std::lround(pulse * 34.0), 0);
+            drawDisc(center, haloRadius * 0.46, color, std::lround(pulse * 78.0), 0);
+            drawDisc(center, coreRadius, QColor("#fffbd0"), 224, 150);
         }
     }
 
+    if (raster) {
+        raster->finish();
+        return raster;
+    }
     QSGGeometry *geometry = node->geometry();
     if (geometry->vertexCount() != vertices.size()) {
         geometry->allocate(vertices.size());

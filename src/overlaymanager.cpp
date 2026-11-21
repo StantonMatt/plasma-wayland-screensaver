@@ -416,7 +416,8 @@ void OverlayManager::updateAnimationState()
     const bool motionAllowed = !m_configuration->reducedMotion();
     const bool animateBall = !depthActive() && m_configuration->monitorBehavior() != QStringLiteral("independent") && motionAllowed
         && m_configuration->visualModule() == QStringLiteral("bounce");
-    const bool animateClock = seamless && motionAllowed && m_configuration->showClock()
+    const bool animateClock = !(depthActive() && m_configuration->visualModule() == QStringLiteral("orbs"))
+        && seamless && motionAllowed && m_configuration->showClock()
         && m_configuration->clockMovement() == QStringLiteral("bounce");
     int simulationRate = m_configuration->frameRate();
     if (simulationRate == 0) {
@@ -661,8 +662,33 @@ void OverlayManager::configureDepthWorlds()
             qint64(
                 std::ceil(PresentationPacing::periodNanoseconds(m_configuration->frameRate(), screen->refreshRate()))));
         stream << screen->name() << view->geometry() << view->devicePixelRatio();
-        if (auto* root = view->rootObject())
-            environment.clockRects.insert(screen->name(), root->property("clockRect").toRectF());
+        if (auto* root = view->rootObject()) {
+            auto clock = root->property("clockRect").toRectF();
+            if (!clock.isEmpty() && m_configuration->visualModule() == QStringLiteral("orbs")
+                && !m_configuration->reducedMotion() && m_configuration->clockMovement() == QStringLiteral("bounce")) {
+                const auto speed = m_configuration->clockSpeed();
+                const double factor = speed == QStringLiteral("slow") ? .55 : speed == QStringLiteral("fast") ? 1.8 : 1.;
+                QPointF v(31. * factor, 23. * factor);
+                if (m_configuration->monitorBehavior() != QStringLiteral("seamless")) {
+                    const double seed = root->property("seed").toInt();
+                    const auto start = [](double distance, double span, double& velocity) {
+                        if (span <= 0.) { velocity = 0.; return 0.; }
+                        const auto phase = distance - 2.*span*std::floor(distance/(2.*span));
+                        if (phase < span) return phase;
+                        velocity = -velocity;
+                        return 2.*span - phase;
+                    };
+                    clock.moveLeft(start(seed*19.37, view->width()-clock.width(), v.rx()));
+                    clock.moveTop(start(seed*11.83, view->height()-clock.height(), v.ry()));
+                }
+                environment.clockVelocity.insert(screen->name(), v);
+                // Spanning has one moving label. Its world chooses a visible start
+                // independent of the order in which the windows finished mapping.
+                if (m_configuration->monitorBehavior() == QStringLiteral("seamless"))
+                    clock.moveTopLeft(-QPointF(view->position()));
+            }
+            environment.clockRects.insert(screen->name(), clock);
+        }
     }
     if (key == m_depthLayoutKey)
         return;

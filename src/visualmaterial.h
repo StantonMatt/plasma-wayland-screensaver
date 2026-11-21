@@ -8,6 +8,7 @@
 
 class QQuickWindow;
 class QRhiTexture;
+class QShader;
 // Per-node, per-QRhi mutable float data. No atlas, mipmaps, sRGB or filtering.
 class VisualDataTexture final : public QSGTexture
 {
@@ -38,6 +39,7 @@ public:
     QSGMaterialShader *createShader(QSGRendererInterface::RenderMode) const override;
     int compare(const QSGMaterial *) const override;
     static bool supportsWindow(QQuickWindow *, Technique = Aurora, int recordCapacity = VISUALS_CORE_MAX_PRIMITIVES);
+    static bool supportsRecordShaders(QQuickWindow*, const QShader& vertex, const QShader& fragment, QSize textureSize);
     static bool shadersAvailable(Technique = Aurora);
     Technique technique;
     visuals_core_snapshot snapshot{};

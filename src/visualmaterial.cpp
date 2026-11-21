@@ -91,8 +91,10 @@ int VisualMaterial::compare(const QSGMaterial *other) const {
     return std::less<const QSGMaterial *>{}(this,other) ? -1 : 1;
 }
 bool VisualMaterial::shadersAvailable(Technique t) { return pack(t).vertex.isValid() && pack(t).fragment.isValid(); }
-bool VisualMaterial::supportsWindow(QQuickWindow *window, Technique t, int recordCapacity) {
-    if (!window || !shadersAvailable(t)) return false;
+static bool supportsShaderLayout(QQuickWindow *window, const QShader& vertex, const QShader& fragment,
+                                QSize textureSize, bool plain)
+{
+    if (!window || !vertex.isValid() || !fragment.isValid()) return false;
     auto *ri=window->rendererInterface();
     auto *rhi=static_cast<QRhi *>(ri->getResource(window,QSGRendererInterface::RhiResource));
     if (!rhi || rhi->backend()==QRhi::Null) return false;
@@ -102,15 +104,14 @@ bool VisualMaterial::supportsWindow(QQuickWindow *window, Technique t, int recor
         if (sc) target=sc->currentFrameRenderTarget();
     }
     if (!target || !target->renderPassDescriptor()) return false;
-    std::unique_ptr<QRhiBuffer> uniforms(rhi->newBuffer(QRhiBuffer::Dynamic,QRhiBuffer::UniformBuffer,UniformSize));
+    std::unique_ptr<QRhiBuffer> uniforms(rhi->newBuffer(QRhiBuffer::Dynamic,QRhiBuffer::UniformBuffer,VisualMaterial::UniformSize));
     if (!uniforms->create()) return false;
     std::unique_ptr<QRhiShaderResourceBindings> bindings(rhi->newShaderResourceBindings());
     std::unique_ptr<QRhiTexture> texture;
     std::unique_ptr<QRhiSampler> sampler;
     const auto stages=QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage;
-    if (t==VertexTextureProof || t==PrimitiveTexture) {
+    if (!textureSize.isEmpty()) {
         if (!rhi->isTextureFormatSupported(QRhiTexture::RGBA32F)) return false;
-        const QSize textureSize=t==PrimitiveTexture ? QSize(3,recordCapacity) : QSize(2,1);
         if (textureSize.height()<=0 || textureSize.height()>rhi->resourceLimit(QRhi::TextureSizeMax)) return false;
         texture.reset(rhi->newTexture(QRhiTexture::RGBA32F,textureSize));
         sampler.reset(rhi->newSampler(QRhiSampler::Nearest,QRhiSampler::Nearest,QRhiSampler::None,
@@ -121,7 +122,7 @@ bool VisualMaterial::supportsWindow(QQuickWindow *window, Technique t, int recor
     } else bindings->setBindings({QRhiShaderResourceBinding::uniformBuffer(0,stages,uniforms.get())});
     if (!bindings->create()) return false;
     QRhiVertexInputLayout layout;
-    if (t==PrimitivePlain) {
+    if (plain) {
         layout.setBindings({{48}});
         layout.setAttributes({{0,0,QRhiVertexInputAttribute::Float2,0},{0,1,QRhiVertexInputAttribute::Float2,8},
             {0,2,QRhiVertexInputAttribute::Float4,16},{0,3,QRhiVertexInputAttribute::Float4,32}});
@@ -130,7 +131,7 @@ bool VisualMaterial::supportsWindow(QQuickWindow *window, Technique t, int recor
         layout.setAttributes({{0,0,QRhiVertexInputAttribute::Float2,0},{0,1,QRhiVertexInputAttribute::Float2,8}});
     }
     std::unique_ptr<QRhiGraphicsPipeline> pipeline(rhi->newGraphicsPipeline());
-    pipeline->setShaderStages({{QRhiShaderStage::Vertex,pack(t).vertex},{QRhiShaderStage::Fragment,pack(t).fragment}});
+    pipeline->setShaderStages({{QRhiShaderStage::Vertex,vertex},{QRhiShaderStage::Fragment,fragment}});
     pipeline->setVertexInputLayout(layout);
     pipeline->setShaderResourceBindings(bindings.get());
     pipeline->setRenderPassDescriptor(target->renderPassDescriptor());
@@ -140,4 +141,18 @@ bool VisualMaterial::supportsWindow(QQuickWindow *window, Technique t, int recor
     blend.dstColor=blend.dstAlpha=QRhiGraphicsPipeline::OneMinusSrcAlpha;
     pipeline->setTargetBlends({blend});
     return pipeline->create();
+}
+
+
+bool VisualMaterial::supportsRecordShaders(QQuickWindow *window, const QShader& vertex, const QShader& fragment, QSize size)
+{
+    return !size.isEmpty() && supportsShaderLayout(window, vertex, fragment, size, false);
+}
+
+bool VisualMaterial::supportsWindow(QQuickWindow *window, Technique t, int recordCapacity)
+{
+    const auto& shaders = pack(t);
+    if (t == PrimitiveTexture && recordCapacity <= 0) return false;
+    const QSize size = t == PrimitiveTexture ? QSize(3,recordCapacity) : t == VertexTextureProof ? QSize(2,1) : QSize();
+    return supportsShaderLayout(window, shaders.vertex, shaders.fragment, size, t == PrimitivePlain);
 }

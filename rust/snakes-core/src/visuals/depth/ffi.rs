@@ -30,6 +30,7 @@ pub struct Output {
     pub dpr: f64,
     pub refresh_hz: f64,
     pub primary: u32,
+    /// Independent screen ordinal in the original vd_output padding word.
     pub padding: u32,
 }
 #[repr(C)]
@@ -157,6 +158,12 @@ impl World {
         }
         self.tick >= target
     }
+}
+/// # Safety
+/// The handle must be live and exclusively owned by the coordinator.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn visuals_depth_next_wake(world: *const World, timeline_ns:i64)->i64 {
+    unsafe { world.as_ref() }.and_then(|w|w.simulation.next_wake_ns(timeline_ns)).unwrap_or(-1)
 }
 /// Enumerate the owned Rust descriptors without duplicating their ABI IDs in consumers.
 /// The key is a borrowed UTF-8 slice valid for the lifetime of the program.
@@ -301,7 +308,7 @@ pub unsafe extern "C" fn visuals_depth_create(
     };
     if obstacles
         .iter()
-        .any(|o| !o.rect.valid() || !o.inflation.is_finite() || o.inflation < 0. || o.enabled > 1)
+        .any(|o| !o.rect.valid() || !o.inflation.is_finite() || o.inflation < 0. || !o.velocity.x.is_finite() || !o.velocity.y.is_finite() || o.enabled > 1)
     {
         return -1;
     }
@@ -322,6 +329,7 @@ pub unsafe extern "C" fn visuals_depth_create(
         reduced_motion: c.reduced_motion != 0,
         parameters,
         environment: Environment {
+            independent_index: outputs[0].padding,
             background: env.background,
             frame_cap: env.frame_cap,
             top: env.top,
@@ -576,7 +584,7 @@ const _: () = {
     assert!(size_of::<Parameter>() == 48);
     assert!(size_of::<Value>() == 16);
     assert!(size_of::<Env>() == 40);
-    assert!(size_of::<Obstacle>() == 56);
+    assert!(size_of::<Obstacle>() == 72);
     assert!(size_of::<Generations>() == 32);
     assert!(size_of::<Stats>() == 40);
     assert!(size_of::<Endpoint>() == 72);

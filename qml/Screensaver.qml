@@ -45,6 +45,8 @@ Item {
 
     property double clockMotionNowMs: animationEpochMs
     readonly property rect clockRect: showClock ? Qt.rect(clockBox.x, clockBox.y, clockBox.width, clockBox.height) : Qt.rect(0, 0, 0, 0)
+    property point livingClockPosition: Qt.point(-1e9, -1e9)
+    readonly property bool useLivingClock: depthActive && visualModule === "orbs" && livingClockPosition.x > -1e8
     property real sharedClockX: 0
     property real sharedClockY: 0
 
@@ -110,6 +112,7 @@ Item {
     function clockLocalX(itemWidth) {
         if (root.clockMovement !== "bounce" || root.reducedMotion)
             return (root.width - itemWidth) / 2
+        if (root.useLivingClock) return root.livingClockPosition.x
         if (root.monitorBehavior === "seamless")
             return root.sharedClockX - root.screenX
         const elapsed = Math.max(0, root.clockMotionNowMs - root.animationEpochMs) / 1000
@@ -121,6 +124,7 @@ Item {
     function clockLocalY(itemHeight) {
         if (root.clockMovement !== "bounce" || root.reducedMotion)
             return (root.height - itemHeight) / 2
+        if (root.useLivingClock) return root.livingClockPosition.y
         if (root.monitorBehavior === "seamless")
             return root.sharedClockY - root.screenY
         const elapsed = Math.max(0, root.clockMotionNowMs - root.animationEpochMs) / 1000
@@ -215,7 +219,7 @@ Item {
 
     FrameClock {
         presentationClock: root.presentationClock
-        running: root.showClock && root.clockMovement === "bounce" && !root.reducedMotion
+        running: root.showClock && !root.useLivingClock && root.clockMovement === "bounce" && !root.reducedMotion
         onTick: function(deltaSeconds, presentationNanoseconds) {
             root.clockMotionNowMs = Date.now()
             if (root.monitorBehavior === "seamless") {

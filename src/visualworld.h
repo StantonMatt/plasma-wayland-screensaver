@@ -24,6 +24,7 @@ public:
     bool ensureThrough(qint64 timelineNs, uint32_t maxTicks = 8);
     VisualSampleLease sample(const vd_view&);
     vd_stats statistics() const;
+    qint64 nextWake(qint64 timelineNs) const { return visuals_depth_next_wake(m_world, timelineNs); }
     // Ownership may transfer only before the object is published to a coordinator.
     void adoptOnCurrentThread();
 #ifdef PVS_ENABLE_VISUAL_CAPTURE

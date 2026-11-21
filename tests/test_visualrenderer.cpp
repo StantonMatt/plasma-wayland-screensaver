@@ -159,7 +159,14 @@ private Q_SLOTS:
         deterministic(renderer,55,2,3,1,QStringLiteral("ocean"),1,false,12.5,visual);
         window.show();QVERIFY(QTest::qWaitForWindowExposed(&window));
         const auto first=window.grabWindow();QVERIFY(!first.isNull());QCOMPARE(renderer.m_shaderInUse,!fallback);
-        if (visual==1 || visual==3) QVERIFY(first.pixelColor(first.width()/2,first.height()/2).blue()>50);
+        const auto centre = first.pixelColor(first.width()/2, first.height()/2);
+        if (visual==VISUALS_CORE_AURORA || (visual==VISUALS_CORE_STARFIELD && gpu()))
+            QVERIFY(centre.blue()>50);
+        if (visual==VISUALS_CORE_STARFIELD && !gpu()) {
+            // Any pixel can contain a star. Check the removed radial record itself.
+            QVERIFY(renderer.m_primitiveCount>0);
+            QVERIFY(renderer.m_primitives[renderer.m_primitiveCount-1].shape[1]!=2.f);
+        }
         if (visual!=1 && gpu()) QCOMPARE(renderer.m_plainInUse,fallback);
         deterministic(renderer,10,.25,.1,0,QStringLiteral("ember"),1,false,12.5,visual);
         const auto changed=window.grabWindow();QVERIFY(first!=changed);

@@ -7,6 +7,7 @@
 #include <QRectF>
 #include <QString>
 #include <QVector>
+#include <QTimer>
 class Configuration;
 class LivingVisualItem;
 enum class VisualMonitorMode : uint32_t
@@ -36,6 +37,7 @@ struct VisualEnvironment
     // Actual clock bounds at activation. Mirrored takes only the reference
     // output rectangle and maps it into the canonical arena.
     QMap<QString, QRectF> clockRects;
+    QMap<QString, QPointF> clockVelocity;
 };
 class VisualWorldCoordinator final : public QObject
 {
@@ -69,6 +71,8 @@ public:
 #endif
 private:
     void assertGui() const;
+    void scheduleWake(qint64 now);
+    QTimer m_wake;
     std::vector<std::unique_ptr<VisualWorld>> m_worlds;
     struct Binding
     {

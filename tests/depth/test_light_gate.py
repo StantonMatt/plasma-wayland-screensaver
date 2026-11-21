@@ -54,6 +54,21 @@ large = patch(24, 18, 16, 13)
 rc, result = check(blink(large, 15))
 assert rc == 1 and result['peakFlashesPerSecond'] == 4 and result['maxSwing'] < .06
 assert check(blink(large, 20))[0] == 0  # Exactly three flashes per second.
+# General and saturated-red thresholds can complete the same gradual flash
+# several frames apart. Their overlapping transition pair counts only once.
+for period in (30, 20, 15):
+    fade = [0, 51, 102, 153, 204, 255, 204, 153, 102, 51] + [0]*(period-10)
+    for colour in ('white', 'red', 'dim-red'):
+        frames = []
+        for i in range(180):
+            level = fade[i % period]
+            rgb = ((level,)*3 if colour == 'white' else
+                   (level if colour == 'red' else level*140//255, 0, 0))
+            frames.append(patch(24, 18, 16, 13, rgb=rgb))
+        rc, result = check(frames)
+        assert rc == int(period == 15), (period, colour, result)
+        assert result['areaQualifiedFlashes'] == 180//period, (period, colour, result)
+        assert result['peakFlashesPerSecond'] == 60//period, (period, colour, result)
 # Opposing transitions finishing on adjacent frames are one concurrent flash.
 for groups in ((7, 6), (5, 4, 4)):
     rc, result = check(staggered_blink(groups))
@@ -68,6 +83,33 @@ assert rc == 0 and result['peakFlashesPerSecond'] == 3, result
 # Two distant clusters cannot be counted together in one field.
 apart = patch(76, 50, 12, 12, background=patch(3, 1, 12, 12))
 assert check(blink(apart, 15))[0] == 0
+# One passage through overlapping fields is not a rapid series of flashes.
+bar = [patch(min(76, max(0, 4*(i-10))), 20, 16, 24) for i in range(120)]
+rc, result = check(bar)
+assert rc == 0 and result['maxSwing'] == 0, result
+# Each lamp flashes twice per second in its own field. Their clocks cannot add.
+left, right = patch(4, 2, 16, 13), patch(72, 52, 16, 13)
+rc, result = check([left if 3 <= i%30 < 8 else right if 18 <= i%30 < 23 else black for i in range(120)])
+assert rc == 0 and result['peakFlashesPerSecond'] == 2, result
+# The same two 2 Hz sources add to four flashes inside one fixed visual field.
+left, right = patch(24, 18, 16, 13), patch(40, 18, 16, 13)
+rc, result = check([left if 3 <= i%30 < 8 else right if 18 <= i%30 < 23 else black for i in range(120)])
+assert rc == 1 and result['peakFlashesPerSecond'] == 4, result
+# Four distinct pulses in neighbouring areas at the coalescing boundary. Even
+# when their completion masks touch, both legs of each new pulse are visible.
+for colour in ((255, 255, 255), (140, 0, 0), (255, 0, 0)):
+    lamps = [patch(x, 18, 16, 13, rgb=colour) for x in (24, 40)]
+    for spacing in (3, 4):
+        pulses = {10+i*spacing: lamps[i%2] for i in range(4)}
+        rc, result = check([pulses.get(i, black) for i in range(120)])
+        assert rc == 1 and result['peakFlashesPerSecond'] == 4, result
+# Three-frame coalescing can stay continuously active during a genuine 20 Hz
+# strobe. Count renewed pairs in the same area, even with staggered phases.
+phases = [patch(24, 18, 16, 5), patch(24, 23, 16, 4), patch(24, 27, 16, 4)]
+for frames in ([large if i%3==1 else black for i in range(120)],
+               [phases[i%3] for i in range(120)]):
+    rc, result = check(frames)
+    assert rc == 1 and result['peakFlashesPerSecond'] >= 19, result
 # A red transition can exceed the red criterion below 10% general luminance.
 rc, result = check(blink(patch(24, 18, 16, 13, rgb=(140, 0, 0)), 15))
 assert rc == 1 and result['peakFlashesPerSecond'] == 4
