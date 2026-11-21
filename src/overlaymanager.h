@@ -18,12 +18,15 @@ class QScreen;
 class PresentationClock;
 class SnakeRenderer;
 class SnakeSimulation;
+class VisualWorldCoordinator;
+class LivingVisualItem;
 
 class OverlayManager final : public QObject
 {
     Q_OBJECT
     friend class OverlaySnakesTest;
     friend class ApplicationControllerTest;
+    friend class DepthCaptureTest;
 
 public:
     explicit OverlayManager(Configuration *configuration, QObject *parent = nullptr);
@@ -47,6 +50,8 @@ private:
     // GUI-thread owned. PresentationClock queues swap feedback before emitting
     // ticks; window geometry, screen hotplug and QObject destruction are GUI
     // events. No scene-graph/render callback may access these containers.
+    bool depthActive() const;
+    void configureDepthWorlds();
     bool addScreen(QScreen *screen);
     void removeScreen(QScreen *screen);
     void updateAllViewGeometry();
@@ -61,6 +66,15 @@ private:
     bool isDismissEvent(const QEvent *event) const;
 
     Configuration *m_configuration;
+    std::unique_ptr<VisualWorldCoordinator> m_depthCoordinator;
+    QHash<QScreen*, LivingVisualItem*> m_depthItems;
+    QByteArray m_depthLayoutKey;
+    qint64 m_depthEpochNs = 0;
+#ifdef PVS_ENABLE_VISUAL_CAPTURE
+    bool m_captureFixture = false;
+    bool m_captureManualTime = false;
+    quint64 m_captureSeed = 1;
+#endif
     AnimationState m_animationState;
     QHash<QScreen *, QQuickView *> m_views;
     QHash<QScreen *, QRect> m_screenGeometries;

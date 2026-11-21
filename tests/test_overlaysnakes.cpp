@@ -22,6 +22,25 @@ class OverlaySnakesTest final : public QObject
 {
     Q_OBJECT
 private Q_SLOTS:
+    void futureBounceCountKeepsLegacyRendererWithinItsAbi()
+    {
+        QTemporaryDir dir;
+        Configuration config(dir.filePath(QStringLiteral("settingsrc")));
+        config.setVisualModule(QStringLiteral("bounce"));
+        config.setBallCount(60);
+        config.setReducedMotion(true);
+        OverlayManager manager(&config);
+        QVERIFY(manager.show());
+        auto* view = manager.m_views.value(QGuiApplication::primaryScreen());
+        QVERIFY(view);
+        QCOMPARE(config.ballCount(), 60);
+        QCOMPARE(view->rootObject()->property("ballCount").toInt(), 20);
+        auto* renderer = view->rootObject()->findChild<VisualRenderer*>();
+        QVERIFY(renderer);
+        QVERIFY(renderer->m_primitiveCount > 0);
+        manager.hide();
+        QTRY_COMPARE(manager.m_pendingViewDeletions, 0);
+    }
     void proceduralVisualUsesNativeRendererInEveryMonitorMode_data()
     {
         QTest::addColumn<QString>("mode");QTest::addColumn<QString>("visual");

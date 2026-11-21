@@ -6,6 +6,7 @@ Item {
     id: root
     clip: true
 
+    property bool depthActive: false
     required property string visualModule
     required property string backgroundStyle
     required property int animationSpeed
@@ -62,6 +63,7 @@ Item {
     }
 
     function visualSource() {
+        if (root.depthActive) return ""
         switch (root.visualModule) {
         case "orbs": return "visuals/Orbs.qml"
         case "bounce": return "visuals/Bounce.qml"
@@ -156,6 +158,12 @@ Item {
             item.seed = root.seed
             item.animationEpochMs = root.animationEpochMs
         }
+    }
+
+    Item {
+        objectName: "livingVisualLayer"
+        anchors.fill: parent
+        visible: root.depthActive
     }
 
     // One pre-rendered radial texture for every visual; no animated gradient

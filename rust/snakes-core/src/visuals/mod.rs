@@ -2,6 +2,7 @@
 //! Versioned procedural visual ABI. No Snakes state or symbols are changed.
 //! Callers own output memory; handles retain no borrowed pointers. A handle is
 //! single-threaded; the GUI builds snapshots, render threads own immutable copies.
+pub mod depth;
 pub mod aurora;
 pub mod bounce;
 pub mod matrix;

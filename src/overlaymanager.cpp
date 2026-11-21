@@ -3,12 +3,18 @@
 
 #include "configuration.h"
 #include "fireflyrenderer.h"
-#include "visualrenderer.h"
-#include "strokerenderer.h"
+#include "livingvisualitem.h"
 #include "matrixrenderer.h"
 #include "presentationclock.h"
 #include "snakerenderer.h"
 #include "snakesimulation.h"
+#include "strokerenderer.h"
+#include "visualdepthregistry.h"
+#include "visualrenderer.h"
+#include "visualworldcoordinator.h"
+#include <QColor>
+#include <QDataStream>
+#include <cmath>
 
 #include <LayerShellQt/Window>
 #include <QCoreApplication>
@@ -33,14 +39,17 @@
 #include <malloc.h>
 #endif
 
-OverlayManager::OverlayManager(Configuration *configuration, QObject *parent)
+OverlayManager::OverlayManager(Configuration* configuration, QObject* parent)
     : QObject(parent)
     , m_configuration(configuration)
+    , m_depthCoordinator(std::make_unique<VisualWorldCoordinator>())
     , m_animationState(this)
 {
     registerSnakeTypes();
     connect(m_configuration, &Configuration::changed, this, [this] {
         if (!m_visible) return;
+        m_depthLayoutKey.clear();
+        configureDepthWorlds();
         configureSnakeRenderSharing();
         if (m_sharedSnakeSimulation) m_sharedSnakeSimulation->applySettings(*m_configuration);
         else for (auto *simulation : std::as_const(m_snakeSimulations)) simulation->applySettings(*m_configuration);
@@ -75,6 +84,8 @@ bool OverlayManager::show()
     m_inputGraceTimer.start();
     qApp->installEventFilter(this);
     m_animationEpochMs = QDateTime::currentMSecsSinceEpoch();
+    m_depthEpochNs = VisualWorldCoordinator::monotonicNow();
+    m_depthLayoutKey.clear();
     updateAnimationState();
     const QList<QScreen *> screens = QGuiApplication::screens();
     for (QScreen *screen : screens) {
@@ -93,6 +104,9 @@ void OverlayManager::hide()
     m_teardownPending = true;
     m_visible = false;
     m_mappingViews.clear();
+    m_depthCoordinator->stop();
+    m_depthItems.clear();
+    m_depthLayoutKey.clear();
     m_animationState.stop();
     m_ballArenaScreen = nullptr;
     m_sharedAnimationActive = false;
@@ -172,6 +186,14 @@ bool OverlayManager::addScreen(QScreen *screen)
             [this, screen](qint64 presentationNanoseconds) {
                 if (m_sharedAnimationActive) m_animationState.advanceTo(presentationNanoseconds);
                 advanceSnakeSimulation(screen, presentationNanoseconds);
+                if (depthActive())
+                {
+#ifdef PVS_ENABLE_VISUAL_CAPTURE
+                    if (m_captureManualTime)
+                        return;
+#endif
+                    m_depthCoordinator->present(screen->name(), presentationNanoseconds);
+                }
             });
 
     const uint seed = m_configuration->monitorBehavior() == QStringLiteral("synchronized")
@@ -181,39 +203,38 @@ bool OverlayManager::addScreen(QScreen *screen)
     const QRect screenGeometry = screen->geometry();
     const QRect virtualGeometry = screen->virtualGeometry();
     view->setInitialProperties({
-        {QStringLiteral("visualModule"), m_configuration->visualModule()},
-        {QStringLiteral("backgroundStyle"), m_configuration->backgroundStyle()},
-        {QStringLiteral("animationSpeed"), m_configuration->animationSpeed()},
-        {QStringLiteral("animationDensity"), m_configuration->animationDensity()},
-        {QStringLiteral("animationScale"), m_configuration->animationScale()},
-        {QStringLiteral("animationPalette"), m_configuration->animationPalette()},
-        {QStringLiteral("trailAmount"), m_configuration->trailAmount()},
-        {QStringLiteral("ballCount"), m_configuration->ballCount()},
-        {QStringLiteral("ballGravity"), m_configuration->ballGravity()},
-        {QStringLiteral("ballElasticity"), m_configuration->ballElasticity()},
-        {QStringLiteral("ballCollisions"), m_configuration->ballCollisions()},
-        {QStringLiteral("snakeIntelligence"), m_configuration->snakeIntelligence()},
-        {QStringLiteral("snakeSelfCollisions"), m_configuration->snakeSelfCollisions()},
-        {QStringLiteral("snakeDeadlyWalls"), m_configuration->snakeDeadlyWalls()},
-        {QStringLiteral("developerMode"), m_developerMode},
-        {QStringLiteral("showClock"), m_configuration->showClock()},
-        {QStringLiteral("clockMovement"), m_configuration->clockMovement()},
-        {QStringLiteral("clockSpeed"), m_configuration->clockSpeed()},
-        {QStringLiteral("frameRate"), m_configuration->frameRate()},
-        {QStringLiteral("reducedMotion"), m_configuration->reducedMotion()},
-        {QStringLiteral("monitorBehavior"), m_configuration->monitorBehavior()},
-        {QStringLiteral("seed"), seed},
-        {QStringLiteral("animationEpochMs"), sharedMotion
-                                                ? m_animationEpochMs
-                                                : QDateTime::currentMSecsSinceEpoch()},
-        {QStringLiteral("screenX"), screenGeometry.x()},
-        {QStringLiteral("screenY"), screenGeometry.y()},
-        {QStringLiteral("virtualX"), virtualGeometry.x()},
-        {QStringLiteral("virtualY"), virtualGeometry.y()},
-        {QStringLiteral("virtualWidth"), virtualGeometry.width()},
-        {QStringLiteral("virtualHeight"), virtualGeometry.height()},
-        {QStringLiteral("animationState"), QVariant::fromValue(static_cast<QObject *>(&m_animationState))},
-        {QStringLiteral("presentationClock"), QVariant::fromValue(static_cast<QObject *>(presentationClock))},
+        {QStringLiteral("depthActive"), depthActive()},
+        { QStringLiteral("visualModule"), m_configuration->visualModule() },
+        { QStringLiteral("backgroundStyle"), m_configuration->backgroundStyle() },
+        { QStringLiteral("animationSpeed"), m_configuration->animationSpeed() },
+        { QStringLiteral("animationDensity"), m_configuration->animationDensity() },
+        { QStringLiteral("animationScale"), m_configuration->animationScale() },
+        { QStringLiteral("animationPalette"), m_configuration->animationPalette() },
+        { QStringLiteral("trailAmount"), m_configuration->trailAmount() },
+        { QStringLiteral("ballCount"), std::min(20, m_configuration->ballCount()) },
+        { QStringLiteral("ballGravity"), m_configuration->ballGravity() },
+        { QStringLiteral("ballElasticity"), m_configuration->ballElasticity() },
+        { QStringLiteral("ballCollisions"), m_configuration->ballCollisions() },
+        { QStringLiteral("snakeIntelligence"), m_configuration->snakeIntelligence() },
+        { QStringLiteral("snakeSelfCollisions"), m_configuration->snakeSelfCollisions() },
+        { QStringLiteral("snakeDeadlyWalls"), m_configuration->snakeDeadlyWalls() },
+        { QStringLiteral("developerMode"), m_developerMode },
+        { QStringLiteral("showClock"), m_configuration->showClock() },
+        { QStringLiteral("clockMovement"), m_configuration->clockMovement() },
+        { QStringLiteral("clockSpeed"), m_configuration->clockSpeed() },
+        { QStringLiteral("frameRate"), m_configuration->frameRate() },
+        { QStringLiteral("reducedMotion"), m_configuration->reducedMotion() },
+        { QStringLiteral("monitorBehavior"), m_configuration->monitorBehavior() },
+        { QStringLiteral("seed"), seed },
+        { QStringLiteral("animationEpochMs"), sharedMotion ? m_animationEpochMs : QDateTime::currentMSecsSinceEpoch() },
+        { QStringLiteral("screenX"), screenGeometry.x() },
+        { QStringLiteral("screenY"), screenGeometry.y() },
+        { QStringLiteral("virtualX"), virtualGeometry.x() },
+        { QStringLiteral("virtualY"), virtualGeometry.y() },
+        { QStringLiteral("virtualWidth"), virtualGeometry.width() },
+        { QStringLiteral("virtualHeight"), virtualGeometry.height() },
+        { QStringLiteral("animationState"), QVariant::fromValue(static_cast<QObject*>(&m_animationState)) },
+        { QStringLiteral("presentationClock"), QVariant::fromValue(static_cast<QObject*>(presentationClock)) },
     });
     view->setSource(QUrl(QStringLiteral("qrc:/qml/Screensaver.qml")));
     if (view->status() == QQuickView::Error) {
@@ -232,7 +253,8 @@ bool OverlayManager::addScreen(QScreen *screen)
         }
     }
 
-    if (m_configuration->visualModule() == QStringLiteral("fireflies")) {
+    if (!depthActive() && m_configuration->visualModule() == QStringLiteral("fireflies"))
+    {
         if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
             if (auto *fireflyRoot = rootItem->findChild<QQuickItem *>(
                     QStringLiteral("fireflyVisualRoot"), Qt::FindChildrenRecursively)) {
@@ -299,7 +321,8 @@ bool OverlayManager::addScreen(QScreen *screen)
         }
     }
 
-    if (m_configuration->visualModule() == QStringLiteral("matrix")) {
+    if (!depthActive() && m_configuration->visualModule() == QStringLiteral("matrix"))
+    {
         if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
             if (auto *root = rootItem->findChild<QQuickItem *>(QStringLiteral("matrixVisualRoot"))) {
                 auto *renderer = new MatrixRenderer(root);
@@ -309,6 +332,24 @@ bool OverlayManager::addScreen(QScreen *screen)
                 connect(root, &QQuickItem::heightChanged, renderer, [root, renderer] {renderer->setHeight(root->height());});
                 root->setProperty("nativeRenderer", QVariant::fromValue(static_cast<QObject *>(renderer)));
             }
+        }
+    }
+
+    if (depthActive())
+    {
+        if (auto* root = qobject_cast<QQuickItem*>(view->rootObject()))
+        {
+            root->setProperty("depthActive", true);
+            auto* layer = root->findChild<QQuickItem*>(QStringLiteral("livingVisualLayer"));
+            Q_ASSERT(layer);
+            auto* item
+                = VisualDepthRegistry::createItem(VisualDepthRegistry::id(m_configuration->visualModule()), layer);
+            item->setObjectName(QStringLiteral("livingVisual"));
+            item->setSize(root->size());
+            // Above the background/legacy visual, below the clock.
+            connect(root, &QQuickItem::widthChanged, item, [root, item] { item->setWidth(root->width()); });
+            connect(root, &QQuickItem::heightChanged, item, [root, item] { item->setHeight(root->height()); });
+            m_depthItems.insert(screen, item);
         }
     }
 
@@ -357,6 +398,8 @@ bool OverlayManager::addScreen(QScreen *screen)
 void OverlayManager::removeScreen(QScreen *screen)
 {
     m_snakeSimulations.remove(screen);
+    m_depthItems.remove(screen);
+    m_depthLayoutKey.clear();
     if (m_snakeArenaScreen == screen) m_snakeArenaScreen = nullptr;
     if (m_ballArenaScreen == screen) m_ballArenaScreen = nullptr;
     m_presentationClocks.remove(screen);
@@ -433,6 +476,7 @@ void OverlayManager::updateAllViewGeometry()
 
 void OverlayManager::updateAnimationState()
 {
+    configureDepthWorlds();
     const bool seamless = m_configuration->monitorBehavior() == QStringLiteral("seamless");
     const bool motionAllowed = !m_configuration->reducedMotion();
     const bool animateBall = m_configuration->monitorBehavior() != QStringLiteral("independent") && motionAllowed
@@ -621,6 +665,7 @@ bool OverlayManager::eventFilter(QObject *watched, QEvent *event)
         if (view && view->isExposed() && m_mappingViews.remove(view)) {
             // Wayland mapping finishes asynchronously, after show() returns.
             m_inputGraceTimer.start();
+            configureDepthWorlds();
         }
     }
     if (m_visible && isDismissEvent(event)) {
@@ -649,5 +694,113 @@ bool OverlayManager::isDismissEvent(const QEvent *event) const
         return true;
     default:
         return false;
+    }
+}
+
+bool OverlayManager::depthActive() const
+{
+#ifdef PVS_ENABLE_VISUAL_CAPTURE
+    if (m_captureFixture)
+        return true;
+#endif
+    return m_configuration->depthAvailable();
+}
+void OverlayManager::configureDepthWorlds()
+{
+    if (!m_visible || !depthActive() || !m_mappingViews.isEmpty()
+        || m_views.size() != QGuiApplication::screens().size())
+        return;
+    QVector<VisualOutput> outputs;
+    VisualEnvironment environment;
+    environment.presentationLeadNs = 0;
+    QByteArray key;
+    QDataStream stream(&key, QIODevice::WriteOnly);
+    QList<QScreen*> screens = m_views.keys();
+    std::sort(screens.begin(), screens.end(), [](auto* a, auto* b) { return a->name() < b->name(); });
+    for (auto* screen : screens)
+    {
+        auto* view = m_views.value(screen);
+        outputs.append({ screen->name(), view->geometry(), view->devicePixelRatio(), screen->refreshRate(),
+            screen == QGuiApplication::primaryScreen(), view->isExposed() });
+        environment.presentationLeadNs = std::max(environment.presentationLeadNs,
+            qint64(
+                std::ceil(PresentationPacing::periodNanoseconds(m_configuration->frameRate(), screen->refreshRate()))));
+        stream << screen->name() << view->geometry() << view->devicePixelRatio();
+        if (auto* root = view->rootObject())
+            environment.clockRects.insert(screen->name(), root->property("clockRect").toRectF());
+    }
+    if (key == m_depthLayoutKey)
+        return;
+    auto visual = VisualDepthRegistry::id(m_configuration->visualModule());
+#ifdef PVS_ENABLE_VISUAL_CAPTURE
+    if (m_captureFixture)
+        visual = 65535;
+#endif
+    const QStringList palettes = { QStringLiteral("ocean"), QStringLiteral("spectrum"), QStringLiteral("ember"),
+        QStringLiteral("forest"), QStringLiteral("mono"), QStringLiteral("pastel") };
+    vd_config config { visual, uint32_t(std::max(qsizetype(0), palettes.indexOf(m_configuration->animationPalette()))),
+        1, m_configuration->animationSpeed() / 100., double(m_configuration->animationDensity()),
+        m_configuration->animationScale() / 100., m_configuration->trailAmount() / 100.,
+        uint32_t(m_configuration->reducedMotion()), 0 };
+#ifdef PVS_ENABLE_VISUAL_CAPTURE
+    if (m_captureFixture)
+        config.seed = m_captureSeed;
+#endif
+    std::vector<vd_value> values;
+    if (visual != 65535)
+        for (const auto& entry : m_configuration->visualSchema())
+        {
+            const auto p = entry.toMap();
+            const auto value = m_configuration->visualParameter(p.value(QStringLiteral("key")).toString());
+            const auto kind = p.value(QStringLiteral("kind")).toUInt();
+            const auto payload = kind == 3
+                ? quint64(p.value(QStringLiteral("choices")).toStringList().indexOf(value.toString()))
+                : kind == 2 ? quint64(value.toBool())
+                            : quint64(value.toLongLong());
+            values.push_back({ p.value(QStringLiteral("id")).toUInt(), kind, payload });
+        }
+    const auto background = m_configuration->backgroundStyle();
+    const QStringList backgrounds
+        = { QStringLiteral("black"), QStringLiteral("midnight"), QStringLiteral("ocean"), QStringLiteral("plum") };
+    environment.colours.background = uint32_t(std::max(qsizetype(0), backgrounds.indexOf(background)));
+    environment.colours.frame_cap = uint32_t(m_configuration->frameRate());
+    const QColor top = background == QStringLiteral("black") ? QColor(QStringLiteral("#000000"))
+        : background == QStringLiteral("ocean")              ? QColor(QStringLiteral("#02111d"))
+        : background == QStringLiteral("plum")               ? QColor(QStringLiteral("#18091d"))
+                                                             : QColor(QStringLiteral("#071329"));
+    const QColor bottom = background == QStringLiteral("black") ? QColor(QStringLiteral("#000000"))
+        : background == QStringLiteral("ocean")                 ? QColor(QStringLiteral("#062f3c"))
+        : background == QStringLiteral("plum")                  ? QColor(QStringLiteral("#310d2c"))
+                                                                : QColor(QStringLiteral("#13091e"));
+    for (int i = 0; i < 4; ++i)
+    {
+        environment.colours.top[i] = float(i == 0 ? top.redF()
+                : i == 1                          ? top.greenF()
+                : i == 2                          ? top.blueF()
+                                                  : top.alphaF());
+        environment.colours.bottom[i] = float(i == 0 ? bottom.redF()
+                : i == 1                             ? bottom.greenF()
+                : i == 2                             ? bottom.blueF()
+                                                     : bottom.alphaF());
+    }
+    const auto behavior = m_configuration->monitorBehavior();
+    const auto mode = behavior == QStringLiteral("seamless") ? VisualMonitorMode::Spanning
+        : behavior == QStringLiteral("synchronized")         ? VisualMonitorMode::Mirrored
+                                                             : VisualMonitorMode::Independent;
+    const auto policy = visuals_depth_mirrored_policy(visual) ? VisualMirroredPolicy::PerOutputLocal
+                                                              : VisualMirroredPolicy::SharedCanonical;
+    if (m_depthCoordinator->configure(config, values, outputs, mode, policy, environment, m_depthEpochNs))
+    {
+        m_depthLayoutKey = key;
+        for (auto* screen : screens)
+            m_depthCoordinator->attach(screen->name(), m_depthItems.value(screen));
+        bool manual=false;
+#ifdef PVS_ENABLE_VISUAL_CAPTURE
+        manual=m_captureManualTime;
+#endif
+        // Reduced motion has no presentation timer. Publish the composed still
+        // once, after every configured viewport and attachment is ready.
+        if(m_configuration->reducedMotion()&&!manual)
+            for(auto *screen:screens)m_depthCoordinator->present(screen->name(),m_depthEpochNs);
     }
 }

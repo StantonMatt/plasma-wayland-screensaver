@@ -40,6 +40,7 @@ find_package(Qt6 6.8 REQUIRED COMPONENTS Core DBus Gui Network Qml Quick QuickCo
 find_package(KF6 6.0 REQUIRED COMPONENTS Config IdleTime)
 find_package(LayerShellQt REQUIRED)
 
+option(PVS_ENABLE_VISUAL_CAPTURE "Build developer-only deterministic depth fixtures and debug API" OFF)
 include(cmake/SnakesCore.cmake)
 
 add_subdirectory(src)
