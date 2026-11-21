@@ -31,8 +31,9 @@ void DepthCaptureTest::productScene()
     config.setVisualModule(visual);
     QCOMPARE(config.visualModule(), visual);
     config.setMonitorBehavior(scene["monitorMode"_L1].toString());
-    config.setShowClock(false);
-    config.setFrameRate(60);
+    config.setShowClock(scene["showClock"_L1].toBool(false));
+    if (config.showClock()) config.setClockMovement(QStringLiteral("bounce"));
+    config.setFrameRate(scene["video"_L1].toObject()["fps"_L1].toInt(60));
     config.setAnimationSpeed(options["speed"_L1].toInt(config.animationSpeed()));
     config.setAnimationDensity(options["density"_L1].toInt(config.animationDensity()));
     config.setAnimationScale(options["scale"_L1].toInt(config.animationScale()));
@@ -46,14 +47,18 @@ void DepthCaptureTest::productScene()
             config.setVisualParameter(key, options[key].toVariant());
     }
     OverlayManager manager(&config);
-    manager.m_captureManualTime = !legacy && !config.reducedMotion();
+    const bool sampleTimeline = !config.reducedMotion() || scene["sampleReducedTimeline"_L1].toBool();
+    manager.m_captureManualTime = !legacy && sampleTimeline;
     manager.m_captureSeed = scene["seed"_L1].toString().toULongLong();
     manager.m_captureSeedSet = scene.contains("seed"_L1);
     const auto start = VisualWorldCoordinator::monotonicNow();
     QVERIFY(manager.show());
     const auto shown = VisualWorldCoordinator::monotonicNow();
+    qint64 fallbackPaintNs = 0;
     QVector<std::shared_ptr<std::atomic<qint64>>> first;
     for (auto it = manager.m_views.cbegin(); it != manager.m_views.cend(); ++it) {
+        if (fallback)
+            continue;
         auto timestamp = std::make_shared<std::atomic<qint64>>(0);
         first.append(timestamp);
         auto* item = manager.m_depthItems.value(it.key());
@@ -85,7 +90,11 @@ void DepthCaptureTest::productScene()
             QCOMPARE(layer->parentItem()->property("source").toUrl().fileName().toLower(), visual + ".qml"_L1);
             if (layer->metaObject()->indexOfProperty("nativeRenderer") >= 0)
                 QVERIFY(layer->property("nativeRenderer").value<QObject*>());
+            // The rejected GPU item never renders a lease. Wait for an actual
+            // paint of the restored software scene on each output instead.
+            QVERIFY(!view->grabWindow().isNull());
         }
+        fallbackPaintNs = VisualWorldCoordinator::monotonicNow() - start;
     } else if (!legacy) {
         const bool localWorlds = config.monitorBehavior() == "independent"_L1
             || (config.monitorBehavior() == "synchronized"_L1 && visuals_depth_mirrored_policy(visualId));
@@ -96,7 +105,7 @@ void DepthCaptureTest::productScene()
     QVERIFY(QTest::qWaitFor(
         [&] { return std::all_of(first.begin(), first.end(), [](const auto& p) { return p->load() > 0; }); },
         10000));
-    qint64 activation = 0;
+    qint64 activation = fallbackPaintNs;
     for (auto& stamp : first)
         activation = std::max(activation, stamp->load() - start);
     for (auto* clock : manager.m_presentationClocks) {
@@ -167,7 +176,7 @@ void DepthCaptureTest::productScene()
     int index = 0;
     int fallbackBrightPixels = 0;
     for (qint64 ns : times) {
-        if (!legacy && !fallback && !config.reducedMotion()) {
+        if (!legacy && !fallback && sampleTimeline) {
             if (index == 0 || !length)
                 QVERIFY(manager.m_depthCoordinator->seek(ns));
             for (auto* screen : manager.m_views.keys())
@@ -175,7 +184,7 @@ void DepthCaptureTest::productScene()
         }
         world.fill(Qt::black);
         QPainter painter(&world);
-        QJsonArray paths;
+        QJsonArray paths, clocks;
         for (auto* screen : manager.m_views.keys()) {
             auto* view = manager.m_views.value(screen);
             auto* item = manager.m_depthItems.value(screen);
@@ -185,6 +194,11 @@ void DepthCaptureTest::productScene()
                 QVERIFY(!manager.m_depthGpuFailed);
             }
             const auto image = view->grabWindow();
+            if (config.showClock()) {
+                const auto clock = view->rootObject()->property("clockRect").toRectF();
+                clocks.append(QJsonObject{{"output"_L1,screen->name()},{"worldX"_L1,clock.x()+view->x()},
+                    {"worldY"_L1,clock.y()+view->y()},{"width"_L1,clock.width()},{"height"_L1,clock.height()}});
+            }
             QCOMPARE(image.size(), view->geometry().size());
             if (fallback && !fallbackPixels.isEmpty() && index == 0) {
                 const auto pixels = image.convertToFormat(QImage::Format_RGB32);
@@ -198,7 +212,7 @@ void DepthCaptureTest::productScene()
                 fallbackBrightPixels += bright;
             }
             if (item && !fallback)
-                QCOMPARE(item->renderedTimelineNs(), config.reducedMotion() ? 0 : ns);
+                QCOMPARE(item->renderedTimelineNs(), sampleTimeline ? ns : 0);
             const QPoint offset = view->geometry().topLeft() - bounds.topLeft();
             painter.drawImage(offset, image);
             if (!length || index == 0) {
@@ -214,8 +228,9 @@ void DepthCaptureTest::productScene()
         if (!length || index == 0) {
             const QString name = QStringLiteral("%1-world.png").arg(ns);
             QVERIFY(world.save(dir.filePath(name)));
-            frames.append(QJsonObject {
-                { "timelineNs"_L1, QString::number(ns) }, { "outputs"_L1, paths }, { "panorama"_L1, name } });
+            QJsonObject frame{{"timelineNs"_L1,QString::number(ns)},{"outputs"_L1,paths},{"panorama"_L1,name}};
+            if (config.showClock()) frame["clocks"_L1]=clocks;
+            frames.append(frame);
         }
         if (length) {
             const QImage stitched
@@ -257,8 +272,11 @@ void DepthCaptureTest::productScene()
     manifest["worldCount"_L1] = manager.m_depthCoordinator->worldCount();
     manifest["timerStoppedAtActivation"_L1] = config.reducedMotion();
     manifest["videoFrames"_L1] = length;
+    manifest["frameCap"_L1] = config.frameRate();
     if (fallback && !fallbackPixels.isEmpty())
         manifest["legacyBrightPixels"_L1] = fallbackBrightPixels;
+    if (fallback)
+        manifest["fallbackPaintNs"_L1] = fallbackPaintNs;
     QFile report(dir.filePath(QStringLiteral("manifest.json")));
     QVERIFY(report.open(QIODevice::WriteOnly));
     report.write(QJsonDocument(manifest).toJson());

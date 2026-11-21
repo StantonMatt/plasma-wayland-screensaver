@@ -29,7 +29,7 @@ def stop(process):
 
 
 LAYOUTS = {'l3': L3, 'single': L3[:1], 'wide': [dict(L3[1], x=0)],
-           'pair': [L3[0], dict(L3[2], x=2560, y=0)]}
+           'pair': [L3[0], dict(L3[2], x=2560, y=0)], 'hd': [dict(L3[2], x=0, y=0)]}
 
 
 def scene_catalogs(directory):
@@ -46,7 +46,7 @@ def worker(args):
     catalog = args.catalog
     scenes = catalog["scenes"]
     if args.scene == 'activation-study':
-        names=['legacy','activation','activation','legacy'] * 3
+        names = ['legacy', 'activation', 'activation', 'legacy'] * (5 if args.warm_activation else 3)
         pairs = [scene_request(args, name) for name in names]
         return capture(args, environment, pairs[0]['outputs'], args.output, dict(pairs=pairs))
     requested = list(scenes) if args.scene == 'all' else args.scene.split(',')
@@ -189,6 +189,7 @@ def capture(args, compositor_environment, roles, target, product):
             for mode in ('independent','seamless'):
                 argv = [str(script), '--target', 'virtual', '--private-depth-session', '--virtual-renderer', 'hardware',
                         '--binary', str(args.build / 'bin/plasma-visual-screensaver'), '--visuals', 'none', args.visual,
+                        *(part for value in args.benchmark_set for part in ('--set', value)),
                         '--set', 'MonitorBehavior='+mode, '--set', 'FrameRate=60', '--set', 'ShowClock=true',
                         '--set', 'ClockMovement=bounce', '--duration', '30', '--warmup', '5',
                         '--output-dir', str(target / mode)]
@@ -201,6 +202,23 @@ def capture(args, compositor_environment, roles, target, product):
             return 0
         if product and 'pairs' in product:
             samples = {'legacy': [], 'activation': []}
+            cold = {}
+            cache_files = []
+            if args.warm_activation:
+                # The worker owns one private HOME and XDG cache for the entire
+                # compositor session. Prime both paths before timing the warm pairs.
+                for request in product['pairs'][:2]:
+                    name = request['scene']
+                    child = target / ('warmup-' + name)
+                    child.mkdir()
+                    if run_scene(args, environment, child, request):
+                        return 1
+                    cold[name] = json.loads((child / 'manifest.json').read_text())['activationNs']
+                for label in ('XDG_CACHE_HOME', 'HOME'):
+                    directory = Path(environment[label])
+                    cache_files.extend(f'{label}/{p.relative_to(directory)}'
+                                       for p in directory.rglob('*') if p.is_file()
+                                       and any('cache' in s.lower() for s in p.relative_to(directory).parts))
             for i, request in enumerate(product['pairs']):
                 child = target / ('%02d-%s' % (i, request['scene']))
                 child.mkdir()
@@ -212,8 +230,16 @@ def capture(args, compositor_environment, roles, target, product):
             delta = medians['activation'] - medians['legacy']
             paired = [new - old for new, old in zip(samples['activation'], samples['legacy'])]
             report = dict(samplesNs=samples, mediansNs=medians, addedNs=delta,
-                          pairedDeltasNs=paired, maxPairedDeltaNs=max(paired),
-                          limitNs=50_000_000, passed=max(paired) <= 50_000_000)
+                          pairedDeltasNs=paired, maxPairedDeltaNs=max(paired))
+            if args.warm_activation:
+                median = statistics.median(paired)
+                p90 = sorted(paired)[math.ceil(0.9 * len(paired)) - 1]
+                report.update(discardedColdNs=cold, privateWarmCacheFiles=sorted(cache_files),
+                              medianPairedDeltaNs=median, p90PairedDeltaNs=p90,
+                              medianLimitNs=25_000_000, maxLimitNs=100_000_000,
+                              passed=len(paired) >= 10 and median <= 25_000_000 and max(paired) <= 100_000_000)
+            else:
+                report.update(limitNs=50_000_000, passed=max(paired) <= 50_000_000)
             (target / 'activation.json').write_text(json.dumps(report, indent=2) + '\n')
             return 0 if report['passed'] else 1
         if product:
@@ -257,6 +283,10 @@ def main():
     parser.add_argument('--layout', default='l3', choices=['l3'])
     parser.add_argument('--clip', type=int, nargs=2, metavar=('START_SECONDS', 'FRAMES'),
                         help='Capture a shorter diagnostic interval from one scripted video scene')
+    parser.add_argument('--benchmark-set', action='append', default=[], metavar='KEY=VALUE',
+                        help='Use a benchmark-visuals.sh General setting for the private CPU study')
+    parser.add_argument('--warm-activation', action='store_true',
+                        help='Warm both renderers in one private driver/Qt cache before ten interleaved activation pairs')
     parser.add_argument('--round', type=int, default=1)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--seed', default='1')
@@ -264,6 +294,10 @@ def main():
     parser.add_argument('--event-script', type=Path, help='JSON array of visual events (id,timelineNs,anchor,strength)')
     parser.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.warm_activation and args.scene != 'activation-study':
+        parser.error('--warm-activation requires --scene activation-study')
+    if args.benchmark_set and args.scene != 'benchmark':
+        parser.error('--benchmark-set is only valid for the benchmark scene')
     if args.clip and (args.visual == 'fixture' or args.scene == 'all' or ',' in args.scene or
                       not 0 <= args.clip[0] <= 3600 or not 60 <= args.clip[1] <= 3600):
         parser.error('--clip needs one video scene, a start in [0, 3600] and 60 to 3600 frames')
@@ -350,7 +384,9 @@ def main():
             scope='Private virtual KWin, 60 Hz outputs, DPR 1'), indent=2))
         process = subprocess.Popen(['dbus-run-session', '--config-file=' + str(bus), '--', sys.executable,
             str(Path(__file__).resolve()), '--worker', '--build', str(args.build), '--output', str(args.output),
-            '--visual', args.visual, '--scene', args.scene, '--seed', args.seed, '--times', args.times, *(['--clip', *map(str, args.clip)] if args.clip else []), *(['--event-script', str(args.event_script.resolve())] if args.event_script else [])],
+            '--visual', args.visual, '--scene', args.scene, '--seed', args.seed, '--times', args.times,
+            *(['--warm-activation'] if args.warm_activation else []),
+            *(part for value in args.benchmark_set for part in ('--benchmark-set', value)), *(['--clip', *map(str, args.clip)] if args.clip else []), *(['--event-script', str(args.event_script.resolve())] if args.event_script else [])],
             env=validated_environment(environment, 'bootstrap'), start_new_session=True)
         print(f'Private capture process group {process.pid}', flush=True)
         def interrupted(signum, frame):

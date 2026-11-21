@@ -20,6 +20,15 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.26.0" date="2026-11-21">
+      <description>
+        <p>Floating Orbs is now a living colony with currents, merging and
+        splitting, three material looks and world events. Starfield voyages
+        through a living galaxy of clusters and nebulae. Fireflies fills a
+        living meadow with courtship, hunters, weather and gatherings.
+        In Spanning mode each visual shares one world across every monitor.</p>
+      </description>
+    </release>
     <release version="0.25.0" date="2026-11-21">
       <description>
         <p>Constellation is now a living night sky. Stars are born, drift,

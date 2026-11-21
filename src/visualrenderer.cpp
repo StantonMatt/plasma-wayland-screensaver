@@ -2,6 +2,7 @@
 #include <cstring>
 #include <array>
 #include "visualrenderer.h"
+#include "visuals_depth_starfield.h"
 #include "visualmaterial.h"
 #include <QDateTime>
 #include <QQuickWindow>
@@ -101,6 +102,9 @@ void VisualRenderer::captureSnapshot(bool advance) {
         : m_config.visual==VISUALS_CORE_AURORA
         ? visuals_core_frame(m_core.get(),&request,&m_snapshot,sizeof(m_snapshot))
         : visuals_core_primitives(m_core.get(),&request,m_primitives.data(),m_primitives.size(),&m_primitiveCount);
+    if (result==0 && m_config.visual==VISUALS_CORE_STARFIELD && window()
+        && window()->rendererInterface()->graphicsApi()==QSGRendererInterface::Software)
+        m_primitiveCount=visuals_starfield_software_material(m_primitives.data(),m_primitiveCount,m_config.palette);
     if (result==0) update();
 }
 void VisualRenderer::geometryChange(const QRectF &now,const QRectF &old) {

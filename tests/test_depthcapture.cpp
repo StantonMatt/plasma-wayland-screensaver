@@ -25,6 +25,15 @@ using namespace Qt::StringLiterals;
 class DepthCaptureTest final : public QObject
 {
     Q_OBJECT
+public:
+    static void initMain()
+    {
+        // The private runner allows one hour to encode a native multi-output film.
+        // QtTest's five-minute watchdog would terminate that capture mid-stream.
+        if (qEnvironmentVariableIsSet("PVS_VISUAL_CAPTURE_SCRIPT"))
+            qputenv("QTEST_FUNCTION_TIMEOUT", "3600000");
+    }
+
 private Q_SLOTS:
     void registeredSceneCatalogs()
     {

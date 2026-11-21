@@ -38,9 +38,12 @@ pub struct Obstacle {
     pub inflation: f64,
     pub kind: u32,
     pub enabled: u32,
+    /// Signed initial velocity in logical pixels per real second. Zero is stationary.
+    pub velocity: super::common::layout::Vec2,
 }
 #[derive(Clone, Debug, Default)]
 pub struct Environment {
+    pub independent_index: u32,
     pub background: u32,
     pub top: [f32; 4],
     pub bottom: [f32; 4],
@@ -101,7 +104,7 @@ pub trait LivingWorld: Send + 'static {
     fn rate(&self) -> Rate;
     fn step(&mut self, tick: u64);
     fn snapshot(&self) -> Snapshot;
-    fn next_wake_ns(&self) -> Option<i64> {
+    fn next_wake_ns(&self, _timeline_ns: i64) -> Option<i64> {
         None
     }
     fn emission_estimate(&self) -> f64 {

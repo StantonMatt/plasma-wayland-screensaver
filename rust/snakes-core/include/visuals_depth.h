@@ -38,7 +38,7 @@ extern "C"
         uint64_t id;
         vd_rect viewport;
         double dpr, refresh_hz;
-        uint32_t primary, padding;
+        uint32_t primary, independent_index; /* stable connector order, zero for shared worlds */
     } vd_output;
     typedef struct
     {
@@ -50,7 +50,9 @@ extern "C"
         uint64_t output_id;
         vd_rect rect;
         double inflation;
+        /* 1: clock obstacle. 2: its mirrored output bounds, in world coordinates. */
         uint32_t kind, enabled;
+        double velocity_x, velocity_y;
     } vd_obstacle;
     typedef struct
     {
@@ -104,6 +106,8 @@ extern "C"
 uint32_t visuals_depth_mirrored_fit(uint32_t);
     int32_t visuals_depth_create(const vd_config*, const vd_value*, size_t, const vd_output*, size_t,
         const vd_environment*, const vd_obstacle*, size_t, uint64_t, int64_t, visuals_depth_world**);
+    /* Next isolated reduced-motion wake on the world timeline, or -1. */
+    int64_t visuals_depth_next_wake(const visuals_depth_world*, int64_t timeline_ns);
     void visuals_depth_destroy(visuals_depth_world*);
     /* 0 ready, 1 more bounded work required, -1 invalid. Max 1024 ticks per call. */
     int32_t visuals_depth_ensure_through(visuals_depth_world*, int64_t, uint32_t);
@@ -116,7 +120,7 @@ uint32_t visuals_depth_mirrored_fit(uint32_t);
 }
 static_assert(sizeof(vd_config) == 56 && sizeof(vd_output) == 64 && sizeof(vd_view) == 88);
 static_assert(sizeof(vd_circle) == 72 && offsetof(vd_circle, birth_ns) == 56);
-static_assert(sizeof(vd_environment) == 40 && sizeof(vd_obstacle) == 56 && sizeof(vd_value) == 16);
+static_assert(sizeof(vd_environment) == 40 && sizeof(vd_obstacle) == 72 && sizeof(vd_value) == 16);
 static_assert(sizeof(vd_stats) == 40 && sizeof(vd_generations) == 32 && offsetof(vd_circle, death_ns) == 64);
 static_assert(sizeof(vd_sample_info) == 184 && sizeof(vd_parameter) == 48 && sizeof(vd_endpoint) == 72);
 #endif

@@ -37,6 +37,31 @@ opens the latest GitHub release instead.
 > It does not authenticate, lock input, protect running applications, or replace
 > Plasma's lock screen. Anyone who dismisses it can use the session.
 
+## Floating Orbs 0.26.0
+
+Floating Orbs moves like a colony in a slow current. Neighbouring orbs form
+rafts, fuse or swallow smaller orbs. Large orbs split, old ones release motes,
+and new orbs grow from what they leave behind. Choose soft Glow, polished
+Glass or iridescent Bubbles, and Drift, Rise or Swirl currents. World events
+gather dandelions, processions and foam. The moving clock parts the flow,
+and Spanning carries one colony across every monitor.
+
+## Starfield 0.26.0
+
+Starfield takes a voyage through a living galaxy. Stars gather in clusters,
+nebulae glow around hot neighbours, and the ship steers towards new sights.
+Cruise gives way to warp, then slows for the next arrival. Comets and other
+passing lights cross the view. In Spanning mode one voyage crosses every
+monitor. Reduced motion parks the view at a star cluster.
+
+## Fireflies 0.26.0
+
+Fireflies fills a living meadow as dusk deepens into night. Lights answer
+each other, court and land, while hunters, gusts and showers change the
+scene. Sometimes the meadow gathers into a glowing tree. Choose grass or a
+forest horizon, tune Synchrony and Light trails, or hold a still exposure
+with reduced motion. Spanning shares one night across every monitor.
+
 ## Constellation 0.25.0
 
 Constellation is a living night sky. Stars are born in nurseries, drift on

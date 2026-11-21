@@ -1,0 +1,1210 @@
+{
+  "eventIds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "prewarmSeconds": 0,
+  "defaults": {
+    "speed": 100,
+    "density": 50,
+    "scale": 100,
+    "trails": 35,
+    "palette": "ocean",
+    "background": "midnight",
+    "reducedMotion": false,
+    "flight": "voyage",
+    "steering": 40,
+    "nebulae": 45,
+    "events": true
+  },
+  "scenes": {
+    "S1": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "20000000000",
+        "45000000000"
+      ],
+      "settings": {},
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "60000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "S1b": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "0",
+        "30000000000"
+      ],
+      "settings": {
+        "reducedMotion": true
+      },
+      "events": []
+    },
+    "S2": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "31500000000",
+        "33100000000",
+        "40000000000",
+        "50300000000",
+        "58000000000"
+      ],
+      "settings": {},
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "S3-ocean": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "60000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace",
+        "density": 70,
+        "trails": 70,
+        "palette": "ocean",
+        "background": "black"
+      },
+      "events": []
+    },
+    "S3-spectrum": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "60000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace",
+        "density": 70,
+        "trails": 70,
+        "palette": "spectrum",
+        "background": "black"
+      },
+      "events": []
+    },
+    "S3-ember": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "60000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace",
+        "density": 70,
+        "trails": 70,
+        "palette": "ember",
+        "background": "black"
+      },
+      "events": []
+    },
+    "S3-forest": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "60000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace",
+        "density": 70,
+        "trails": 70,
+        "palette": "forest",
+        "background": "black"
+      },
+      "events": []
+    },
+    "S3-mono": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "60000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace",
+        "density": 70,
+        "trails": 70,
+        "palette": "mono",
+        "background": "black"
+      },
+      "events": []
+    },
+    "S3-pastel": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "60000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace",
+        "density": 70,
+        "trails": 70,
+        "palette": "pastel",
+        "background": "black"
+      },
+      "events": []
+    },
+    "S4": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "23",
+      "captureTimesNs": [
+        "90000000000",
+        "105000000000",
+        "120000000000"
+      ],
+      "settings": {
+        "nebulae": 90,
+        "steering": 60,
+        "palette": "ember",
+        "background": "ocean"
+      },
+      "events": [
+        {
+          "id": 2,
+          "timelineNs": "80000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "S5": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "30000000000",
+        "50000000000",
+        "60000000000"
+      ],
+      "settings": {},
+      "events": [
+        {
+          "id": 3,
+          "timelineNs": "40000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 1,
+          "timelineNs": "62000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "S6": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "11",
+      "captureTimesNs": [
+        "25000000000",
+        "44000000000",
+        "63000000000",
+        "92000000000"
+      ],
+      "settings": {
+        "palette": "mono",
+        "background": "black"
+      },
+      "events": [
+        {
+          "id": 4,
+          "timelineNs": "20000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 5,
+          "timelineNs": "40000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 7,
+          "timelineNs": "60000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 1,
+          "timelineNs": "80000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 6,
+          "timelineNs": "90000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "G": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "600000000000"
+      ],
+      "settings": {
+        "density": 80,
+        "palette": "ember",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100
+      },
+      "events": []
+    },
+    "flight-cruise": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "flight": "cruise"
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "flight-hyperspace": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace"
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "steering-0": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "steering": 0
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "steering-100": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "steering": 100
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "nebulae-0": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "nebulae": 0
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "nebulae-100": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "nebulae": 100
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "events-false": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "25000000000"
+      ],
+      "settings": {
+        "events": false
+      },
+      "events": [
+        {
+          "id": 4,
+          "timelineNs": "20000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "events-true": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "25000000000"
+      ],
+      "settings": {
+        "events": true
+      },
+      "events": [
+        {
+          "id": 4,
+          "timelineNs": "20000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "density-10": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "density": 10
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "density-100": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "density": 100
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "speed-10": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "speed": 10
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "speed-300": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "speed": 300
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "trails-0": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "trails": 0
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "trails-100": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "trails": 100
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "scale-25": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "scale": 25
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "scale-200": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "40000000000"
+      ],
+      "settings": {
+        "scale": 200
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "30000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "mirrored": {
+      "layout": "pair",
+      "monitorMode": "synchronized",
+      "seed": "1",
+      "captureTimesNs": [
+        "30000000000"
+      ],
+      "settings": {},
+      "events": []
+    },
+    "stress": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "600000000000"
+      ],
+      "settings": {
+        "speed": 300,
+        "density": 100,
+        "trails": 100
+      },
+      "events": []
+    },
+    "fallback": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "0"
+      ],
+      "settings": {},
+      "events": [],
+      "softwareProbe": true,
+      "fallbackPixels": {
+        "threshold": 40,
+        "minimum": 25
+      }
+    },
+    "legacy": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "0"
+      ],
+      "settings": {},
+      "events": [],
+      "legacy": true
+    },
+    "activation": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "0"
+      ],
+      "settings": {},
+      "events": []
+    },
+    "recording": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "0"
+      ],
+      "settings": {},
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "45000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 3,
+          "timelineNs": "15000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ],
+      "video": {
+        "start": 0,
+        "frames": 5400,
+        "fps": 60,
+        "name": "voyage",
+        "seam": true,
+        "crop": [
+          2230,
+          450,
+          680,
+          430
+        ]
+      }
+    },
+    "jump-30": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "46000000000"
+      ],
+      "settings": {},
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "45000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 3,
+          "timelineNs": "15000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ],
+      "video": {
+        "start": 46,
+        "frames": 600,
+        "fps": 30,
+        "name": "jump-30",
+        "seam": true,
+        "crop": [
+          2230,
+          450,
+          680,
+          430
+        ]
+      }
+    },
+    "G-motion": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "630000000000"
+      ],
+      "settings": {
+        "density": 80,
+        "palette": "ember",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100
+      },
+      "events": [],
+      "video": {
+        "name": "G-motion",
+        "start": 630,
+        "frames": 1200,
+        "fps": 60
+      }
+    },
+    "steering-span": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "35000000000"
+      ],
+      "settings": {
+        "steering": 100
+      },
+      "events": [
+        {
+          "id": 3,
+          "timelineNs": "40000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 1,
+          "timelineNs": "62000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ],
+      "video": {
+        "start": 35,
+        "frames": 1800,
+        "fps": 60,
+        "name": "steering-span",
+        "seam": true,
+        "crop": [
+          2030,
+          450,
+          680,
+          430
+        ]
+      }
+    },
+    "S4-gas-control": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "23",
+      "captureTimesNs": [
+        "90000000000",
+        "105000000000",
+        "120000000000"
+      ],
+      "settings": {
+        "nebulae": 0,
+        "steering": 60,
+        "palette": "ember",
+        "background": "ocean"
+      },
+      "events": [
+        {
+          "id": 2,
+          "timelineNs": "80000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "warp-spanning": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "55000000000"
+      ],
+      "settings": {},
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "45000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 3,
+          "timelineNs": "15000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "warp-spanning-control": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "55000000000"
+      ],
+      "settings": {
+        "trails": 0
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "45000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 3,
+          "timelineNs": "15000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "arrival-subject": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "65600000000",
+        "69000000000",
+        "73000000000",
+        "76000000000",
+        "77600000000",
+        "78100000000"
+      ],
+      "settings": {},
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "45000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 3,
+          "timelineNs": "15000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "gas-handoff": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "57100000000",
+        "57116666667",
+        "57133333333",
+        "57150000000"
+      ],
+      "settings": {},
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "45000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 3,
+          "timelineNs": "15000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "S3-ocean-gas-control": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "60000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace",
+        "density": 70,
+        "trails": 70,
+        "palette": "ocean",
+        "background": "black",
+        "nebulae": 0
+      },
+      "events": []
+    },
+    "S3-spectrum-gas-control": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "60000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace",
+        "density": 70,
+        "trails": 70,
+        "palette": "spectrum",
+        "background": "black",
+        "nebulae": 0
+      },
+      "events": []
+    },
+    "S3-ember-gas-control": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "60000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace",
+        "density": 70,
+        "trails": 70,
+        "palette": "ember",
+        "background": "black",
+        "nebulae": 0
+      },
+      "events": []
+    },
+    "S3-forest-gas-control": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "60000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace",
+        "density": 70,
+        "trails": 70,
+        "palette": "forest",
+        "background": "black",
+        "nebulae": 0
+      },
+      "events": []
+    },
+    "S3-mono-gas-control": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "60000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace",
+        "density": 70,
+        "trails": 70,
+        "palette": "mono",
+        "background": "black",
+        "nebulae": 0
+      },
+      "events": []
+    },
+    "S3-pastel-gas-control": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "60000000000"
+      ],
+      "settings": {
+        "flight": "hyperspace",
+        "density": 70,
+        "trails": 70,
+        "palette": "pastel",
+        "background": "black",
+        "nebulae": 0
+      },
+      "events": []
+    },
+    "arrival-30-speed-100": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "75000000000"
+      ],
+      "settings": {
+        "speed": 100,
+        "trails": 35
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "45000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 3,
+          "timelineNs": "15000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ],
+      "video": {
+        "name": "arrival-30-speed-100",
+        "start": 75,
+        "frames": 120,
+        "fps": 30
+      }
+    },
+    "arrival-30-speed-300": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "1",
+      "captureTimesNs": [
+        "75000000000"
+      ],
+      "settings": {
+        "speed": 300,
+        "trails": 35
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "45000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        },
+        {
+          "id": 3,
+          "timelineNs": "15000000000",
+          "anchor": [
+            0,
+            0
+          ],
+          "strength": 1
+        }
+      ],
+      "video": {
+        "name": "arrival-30-speed-300",
+        "start": 75,
+        "frames": 120,
+        "fps": 30
+      }
+    }
+  }
+}

@@ -9,7 +9,7 @@ class LivingVisualItem : public QQuickItem
 public:
     explicit LivingVisualItem(QQuickItem* parent = nullptr);
     // GUI only. The Qt synchronization barrier transfers this immutable lease.
-    void setSample(VisualSampleLease);
+    virtual void setSample(VisualSampleLease);
     quint64 renderedSample() const;
     quint64 renderedLayout() const;
     quint64 renderedDataRevision() const;

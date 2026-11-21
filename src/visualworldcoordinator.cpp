@@ -22,6 +22,28 @@ vd_rect rect(QRectF r)
 VisualWorldCoordinator::VisualWorldCoordinator(QObject* parent)
     : QObject(parent)
 {
+    m_wake.setSingleShot(true);
+    m_wake.setTimerType(Qt::PreciseTimer);
+    connect(&m_wake, &QTimer::timeout, this, [this] {
+        const auto now = monotonicNow();
+        for (auto it = m_bindings.cbegin(); it != m_bindings.cend(); ++it)
+            present(it.key(), now);
+        scheduleWake(now);
+    });
+}
+
+void VisualWorldCoordinator::scheduleWake(qint64 now)
+{
+    m_wake.stop();
+    const qint64 elapsed = std::max<qint64>(0, now - m_timeOrigin);
+    qint64 next = -1;
+    for (const auto& world : m_worlds) {
+        const auto due = world->nextWake(elapsed);
+        if (due > elapsed && (next < 0 || due < next))
+            next = due;
+    }
+    if (next >= 0)
+        m_wake.start(std::chrono::milliseconds((next - elapsed + 999999) / 1000000));
 }
 qint64 VisualWorldCoordinator::monotonicNow()
 {
@@ -113,7 +135,8 @@ bool VisualWorldCoordinator::configure(const vd_config& input, const std::vector
             const auto addOutput = [&](const VisualOutput& o, QRectF arena)
             {
                 arenas.push_back(
-                    { outputIdentity(o.connector), rect(arena), o.dpr, o.refreshHz, uint32_t(o.primary), 0 });
+                    { outputIdentity(o.connector), rect(arena), o.dpr, o.refreshHz, uint32_t(o.primary),
+                      mode == VisualMonitorMode::Independent ? uint32_t(&o - outputs.constData()) : 0u });
             };
             if (mode == VisualMonitorMode::Spanning)
                 for (const auto& o : outputs)
@@ -124,7 +147,8 @@ bool VisualWorldCoordinator::configure(const vd_config& input, const std::vector
                 addOutput(output, QRectF(QPointF(0, 0), output.viewport.size()));
             for (const auto& o : outputs)
             {
-                if (mode != VisualMonitorMode::Spanning
+                const bool mirroredClock = input.visual == 8 && mode == VisualMonitorMode::Mirrored && shared;
+                if (!mirroredClock && mode != VisualMonitorMode::Spanning
                     && o.connector != (shared ? reference->connector : output.connector))
                     continue;
                 QRectF obstacle = environment.clockRects.value(o.connector);
@@ -132,6 +156,7 @@ bool VisualWorldCoordinator::configure(const vd_config& input, const std::vector
                     continue;
                 if (mode == VisualMonitorMode::Spanning)
                     obstacle.translate(o.viewport.topLeft());
+                auto velocity = environment.clockVelocity.value(o.connector);
                 if (mode == VisualMonitorMode::Mirrored && shared)
                 {
                     const double sx = o.viewport.width() / canonical.width(),
@@ -140,6 +165,12 @@ bool VisualWorldCoordinator::configure(const vd_config& input, const std::vector
                     const double scale = fit == 2 ? sy : fit == 1 ? std::min(sx, sy) : std::max(sx, sy);
                     const QPointF offset((o.viewport.width() - canonical.width() * scale) / 2.,
                         (o.viewport.height() - canonical.height() * scale) / 2.);
+                    if (mirroredClock) {
+                        // The local clock bounces inside this visible cover crop.
+                        const QRectF bounds(-offset / scale, o.viewport.size() / scale);
+                        obstacles.push_back({outputIdentity(o.connector), rect(bounds), 0., 2, 1, 0., 0.});
+                        velocity /= scale;
+                    }
                     obstacle = QRectF((obstacle.topLeft() - offset) / scale, obstacle.size() / scale);
                 }
                 bool duplicate = false;
@@ -147,8 +178,10 @@ bool VisualWorldCoordinator::configure(const vd_config& input, const std::vector
                     if (prior.rect.x == obstacle.x() && prior.rect.y == obstacle.y()
                         && prior.rect.width == obstacle.width() && prior.rect.height == obstacle.height())
                         duplicate = true;
-                if (!duplicate)
-                    obstacles.push_back({ outputIdentity(o.connector), rect(obstacle), .1, 1, 1 });
+                if (mirroredClock || !duplicate) {
+                    const auto v = velocity;
+                    obstacles.push_back({ outputIdentity(o.connector), rect(obstacle), .1, 1, 1, v.x(), v.y() });
+                }
             }
             auto world = std::make_unique<VisualWorld>(
                 config, parameters, arenas, environment.colours, obstacles, m_generation, environment.presentationLeadNs);
@@ -166,6 +199,7 @@ bool VisualWorldCoordinator::configure(const vd_config& input, const std::vector
     for (auto it = old.cbegin(); it != old.cend(); ++it)
         if (!m_bindings.contains(it.key()) && it->item)
             it->item->setSample({});
+    scheduleWake(monotonicNow());
     return true;
 }
 void VisualWorldCoordinator::attach(const QString& connector, LivingVisualItem* item)
@@ -201,6 +235,7 @@ bool VisualWorldCoordinator::present(const QString& connector, qint64 ns)
 }
 void VisualWorldCoordinator::stop()
 {
+    m_wake.stop();
     assertGui();
     for (auto& b : m_bindings)
         if (b.item)

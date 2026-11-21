@@ -1,1 +1,7 @@
-# Register owned depth tests here.
+add_test(NAME depth-orbs-settings COMMAND test-settingsqml -input "${CMAKE_CURRENT_SOURCE_DIR}/qml")
+set_tests_properties(depth-orbs-settings PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+if(PVS_ENABLE_VISUAL_CAPTURE)
+    add_executable(test-orbs-clock test_clock.cpp)
+    target_link_libraries(test-orbs-clock PRIVATE VisualDepth Qt6::Test)
+    add_test(NAME depth-orbs-clock COMMAND test-orbs-clock)
+endif()

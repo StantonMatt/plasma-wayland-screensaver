@@ -32,6 +32,7 @@ Kirigami.FormLayout {
         Kirigami.FormData.label: qsTr("Merging:")
         accessibleName: qsTr("Merging")
         from: 0; to: 100; stepSize: 5
+        valueText: shownValue === 0 ? qsTr("Never") : qsTr("%1%").arg(shownValue)
         value: form.config.visualParameters.merging
         onMoved: value => form.settings.writeVisualParameter("merging", value)
     }
@@ -40,12 +41,13 @@ Kirigami.FormLayout {
         Kirigami.FormData.label: qsTr("Depth:")
         accessibleName: qsTr("Depth")
         from: 0; to: 100; stepSize: 5
+        valueText: shownValue === 0 ? qsTr("Flat") : qsTr("%1%").arg(shownValue)
         value: form.config.visualParameters.depth
         onMoved: value => form.settings.writeVisualParameter("depth", value)
     }
 
     QQC2.CheckBox {
-        text: qsTr("World events")
+        text: qsTr("World events (dandelions, processions, foam and surfacing)")
         checked: form.config.visualParameters.worldEvents === true
         onToggled: form.settings.writeVisualParameter("worldEvents", checked)
     }

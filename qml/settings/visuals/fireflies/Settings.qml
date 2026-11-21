@@ -8,7 +8,7 @@ Kirigami.FormLayout {
     id: form
     required property var settings
     required property var config
-    readonly property var sharedLabels: ({speed: qsTr("Speed"), density: qsTr("Fireflies"), scale: qsTr("Size"), trail: qsTr("Light trails")})
+    readonly property var sharedLabels: ({speed: qsTr("Speed"), density: qsTr("Swarm size"), scale: qsTr("Size"), trail: qsTr("Light trails")})
 
     ValueSlider {
         Kirigami.FormData.label: qsTr("Synchrony:")
@@ -19,7 +19,7 @@ Kirigami.FormLayout {
     }
 
     QQC2.CheckBox {
-        text: qsTr("Night cycle")
+        text: qsTr("Night passes from dusk to dawn")
         checked: form.config.visualParameters.nightCycle === true
         onToggled: form.settings.writeVisualParameter("nightCycle", checked)
     }
@@ -31,13 +31,13 @@ Kirigami.FormLayout {
     }
 
     QQC2.CheckBox {
-        text: qsTr("Hunters")
+        text: qsTr("Hunters lure other fireflies")
         checked: form.config.visualParameters.hunters === true
         onToggled: form.settings.writeVisualParameter("hunters", checked)
     }
 
     QQC2.CheckBox {
-        text: qsTr("Lit grass")
+        text: qsTr("Grass lit by fireflies")
         checked: form.config.visualParameters.grass === true
         onToggled: form.settings.writeVisualParameter("grass", checked)
     }
