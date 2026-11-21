@@ -1,1 +1,6 @@
-# Register owned depth tests here.
+add_test(NAME depth-matrix-settings COMMAND test-settingsqml -input "${CMAKE_CURRENT_SOURCE_DIR}/qml")
+set_tests_properties(depth-matrix-settings PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+add_executable(test-rain-glyphatlas test_glyphatlas.cpp)
+target_link_libraries(test-rain-glyphatlas PRIVATE VisualDepth Qt6::Test)
+add_test(NAME depth-matrix-glyphatlas COMMAND test-rain-glyphatlas)
+set_tests_properties(depth-matrix-glyphatlas PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")

@@ -8,6 +8,7 @@ Build-Depends:
  dbus-daemon,
  debhelper-compat (= 13),
  extra-cmake-modules (>= 6.0),
+ fonts-dejavu-core,
  fonts-dejavu-mono,
  fonts-noto-cjk,
  libkf6config-dev (>= 6.0),
@@ -46,6 +47,9 @@ Depends:
  qml6-module-org-kde-kirigamiaddons-delegates,
  qml6-module-qtquick-shapes
 Recommends:
+ fonts-dejavu-core,
+ fonts-dejavu-mono,
+ fonts-noto-cjk,
  libvulkan1,
  mesa-vulkan-drivers,
  powerdevil,

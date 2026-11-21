@@ -20,6 +20,13 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.27.0" date="2026-11-21">
+      <description>
+        <p>Kaleidoscope is a chamber of moving coloured glass, beads and silver motes behind Mandala and Lattice mirrors. Spanning shares one chamber across every monitor.</p>
+        <p>Matrix becomes Digital Rain, with layered glyphs, changing weather and bright falling heads. The old Matrix look has changed on purpose.</p>
+        <p>Bouncing Balls gains rubber, glass and metal materials, rolling spin, charged hops and shared terrain. The old Bounce look and motion have changed on purpose.</p>
+      </description>
+    </release>
     <release version="0.26.0" date="2026-11-21">
       <description>
         <p>Floating Orbs is now a living colony with currents, merging and

@@ -21,6 +21,8 @@ Kirigami.FormLayout {
 
     ValueSlider {
         Kirigami.FormData.label: qsTr("Points:")
+        objectName: "kaleidoscopePoints"
+        visible: form.config.visualParameters.mirrors === "mandala"
         accessibleName: qsTr("Points")
         from: 3; to: 16; stepSize: 1
         value: form.config.visualParameters.points
@@ -31,7 +33,7 @@ Kirigami.FormLayout {
         Kirigami.FormData.label: qsTr("Glass:")
         Accessible.name: qsTr("Glass")
         readonly property var keys: ["mixed", "beads", "shards", "rods-wire"]
-        model: [qsTr("Mixed"), qsTr("Beads"), qsTr("Shards"), qsTr("Rods wire")]
+        model: [qsTr("Mixed"), qsTr("Beads"), qsTr("Shards"), qsTr("Rods and wire")]
         currentIndex: keys.indexOf(form.config.visualParameters.glass)
         onActivated: index => form.settings.writeVisualParameter("glass", keys[index])
     }
@@ -45,7 +47,8 @@ Kirigami.FormLayout {
     }
 
     QQC2.CheckBox {
-        text: qsTr("Events")
+        Kirigami.FormData.label: qsTr("Events:")
+        text: qsTr("Dust, passing clouds and glass swaps")
         checked: form.config.visualParameters.events === true
         onToggled: form.settings.writeVisualParameter("events", checked)
     }

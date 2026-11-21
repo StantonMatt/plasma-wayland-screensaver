@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <cstring>
 #include <array>
+#include <algorithm>
 #include "visualrenderer.h"
 #include "visuals_depth_starfield.h"
 #include "visualmaterial.h"
@@ -44,7 +45,7 @@ void VisualRenderer::configureStarfield(int density,qreal scale,qreal speed,qrea
 }
 void VisualRenderer::configureBounce(int density,qreal scale,qreal speed,qreal trails,
     const QString &palette,int seed,bool reduced,double epochMs,int count,qreal gravity,qreal elasticity,bool collisions,int mode) {
-    m_bounceSettings={VISUALS_BOUNCE_ABI_VERSION,sizeof(visuals_bounce_settings),uint32_t(count),uint32_t(mode),gravity,elasticity,uint32_t(collisions),0};
+    m_bounceSettings={VISUALS_BOUNCE_ABI_VERSION,sizeof(visuals_bounce_settings),uint32_t(std::clamp(count, 1, 20)),uint32_t(mode),gravity,elasticity,uint32_t(collisions),0};
     configure(VISUALS_BOUNCE_VISUAL,density,scale,speed,trails,palette,seed,reduced,epochMs);
 }
 void VisualRenderer::configure(uint32_t visual,int density,qreal scale,qreal speed,qreal trails,
