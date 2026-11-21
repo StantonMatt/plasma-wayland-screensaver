@@ -110,7 +110,7 @@ fn construct(input: WorldInput) -> Option<Box<dyn LivingWorld>> {
         return Some(Box::new(super::fixture::Fixture::new(input)));
     }
     super::descriptor(input.visual_id)
-        .filter(|d| d.available)
+        .filter(|d| d.available || cfg!(feature = "visual-capture"))
         .and_then(|d| (d.create)(input))
 }
 fn new_world(input: WorldInput, lead_ns: i64) -> Option<World> {
@@ -158,6 +158,29 @@ impl World {
         self.tick >= target
     }
 }
+/// Enumerate the owned Rust descriptors without duplicating their ABI IDs in consumers.
+/// The key is a borrowed UTF-8 slice valid for the lifetime of the program.
+/// # Safety
+/// Both output pointers must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn visuals_depth_registry_entry(
+    index: usize,
+    key: *mut *const u8,
+    length: *mut usize,
+) -> u32 {
+    let Some(d) = super::DESCRIPTORS.get(index) else {
+        return 0;
+    };
+    if key.is_null() || length.is_null() {
+        return 0;
+    }
+    unsafe {
+        key.write(d.key.as_ptr());
+        length.write(d.key.len());
+    }
+    d.id
+}
+
 /// # Safety
 /// All non-null output pointers are writable; static schema storage outlives callers.
 #[unsafe(no_mangle)]
@@ -564,19 +587,36 @@ mod tests {
     use super::*;
     #[test]
     fn exported_schema() {
-        for d in super::super::DESCRIPTORS {
+        for (i, d) in super::super::DESCRIPTORS.iter().enumerate() {
+            let mut key = ptr::null();
+            let mut length = 0;
+            assert_eq!(
+                unsafe { visuals_depth_registry_entry(i, &mut key, &mut length) },
+                d.id
+            );
+            assert_eq!(
+                unsafe { slice::from_raw_parts(key, length) },
+                d.key.as_bytes()
+            );
             let mut p = ptr::null();
             let mut n = 0;
             assert_eq!(unsafe { visuals_depth_schema(d.id, &mut p, &mut n) }, 0);
             assert_eq!(n, d.parameters.len());
             assert!(!p.is_null());
-            assert!(!d.available);
+            assert_eq!(visuals_depth_available(d.id), u32::from(d.available));
             let params = unsafe { slice::from_raw_parts(p, n) };
             for (i, p) in params.iter().enumerate() {
                 assert!(p.minimum <= p.default_value && p.default_value <= p.maximum);
                 assert!(!params[..i].iter().any(|q| p.id == q.id));
             }
         }
+        let mut key = ptr::null();
+        let mut length = 0;
+        let end = super::super::DESCRIPTORS.len();
+        assert_eq!(
+            unsafe { visuals_depth_registry_entry(end, &mut key, &mut length) },
+            0
+        );
     }
 }
 

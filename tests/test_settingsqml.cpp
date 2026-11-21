@@ -2,6 +2,7 @@
 // Drives the real qrc:/qml/Settings.qml with a real Configuration (in a
 // throwaway file) and a stand-in for ApplicationController's QML API.
 #include "configuration.h"
+#include "visualdepthregistry.h"
 #include <QCoreApplication>
 #include <QFile>
 #include <QQmlContext>
@@ -61,6 +62,13 @@ public Q_SLOTS:
     {
         if (!m_configuration)
             m_configuration = std::make_unique<Configuration>(m_home.filePath(QStringLiteral("settings-test-rc")));
+        const auto visuals = VisualDepthRegistry::keys();
+        QStringList enabled;
+        for (const auto& visual : visuals)
+            if (VisualDepthRegistry::available(visual))
+                enabled.append(visual);
+        engine->rootContext()->setContextProperty(QStringLiteral("testDepthVisuals"), visuals);
+        engine->rootContext()->setContextProperty(QStringLiteral("testEnabledDepthVisuals"), enabled);
         engine->rootContext()->setContextProperty(QStringLiteral("testConfig"), m_configuration.get());
         engine->rootContext()->setContextProperty(QStringLiteral("testController"), &m_controller);
     }

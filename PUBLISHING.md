@@ -22,7 +22,7 @@ The default `GITHUB_TOKEN` is read-only; only the release publication job has
 
 ## Prepare a release
 
-1. Choose a semantic version, for example `0.24.0`.
+1. Choose a semantic version, for example `0.25.0`.
 2. Update `VERSION` in the top-level `CMakeLists.txt`.
 3. Add a matching newest entry to `packaging/debian/changelog`. Increment the
    revision after the dash when rebuilding the same upstream version.
@@ -47,8 +47,8 @@ The default `GITHUB_TOKEN` is read-only; only the release publication job has
 Create and push an annotated tag whose name exactly matches the CMake version:
 
 ```bash
-git tag -a v0.24.0 -m "Plasma Visual Screensaver 0.24.0"
-git push origin v0.24.0
+git tag -a v0.25.0 -m "Plasma Visual Screensaver 0.25.0"
+git push origin v0.25.0
 ```
 
 The **Publish release** GitHub workflow then:

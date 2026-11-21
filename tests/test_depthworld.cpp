@@ -54,13 +54,18 @@ class DepthWorldTest final : public QObject
 {
     Q_OBJECT
 private Q_SLOTS:
-    void seedsAndDisabledSlots()
+    void seedsAndReleasedSlots()
     {
-        for (const auto* visual : { "aurora", "constellation", "starfield", "ribbons", "kaleidoscope", "matrix",
-                 "bounce", "orbs", "fireflies" })
-        {
-            QVERIFY(!VisualDepthRegistry::available(QString::fromLatin1(visual)));
-            QVERIFY(!VisualDepthRegistry::schema(QString::fromLatin1(visual)).isEmpty());
+        const auto visuals = VisualDepthRegistry::keys();
+        QVERIFY(!visuals.isEmpty());
+        for (const auto& visual : visuals) {
+            const auto id = VisualDepthRegistry::id(visual);
+            QVERIFY(id);
+            QCOMPARE(VisualDepthRegistry::available(visual), bool(visuals_depth_available(id)));
+            const vd_parameter* parameters = nullptr;
+            size_t count = 0;
+            QCOMPARE(visuals_depth_schema(id, &parameters, &count), 0);
+            QCOMPARE(size_t(VisualDepthRegistry::schema(visual).size()), count);
         }
         QCOMPARE(VisualWorldCoordinator::outputIdentity(QStringLiteral("DP-5")), quint64(0x174b27724a34bbebULL));
         QVERIFY(VisualWorldCoordinator::independentSeed(7, 2, QStringLiteral("DP-5"))

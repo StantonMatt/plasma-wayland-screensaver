@@ -43,6 +43,7 @@ public:
 
     ~PresentationClock() override;
     void setRunning(bool running);
+    bool isRunning() const { return m_running; }
     void setTargetFrameRate(int targetFrameRate);
     void setTraceSimulationSource(QObject *source);
 

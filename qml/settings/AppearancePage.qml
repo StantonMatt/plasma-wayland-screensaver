@@ -93,7 +93,7 @@ Kirigami.ScrollablePage {
             // ---- Options of the selected animation ----------------------
             Kirigami.Separator {
                 Kirigami.FormData.isSection: true
-                Kirigami.FormData.label: page.animation.name
+                Kirigami.FormData.label: Catalog.animation(page.visual).name
                 visible: page.visual !== "none"
             }
 
@@ -251,13 +251,17 @@ Kirigami.ScrollablePage {
         Loader {
             id: depthForm
             Layout.fillWidth: true
-            active: page.depthAvailable
-            onActiveChanged: if (active) loadForm()
+            // Read both values from the same Configuration notification. Derived
+            // page properties can still describe different selections during a change.
+            readonly property string formPath: page.config.depthAvailable
+                ? "visuals/" + page.config.visualModule + "/Settings.qml" : ""
             function loadForm() {
-                if (!active) return
-                setSource("visuals/" + page.visual + "/Settings.qml", { settings: page.settings, config: page.config })
+                if (!formPath)
+                    source = ""
+                else if (source.toString() !== Qt.resolvedUrl(formPath).toString())
+                    setSource(formPath, { settings: page.settings, config: page.config })
             }
-            Connections { target: page; function onVisualChanged() { depthForm.loadForm() } }
+            onFormPathChanged: loadForm()
             Component.onCompleted: loadForm()
         }
     }

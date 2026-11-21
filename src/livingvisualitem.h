@@ -15,6 +15,9 @@ public:
     quint64 renderedDataRevision() const;
     qint64 renderedTimelineNs() const;
 
+Q_SIGNALS:
+    void gpuUnavailable();
+
 protected:
     // The base binds time/view/generation once and acknowledges afterRendering.
     // Owned adapters receive immutable endpoints, never the mutable world.

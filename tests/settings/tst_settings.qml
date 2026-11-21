@@ -82,28 +82,43 @@ TestCase {
         wait(0)
     }
 
-    function test_depthFormsAndDebouncedSave() {
-        const visuals = ["aurora", "orbs", "bounce", "starfield", "matrix", "kaleidoscope", "fireflies", "ribbons", "constellation"]
-        for (const visual of visuals) {
-            testConfig.visualModule = visual
-            verify(!testConfig.depthAvailable)
-            const component = Qt.createComponent("qrc:/qml/settings/visuals/" + visual + "/Settings.qml")
-            compare(component.status, Component.Ready, component.errorString())
-            const form = component.createObject(win.contentItem, {settings: win, config: testConfig})
-            verify(form)
-            verify(form.sharedLabels.speed.length > 0)
-            verify(testConfig.visualSchema().length >= 4)
-            form.destroy()
+    function test_depthFormsAndDebouncedSave_data() {
+        return testDepthVisuals.map(visual => ({tag: visual, visual: visual}))
+    }
+    function test_depthFormsAndDebouncedSave(data) {
+        const visual = data.visual
+        testConfig.visualModule = visual
+        const enabled = testEnabledDepthVisuals.includes(visual)
+        compare(testConfig.depthAvailable, enabled)
+        const component = Qt.createComponent("qrc:/qml/settings/visuals/" + visual + "/Settings.qml")
+        compare(component.status, Component.Ready, component.errorString())
+        const form = component.createObject(win.contentItem, {settings: win, config: testConfig})
+        verify(form)
+        for (const key of ["speed", "density", "scale", "trail"])
+            compare(typeof form.sharedLabels[key], "string")
+        const appearance = page("appearance")
+        const loaded = findAll(appearance, item => item.sharedLabels !== undefined)
+        compare(loaded.length, enabled ? 1 : 0)
+        if (enabled) {
+            for (const key of Object.keys(form.sharedLabels))
+                compare(appearance.animation[key], form.sharedLabels[key])
         }
-        testConfig.visualModule = "constellation"
-        win.writeVisualParameter("gravity", 75)
-        compare(testConfig.visualParameter("gravity"), 75)
+        form.destroy()
+        if (!enabled) return
+        const p = testConfig.visualSchema().find(entry => entry.maximum > entry.minimum)
+        if (!p) return
+        const current = testConfig.visualParameter(p.key)
+        const next = p.kind === 2 ? !current : p.kind === 3
+                   ? p.choices.find(choice => choice !== current)
+                   : current === p.minimum ? p.maximum : p.minimum
+        win.writeVisualParameter(p.key, next)
+        compare(testConfig.visualParameter(p.key), next)
         compare(saves.count, 0)
         win.close() // close must flush the pending debounced write
         compare(saves.count, 1)
         testConfig.reload()
-        compare(testConfig.visualModule, "constellation")
-        compare(testConfig.visualParameter("gravity"), 75)
+        compare(testConfig.visualModule, visual)
+        compare(testConfig.visualParameter(p.key), next)
     }
 
     function test_inventorySetting() {
@@ -263,7 +278,8 @@ TestCase {
         mouseClick(view.itemAtIndex(10))
         compare(testConfig.visualModule, "snakes")
         keyClick(Qt.Key_Left)
-        compare(testConfig.visualModule, "constellation")
+        compare(view.currentIndex, 9)
+        compare(testConfig.visualModule, view.itemAtIndex(9).modelData.id)
         keyClick(Qt.Key_Up)
         compare(testConfig.visualModule, "bounce")
         compare(testController.previews, 0)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "visuals_depth.h"
-#include <QString>
+#include <QStringList>
 #include <functional>
 #ifdef PVS_ENABLE_VISUAL_CAPTURE
 #include <optional>
@@ -16,6 +16,7 @@ namespace VisualDepthRegistry
 using ItemFactory = std::function<LivingVisualItem*(QQuickItem*)>;
 void registerItemFactory(uint32_t visual, ItemFactory);
 LivingVisualItem* createItem(uint32_t visual, QQuickItem* parent);
+QStringList keys();
 uint32_t id(const QString& visual);
 bool available(const QString& visual);
 #ifdef PVS_ENABLE_VISUAL_CAPTURE

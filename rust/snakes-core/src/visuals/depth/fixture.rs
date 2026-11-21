@@ -122,6 +122,7 @@ impl LivingWorld for Fixture {
             },
             circles: circles.into(),
             payload: payload.into(),
+            typed: None,
             texture: texture_present.then(|| self.texture.clone()),
             emission_estimate: 0.01 + event * 0.001,
         };

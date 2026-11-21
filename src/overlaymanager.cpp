@@ -24,6 +24,7 @@
 #include <QPointer>
 #include <QQuickItem>
 #include <QQuickView>
+#include <QRandomGenerator>
 #include <QScreen>
 #include <QSet>
 #include <QString>
@@ -81,10 +82,12 @@ bool OverlayManager::show()
     if (m_teardownPending || m_pendingViewDeletions != 0) return false;
 
     m_visible = true;
+    m_depthGpuFailed = false;
     m_inputGraceTimer.start();
     qApp->installEventFilter(this);
     m_animationEpochMs = QDateTime::currentMSecsSinceEpoch();
     m_depthEpochNs = VisualWorldCoordinator::monotonicNow();
+    m_depthSeed = QRandomGenerator::global()->generate64() | 1U;
     m_depthLayoutKey.clear();
     updateAnimationState();
     const QList<QScreen *> screens = QGuiApplication::screens();
@@ -253,87 +256,8 @@ bool OverlayManager::addScreen(QScreen *screen)
         }
     }
 
-    if (!depthActive() && m_configuration->visualModule() == QStringLiteral("fireflies"))
-    {
-        if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
-            if (auto *fireflyRoot = rootItem->findChild<QQuickItem *>(
-                    QStringLiteral("fireflyVisualRoot"), Qt::FindChildrenRecursively)) {
-                auto *renderer = new FireflyRenderer(fireflyRoot);
-                renderer->setParentItem(fireflyRoot);
-                renderer->setSize(fireflyRoot->size());
-                connect(fireflyRoot, &QQuickItem::widthChanged, renderer,
-                        [fireflyRoot, renderer] { renderer->setWidth(fireflyRoot->width()); });
-                connect(fireflyRoot, &QQuickItem::heightChanged, renderer,
-                        [fireflyRoot, renderer] { renderer->setHeight(fireflyRoot->height()); });
-                fireflyRoot->setProperty("nativeRenderer",
-                                         QVariant::fromValue(static_cast<QObject *>(renderer)));
-            }
-        }
-    }
-
-    if (m_configuration->visualModule() == QStringLiteral("aurora")
-        || m_configuration->visualModule() == QStringLiteral("constellation")
-        || m_configuration->visualModule() == QStringLiteral("starfield")
-        || m_configuration->visualModule() == QStringLiteral("bounce")) {
-        if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
-            if (auto *visualRoot = rootItem->findChild<QQuickItem *>(m_configuration->visualModule() + QStringLiteral("VisualRoot"))) {
-                auto *renderer = new VisualRenderer(visualRoot);
-                if (m_configuration->visualModule() == QStringLiteral("bounce")) {
-                    connect(presentationClock, &PresentationClock::frameTick,
-                            renderer, &VisualRenderer::presentBounceDelta);
-                    const QPointer<AnimationState> state(&m_animationState);
-                    renderer->setBounceSource([state](qint64 ns, visuals_bounce_ball *out, size_t capacity) {
-                        if (!state) return size_t(0);
-                        std::array<AnimationState::BallSnapshot,20> balls;
-                        const auto count=state->ballSnapshotAt(ns,balls.data(),std::min(capacity,balls.size()));
-                        for (size_t i=0;i<count;++i) out[i]={balls[i].x,balls[i].y,balls[i].vx,balls[i].vy,balls[i].size};
-                        return count;
-                    });
-                }
-                connect(presentationClock, &PresentationClock::presentationTick,
-                        renderer, &VisualRenderer::presentAt);
-                renderer->setParentItem(visualRoot);
-                renderer->setSize(visualRoot->size());
-                connect(visualRoot, &QQuickItem::widthChanged, renderer,
-                        [visualRoot, renderer] { renderer->setWidth(visualRoot->width()); });
-                connect(visualRoot, &QQuickItem::heightChanged, renderer,
-                        [visualRoot, renderer] { renderer->setHeight(visualRoot->height()); });
-                visualRoot->setProperty("nativeRenderer", QVariant::fromValue(static_cast<QObject *>(renderer)));
-            }
-        }
-    }
-
-    if (m_configuration->visualModule() == QStringLiteral("ribbons")
-        || m_configuration->visualModule() == QStringLiteral("kaleidoscope")) {
-        if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
-            const auto name = m_configuration->visualModule() + QStringLiteral("VisualRoot");
-            if (auto *visualRoot = rootItem->findChild<QQuickItem *>(name)) {
-                auto *renderer = new StrokeRenderer(visualRoot);
-                connect(presentationClock, &PresentationClock::presentationTick,
-                        renderer, &StrokeRenderer::presentAt);
-                renderer->setSize(visualRoot->size());
-                connect(visualRoot, &QQuickItem::widthChanged, renderer,
-                        [visualRoot, renderer] { renderer->setWidth(visualRoot->width()); });
-                connect(visualRoot, &QQuickItem::heightChanged, renderer,
-                        [visualRoot, renderer] { renderer->setHeight(visualRoot->height()); });
-                visualRoot->setProperty("nativeRenderer", QVariant::fromValue(static_cast<QObject *>(renderer)));
-            }
-        }
-    }
-
-    if (!depthActive() && m_configuration->visualModule() == QStringLiteral("matrix"))
-    {
-        if (auto *rootItem = qobject_cast<QQuickItem *>(view->rootObject())) {
-            if (auto *root = rootItem->findChild<QQuickItem *>(QStringLiteral("matrixVisualRoot"))) {
-                auto *renderer = new MatrixRenderer(root);
-                connect(presentationClock, &PresentationClock::presentationTick, renderer, &MatrixRenderer::presentAt);
-                renderer->setSize(root->size());
-                connect(root, &QQuickItem::widthChanged, renderer, [root, renderer] {renderer->setWidth(root->width());});
-                connect(root, &QQuickItem::heightChanged, renderer, [root, renderer] {renderer->setHeight(root->height());});
-                root->setProperty("nativeRenderer", QVariant::fromValue(static_cast<QObject *>(renderer)));
-            }
-        }
-    }
+    if (!depthActive())
+        attachLegacyRenderer(view, presentationClock);
 
     if (depthActive())
     {
@@ -350,6 +274,17 @@ bool OverlayManager::addScreen(QScreen *screen)
             connect(root, &QQuickItem::widthChanged, item, [root, item] { item->setWidth(root->width()); });
             connect(root, &QQuickItem::heightChanged, item, [root, item] { item->setHeight(root->height()); });
             m_depthItems.insert(screen, item);
+            connect(item, &LivingVisualItem::gpuUnavailable, this, [this, item] {
+                if (!m_visible || m_depthGpuFailed || !m_depthItems.values().contains(item)) return;
+                m_depthGpuFailed = true;
+                qWarning("Living visual GPU probe failed; restoring the legacy renderer");
+                m_depthCoordinator->stop();
+                for (auto it = m_views.cbegin(); it != m_views.cend(); ++it) {
+                    it.value()->rootObject()->setProperty("depthActive", false);
+                    attachLegacyRenderer(it.value(), m_presentationClocks.value(it.key()));
+                }
+                updateAnimationState();
+            }, Qt::QueuedConnection);
         }
     }
 
@@ -479,7 +414,7 @@ void OverlayManager::updateAnimationState()
     configureDepthWorlds();
     const bool seamless = m_configuration->monitorBehavior() == QStringLiteral("seamless");
     const bool motionAllowed = !m_configuration->reducedMotion();
-    const bool animateBall = m_configuration->monitorBehavior() != QStringLiteral("independent") && motionAllowed
+    const bool animateBall = !depthActive() && m_configuration->monitorBehavior() != QStringLiteral("independent") && motionAllowed
         && m_configuration->visualModule() == QStringLiteral("bounce");
     const bool animateClock = seamless && motionAllowed && m_configuration->showClock()
         && m_configuration->clockMovement() == QStringLiteral("bounce");
@@ -562,7 +497,7 @@ void OverlayManager::updatePresentationClocks()
     }
     const bool seamless = m_configuration->monitorBehavior() == QStringLiteral("seamless");
     const bool visualUsesClock = m_configuration->visualModule() != QStringLiteral("none")
-        && !(seamless && m_configuration->visualModule() == QStringLiteral("bounce"));
+        && (depthActive() || !(seamless && m_configuration->visualModule() == QStringLiteral("bounce")));
     const bool clockUsesClock = !seamless && m_configuration->showClock()
         && m_configuration->clockMovement() == QStringLiteral("bounce");
     const bool perWindowMotion = !m_configuration->reducedMotion()
@@ -703,7 +638,7 @@ bool OverlayManager::depthActive() const
     if (m_captureFixture)
         return true;
 #endif
-    return m_configuration->depthAvailable();
+    return !m_depthGpuFailed && m_configuration->depthAvailable();
 }
 void OverlayManager::configureDepthWorlds()
 {
@@ -739,11 +674,11 @@ void OverlayManager::configureDepthWorlds()
     const QStringList palettes = { QStringLiteral("ocean"), QStringLiteral("spectrum"), QStringLiteral("ember"),
         QStringLiteral("forest"), QStringLiteral("mono"), QStringLiteral("pastel") };
     vd_config config { visual, uint32_t(std::max(qsizetype(0), palettes.indexOf(m_configuration->animationPalette()))),
-        1, m_configuration->animationSpeed() / 100., double(m_configuration->animationDensity()),
+        m_depthSeed, m_configuration->animationSpeed() / 100., double(m_configuration->animationDensity()),
         m_configuration->animationScale() / 100., m_configuration->trailAmount() / 100.,
         uint32_t(m_configuration->reducedMotion()), 0 };
 #ifdef PVS_ENABLE_VISUAL_CAPTURE
-    if (m_captureFixture)
+    if (m_captureSeedSet)
         config.seed = m_captureSeed;
 #endif
     std::vector<vd_value> values;
@@ -794,13 +729,54 @@ void OverlayManager::configureDepthWorlds()
         m_depthLayoutKey = key;
         for (auto* screen : screens)
             m_depthCoordinator->attach(screen->name(), m_depthItems.value(screen));
-        bool manual=false;
-#ifdef PVS_ENABLE_VISUAL_CAPTURE
-        manual=m_captureManualTime;
-#endif
-        // Reduced motion has no presentation timer. Publish the composed still
-        // once, after every configured viewport and attachment is ready.
-        if(m_configuration->reducedMotion()&&!manual)
-            for(auto *screen:screens)m_depthCoordinator->present(screen->name(),m_depthEpochNs);
+        // Publish the first chart as soon as all configured views are attached.
+        // An exposed layer can draw it before the first presentation tick.
+        for (auto* screen : screens)
+            m_depthCoordinator->present(screen->name(),m_depthEpochNs);
     }
+}
+
+void OverlayManager::attachLegacyRenderer(QQuickView* view, PresentationClock* clock)
+{
+    const auto visual = m_configuration->visualModule();
+    if (!VisualDepthRegistry::id(visual))
+        return;
+    auto* root = view->rootObject()->property("legacyVisual").value<QQuickItem*>();
+    // Some released visuals draw directly in QML. Others expose a native renderer slot.
+    if (!root || root->metaObject()->indexOfProperty("nativeRenderer") < 0
+        || root->property("nativeRenderer").value<QObject*>())
+        return;
+
+    QQuickItem* item = nullptr;
+    if (visual == QStringLiteral("fireflies")) {
+        item = new FireflyRenderer(root);
+    } else if (visual == QStringLiteral("matrix")) {
+        auto* renderer = new MatrixRenderer(root);
+        connect(clock, &PresentationClock::presentationTick, renderer, &MatrixRenderer::presentAt);
+        item = renderer;
+    } else if (visual == QStringLiteral("ribbons") || visual == QStringLiteral("kaleidoscope")) {
+        auto* renderer = new StrokeRenderer(root);
+        connect(clock, &PresentationClock::presentationTick, renderer, &StrokeRenderer::presentAt);
+        item = renderer;
+    } else {
+        auto* renderer = new VisualRenderer(root);
+        connect(clock, &PresentationClock::presentationTick, renderer, &VisualRenderer::presentAt);
+        if (visual == QStringLiteral("bounce")) {
+            connect(clock, &PresentationClock::frameTick, renderer, &VisualRenderer::presentBounceDelta);
+            const QPointer<AnimationState> state(&m_animationState);
+            renderer->setBounceSource([state](qint64 ns, visuals_bounce_ball* out, size_t capacity) {
+                if (!state) return size_t(0);
+                std::array<AnimationState::BallSnapshot, 20> balls;
+                const auto count = state->ballSnapshotAt(ns, balls.data(), std::min(capacity, balls.size()));
+                for (size_t i = 0; i < count; ++i)
+                    out[i] = {balls[i].x, balls[i].y, balls[i].vx, balls[i].vy, balls[i].size};
+                return count;
+            });
+        }
+        item = renderer;
+    }
+    item->setSize(root->size());
+    connect(root, &QQuickItem::widthChanged, item, [root, item] { item->setWidth(root->width()); });
+    connect(root, &QQuickItem::heightChanged, item, [root, item] { item->setHeight(root->height()); });
+    root->setProperty("nativeRenderer", QVariant::fromValue(static_cast<QObject*>(item)));
 }

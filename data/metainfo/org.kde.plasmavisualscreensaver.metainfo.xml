@@ -20,6 +20,15 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.25.0" date="2026-11-21">
+      <description>
+        <p>Constellation is now a living night sky. Stars are born, drift,
+        gather into star-chart figures and end as supernovae, while comets,
+        satellites and meteor showers pass by. In Spanning mode one sky crosses
+        every monitor. Each activation starts a fresh scene, and Appearance
+        Defaults now resets only the selected visual.</p>
+      </description>
+    </release>
     <release version="0.24.0" date="2026-11-20">
       <description>
         <p>Bounce and Matrix are now drawn on the GPU. Independent Bounce no
