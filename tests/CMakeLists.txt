@@ -196,12 +196,13 @@ add_custom_target(snakes-parity-build ALL
     COMMAND "${CMAKE_COMMAND}" -E env ${SNAKES_CORE_CARGO_ENV}
         "${CARGO_EXECUTABLE}" build --frozen --offline
         --manifest-path "${SNAKES_CORE_MANIFEST}" --profile "${SNAKES_CORE_PROFILE}"
+        --target-dir "${SNAKES_CORE_TARGET_DIR}/parity-${SNAKES_CORE_CONFIG}"
         --features parity --example parity
-    BYPRODUCTS "${SNAKES_CORE_TARGET_DIR}/${SNAKES_CORE_CONFIG}/${SNAKES_CORE_PROFILE_DIR}/examples/parity"
+    BYPRODUCTS "${SNAKES_CORE_TARGET_DIR}/parity-${SNAKES_CORE_CONFIG}/${SNAKES_CORE_PROFILE_DIR}/examples/parity"
     VERBATIM)
 add_test(NAME snakes-parity
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/snakes/compare.py"
-        --binary "${SNAKES_CORE_TARGET_DIR}/${SNAKES_CORE_CONFIG}/${SNAKES_CORE_PROFILE_DIR}/examples/parity")
+        --binary "${SNAKES_CORE_TARGET_DIR}/parity-${SNAKES_CORE_CONFIG}/${SNAKES_CORE_PROFILE_DIR}/examples/parity")
 set_tests_properties(snakes-parity PROPERTIES TIMEOUT 120)
 add_test(NAME snakes-parity-record
     COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/parity/snakes/record.sh" --check)
@@ -297,3 +298,25 @@ target_compile_definitions(test-matrixrenderer PRIVATE MATRIX_ORACLE_DIR="${CMAK
 add_test(NAME visual-matrix-renderer COMMAND test-matrixrenderer)
 set_tests_properties(visual-matrix-renderer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
 add_test(NAME visual-matrix-parity-record COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/matrix/record.py" --check)
+
+foreach(visual aurora constellation starfield ribbons kaleidoscope matrix bounce orbs fireflies)
+    add_subdirectory(depth/${visual})
+endforeach()
+
+add_executable(test-depthworld test_depthworld.cpp)
+target_link_libraries(test-depthworld PRIVATE VisualDepth Qt6::Test)
+add_test(NAME depth-world COMMAND test-depthworld)
+if(PVS_ENABLE_VISUAL_CAPTURE)
+    add_executable(test-visual-depth-capture test_depthcapture.cpp
+        ../src/overlaymanager.cpp ../src/overlaymanager.h
+        ../src/animationstate.cpp ../src/animationstate.h
+        ../src/presentationclock.cpp ../src/presentationclock.h
+        ../src/snakesimulation.cpp ../src/snakesimulation.h
+        ../src/snakerenderer.cpp ../src/snakerenderer.h
+        ../src/fireflyrenderer.cpp ../src/fireflyrenderer.h
+        ../src/configuration.cpp ../src/configuration.h ../src/resources.qrc)
+    target_link_libraries(test-visual-depth-capture PRIVATE VisualDepth GraphicsBackend SnakeMaterial VisualRenderer
+        Qt6::Quick Qt6::Test KF6::ConfigCore LayerShellQt::Interface)
+    add_test(NAME depth-capture-contract COMMAND test-visual-depth-capture)
+    set_tests_properties(depth-capture-contract PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+endif()

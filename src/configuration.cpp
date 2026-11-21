@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "configuration.h"
+#include "visualdepthregistry.h"
+#include <QDebug>
+#include <cmath>
 
 #include <KConfig>
 #include <KConfigGroup>
@@ -43,6 +46,13 @@ QString diskKey(QString key)
     key[0] = key[0].toUpper();
     return key;
 }
+bool oldDefaultTuple(const QVariantMap &profile) {
+    return profile.value(QStringLiteral("animationSpeed")).toInt()==100
+        && profile.value(QStringLiteral("animationDensity")).toInt()==50
+        && profile.value(QStringLiteral("animationScale")).toInt()==100
+        && profile.value(QStringLiteral("animationPalette")).toString()==QStringLiteral("ocean")
+        && profile.value(QStringLiteral("trailAmount")).toInt()==35;
+}
 QVariantMap pageValues(QVariantMap values, const QString &page)
 {
     if (page.isEmpty()) return values;
@@ -65,6 +75,73 @@ Configuration::Configuration(const QString &filePath, QObject *parent)
 }
 
 Configuration::~Configuration() = default;
+
+QVariantMap Configuration::visualParameters() const
+{
+    auto values = m_visualParameters.value(m_visualModule);
+    if (m_visualModule == QStringLiteral("bounce"))
+    {
+        values.insert(QStringLiteral("count"), m_ballCount);
+        values.insert(QStringLiteral("gravity"), m_ballGravity);
+        values.insert(QStringLiteral("elasticity"), m_ballElasticity);
+        values.insert(QStringLiteral("collisions"), m_ballCollisions);
+    }
+    return values;
+}
+bool Configuration::depthAvailable() const
+{
+    return VisualDepthRegistry::available(m_visualModule);
+}
+QVariant Configuration::visualParameter(const QString& key) const
+{
+    return visualParameters().value(key);
+}
+QVariantList Configuration::visualSchema(const QString& visual) const
+{
+    return VisualDepthRegistry::schema(visual.isEmpty() ? m_visualModule : visual);
+}
+void Configuration::setVisualParameter(const QString& key, const QVariant& value)
+{
+    for (const auto& v : visualSchema())
+    {
+        const auto entry = v.toMap();
+        if (entry.value(QStringLiteral("key")).toString() != key)
+            continue;
+        const auto normalized = VisualDepthRegistry::normalize(entry, value);
+        if (m_visualModule == QStringLiteral("bounce"))
+        {
+            if (key == QStringLiteral("count"))
+            {
+                setBallCount(normalized.toInt());
+                return;
+            }
+            if (key == QStringLiteral("gravity"))
+            {
+                setBallGravity(normalized.toInt());
+                return;
+            }
+            if (key == QStringLiteral("elasticity"))
+            {
+                setBallElasticity(normalized.toInt());
+                return;
+            }
+            if (key == QStringLiteral("collisions"))
+            {
+                setBallCollisions(normalized.toBool());
+                return;
+            }
+        }
+        if (m_visualParameters[m_visualModule].value(key) == normalized)
+            return;
+        m_visualParameters[m_visualModule].insert(key, normalized);
+        m_depthDirtyKeys[m_visualModule].insert(key);
+        if (m_updateDepth > 0)
+            m_changedPending = true;
+        else
+            Q_EMIT changed();
+        return;
+    }
+}
 
 int Configuration::idleMinutes() const { return m_idleMinutes; }
 QString Configuration::visualModule() const { return m_visualModule; }
@@ -160,7 +237,7 @@ void Configuration::setAnimationPalette(const QString &value)
     update(m_animationPalette, palettes.contains(value) ? value : QStringLiteral("ocean"));
 }
 void Configuration::setTrailAmount(int value) { update(m_trailAmount, std::clamp(value, 0, 100)); }
-void Configuration::setBallCount(int value) { update(m_ballCount, std::clamp(value, 1, 20)); }
+void Configuration::setBallCount(int value) { update(m_ballCount, std::clamp(value, 1, 60)); }
 void Configuration::setBallGravity(int value) { update(m_ballGravity, std::clamp(value, -100, 100)); }
 void Configuration::setBallElasticity(int value) { update(m_ballElasticity, std::clamp(value, 50, 100)); }
 void Configuration::setBallCollisions(bool value) { update(m_ballCollisions, value); }
@@ -244,6 +321,21 @@ void Configuration::apply(const QVariantMap &settings)
         }
         setVisualModule(selected);
     }
+    if (settings.contains(QStringLiteral("visualParameterProfiles")))
+    {
+        const auto profiles = settings.value(QStringLiteral("visualParameterProfiles")).toMap();
+        const auto selected = m_visualModule;
+        for (auto it = profiles.cbegin(); it != profiles.cend(); ++it)
+        {
+            if (!visualModules().contains(it.key()))
+                continue;
+            setVisualModule(it.key());
+            const auto parameters = it.value().toMap();
+            for (auto p = parameters.cbegin(); p != parameters.cend(); ++p)
+                setVisualParameter(p.key(), p.value());
+        }
+        setVisualModule(selected);
+    }
     if (settings.contains(QStringLiteral("backgroundStyle"))) {
         setBackgroundStyle(settings.value(QStringLiteral("backgroundStyle")).toString());
     }
@@ -320,6 +412,19 @@ void Configuration::apply(const QVariantMap &settings)
         setCoverPanels(settings.value(QStringLiteral("coverPanels")).toBool());
     }
     if (settings.contains(QStringLiteral("clockMode"))) setClockMode(settings.value(QStringLiteral("clockMode")).toInt());
+    // Undo restores preservation state after setters have applied normalized values.
+    const auto preservation = settings.value(QStringLiteral("visualParameterPreservation")).toMap();
+    for (auto it = preservation.cbegin(); it != preservation.cend(); ++it) {
+        if (!visualModules().contains(it.key())) continue;
+        const auto state = it.value().toMap();
+        const auto raw = state.value(QStringLiteral("rawValues")).toMap();
+        const auto keys = state.value(QStringLiteral("dirtyKeys")).toStringList();
+        const QSet<QString> dirty(keys.cbegin(), keys.cend());
+        if (m_depthRawValues.value(it.key()) != raw || m_depthDirtyKeys.value(it.key()) != dirty)
+            m_changedPending = true;
+        m_depthRawValues.insert(it.key(), raw);
+        m_depthDirtyKeys.insert(it.key(), dirty);
+    }
     endUpdate();
 }
 
@@ -357,23 +462,85 @@ QVariantMap Configuration::defaults(const QString &page) const
     QVariantMap animation;
     for (const QString &key : animationKeys()) animation.insert(key, values.value(key));
     QVariantMap profiles;
-    for (const QString &module : visualModules()) profiles.insert(module, animation);
+    for (const QString &module : visualModules()) {
+        auto profile=animation;
+        if(VisualDepthRegistry::available(module)&&module==QStringLiteral("kaleidoscope"))profile.insert(QStringLiteral("animationPalette"),QStringLiteral("spectrum"));
+        profiles.insert(module,profile);
+    }
+    if(VisualDepthRegistry::available(QStringLiteral("bounce"))) {
+        values.insert(QStringLiteral("ballCount"),12);values.insert(QStringLiteral("ballElasticity"),90);
+    }
     values.insert(QStringLiteral("animationSettings"), profiles);
+    QVariantMap parameterProfiles;
+    for (const auto& module : visualModules())
+    {
+        auto own = VisualDepthRegistry::defaults(module);
+        if (module == QStringLiteral("bounce"))
+            for (const auto& key : { QStringLiteral("count"), QStringLiteral("gravity"), QStringLiteral("elasticity"),
+                     QStringLiteral("collisions") })
+                own.remove(key);
+        parameterProfiles.insert(module, own);
+    }
+    values.insert(QStringLiteral("visualParameterProfiles"), parameterProfiles);
+    if (page == QStringLiteral("appearance"))
+    {
+        // Keep gallery selection, other profiles and their rules. Undo still uses
+        // the complete snapshot; Defaults edits only the selected profile.
+        const auto current = snapshot();
+        for (auto it = current.cbegin(); it != current.cend(); ++it)
+        {
+            const bool selectedBall
+                = m_visualModule == QStringLiteral("bounce") && it.key().startsWith(QStringLiteral("ball"));
+            const bool selectedSnake
+                = m_visualModule == QStringLiteral("snakes") && it.key().startsWith(QStringLiteral("snake"));
+            if ((it.key().startsWith(QStringLiteral("ball")) && !selectedBall)
+                || (it.key().startsWith(QStringLiteral("snake")) && !selectedSnake))
+                values.insert(it.key(), it.value());
+        }
+        auto kept = current.value(QStringLiteral("animationSettings")).toMap();
+        const auto selectedDefaults=profiles.value(m_visualModule).toMap();
+        kept.insert(m_visualModule, selectedDefaults);
+        values.insert(QStringLiteral("animationPalette"),selectedDefaults.value(QStringLiteral("animationPalette")));
+        values.insert(QStringLiteral("animationSettings"), kept);
+        auto own = current.value(QStringLiteral("visualParameterProfiles")).toMap();
+        own.insert(m_visualModule, parameterProfiles.value(m_visualModule));
+        values.insert(QStringLiteral("visualParameterProfiles"), own);
+        values.insert(QStringLiteral("visualModule"), m_visualModule);
+        if (depthAvailable() && m_visualModule == QStringLiteral("kaleidoscope"))
+            values.insert(QStringLiteral("animationPalette"), QStringLiteral("spectrum"));
+    }
     return pageValues(values, page);
 }
 
-QVariantMap Configuration::snapshot(const QString &page) const
+QVariantMap Configuration::snapshot(const QString &page, bool includePreservation) const
 {
     QVariantMap values;
     const QVariantMap defaultValues = defaults();
     for (auto it = defaultValues.cbegin(); it != defaultValues.cend(); ++it) {
-        if (it.key() != QStringLiteral("animationSettings")) values.insert(it.key(), property(it.key().toUtf8().constData()));
+        if (it.key() != QStringLiteral("animationSettings") && it.key() != QStringLiteral("visualParameterProfiles"))
+            values.insert(it.key(), property(it.key().toUtf8().constData()));
     }
     QVariantMap profiles;
     for (const QString &module : visualModules()) {
         profiles.insert(module, module == m_visualModule ? activeAnimationSettings() : m_animationSettings.value(module));
     }
     values.insert(QStringLiteral("animationSettings"), profiles);
+    QVariantMap own;
+    for (const auto& module : visualModules())
+        own.insert(module, m_visualParameters.value(module));
+    values.insert(QStringLiteral("visualParameterProfiles"), own);
+    if (includePreservation) {
+        QVariantMap preservation;
+        for (const auto& module : visualModules()) {
+            const auto dirty = m_depthDirtyKeys.value(module);
+            QStringList keys(dirty.cbegin(), dirty.cend());
+            keys.sort();
+            preservation.insert(module, QVariantMap {
+                {QStringLiteral("rawValues"), m_depthRawValues.value(module)},
+                {QStringLiteral("dirtyKeys"), keys}});
+        }
+        values.insert(QStringLiteral("visualParameterPreservation"), preservation);
+    }
     return pageValues(values, page);
 }
 
@@ -402,12 +569,28 @@ void Configuration::reload()
 {
     m_config->reparseConfiguration();
     const KConfigGroup general(m_config.get(), QStringLiteral("General"));
+    // Capture raw key presence before any legacy setters or v0 migration.
+    const auto rawGeneralValues=general.entryMap();
+    const KConfigGroup rawAnimations(m_config.get(), QStringLiteral("Animations"));
+    m_depthRawValues.clear();
+    for (const auto& module : visualModules())
+    {
+        const auto group = rawAnimations.group(module);
+        QVariantMap raw;
+        for (const auto& key : group.keyList())
+            raw.insert(key, group.readEntry(key, QString()));
+        m_depthRawValues.insert(module, raw);
+    }
     const QVariantMap defaultValues = defaults();
     QVariantMap values;
     for (auto it = defaultValues.cbegin(); it != defaultValues.cend(); ++it) {
-        if (it.key() == QStringLiteral("animationSettings")) continue;
+        if (it.key() == QStringLiteral("animationSettings") || it.key() == QStringLiteral("visualParameterProfiles"))
+            continue;
         values.insert(it.key(), general.readEntry(diskKey(it.key()), it.value()));
     }
+    // Read the released Bounce tuple first; upgrade it only as a whole below.
+    values.insert(QStringLiteral("ballCount"), general.readEntry("BallCount", 5));
+    values.insert(QStringLiteral("ballElasticity"), general.readEntry("BallElasticity", 92));
     const QString legacyVisual = values.value(QStringLiteral("visualModule")).toString();
     if (legacyVisual == QStringLiteral("black")) values[QStringLiteral("visualModule")] = QStringLiteral("none");
     if (!general.hasKey("BackgroundStyle") && (legacyVisual == QStringLiteral("black") || legacyVisual == QStringLiteral("bounce"))) {
@@ -430,10 +613,59 @@ void Configuration::reload()
         profiles.insert(module, profile);
     }
     apply({{QStringLiteral("animationSettings"), profiles}});
+    // Legacy profiles are the only stored shared values. Keep the pre-activation
+    // baseline so an explicit save writes any newly applied defaults.
+    m_loadedAnimationSettings = m_animationSettings;
+    m_depthVersions.clear();
+    m_depthDirtyKeys.clear();
+    QVariantMap activatedProfiles;
+    for (const auto& module : visualModules())
+    {
+        const auto group = animations.group(module);
+        m_depthVersions.insert(module, group.readEntry("DepthSettingsVersion", 0));
+        const auto raw = m_depthRawValues.value(module);
+        auto own = VisualDepthRegistry::defaults(module);
+        for (const auto& v : VisualDepthRegistry::schema(module))
+        {
+            const auto p = v.toMap();
+            const auto key = p.value(QStringLiteral("key")).toString();
+            if (raw.contains(key))
+                own.insert(key, VisualDepthRegistry::normalize(p, raw.value(key)));
+        }
+        // General is the only home of the four released Bounce ball keys.
+        if (module == QStringLiteral("bounce"))
+            for (const auto& key : { QStringLiteral("count"), QStringLiteral("gravity"), QStringLiteral("elasticity"),
+                     QStringLiteral("collisions") })
+                own.remove(key);
+        m_visualParameters.insert(module, own);
+        auto profile = m_animationSettings.value(module);
+        auto originalTuple = profile;
+        for (const auto& key : animationKeys()) {
+            const auto disk = diskKey(key);
+            if (raw.contains(disk)) originalTuple.insert(key, raw.value(disk));
+            else if (migrate && rawGeneralValues.contains(disk)) originalTuple.insert(key, rawGeneralValues.value(disk));
+        }
+        if (VisualDepthRegistry::available(module) && module == QStringLiteral("kaleidoscope")) {
+            const bool untouched = oldDefaultTuple(originalTuple);
+            if (untouched)
+                profile.insert(QStringLiteral("animationPalette"), QStringLiteral("spectrum"));
+            if (!raw.contains(QStringLiteral("points")))
+                m_visualParameters[module].insert(QStringLiteral("points"), untouched ? 8
+                    : int(std::round(5. + profile.value(QStringLiteral("animationDensity")).toInt() / 9.)));
+        }
+        activatedProfiles.insert(module, profile);
+    }
+    apply({{QStringLiteral("animationSettings"), activatedProfiles}});
+    if (VisualDepthRegistry::available(QStringLiteral("bounce"))
+        && general.readEntry("BallCount", 5) == 5 && general.readEntry("BallGravity", 35) == 35
+        && general.readEntry("BallElasticity", 92) == 92 && general.readEntry("BallCollisions", true)) {
+        setBallCount(12);
+        setBallElasticity(90);
+    }
+    m_animationSettings.insert(m_visualModule, activeAnimationSettings());
+    m_depthDirtyKeys.clear();
+    m_changedPending = true;
     endUpdate();
-    // Persist the one-time migration even if the settings window is never opened.
-    // A brand new configuration remains unwritten until the first explicit save.
-    if (migrate && general.exists()) save();
 }
 
 void Configuration::save()
@@ -471,10 +703,49 @@ void Configuration::save()
     for (const QString &module : visualModules()) {
         KConfigGroup group = animations.group(module);
         const QVariantMap profile = m_animationSettings.value(module);
-        for (const QString &key : animationKeys()) group.writeEntry(diskKey(key), profile.value(key));
+        for (const QString& key : animationKeys())
+        {
+            if (!group.hasKey(diskKey(key)) || profile.value(key) != m_loadedAnimationSettings.value(module).value(key))
+                group.writeEntry(diskKey(key), profile.value(key));
+        }
+        if (!VisualDepthRegistry::schema(module).isEmpty())
+        {
+            const int version = m_depthVersions.value(module);
+            if (version <= 1) group.writeEntry("DepthSettingsVersion", 1);
+            for (const auto& v : VisualDepthRegistry::schema(module))
+            {
+                const auto key = v.toMap().value(QStringLiteral("key")).toString();
+                if (module == QStringLiteral("bounce")
+                    && (key == QStringLiteral("count") || key == QStringLiteral("gravity")
+                        || key == QStringLiteral("elasticity") || key == QStringLiteral("collisions")))
+                    continue;
+                const auto raw = m_depthRawValues.value(module);
+                if (m_depthDirtyKeys.value(module).contains(key))
+                    group.writeEntry(key, m_visualParameters.value(module).value(key));
+                else if (raw.contains(key))
+                    // A snapshot may restore a newer raw value after Defaults was saved.
+                    group.writeEntry(key, raw.value(key));
+                else if (version <= 1 && VisualDepthRegistry::available(module))
+                    group.writeEntry(key, m_visualParameters.value(module).value(key));
+            }
+        }
     }
-    general.writeEntry("AnimationSettingsVersion", 1);
-    m_config->sync();
+    general.writeEntry("AnimationSettingsVersion", std::max(1, general.readEntry("AnimationSettingsVersion", 0)));
+    if (!m_config->sync())
+    {
+        qWarning() << "Could not save screensaver configuration";
+        return;
+    }
+    // A later edit may return to a value from the original load. Compare it
+    // against the last successful save, not that stale original baseline.
+    m_loadedAnimationSettings=m_animationSettings;
+    m_depthDirtyKeys.clear();
+    for(const auto &module:visualModules()) {
+        const auto group=animations.group(module);QVariantMap raw;
+        for(const auto &key:group.keyList())raw.insert(key,group.readEntry(key,QString()));
+        m_depthRawValues.insert(module,raw);
+        m_depthVersions.insert(module,group.readEntry("DepthSettingsVersion",0));
+    }
     Q_EMIT saved();
 }
 

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "../src/configuration.h"
+#include "visualdepthregistry.h"
+#include <QScopeGuard>
 
 #include <KConfig>
 #include <KConfigGroup>
@@ -73,7 +75,7 @@ private Q_SLOTS:
         QCOMPARE(config.animationScale(), 25);
         QCOMPARE(config.animationPalette(), QStringLiteral("ocean"));
         QCOMPARE(config.trailAmount(), 0);
-        QCOMPARE(config.ballCount(), 20);
+        QCOMPARE(config.ballCount(), 60);
         QCOMPARE(config.ballGravity(), -100);
         QCOMPARE(config.ballElasticity(), 50);
         QCOMPARE(config.snakeIntelligence(), 100);
@@ -267,9 +269,9 @@ private Q_SLOTS:
             QCOMPARE(config.trailAmount(), 100);
             QCOMPARE(config.animationPalette(), QStringLiteral("ember"));
         }
-        // Migration was persisted before any explicit save.
+        // Loading stages migrations in memory; only an explicit save writes.
         KConfig migrated(path, KConfig::SimpleConfig);
-        QCOMPARE(KConfigGroup(&migrated, QStringLiteral("General")).readEntry("AnimationSettingsVersion", 0), 1);
+        QCOMPARE(KConfigGroup(&migrated, QStringLiteral("General")).readEntry("AnimationSettingsVersion", 0), 0);
         config.setVisualModule(QStringLiteral("aurora"));
         config.setAnimationSpeed(120);
         config.setAnimationPalette(QStringLiteral("pastel"));
@@ -301,12 +303,12 @@ private Q_SLOTS:
                 {QStringLiteral("animationScale"), 25 + i * 10},
                 {QStringLiteral("trailAmount"), i * 7},
                 {QStringLiteral("animationPalette"), i % 2 ? QStringLiteral("ember") : QStringLiteral("mono")}});
-            expected = config.snapshot();
+            expected = config.snapshot({}, false);
             ++i;
         }
         config.save();
         Configuration loaded(path);
-        QCOMPARE(loaded.snapshot(), expected);
+        QCOMPARE(loaded.snapshot({}, false), expected);
         {
             KConfig raw(path, KConfig::SimpleConfig);
             KConfigGroup animations(&raw, QStringLiteral("Animations"));
@@ -339,7 +341,7 @@ private Q_SLOTS:
     {
         QTemporaryDir directory;
         Configuration config(directory.filePath(QStringLiteral("settingsrc")));
-        QCOMPARE(config.snapshot(), config.defaults());
+        QCOMPARE(config.snapshot({}, false), config.defaults());
         config.setAnimationSpeed(250);
         config.setVisualModule(QStringLiteral("snakes"));
         config.setAnimationDensity(80);
@@ -353,7 +355,7 @@ private Q_SLOTS:
         QSignalSpy changed(&config, &Configuration::changed);
         config.restoreDefaults(QStringLiteral("appearance"));
         QCOMPARE(changed.count(), 1);
-        QCOMPARE(config.snapshot(QStringLiteral("appearance")), config.defaults(QStringLiteral("appearance")));
+        QCOMPARE(config.snapshot(QStringLiteral("appearance"), false), config.defaults(QStringLiteral("appearance")));
         QCOMPARE(config.snapshot(QStringLiteral("general")), general);
         changed.clear();
         config.apply(appearance);
@@ -361,14 +363,303 @@ private Q_SLOTS:
         QCOMPARE(config.snapshot(), before);
         config.restoreDefaults(QStringLiteral("general"));
         QCOMPARE(config.snapshot(QStringLiteral("appearance")), appearance);
-        QCOMPARE(config.snapshot(QStringLiteral("general")), config.defaults(QStringLiteral("general")));
+        QCOMPARE(config.snapshot(QStringLiteral("general"), false), config.defaults(QStringLiteral("general")));
         config.apply(general);
         QCOMPARE(config.snapshot(), before);
         config.restoreDefaults(QStringLiteral("invalid"));
         QCOMPARE(config.snapshot(), before);
         config.restoreDefaults();
-        QCOMPARE(config.snapshot(), config.defaults());
+        QCOMPARE(config.snapshot({}, false), config.defaults());
     }
+
+    void depthMigrationAndPersistence()
+    {
+        QTemporaryDir dir;
+        const auto path = dir.filePath(QStringLiteral("settingsrc"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        const QByteArray input = "[General]\nAnimationSettingsVersion=1\nVisualModule=kaleidoscope\nBallCount=60\n\n["
+                                 "Animations][kaleidoscope]\nAnimationSpeed=300\nAnimationDensity=80\nAnimationScale="
+                                 "200\nAnimationPalette=ember\nTrailAmount=100\nUnrecognised=keep "
+                                 "me\n\n[Animations][matrix]\nDepthSettingsVersion=9\nweather=future-weather\nwind="
+                                 "333\nUnknownFuture=present\n";
+        file.write(input);
+        file.close();
+        Configuration config(path);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), input);
+        file.close();
+        QCOMPARE(config.visualParameter(QStringLiteral("points")).toInt(), 8);
+        QCOMPARE(config.animationPalette(), QStringLiteral("ember"));
+        config.setVisualParameter(QStringLiteral("turning"), 75);
+        config.setVisualModule(QStringLiteral("constellation"));
+        config.setVisualParameter(QStringLiteral("gravity"), 80);
+        config.save();
+        Configuration loaded(path);
+        QCOMPARE(loaded.visualModule(), QStringLiteral("constellation"));
+        QCOMPARE(loaded.visualParameter(QStringLiteral("gravity")).toInt(), 80);
+        QCOMPARE(loaded.ballCount(), 60);
+        loaded.setVisualModule(QStringLiteral("kaleidoscope"));
+        QCOMPARE(loaded.visualParameter(QStringLiteral("turning")).toInt(), 75);
+        QCOMPARE(loaded.visualParameter(QStringLiteral("points")).toInt(), 8);
+        loaded.save();
+        KConfig disk(path, KConfig::SimpleConfig);
+        const auto animations = KConfigGroup(&disk, QStringLiteral("Animations"));
+        const auto matrix = animations.group(QStringLiteral("matrix"));
+        QCOMPARE(matrix.readEntry("DepthSettingsVersion", 0), 9);
+        QCOMPARE(matrix.readEntry("weather", QString()), QStringLiteral("future-weather"));
+        QCOMPARE(matrix.readEntry("wind", 0), 333);
+        QCOMPARE(matrix.readEntry("UnknownFuture", QString()), QStringLiteral("present"));
+        const auto kaleidoscope = animations.group(QStringLiteral("kaleidoscope"));
+        QCOMPARE(kaleidoscope.readEntry("Unrecognised", QString()), QStringLiteral("keep me"));
+        QCOMPARE(kaleidoscope.readEntry("AnimationDensity", 0), 80);
+        QVERIFY(!kaleidoscope.hasGroup(QStringLiteral("LegacyShared")));
+        QVERIFY(!kaleidoscope.hasGroup(QStringLiteral("DepthShared")));
+        QVERIFY(!animations.group(QStringLiteral("bounce")).hasKey("count"));
+        QVERIFY(!kaleidoscope.hasKey("points")); // disabled slots retain the raw legacy tuple for activation
+    }
+    void untouchedAndExplicitDefaults()
+    {
+        for (int version : { 0, 1 })
+        {
+            QTemporaryDir dir;
+            const auto path = dir.filePath(QStringLiteral("settingsrc"));
+            QFile f(path);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(QByteArray("[General]\nAnimationSettingsVersion=") + QByteArray::number(version)
+                + "\nVisualModule=kaleidoscope\nBallCount=5\nBallElasticity=92\n");
+            f.close();
+            QFile original(path);
+            QVERIFY(original.open(QIODevice::ReadOnly));
+            const auto before = original.readAll();
+            original.close();
+            Configuration c(path);
+            QCOMPARE(c.ballCount(), 5);
+            QCOMPARE(c.ballElasticity(), 92);
+            QCOMPARE(c.visualParameter(QStringLiteral("points")).toInt(), 8);
+            c.reload();
+            QFile same(path);
+            QVERIFY(same.open(QIODevice::ReadOnly));
+            QCOMPARE(same.readAll(), before);
+            same.close();
+            c.save();
+            KConfig disk(path, KConfig::SimpleConfig);
+            const auto k = KConfigGroup(&disk, QStringLiteral("Animations")).group(QStringLiteral("kaleidoscope"));
+            QVERIFY(!k.hasGroup(QStringLiteral("DepthShared")));
+            QVERIFY(!k.hasKey("DepthBehaviorVersion"));
+            QCOMPARE(k.readEntry("AnimationPalette", QString()), QStringLiteral("ocean"));
+            QCOMPARE(c.animationPalette(), QStringLiteral("ocean")); // legacy path still disabled
+        }
+    }
+#ifdef PVS_ENABLE_VISUAL_CAPTURE
+    void availabilityActivatesInactiveProfilesTogetherWithTheirDefaults() {
+        VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"),true);
+        VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("bounce"),true);
+        const auto reset=qScopeGuard([]{VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"),std::nullopt);VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("bounce"),std::nullopt);});
+        QTemporaryDir dir;const auto path=dir.filePath(QStringLiteral("settingsrc"));
+        QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));file.write("[General]\nAnimationSettingsVersion=1\nVisualModule=aurora\n");file.close();
+        Configuration c(path);QCOMPARE(c.visualModule(),QStringLiteral("aurora"));QCOMPARE(c.ballCount(),12);QCOMPARE(c.ballElasticity(),90);
+        c.setVisualModule(QStringLiteral("kaleidoscope"));QCOMPARE(c.animationPalette(),QStringLiteral("spectrum"));QCOMPARE(c.visualParameter(QStringLiteral("points")).toInt(),8);
+        c.restoreDefaults(QStringLiteral("appearance"));QCOMPARE(c.snapshot(QStringLiteral("appearance"), false),c.defaults(QStringLiteral("appearance")));
+        c.save();c.reload();QCOMPARE(c.animationPalette(),QStringLiteral("spectrum"));QCOMPARE(c.ballCount(),12);
+        const auto explicitPath=dir.filePath(QStringLiteral("explicitrc"));QFile explicitFile(explicitPath);QVERIFY(explicitFile.open(QIODevice::WriteOnly));explicitFile.write("[General]\nBallCount=5\nBallElasticity=92\n");explicitFile.close();
+        Configuration explicitValues(explicitPath);QCOMPARE(explicitValues.ballCount(),12);QCOMPARE(explicitValues.ballElasticity(),90);
+        const auto customPath=dir.filePath(QStringLiteral("customrc"));QFile custom(customPath);QVERIFY(custom.open(QIODevice::WriteOnly));custom.write("[General]\nAnimationSettingsVersion=1\nVisualModule=aurora\n\n[Animations][kaleidoscope]\nAnimationDensity=80\nAnimationScale=200\nAnimationSpeed=300\nAnimationPalette=ember\nTrailAmount=100\n");custom.close();
+        Configuration customized(customPath);customized.setVisualModule(QStringLiteral("kaleidoscope"));QCOMPARE(customized.visualParameter(QStringLiteral("points")).toInt(),14);QCOMPARE(customized.animationPalette(),QStringLiteral("ember"));
+
+    }
+#endif
+#ifdef PVS_ENABLE_VISUAL_CAPTURE
+    void disabledProfileUsesCurrentLegacyTupleAtActivation() {
+        for(bool resetLegacy:{false,true}) {
+            QTemporaryDir dir;const auto path=dir.filePath(QStringLiteral("settingsrc"));
+            Configuration legacy(path);legacy.setVisualModule(QStringLiteral("kaleidoscope"));
+            legacy.setAnimationDensity(80);legacy.setAnimationSpeed(300);legacy.setAnimationScale(200);legacy.setAnimationPalette(QStringLiteral("ember"));legacy.setTrailAmount(100);legacy.save();
+            legacy.setAnimationDensity(100);legacy.save();
+            if(resetLegacy){legacy.restoreDefaults(QStringLiteral("appearance"));legacy.save();}
+            {KConfig disk(path,KConfig::SimpleConfig);const auto profile=KConfigGroup(&disk,QStringLiteral("Animations")).group(QStringLiteral("kaleidoscope"));QVERIFY(!profile.hasKey("points"));QVERIFY(!profile.hasKey("DepthBehaviorVersion"));}
+            VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"),true);
+            const auto reset=qScopeGuard([]{VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"),std::nullopt);});
+            Configuration active(path);QCOMPARE(active.visualParameter(QStringLiteral("points")).toInt(),resetLegacy?8:16);QCOMPARE(active.animationPalette(),resetLegacy?QStringLiteral("spectrum"):QStringLiteral("ember"));active.save();
+            active.setAnimationSpeed(100);active.setAnimationDensity(50);active.setAnimationScale(100);active.setAnimationPalette(QStringLiteral("ocean"));active.setTrailAmount(35);active.save();active.reload();
+            QCOMPARE(active.animationPalette(),QStringLiteral("spectrum")); // an exact old-default tuple receives the available visual defaults
+            QCOMPARE(active.visualParameter(QStringLiteral("points")).toInt(),resetLegacy?8:16);
+        }
+    }
+#endif
+    void unrelatedSaveRetainsRawSharedValues() {
+        QTemporaryDir dir;const auto path=dir.filePath(QStringLiteral("settingsrc"));
+        QFile file(path);QVERIFY(file.open(QIODevice::WriteOnly));file.write("[General]\nAnimationSettingsVersion=1\nVisualModule=kaleidoscope\n\n[Animations][kaleidoscope]\nAnimationDensity=80\nAnimationScale=999\nAnimationPalette=ember\n");file.close();
+        Configuration c(path);QCOMPARE(c.animationScale(),200);c.save();
+        KConfig disk(path,KConfig::SimpleConfig);const auto profile=KConfigGroup(&disk,QStringLiteral("Animations")).group(QStringLiteral("kaleidoscope"));
+        QCOMPARE(profile.readEntry("AnimationScale",0),999);QVERIFY(!profile.hasGroup(QStringLiteral("LegacyShared")));
+    }
+    void appearanceDefaultsDoNotWriteBallPresenceMarkers()
+    {
+        QTemporaryDir dir;
+        const auto path = dir.filePath(QStringLiteral("settingsrc"));
+        Configuration c(path);
+        c.setVisualModule(QStringLiteral("constellation"));
+        c.restoreDefaults(QStringLiteral("appearance"));
+        c.save();
+        KConfig disk(path, KConfig::SimpleConfig);
+        const auto bounce = KConfigGroup(&disk, QStringLiteral("Animations")).group(QStringLiteral("bounce"));
+        QVERIFY(!bounce.hasKey("LegacyGeneralBallKeys"));
+        QVERIFY(!bounce.hasKey("DepthBehaviorVersion"));
+    }
+    void appearanceDefaultsPreserveOtherVisuals()
+    {
+        QTemporaryDir dir;
+        Configuration c(dir.filePath(QStringLiteral("settingsrc")));
+        c.setVisualModule(QStringLiteral("snakes"));
+        c.setAnimationSpeed(300);
+        c.setSnakeAggression(40);
+        c.setVisualModule(QStringLiteral("constellation"));
+        c.setVisualParameter(QStringLiteral("gravity"),true);QCOMPARE(c.visualParameter(QStringLiteral("gravity")).toInt(),40);
+        c.setVisualParameter(QStringLiteral("gravity"), 80);
+        c.setAnimationDensity(80);
+        c.restoreDefaults(QStringLiteral("appearance"));
+        QCOMPARE(c.visualModule(), QStringLiteral("constellation"));
+        QCOMPARE(c.visualParameter(QStringLiteral("gravity")).toInt(), 40);
+        QCOMPARE(c.animationDensity(), 50);
+        c.setVisualModule(QStringLiteral("snakes"));
+        QCOMPARE(c.animationSpeed(), 300);
+        QCOMPARE(c.snakeAggression(), 40);
+    }
+
+    void defaultsUndoPreservesRawParameters()
+    {
+        for (const bool saveDefaults : {false, true}) {
+            QTemporaryDir dir;
+            const auto path = dir.filePath(QStringLiteral("settingsrc"));
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write("[General]\nVisualModule=matrix\nAnimationSettingsVersion=1\n\n"
+                       "[Animations][matrix]\nDepthSettingsVersion=9\nwind=333\nweather=future-weather\nUnknownFuture=keep\n");
+            file.close();
+            Configuration config(path);
+            config.setVisualParameter(QStringLiteral("glyphs"), QStringLiteral("numbers"));
+            const auto before = config.snapshot(QStringLiteral("appearance"));
+            config.restoreDefaults(QStringLiteral("appearance"));
+            if (saveDefaults) config.save();
+            config.apply(before);
+            QCOMPARE(config.snapshot(QStringLiteral("appearance")), before);
+            config.save();
+            KConfig disk(path, KConfig::SimpleConfig);
+            const auto matrix = KConfigGroup(&disk, QStringLiteral("Animations")).group(QStringLiteral("matrix"));
+            QCOMPARE(matrix.readEntry("wind", QString()), QStringLiteral("333"));
+            QCOMPARE(matrix.readEntry("weather", QString()), QStringLiteral("future-weather"));
+            QCOMPARE(matrix.readEntry("UnknownFuture", QString()), QStringLiteral("keep"));
+            QCOMPARE(matrix.readEntry("DepthSettingsVersion", 0), 9);
+            QCOMPARE(matrix.readEntry("glyphs", QString()), QStringLiteral("numbers"));
+        }
+    }
+#ifdef PVS_ENABLE_VISUAL_CAPTURE
+    void disabledUnrelatedSaveRetainsActivatedProfile()
+    {
+        const auto reset = qScopeGuard([] { VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"), std::nullopt); });
+        QTemporaryDir dir;
+        const auto path = dir.filePath(QStringLiteral("settingsrc"));
+        { Configuration disabled(path); disabled.save(); }
+        VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"), true);
+        {
+            Configuration active(path);
+            active.setVisualModule(QStringLiteral("kaleidoscope"));
+            QCOMPARE(active.animationPalette(), QStringLiteral("spectrum"));
+            active.save();
+        }
+        VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"), false);
+        {
+            Configuration disabled(path);
+            disabled.setIdleMinutes(27);
+            disabled.save();
+        }
+        VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"), true);
+        Configuration upgraded(path);
+        QCOMPARE(upgraded.animationPalette(), QStringLiteral("spectrum"));
+    }
+
+    void releasedBallEditsSurviveReupgrade()
+    {
+        const auto reset = qScopeGuard([] { VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("bounce"), std::nullopt); });
+        QTemporaryDir dir;
+        const auto path = dir.filePath(QStringLiteral("settingsrc"));
+        { Configuration disabled(path); disabled.save(); }
+        {
+            KConfig disk(path, KConfig::SimpleConfig);
+            auto general = KConfigGroup(&disk, QStringLiteral("General"));
+            general.writeEntry("BallCount", 17);
+            general.writeEntry("BallElasticity", 77);
+            auto bounce = KConfigGroup(&disk, QStringLiteral("Animations")).group(QStringLiteral("bounce"));
+            bounce.writeEntry("LegacyGeneralBallKeys", QStringList()); // stale experimental metadata must be ignored
+            QVERIFY(disk.sync());
+        }
+        VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("bounce"), true);
+        Configuration upgraded(path);
+        QCOMPARE(upgraded.ballCount(), 17);
+        QCOMPARE(upgraded.ballElasticity(), 77);
+        upgraded.setVisualModule(QStringLiteral("bounce"));
+        upgraded.setVisualParameter(QStringLiteral("count"), 60);
+        upgraded.setVisualModule(QStringLiteral("matrix"));
+        upgraded.save();
+        upgraded.reload();
+        upgraded.setVisualModule(QStringLiteral("bounce"));
+        QCOMPARE(upgraded.visualParameter(QStringLiteral("count")).toInt(), 60);
+    }
+
+    void bounceUpgradesOnlyTheWholeReleasedDefaultTuple()
+    {
+        VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("bounce"), true);
+        const auto reset = qScopeGuard([] { VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("bounce"), std::nullopt); });
+        struct BallCase { QByteArray entry; int count; int elasticity; };
+        for (const auto& test : {BallCase {"", 12, 90}, BallCase {"BallCount=17\n", 17, 92},
+                 BallCase {"BallElasticity=77\n", 5, 77}, BallCase {"BallGravity=-40\n", 5, 92},
+                 BallCase {"BallCollisions=false\n", 5, 92}}) {
+            QTemporaryDir dir;
+            const auto path = dir.filePath(QStringLiteral("settingsrc"));
+            QFile file(path);
+            const auto input = QByteArray("[General]\n") + test.entry;
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(input);
+            file.close();
+            Configuration config(path);
+            QCOMPARE(config.ballCount(), test.count);
+            QCOMPARE(config.ballElasticity(), test.elasticity);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            QCOMPARE(file.readAll(), input);
+        }
+    }
+
+    void sharedEditsDuringDowngradeSurviveReupgrade()
+    {
+        const auto reset = qScopeGuard([] { VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"), std::nullopt); });
+        QTemporaryDir dir;
+        const auto path = dir.filePath(QStringLiteral("settingsrc"));
+        VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"), true);
+        {
+            Configuration active(path);
+            active.setVisualModule(QStringLiteral("kaleidoscope"));
+            active.setAnimationSpeed(180);
+            active.save();
+        }
+        {
+            KConfig disk(path, KConfig::SimpleConfig);
+            auto profile = KConfigGroup(&disk, QStringLiteral("Animations")).group(QStringLiteral("kaleidoscope"));
+            profile.writeEntry("AnimationSpeed", 250);
+            profile.writeEntry("AnimationDensity", 80);
+            profile.writeEntry("AnimationScale", 135);
+            profile.writeEntry("AnimationPalette", QStringLiteral("ember"));
+            profile.writeEntry("TrailAmount", 70);
+            QVERIFY(disk.sync());
+        }
+        Configuration upgraded(path);
+        QCOMPARE(upgraded.animationSpeed(), 250);
+        QCOMPARE(upgraded.animationDensity(), 80);
+        QCOMPARE(upgraded.animationScale(), 135);
+        QCOMPARE(upgraded.animationPalette(), QStringLiteral("ember"));
+        QCOMPARE(upgraded.trailAmount(), 70);
+    }
+#endif
 
     void clockModeMappingPreservesHiddenChoices()
     {

@@ -51,6 +51,12 @@ Kirigami.ApplicationWindow {
         saveTimer.restart()
     }
 
+    function writeVisualParameter(key, value) {
+        if (screensaverConfig.visualParameter(key) === value) return
+        screensaverConfig.setVisualParameter(key, value)
+        saveTimer.restart()
+    }
+
     function flush() {
         if (!saveTimer.running) return
         saveTimer.stop()
@@ -64,12 +70,12 @@ Kirigami.ApplicationWindow {
         target: window.screensaverConfig
         function onChanged() { window.revision += 1 }
     }
-    readonly property string appearanceDefaultsJson: JSON.stringify(screensaverConfig.defaults("appearance"))
+    readonly property string appearanceDefaultsJson: revision >= 0 ? JSON.stringify(screensaverConfig.defaults("appearance")) : ""
     readonly property string generalDefaultsJson: JSON.stringify(screensaverConfig.defaults("general"))
     readonly property bool appearanceIsDefault: revision >= 0
-        && JSON.stringify(screensaverConfig.snapshot("appearance")) === appearanceDefaultsJson
+        && JSON.stringify(screensaverConfig.snapshot("appearance", false)) === appearanceDefaultsJson
     readonly property bool generalIsDefault: revision >= 0
-        && JSON.stringify(screensaverConfig.snapshot("general")) === generalDefaultsJson
+        && JSON.stringify(screensaverConfig.snapshot("general", false)) === generalDefaultsJson
 
     function restoreDefaults(page) {
         const previous = screensaverConfig.snapshot(page)

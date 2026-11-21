@@ -13,7 +13,8 @@ Kirigami.ScrollablePage {
     required property var settings      // the window: write(), restoreDefaults(), preview()
     readonly property var config: settings.screensaverConfig
     readonly property string visual: config.visualModule
-    readonly property var animation: Catalog.animation(visual)
+    readonly property bool depthAvailable: config.depthAvailable
+    readonly property var animation: depthForm.item ? depthForm.item.sharedLabels : Catalog.animation(visual)
 
     title: qsTr("Appearance")
 
@@ -116,7 +117,7 @@ Kirigami.ScrollablePage {
 
             QQC2.SpinBox {
                 Kirigami.FormData.label: qsTr("Balls:")
-                visible: page.visual === "bounce"
+                visible: page.visual === "bounce" && !page.depthAvailable
                 from: 1; to: 20
                 value: page.config.ballCount
                 onValueModified: page.settings.write("ballCount", value)
@@ -153,7 +154,7 @@ Kirigami.ScrollablePage {
             // Bouncing Balls ------------------------------------------------
             ValueSlider {
                 Kirigami.FormData.label: qsTr("Gravity:")
-                visible: page.visual === "bounce"
+                visible: page.visual === "bounce" && !page.depthAvailable
                 accessibleName: qsTr("Gravity")
                 from: -100; to: 100; stepSize: 5
                 value: page.config.ballGravity
@@ -165,7 +166,7 @@ Kirigami.ScrollablePage {
 
             ValueSlider {
                 Kirigami.FormData.label: qsTr("Bounciness:")
-                visible: page.visual === "bounce"
+                visible: page.visual === "bounce" && !page.depthAvailable
                 accessibleName: qsTr("Bounciness")
                 from: 50; to: 100; stepSize: 1
                 value: page.config.ballElasticity
@@ -173,7 +174,7 @@ Kirigami.ScrollablePage {
             }
 
             QQC2.CheckBox {
-                visible: page.visual === "bounce"
+                visible: page.visual === "bounce" && !page.depthAvailable
                 text: qsTr("Balls collide with each other")
                 checked: page.config.ballCollisions
                 onToggled: page.settings.write("ballCollisions", checked)
@@ -246,6 +247,18 @@ Kirigami.ScrollablePage {
                 checked: page.config.snakeLengthLimit
                 onToggled: page.settings.write("snakeLengthLimit", checked)
             }
+        }
+        Loader {
+            id: depthForm
+            Layout.fillWidth: true
+            active: page.depthAvailable
+            onActiveChanged: if (active) loadForm()
+            function loadForm() {
+                if (!active) return
+                setSource("visuals/" + page.visual + "/Settings.qml", { settings: page.settings, config: page.config })
+            }
+            Connections { target: page; function onVisualChanged() { depthForm.loadForm() } }
+            Component.onCompleted: loadForm()
         }
     }
 }

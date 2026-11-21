@@ -39,10 +39,14 @@ endif()
 separate_arguments(SNAKES_CORE_NATIVE_LIBS UNIX_COMMAND "${CMAKE_MATCH_1}")
 message(STATUS "Rust native static libraries: ${SNAKES_CORE_NATIVE_LIBS}")
 
+if(PVS_ENABLE_VISUAL_CAPTURE)
+    set(SNAKES_DEPTH_FEATURES --features visual-capture)
+endif()
+
 # Always invoke Cargo; it tracks manifests, source additions/removals and flags.
 add_custom_target(snakes-core-build
     COMMAND "${CMAKE_COMMAND}" -E env ${SNAKES_CORE_CARGO_ENV}
-        "${CARGO_EXECUTABLE}" build --frozen
+        "${CARGO_EXECUTABLE}" build --frozen ${SNAKES_DEPTH_FEATURES}
         --manifest-path "${SNAKES_CORE_MANIFEST}" --profile "${SNAKES_CORE_PROFILE}"
     BYPRODUCTS "${SNAKES_CORE_TARGET_DIR}/${SNAKES_CORE_CONFIG}/${SNAKES_CORE_PROFILE_DIR}/libsnakes_core.a"
     VERBATIM)

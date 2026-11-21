@@ -130,3 +130,27 @@ function(link_snake_material_consumers)
     endforeach()
 endfunction()
 cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL link_snake_material_consumers)
+
+# Shared living-world foundation. Disabled visual slots own their local source,
+# shader and form registration, so builders never edit this central list.
+add_library(VisualDepth STATIC visualdepthregistry.cpp visualdepthregistry.h
+    visualworld.cpp visualworld.h visualworldcoordinator.cpp visualworldcoordinator.h
+    livingvisualitem.cpp livingvisualitem.h)
+target_include_directories(VisualDepth PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(VisualDepth PUBLIC Qt6::Quick SnakesCore::snakes_core)
+if(PVS_ENABLE_VISUAL_CAPTURE)
+    target_compile_definitions(VisualDepth PUBLIC PVS_ENABLE_VISUAL_CAPTURE)
+endif()
+foreach(visual aurora constellation starfield ribbons kaleidoscope matrix bounce orbs fireflies)
+    add_subdirectory(visuals/${visual})
+endforeach()
+# Every existing Configuration consumer uses the same startup schema registry.
+function(link_visual_depth_consumers)
+    foreach(consumer plasma-visual-screensaver test-configuration test-snakerenderer
+        test-snakesimulation test-snakesqml test-overlaysnakes test-applicationcontroller test-settingsqml)
+        if(TARGET ${consumer})
+            target_link_libraries(${consumer} PRIVATE VisualDepth)
+        endif()
+    endforeach()
+endfunction()
+cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL link_visual_depth_consumers)

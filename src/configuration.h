@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <QObject>
 #include <QMap>
+#include <QObject>
+#include <QSet>
 #include <QString>
 #include <QVariantMap>
 #include <memory>
@@ -12,6 +13,8 @@ class KConfig;
 class Configuration final : public QObject
 {
     Q_OBJECT
+    Q_PROPERTY(QVariantMap visualParameters READ visualParameters NOTIFY changed)
+    Q_PROPERTY(bool depthAvailable READ depthAvailable NOTIFY changed)
     Q_PROPERTY(int idleMinutes READ idleMinutes WRITE setIdleMinutes NOTIFY changed)
     Q_PROPERTY(QString visualModule READ visualModule WRITE setVisualModule NOTIFY changed)
     Q_PROPERTY(QString backgroundStyle READ backgroundStyle WRITE setBackgroundStyle NOTIFY changed)
@@ -46,6 +49,11 @@ public:
     explicit Configuration(const QString &filePath = {}, QObject *parent = nullptr);
     ~Configuration() override;
 
+    QVariantMap visualParameters() const;
+    bool depthAvailable() const;
+    Q_INVOKABLE QVariant visualParameter(const QString& key) const;
+    Q_INVOKABLE void setVisualParameter(const QString& key, const QVariant& value);
+    Q_INVOKABLE QVariantList visualSchema(const QString& visual = {}) const;
     int idleMinutes() const;
     QString visualModule() const;
     QString backgroundStyle() const;
@@ -106,9 +114,10 @@ public:
     Q_INVOKABLE void apply(const QVariantMap &settings);
     // page is "appearance", "general", or empty for all settings. Appearance
     // maps include every animation profile; apply(snapshot(page)) restores Undo
-    // atomically, including the selected module. Unknown pages return empty maps.
+    // atomically, including raw own parameters and pending edits. Pass false for
+    // includePreservation to compare effective values. Unknown pages return empty maps.
     Q_INVOKABLE QVariantMap defaults(const QString &page = {}) const;
-    Q_INVOKABLE QVariantMap snapshot(const QString &page = {}) const;
+    Q_INVOKABLE QVariantMap snapshot(const QString &page = {}, bool includePreservation = true) const;
 
     Q_INVOKABLE void reload();
     Q_INVOKABLE void save();
@@ -130,6 +139,11 @@ private:
     // Profiles are touched only by config edits/load/save. Render/tick getters
     // keep reading the scalar active-profile fields below without map lookups.
     QMap<QString, QVariantMap> m_animationSettings;
+    QMap<QString, QVariantMap> m_visualParameters;
+    QMap<QString, QVariantMap> m_depthRawValues;
+    QMap<QString, QSet<QString>> m_depthDirtyKeys;
+    QMap<QString, int> m_depthVersions;
+    QMap<QString, QVariantMap> m_loadedAnimationSettings;
     int m_updateDepth = {};
     bool m_changedPending = {};
     int m_idleMinutes = {};

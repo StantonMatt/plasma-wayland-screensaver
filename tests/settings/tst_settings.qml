@@ -82,6 +82,30 @@ TestCase {
         wait(0)
     }
 
+    function test_depthFormsAndDebouncedSave() {
+        const visuals = ["aurora", "orbs", "bounce", "starfield", "matrix", "kaleidoscope", "fireflies", "ribbons", "constellation"]
+        for (const visual of visuals) {
+            testConfig.visualModule = visual
+            verify(!testConfig.depthAvailable)
+            const component = Qt.createComponent("qrc:/qml/settings/visuals/" + visual + "/Settings.qml")
+            compare(component.status, Component.Ready, component.errorString())
+            const form = component.createObject(win.contentItem, {settings: win, config: testConfig})
+            verify(form)
+            verify(form.sharedLabels.speed.length > 0)
+            verify(testConfig.visualSchema().length >= 4)
+            form.destroy()
+        }
+        testConfig.visualModule = "constellation"
+        win.writeVisualParameter("gravity", 75)
+        compare(testConfig.visualParameter("gravity"), 75)
+        compare(saves.count, 0)
+        win.close() // close must flush the pending debounced write
+        compare(saves.count, 1)
+        testConfig.reload()
+        compare(testConfig.visualModule, "constellation")
+        compare(testConfig.visualParameter("gravity"), 75)
+    }
+
     function test_inventorySetting() {
         win.write("visualModule", "snakes")
         const appearance = page("appearance")
@@ -202,9 +226,9 @@ TestCase {
         verify(defaults.enabled)
 
         defaults.trigger()
-        compare(testConfig.visualModule, "aurora")
-        compare(testConfig.snakeAggression, 100)
-        compare(testConfig.snapshot("appearance").animationSettings.snakes.animationSpeed, 100)
+        compare(testConfig.visualModule, "matrix")
+        compare(testConfig.snakeAggression, 40)
+        compare(testConfig.snapshot("appearance").animationSettings.snakes.animationSpeed, 300)
         compare(testConfig.idleMinutes, 3, "Appearance defaults leave General alone")
         verify(!defaults.enabled)
 

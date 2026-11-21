@@ -23,6 +23,7 @@ panic = "abort"
 
 [features]
 desktop-diag = []
+visual-capture = []
 parity = []
 
 [[example]]
