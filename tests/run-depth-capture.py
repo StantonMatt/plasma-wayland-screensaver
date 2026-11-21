@@ -29,7 +29,9 @@ def stop(process):
 
 
 LAYOUTS = {'l3': L3, 'single': L3[:1], 'wide': [dict(L3[1], x=0)],
-           'pair': [L3[0], dict(L3[2], x=2560, y=0)], 'hd': [dict(L3[2], x=0, y=0)]}
+           'pair': [L3[0], dict(L3[2], x=2560, y=0)],
+           'hd': [dict(L3[2], x=0, y=0)], 'fullhd': [dict(L3[2], x=0, y=0)],
+           'wide-pair': [dict(L3[1], x=0), dict(L3[2], x=3440, y=0)]}
 
 
 def scene_catalogs(directory):
@@ -98,8 +100,11 @@ def run_scene(args, environment, target, product):
     script = target / 'request.json'
     script.write_text(json.dumps(product, indent=2))
     env = dict(environment, VISUALS_CAPTURE_DIR=str(target), PVS_VISUAL_CAPTURE_SCRIPT=str(script))
+    test_args = [str(args.build / 'bin/test-visual-depth-capture'), 'productScene']
+    if product.get('gpuTiming'):
+        test_args.extend(['-maxwarnings', '0'])
     with (target / 'gpu-tests.log').open('w') as log:
-        test = subprocess.Popen([str(args.build / 'bin/test-visual-depth-capture'), 'productScene'],
+        test = subprocess.Popen(test_args,
                                 env=validated_environment(env,'client'), stdout=log, stderr=subprocess.STDOUT)
         print(f"{product['scene']} capture PID {test.pid}", flush=True)
         try:
@@ -124,7 +129,17 @@ def finish_video(directory, scene):
     for film in films:
         path = directory / (film + '.mp4')
         if path.exists():
-            manifest['recordings'].append(path.name)
+            if video.get('reviewCopy'):
+                lossless = directory / 'lossless' / path.name
+                lossless.parent.mkdir(exist_ok=True)
+                path.rename(lossless)
+                subprocess.run(['ffmpeg', '-loglevel', 'error', '-i', str(lossless), '-threads', '4',
+                                '-c:v', 'libx264', '-crf', '16', '-preset', 'veryfast',
+                                '-pix_fmt', 'yuv420p', '-movflags', '+faststart', str(path)],
+                               check=True, timeout=1800)
+                manifest.setdefault('reviewRecordings', []).append(path.name)
+                path = lossless
+            manifest['recordings'].append(str(path.relative_to(directory)))
         else:
             # Capture frames use five-digit indices; contact sheets share the
             # film prefix but must never become part of the recorded sequence.
@@ -366,8 +381,9 @@ def main():
         diff = subprocess.check_output(['git', '-C', str(source_root), 'diff', 'HEAD'], env=environment, timeout=20)
         new_paths = subprocess.check_output(['git', '-C', str(source_root), 'ls-files', '--others',
                                             '--exclude-standard', '-z', '--', 'rust/snakes-core/src/visuals/depth',
-                                            'rust/snakes-core/include', 'src/visualdepthregistrations.cpp.in', f'src/visuals/{args.visual}',
-                                            f'src/shaders/depth/{args.visual}', f'tests/depth/scenes/{args.visual}',
+                                            'rust/snakes-core/include', 'src/visualdepthregistrations.cpp.in', 'src/visuals/common',
+                                            f'src/visuals/{args.visual}',
+                                            f'src/shaders/depth/{args.visual}', f'tests/depth/{args.visual}', f'tests/depth/scenes/{args.visual}',
                                             'tests/depth/productcapture.inc', 'tests/depth/luminance.cpp',
                                             'tests/check-depth-luminance.py'], env=environment, timeout=20)
         untracked_hashes = {}

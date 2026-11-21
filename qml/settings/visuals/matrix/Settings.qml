@@ -23,12 +23,15 @@ Kirigami.FormLayout {
         Kirigami.FormData.label: qsTr("Wind:")
         accessibleName: qsTr("Wind")
         from: 0; to: 100; stepSize: 5
+        valueText: shownValue === 0 ? qsTr("Still") : qsTr("%1%").arg(shownValue)
         value: form.config.visualParameters.wind
         onMoved: value => form.settings.writeVisualParameter("wind", value)
     }
 
     QQC2.CheckBox {
+        objectName: "rainLightning"
         text: qsTr("Lightning during storms")
+        enabled: form.config.visualParameters.weather !== "steady"
         checked: form.config.visualParameters.lightning === true
         onToggled: form.settings.writeVisualParameter("lightning", checked)
     }
@@ -37,7 +40,7 @@ Kirigami.FormLayout {
         Kirigami.FormData.label: qsTr("Glyphs:")
         Accessible.name: qsTr("Glyphs")
         readonly property var keys: ["weather", "numbers", "hex", "katakana", "letters", "lines-blocks", "braille"]
-        model: [qsTr("Weather"), qsTr("Numbers"), qsTr("Hex"), qsTr("Katakana"), qsTr("Letters"), qsTr("Lines blocks"), qsTr("Braille")]
+        model: [qsTr("Changing with the weather"), qsTr("Numbers"), qsTr("Hex code"), qsTr("Katakana"), qsTr("Letters"), qsTr("Lines & blocks"), qsTr("Braille dots")]
         currentIndex: keys.indexOf(form.config.visualParameters.glyphs)
         onActivated: index => form.settings.writeVisualParameter("glyphs", keys[index])
     }
@@ -46,6 +49,7 @@ Kirigami.FormLayout {
         Kirigami.FormData.label: qsTr("Depth:")
         accessibleName: qsTr("Depth")
         from: 0; to: 100; stepSize: 5
+        valueText: shownValue === 0 ? qsTr("Flat") : qsTr("%1%").arg(shownValue)
         value: form.config.visualParameters.depth
         onMoved: value => form.settings.writeVisualParameter("depth", value)
     }

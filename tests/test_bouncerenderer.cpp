@@ -36,6 +36,27 @@ class BounceRendererTest final : public QObject {
         });
     }
 private Q_SLOTS:
+    void fallbackCounts_data() {
+        QTest::addColumn<int>("mode");
+        QTest::addColumn<int>("count");
+        for (int mode : {0, 1, 2}) for (int count : {20, 21, 60})
+            QTest::newRow(qPrintable(QString::number(mode) + QStringLiteral("-") + QString::number(count))) << mode << count;
+    }
+    void fallbackCounts() {
+        QFETCH(int, mode); QFETCH(int, count);
+        AnimationState state;
+        state.configureGeometries({{0, 0, 640, 360}}, true, false, QStringLiteral("normal"),
+                                  60, 20, 300, 200, 10, 100, true, true);
+        VisualRenderer renderer;
+        renderer.setSize({640, 360});
+        source(renderer, state);
+        renderer.setViewport(state.bounds(), {});
+        renderer.m_supportCheck = [](QQuickWindow*) { return false; };
+        configure(renderer, mode, count);
+        QVERIFY(renderer.m_bounce);
+        QCOMPARE(renderer.m_bounceSettings.count, 20u);
+        QVERIFY(renderer.m_primitiveCount > 0);
+    }
     void sharedPhysicsAndTypedHistoryMatchFrozenCpp() {
         const QList<QList<QRect>> layouts={{{0,0,2560,1440},{2560,0,3440,1440},{6000,0,1920,1080}},
             {{-1600,-300,1600,900},{0,0,1920,1080},{2200,0,1280,1024}}};

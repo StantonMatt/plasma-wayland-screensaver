@@ -1,5 +1,6 @@
 // Included by the private capture test, which has access to OverlayManager's
 // configured views. A scene always runs in a freshly isolated application.
+#include "matrix/gputimer.h"
 void DepthCaptureTest::productScene()
 {
     if (!qEnvironmentVariableIsSet("VISUALS_REQUIRE_GPU"))
@@ -25,7 +26,8 @@ void DepthCaptureTest::productScene()
     const auto visual = scene["visual"_L1].toString();
     const auto visualId = VisualDepthRegistry::id(visual);
     QVERIFY2(visualId, qPrintable(visual));
-    VisualDepthRegistry::setAvailabilityForTest(visual, !legacy);
+    if (legacy || !visuals_depth_available(visualId))
+        VisualDepthRegistry::setAvailabilityForTest(visual, !legacy);
     const auto reset = qScopeGuard([&] { VisualDepthRegistry::setAvailabilityForTest(visual, std::nullopt); });
     Configuration config(temp.filePath(QStringLiteral("scene.rc")));
     config.setVisualModule(visual);
@@ -56,14 +58,11 @@ void DepthCaptureTest::productScene()
     const auto shown = VisualWorldCoordinator::monotonicNow();
     qint64 fallbackPaintNs = 0;
     QVector<std::shared_ptr<std::atomic<qint64>>> first;
-    for (auto it = manager.m_views.cbegin(); it != manager.m_views.cend(); ++it) {
-        if (fallback)
-            continue;
+    const auto observeFirstRender = [&](QQuickWindow* view, LivingVisualItem* item) {
         auto timestamp = std::make_shared<std::atomic<qint64>>(0);
         first.append(timestamp);
-        auto* item = manager.m_depthItems.value(it.key());
         connect(
-            it.value(), &QQuickWindow::afterRendering, it.value(),
+            view, &QQuickWindow::afterRendering, view,
             [item, timestamp] {
                 if (!item || item->renderedSample() > 0) {
                     qint64 empty = 0;
@@ -71,6 +70,10 @@ void DepthCaptureTest::productScene()
                 }
             },
             Qt::DirectConnection);
+    };
+    if (!fallback) {
+        for (auto it = manager.m_views.cbegin(); it != manager.m_views.cend(); ++it)
+            observeFirstRender(it.value(), manager.m_depthItems.value(it.key()));
     }
     QVERIFY(QTest::qWaitFor(
         [&] {
@@ -90,11 +93,10 @@ void DepthCaptureTest::productScene()
             QCOMPARE(layer->parentItem()->property("source").toUrl().fileName().toLower(), visual + ".qml"_L1);
             if (layer->metaObject()->indexOfProperty("nativeRenderer") >= 0)
                 QVERIFY(layer->property("nativeRenderer").value<QObject*>());
-            // The rejected GPU item never renders a lease. Wait for an actual
-            // paint of the restored software scene on each output instead.
-            QVERIFY(!view->grabWindow().isNull());
+            // A restored legacy layer has no living-world sample to acknowledge.
+            observeFirstRender(view, nullptr);
+            view->update();
         }
-        fallbackPaintNs = VisualWorldCoordinator::monotonicNow() - start;
     } else if (!legacy) {
         const bool localWorlds = config.monitorBehavior() == "independent"_L1
             || (config.monitorBehavior() == "synchronized"_L1 && visuals_depth_mirrored_policy(visualId));
@@ -105,6 +107,8 @@ void DepthCaptureTest::productScene()
     QVERIFY(QTest::qWaitFor(
         [&] { return std::all_of(first.begin(), first.end(), [](const auto& p) { return p->load() > 0; }); },
         10000));
+    if (fallback)
+        fallbackPaintNs = VisualWorldCoordinator::monotonicNow() - start;
     qint64 activation = fallbackPaintNs;
     for (auto& stamp : first)
         activation = std::max(activation, stamp->load() - start);
@@ -132,9 +136,39 @@ void DepthCaptureTest::productScene()
     } else
         for (auto time : scene["captureTimesNs"_L1].toArray())
             times.append(time.toString().toLongLong());
+    if (scene["gpuTiming"_L1].toBool()) {
+        // Time the normal window render pass on the GPU. grabWindow() below
+        // has its own offscreen target and synchronous readback; keep it out
+        // of the timing interval.
+        QCOMPARE(manager.m_views.size(), 1);
+        QVERIFY(!times.isEmpty());
+        auto* view = manager.m_views.cbegin().value();
+        auto swaps = std::make_shared<std::atomic<int>>(0);
+        auto gpu = std::make_shared<CaptureGpuTimer>();
+        const auto gpuStart = connect(view, &QQuickWindow::beforeRenderPassRecording, view,
+            [gpu, view] { gpu->begin(view); }, Qt::DirectConnection);
+        const auto gpuEnd = connect(view, &QQuickWindow::afterRenderPassRecording, view,
+            [gpu, view] { gpu->finish(view); }, Qt::DirectConnection);
+        const auto countSwaps = connect(view, &QQuickWindow::frameSwapped, view,
+            [swaps] { ++*swaps; }, Qt::DirectConnection);
+        QVERIFY(manager.m_depthCoordinator->seek(times.first()));
+        qInfo("GPU timing begin");
+        for (qint64 ns : times) {
+            const int prior = swaps->load();
+            QVERIFY(manager.m_depthCoordinator->present(view->screen()->name(), manager.m_depthEpochNs + ns));
+            view->update();
+            QVERIFY(QTest::qWaitFor([&] { return swaps->load() > prior; }, 5000));
+        }
+        qInfo("GPU timing end");
+        disconnect(countSwaps);
+        disconnect(gpuStart);
+        disconnect(gpuEnd);
+        QVERIFY2(gpu->samples.load() >= times.size() * 9 / 10, "Insufficient valid GPU timer samples");
+    }
     const auto movieName = video["name"_L1].toString(QStringLiteral("world"));
     const bool seam = video["seam"_L1].toBool();
-    const auto movieSize = seam ? bounds.size() / 2 : bounds.size();
+    const bool halfScale = seam || video["halfScale"_L1].toBool();
+    const auto movieSize = halfScale ? bounds.size() / 2 : bounds.size();
     QRect crop;
     if (seam) {
         const auto rect = video["crop"_L1].toArray();
@@ -234,7 +268,7 @@ void DepthCaptureTest::productScene()
         }
         if (length) {
             const QImage stitched
-                = seam ? world.scaled(movieSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation) : world;
+                = halfScale ? world.scaled(movieSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation) : world;
             if (encode) {
                 QVERIFY(stream(movie, stitched));
                 if (seam)

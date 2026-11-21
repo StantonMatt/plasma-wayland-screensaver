@@ -1,1 +1,6 @@
-# Register owned depth tests here.
+add_test(NAME depth-kaleidoscope-settings COMMAND test-settingsqml -input "${CMAKE_CURRENT_SOURCE_DIR}/qml")
+set_tests_properties(depth-kaleidoscope-settings PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+add_executable(test-kaleidoscope-blur test_blur.cpp)
+target_include_directories(test-kaleidoscope-blur PRIVATE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/rust/snakes-core/include")
+target_link_libraries(test-kaleidoscope-blur PRIVATE Qt6::Test)
+add_test(NAME depth-kaleidoscope-blur COMMAND test-kaleidoscope-blur)

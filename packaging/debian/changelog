@@ -1,3 +1,15 @@
+plasma-visual-screensaver (0.27.0-1) unstable; urgency=medium
+
+  * Kaleidoscope is a chamber of moving coloured glass, beads and silver
+    motes, with Mandala and Lattice mirrors and a shared Spanning chamber.
+  * Matrix becomes Digital Rain, with layered glyphs, changing weather and
+    bright falling heads. The old Matrix look has changed on purpose.
+  * Bouncing Balls gains rubber, glass and metal materials, rolling spin,
+    charged hops and shared terrain. The old Bounce look and motion have
+    changed on purpose.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Sat, 21 Nov 2026 20:00:00 -0300
+
 plasma-visual-screensaver (0.26.0-1) unstable; urgency=medium
 
   * Floating Orbs is now a living colony in a slow current, with Glow, Glass

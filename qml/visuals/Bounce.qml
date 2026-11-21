@@ -22,7 +22,9 @@ Item {
         : Qt.rect(0, 0, width, height)
     readonly property point viewportOrigin: context && context.screenX !== undefined
         ? Qt.point(context.screenX, context.screenY) : Qt.point(0, 0)
-    readonly property int ballCount: context && context.ballCount !== undefined ? context.ballCount : 1
+    // This component is the legacy fallback; living settings retain 1–60.
+    readonly property int ballCount: Math.max(1, Math.min(20,
+        context && context.ballCount !== undefined ? context.ballCount : 1))
     readonly property real gravity: context && context.ballGravity !== undefined ? context.ballGravity : 0
     readonly property real elasticity: context && context.ballElasticity !== undefined ? context.ballElasticity : 100
     readonly property bool collisions: context && context.ballCollisions !== undefined ? context.ballCollisions : false

@@ -37,6 +37,30 @@ opens the latest GitHub release instead.
 > It does not authenticate, lock input, protect running applications, or replace
 > Plasma's lock screen. Anyone who dismisses it can use the session.
 
+## Kaleidoscope 0.27.0
+
+Kaleidoscope looks into a chamber of moving coloured glass. Shards, beads and
+silver motes tumble behind repeating mirrors, with Mandala and Lattice folds.
+A slow hand turns the chamber, pours out the glass and brings in a new batch.
+Spanning carries one chamber across every monitor; reduced motion holds a
+still arrangement.
+
+## Digital Rain 0.27.0
+
+Matrix becomes Digital Rain: a field of glyphs with depth, changing weather
+and bright falling heads. Choose alphabets, Drizzle or Steady rain, and let
+gusts, strikes and clearings pass through. Spanning shares one rain field
+across every monitor. The old Matrix look has changed on purpose; reduced
+motion shows a still photograph that renews gently every five minutes.
+
+## Bouncing Balls 0.27.0
+
+Bouncing Balls fills a room with rubber, glass and metal balls. They roll,
+spin, trade momentum and wake into charged hops, leaving soft light trails.
+Tilts and Zero-G change the room, and Spanning lets balls cross the shared
+terrain of every monitor. The old Bounce look and motion have changed on
+purpose. Reduced motion holds a balanced still life.
+
 ## Floating Orbs 0.26.0
 
 Floating Orbs moves like a colony in a slow current. Neighbouring orbs form

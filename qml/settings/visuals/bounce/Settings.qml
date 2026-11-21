@@ -8,20 +8,24 @@ Kirigami.FormLayout {
     id: form
     required property var settings
     required property var config
-    readonly property var sharedLabels: ({speed: qsTr("Speed"), density: qsTr(""), scale: qsTr("Size"), trail: qsTr("Light trails")})
+    readonly property var sharedLabels: ({speed: qsTr("Speed"), density: "", scale: qsTr("Ball size"), trail: qsTr("Light trails")})
 
-    ValueSlider {
+    QQC2.SpinBox {
+        objectName: "bounceCount"
         Kirigami.FormData.label: qsTr("Balls:")
-        accessibleName: qsTr("Balls")
-        from: 1; to: 60; stepSize: 1
+        Accessible.name: qsTr("Balls")
+        from: 1; to: 60
         value: form.config.visualParameters.count
-        onMoved: value => form.settings.writeVisualParameter("count", value)
+        onValueModified: form.settings.writeVisualParameter("count", value)
     }
 
     ValueSlider {
         Kirigami.FormData.label: qsTr("Gravity:")
         accessibleName: qsTr("Gravity")
         from: -100; to: 100; stepSize: 5
+        valueText: shownValue < -2 ? qsTr("Up %1").arg(-shownValue)
+                 : shownValue > 2 ? qsTr("Down %1").arg(shownValue) : qsTr("Zero-G")
+        widestText: qsTr("Down %1").arg(100)
         value: form.config.visualParameters.gravity
         onMoved: value => form.settings.writeVisualParameter("gravity", value)
     }
@@ -35,6 +39,7 @@ Kirigami.FormLayout {
     }
 
     QQC2.ComboBox {
+        objectName: "bounceMaterial"
         Kirigami.FormData.label: qsTr("Material:")
         Accessible.name: qsTr("Material")
         readonly property var keys: ["mixed", "rubber", "glass", "metal"]

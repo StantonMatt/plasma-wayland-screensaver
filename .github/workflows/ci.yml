@@ -120,7 +120,7 @@ jobs:
         run: |
           ./scripts/ci-apt-install.sh \
             appstream build-essential cargo rustc cmake debhelper desktop-file-utils \
-            devscripts dpkg-dev extra-cmake-modules fonts-dejavu-mono fonts-noto-cjk libkf6config-dev \
+            devscripts dpkg-dev extra-cmake-modules fonts-dejavu-core fonts-dejavu-mono fonts-noto-cjk libkf6config-dev \
             libkf6idletime-dev liblayershellqtinterface-dev lintian ninja-build qt6-base-dev qt6-base-private-dev \
             qt6-declarative-dev qt6-shadertools-dev qt6-tools-dev qml6-module-qtquick \
             qml6-module-qtquick-controls qml6-module-qtquick-layouts \
