@@ -15,6 +15,7 @@
 #include <QPainter>
 #include <QDateTime>
 #include <rhi/qrhi.h>
+#include <algorithm>
 #include <cmath>
 
 class DataProofItem final : public QQuickItem
@@ -96,6 +97,27 @@ private Q_SLOTS:
         VisualMaterial material;
         QVERIFY(material.flags().testFlag(QSGMaterial::NoBatching));
         QVERIFY(material.flags().testFlag(QSGMaterial::RequiresFullMatrix));
+    }
+    void primitiveShaderInterfaces() {
+        const auto description=[](const char *name) {
+            QFile file(QStringLiteral(":/visuals/shaders/")+QString::fromLatin1(name)+QStringLiteral(".qsb"));
+            return file.open(QIODevice::ReadOnly)
+                ? QShader::fromSerialized(file.readAll()).description() : QShaderDescription{};
+        };
+        const auto inputs=description("visual-primitives.frag").inputVariables();
+        QVERIFY(!inputs.isEmpty());
+        // Both vertex stages paired with visual-primitives.frag in VisualMaterial.
+        // QSB reflection checks the interface without creating a GPU context.
+        for (const char *name : {"visual-primitives.vert", "visual-plain.vert"}) {
+            const auto outputs=description(name).outputVariables();
+            for (const auto &input : inputs) {
+                const auto output=std::find_if(outputs.cbegin(),outputs.cend(),[&](const auto &value) {
+                    return value.location==input.location && value.name==input.name && value.type==input.type;
+                });
+                QVERIFY2(output!=outputs.cend(),qPrintable(QString::fromLatin1(name)
+                    +QStringLiteral(" does not output fragment input ")+QString::fromUtf8(input.name)));
+            }
+        }
     }
     void vertexDataTextureUpdatesAndRecreates() {
         if (!gpu()) QSKIP("Real RHI run is separate from software backend checks");

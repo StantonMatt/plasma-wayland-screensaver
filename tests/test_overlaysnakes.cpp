@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "overlaymanager.h"
+#include "livingvisualitem.h"
+#include "visualdepthregistry.h"
 #include "snakesimulation.h"
 #include "snakerenderer.h"
 #include "visualrenderer.h"
@@ -13,6 +15,7 @@
 #include <QQuickView>
 #include <QQmlExpression>
 #include <QQmlContext>
+#include <QScopeGuard>
 #include <QScreen>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -21,6 +24,15 @@
 class OverlaySnakesTest final : public QObject
 {
     Q_OBJECT
+    static void useLegacyRenderer(OverlayManager& manager)
+    {
+        if (manager.m_depthItems.isEmpty() || manager.m_depthGpuFailed)
+            return;
+        auto* item = manager.m_depthItems.constBegin().value();
+        QVERIFY(item);
+        Q_EMIT item->gpuUnavailable();
+        QTRY_VERIFY(manager.m_depthGpuFailed);
+    }
 private Q_SLOTS:
     void futureBounceCountKeepsLegacyRendererWithinItsAbi()
     {
@@ -31,6 +43,7 @@ private Q_SLOTS:
         config.setReducedMotion(true);
         OverlayManager manager(&config);
         QVERIFY(manager.show());
+        useLegacyRenderer(manager);
         auto* view = manager.m_views.value(QGuiApplication::primaryScreen());
         QVERIFY(view);
         QCOMPARE(config.ballCount(), 60);
@@ -41,16 +54,48 @@ private Q_SLOTS:
         manager.hide();
         QTRY_COMPARE(manager.m_pendingViewDeletions, 0);
     }
-    void proceduralVisualUsesNativeRendererInEveryMonitorMode_data()
+    void eachActivationStartsAFreshLivingWorld()
     {
-        QTest::addColumn<QString>("mode");QTest::addColumn<QString>("visual");
-        for (const char *visual : {"aurora","constellation","starfield","bounce"})
-            for (const char *mode : {"independent", "synchronized", "seamless"})
-                QTest::newRow(qPrintable(QString::fromLatin1(visual)+QStringLiteral("-")+QString::fromLatin1(mode))) << QString::fromLatin1(mode) << QString::fromLatin1(visual);
+        QTemporaryDir dir;
+        Configuration config(dir.filePath(QStringLiteral("settingsrc")));
+        OverlayManager manager(&config);
+        QSignalSpy teardown(&manager, &OverlayManager::teardownCompleted);
+        QVERIFY(manager.show());
+        const quint64 first = manager.m_depthSeed;
+        manager.hide();
+        QTRY_COMPARE(teardown.count(), 1);
+        QVERIFY(manager.show());
+        QVERIFY(manager.m_depthSeed != first);
+        manager.hide();
+        QTRY_COMPARE(teardown.count(), 2);
     }
-    void proceduralVisualUsesNativeRendererInEveryMonitorMode()
+
+    void visualRoutingInEveryMonitorMode_data()
     {
-        QFETCH(QString, mode);QFETCH(QString, visual);
+        QTest::addColumn<QString>("mode");
+        QTest::addColumn<QString>("visual");
+        QTest::addColumn<bool>("forceCandidate");
+        for (const auto& visual : VisualDepthRegistry::keys())
+            for (const auto* mode : {"independent", "synchronized", "seamless"}) {
+#ifdef PVS_ENABLE_VISUAL_CAPTURE
+                if (!VisualDepthRegistry::available(visual))
+                    QTest::newRow(qPrintable(visual + QStringLiteral("-probe-") + QString::fromLatin1(mode)))
+                        << QString::fromLatin1(mode) << visual << true;
+#endif
+                QTest::newRow(qPrintable(visual + QStringLiteral("-") + QString::fromLatin1(mode)))
+                    << QString::fromLatin1(mode) << visual << false;
+            }
+    }
+    void visualRoutingInEveryMonitorMode()
+    {
+        QFETCH(QString, mode);
+        QFETCH(QString, visual);
+#ifdef PVS_ENABLE_VISUAL_CAPTURE
+        QFETCH(bool, forceCandidate);
+        if (forceCandidate)
+            VisualDepthRegistry::setAvailabilityForTest(visual, true);
+        const auto reset = qScopeGuard([&] { VisualDepthRegistry::setAvailabilityForTest(visual, std::nullopt); });
+#endif
         QTemporaryDir dir;
         Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
         settings.setVisualModule(visual);
@@ -58,23 +103,36 @@ private Q_SLOTS:
         settings.setReducedMotion(true);
         OverlayManager manager(&settings);
         QVERIFY(manager.show());
-        auto *screen = QGuiApplication::primaryScreen();
-        auto *view = manager.m_views.value(screen);
+        auto* screen = QGuiApplication::primaryScreen();
+        auto* view = manager.m_views.value(screen);
         QVERIFY(view);
-        auto *root = view->rootObject()->findChild<QQuickItem *>(visual+QStringLiteral("VisualRoot"));
+        auto* living = manager.m_depthItems.value(screen);
+        QCOMPARE(bool(living), settings.depthAvailable());
+        QCOMPARE(view->rootObject()->property("depthActive").toBool(), bool(living));
+        if (living) {
+            QCOMPARE(living->size(), view->rootObject()->size());
+            useLegacyRenderer(manager);
+        }
+
+        auto* root = view->rootObject()->property("legacyVisual").value<QQuickItem*>();
         QVERIFY(root);
-        auto *renderer = root->findChild<VisualRenderer *>();
-        QVERIFY(renderer);
-        QCOMPARE(root->property("nativeRenderer").value<QObject *>(), static_cast<QObject *>(renderer));
-        QCOMPARE(renderer->size(), root->size());
-        auto *clock = manager.m_presentationClocks.value(screen);
-        QVERIFY(clock);
-        clock->presentationTick(1234567890123LL);
-        QCOMPARE(renderer->m_presentationNs,1234567890123LL);
+        QCOMPARE(root->parentItem()->property("source").toUrl().fileName().toLower(), visual + QStringLiteral(".qml"));
         QCOMPARE(root->property("seed").toInt(), mode == QStringLiteral("independent") ? int(qHash(screen->name())) : 1);
-        for (auto *child : root->findChildren<QQuickItem *>()) QVERIFY(!child->inherits("QQuickCanvasItem"));
+        if (root->metaObject()->indexOfProperty("nativeRenderer") >= 0) {
+            auto* item = root->property("nativeRenderer").value<QQuickItem*>();
+            QVERIFY(item);
+            QCOMPARE(item->size(), root->size());
+            if (auto* renderer = qobject_cast<VisualRenderer*>(item)) {
+                auto* clock = manager.m_presentationClocks.value(screen);
+                QVERIFY(clock);
+                clock->presentationTick(1234567890123LL);
+                QCOMPARE(renderer->m_presentationNs, 1234567890123LL);
+                for (auto* child : root->findChildren<QQuickItem*>())
+                    QVERIFY(!child->inherits("QQuickCanvasItem"));
+            }
+        }
         manager.hide();
-        QTRY_VERIFY(manager.m_pendingViewDeletions == 0);
+        QTRY_COMPARE(manager.m_pendingViewDeletions, 0);
     }
 
     void strokesUseNativeRendererInEveryMonitorMode_data()
@@ -97,6 +155,7 @@ private Q_SLOTS:
         settings.setReducedMotion(true);
         OverlayManager manager(&settings);
         QVERIFY(manager.show());
+        useLegacyRenderer(manager);
         auto *screen = QGuiApplication::primaryScreen();
         auto *view = manager.m_views.value(screen);
         QVERIFY(view);
@@ -126,6 +185,7 @@ private Q_SLOTS:
         settings.setShowClock(false);
         auto manager = std::make_unique<OverlayManager>(&settings);
         QVERIFY(manager->show());
+        useLegacyRenderer(*manager);
         QPointer<QQuickView> view = manager->m_views.value(QGuiApplication::primaryScreen());
         QVERIFY(view);
         QPointer<VisualRenderer> renderer = view->rootObject()->findChild<VisualRenderer *>();
@@ -145,7 +205,9 @@ private Q_SLOTS:
     void matrixUsesNativeRendererInEveryMonitorMode() {
         QFETCH(QString,mode);QTemporaryDir dir;Configuration settings(dir.filePath(QStringLiteral("settingsrc")));
         settings.setVisualModule(QStringLiteral("matrix"));settings.setMonitorBehavior(mode);settings.setReducedMotion(true);
-        OverlayManager manager(&settings);QVERIFY(manager.show());auto *screen=QGuiApplication::primaryScreen();auto *view=manager.m_views.value(screen);QVERIFY(view);
+        OverlayManager manager(&settings);QVERIFY(manager.show());
+        useLegacyRenderer(manager);
+        auto *screen=QGuiApplication::primaryScreen();auto *view=manager.m_views.value(screen);QVERIFY(view);
         auto *root=view->rootObject()->findChild<QQuickItem *>(QStringLiteral("matrixVisualRoot"));QVERIFY(root);
         auto *renderer=root->findChild<MatrixRenderer *>();QVERIFY(renderer);QCOMPARE(root->property("nativeRenderer").value<QObject *>(),static_cast<QObject *>(renderer));QCOMPARE(renderer->size(),root->size());
         manager.m_presentationClocks.value(screen)->presentationTick(1234567890123LL);QCOMPARE(renderer->m_presentationNs,1234567890123LL);
@@ -318,6 +380,7 @@ private Q_SLOTS:
         settings.setClockMovement(QStringLiteral("bounce"));
         OverlayManager manager(&settings);
         QVERIFY(manager.show());
+        useLegacyRenderer(manager);
         auto *screen = QGuiApplication::primaryScreen();
         auto *view = manager.m_views.value(screen);
         auto *root = view->rootObject();
@@ -382,6 +445,7 @@ private Q_SLOTS:
         settings.setShowClock(false);
         OverlayManager manager(&settings);
         QVERIFY(manager.show());
+        useLegacyRenderer(manager);
         auto *screen = QGuiApplication::primaryScreen();
         auto *first = manager.m_views.value(screen);
         QVERIFY(manager.m_sharedAnimationActive);

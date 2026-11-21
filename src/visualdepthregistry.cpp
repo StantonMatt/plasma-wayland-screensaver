@@ -4,39 +4,8 @@
 #include <QMap>
 #include <QStringList>
 #include <cmath>
-void registerDepthAuroraAdapter();
-void registerDepthConstellationAdapter();
-void registerDepthStarfieldAdapter();
-void registerDepthRibbonsAdapter();
-void registerDepthKaleidoscopeAdapter();
-void registerDepthMatrixAdapter();
-void registerDepthBounceAdapter();
-void registerDepthOrbsAdapter();
-void registerDepthFirefliesAdapter();
-static void initializeDepthResources()
-{
-    Q_INIT_RESOURCE(depth_aurora_settings);
-    Q_INIT_RESOURCE(depth_constellation_settings);
-    Q_INIT_RESOURCE(depth_starfield_settings);
-    Q_INIT_RESOURCE(depth_ribbons_settings);
-    Q_INIT_RESOURCE(depth_kaleidoscope_settings);
-    Q_INIT_RESOURCE(depth_matrix_settings);
-    Q_INIT_RESOURCE(depth_bounce_settings);
-    Q_INIT_RESOURCE(depth_orbs_settings);
-    Q_INIT_RESOURCE(depth_fireflies_settings);
-}
-static void initializeDepthAdapters()
-{
-    registerDepthAuroraAdapter();
-    registerDepthConstellationAdapter();
-    registerDepthStarfieldAdapter();
-    registerDepthRibbonsAdapter();
-    registerDepthKaleidoscopeAdapter();
-    registerDepthMatrixAdapter();
-    registerDepthBounceAdapter();
-    registerDepthOrbsAdapter();
-    registerDepthFirefliesAdapter();
-}
+void initializeDepthResources();
+void initializeDepthAdapters();
 namespace
 {
 struct Registry
@@ -46,14 +15,14 @@ struct Registry
     Registry()
     {
         initializeDepthResources();
-        // ABI identities, not gallery ordering. Parameter declarations remain local Rust tables.
-        const QStringList names = { QStringLiteral("aurora"), QStringLiteral("constellation"),
-            QStringLiteral("starfield"), QStringLiteral("ribbons"), QStringLiteral("kaleidoscope"),
-            QStringLiteral("matrix"), QStringLiteral("bounce"), QStringLiteral("orbs"), QStringLiteral("fireflies") };
-        for (qsizetype i = 0; i < names.size(); ++i)
-        {
-            const auto id = uint32_t(i + 1);
-            ids.insert(names[i], id);
+        for (size_t i = 0;; ++i) {
+            const uint8_t* key = nullptr;
+            size_t length = 0;
+            const auto id = visuals_depth_registry_entry(i, &key, &length);
+            if (!id)
+                break;
+            const auto name = QString::fromUtf8(reinterpret_cast<const char*>(key), qsizetype(length));
+            ids.insert(name, id);
             const vd_parameter* p = nullptr;
             size_t count = 0;
             if (visuals_depth_schema(id, &p, &count) != 0)
@@ -71,7 +40,7 @@ struct Registry
                     { QStringLiteral("minimum"), v.minimum }, { QStringLiteral("maximum"), v.maximum },
                     { QStringLiteral("default"), value }, { QStringLiteral("choices"), choices } });
             }
-            schemas.insert(names[i], entries);
+            schemas.insert(name, entries);
         }
     }
 };
@@ -84,6 +53,10 @@ const Registry& registry()
     return r;
 }
 }
+QStringList VisualDepthRegistry::keys()
+{
+    return registry().ids.keys();
+}
 uint32_t VisualDepthRegistry::id(const QString& visual)
 {
     return registry().ids.value(visual);
@@ -91,9 +64,19 @@ uint32_t VisualDepthRegistry::id(const QString& visual)
 bool VisualDepthRegistry::available(const QString& visual)
 {
 #ifdef PVS_ENABLE_VISUAL_CAPTURE
-    if(availabilityOverrides().contains(visual))return availabilityOverrides().value(visual);
+    if (availabilityOverrides().contains(visual))
+        return availabilityOverrides().value(visual);
 #endif
-    return visuals_depth_available(id(visual)) != 0;
+    const uint32_t visualId = id(visual);
+    if (visuals_depth_available(visualId))
+        return true;
+#ifdef PVS_ENABLE_VISUAL_CAPTURE
+    // A private benchmark can exercise an implemented slot before release.
+    return visualId && !qEnvironmentVariableIsEmpty("PVS_PRIVATE_HARNESS_ROOT")
+        && qEnvironmentVariable("PVS_CAPTURE_DEPTH_CANDIDATE") == visual;
+#else
+    return false;
+#endif
 }
 QVariantList VisualDepthRegistry::schema(const QString& visual)
 {

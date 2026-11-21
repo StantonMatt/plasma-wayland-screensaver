@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include <QResource>
+
+@depth_declarations@
+void initializeDepthResources()
+{
+@depth_resources@}
+
+void initializeDepthAdapters()
+{
+@depth_adapters@}

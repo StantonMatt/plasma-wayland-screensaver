@@ -21,8 +21,9 @@ import sys
 import tempfile
 import time
 
-VISUALS = ('none', 'aurora', 'bounce', 'constellation', 'fireflies',
-           'kaleidoscope', 'matrix', 'orbs', 'ribbons', 'snakes', 'starfield')
+HERE = Path(__file__).resolve().parent
+SLOT_FILES = (HERE.parent / 'src/visuals').glob('*/CMakeLists.txt')
+VISUALS = ('none', *sorted(['snakes', *(path.parent.name for path in SLOT_FILES)]))
 ANIMATION = dict(AnimationDensity='55', AnimationScale='200', AnimationSpeed='300',
                  TrailAmount='100', AnimationPalette='ocean')
 DEFAULTS = dict(ANIMATION, FrameRate='60', MonitorBehavior='seamless')
@@ -30,7 +31,6 @@ GENERAL_KEYS = set(DEFAULTS) | set(('BackgroundStyle BallCollisions BallCount Ba
     'ClockMovement ClockSpeed CoverPanels IdleMinutes ReducedMotion ShowClock SnakeAggression SnakeDeadlyWalls '
     'SnakeIntelligence SnakeLengthLimit SnakePowerUps SnakeSelfCollisions SnakeStorePowerUps SnakeWorldEvents').split())
 SIZES = [(2560, 1440), (3440, 1440), (1920, 1080)]
-HERE = Path(__file__).resolve().parent
 SCRATCH = Path.home() / '.cache/agent-scratch/plasma-wayland-screensaver/visual-bench'
 
 
@@ -776,6 +776,7 @@ Examples (run heavy finite benchmarks through ~/.local/bin/heavy):
     p.add_argument('--output-dir', type=Path, help='new, nonexisting artifact directory (default timestamped on-disk agent scratch)')
     p.add_argument('--wait-idle', type=float, default=1, metavar='MINUTES', help='real only: fresh input-idle interval (default 1; 0 arms after 1ms)')
     p.add_argument('--virtual-renderer', choices=['software', 'hardware'], default='software')
+    p.add_argument('--private-depth-session', action='store_true', help=argparse.SUPPRESS)
     p.add_argument('--graphics-api', choices=['opengl', 'vulkan'], help='force app graphics API and reject fallback')
     p.add_argument('--stall-ms', type=float, default=50, help='frame interval counted as a stall when above this (default 50ms)')
     p.add_argument('--max-cpu-regression', type=float, metavar='FRACTION', help='optional A/B gate, e.g. .10 allows 10%% more CPU')
@@ -831,7 +832,22 @@ def main(argv=None):
     write_json(root / 'job.json', job)
     print(f'Artifacts: {root}\nTarget {args.target}; {len(job["entries"])} runs, each {args.warmup:g}s warm + {args.duration:g}s measured.', flush=True)
     try:
-        run_session(job, root, args)
+        if args.private_depth_session:
+            from visual_harness.isolation import validated_environment
+            from visual_harness.layout import configure_layout, L3
+            if args.target != 'virtual':
+                p.error('--private-depth-session requires --target virtual')
+            # The public .sh entry point starts Bash, which adds these three
+            # bookkeeping variables. Pass only the validated result to children.
+            environment = validated_environment({k:v for k,v in os.environ.items()
+                if k not in ('PWD', 'SHLVL', '_')}, 'client')
+            outputs = configure_layout(environment, root, L3)
+            write_json(root/'outputs.json', outputs)
+            for entry in job['entries']:
+                candidate = dict(environment, PVS_CAPTURE_DEPTH_CANDIDATE=entry['visual'])
+                measure(job, entry, candidate, None)
+        else:
+            run_session(job, root, args)
         result = summarize(job, root, args)
         write_json(root / 'status.json', dict(status='failed-gate' if result else 'complete'))
         return result

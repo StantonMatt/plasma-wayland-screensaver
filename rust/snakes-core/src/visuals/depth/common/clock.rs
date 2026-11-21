@@ -53,16 +53,24 @@ pub struct Sample<T> {
 impl<T> History<T> {
     pub fn new(capacity: usize) -> Self {
         Self {
-            entries: VecDeque::new(),
+            entries: VecDeque::with_capacity(capacity.max(2)),
             capacity: capacity.max(2),
         }
     }
     pub fn push(&mut self, tick: u64, value: T) {
         assert!(self.entries.back().is_none_or(|(last, _)| tick > *last));
-        self.entries.push_back((tick, Arc::new(value)));
-        while self.entries.len() > self.capacity {
-            self.entries.pop_front();
-        }
+        // A retained lease owns its endpoints. Recycle only an evicted slot
+        // that has no external readers, as in the steady presentation loop.
+        let retired =
+            (self.entries.len() == self.capacity).then(|| self.entries.pop_front().unwrap().1);
+        let slot = match retired {
+            Some(mut slot) if Arc::strong_count(&slot) == 1 && Arc::weak_count(&slot) == 0 => {
+                *Arc::get_mut(&mut slot).unwrap() = value;
+                slot
+            }
+            _ => Arc::new(value),
+        };
+        self.entries.push_back((tick, slot));
     }
     pub fn sample(&self, bracket: Bracket) -> Option<Sample<T>> {
         let (first, oldest) = self.entries.front()?;

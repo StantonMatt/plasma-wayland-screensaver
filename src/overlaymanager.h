@@ -51,6 +51,8 @@ private:
     // ticks; window geometry, screen hotplug and QObject destruction are GUI
     // events. No scene-graph/render callback may access these containers.
     bool depthActive() const;
+    bool m_depthGpuFailed = false;
+    void attachLegacyRenderer(QQuickView*, PresentationClock*);
     void configureDepthWorlds();
     bool addScreen(QScreen *screen);
     void removeScreen(QScreen *screen);
@@ -70,9 +72,13 @@ private:
     QHash<QScreen*, LivingVisualItem*> m_depthItems;
     QByteArray m_depthLayoutKey;
     qint64 m_depthEpochNs = 0;
+    // New per activation so each living world starts from a fresh composition;
+    // kept while hotplug or layout changes recreate worlds within one activation.
+    quint64 m_depthSeed = 1;
 #ifdef PVS_ENABLE_VISUAL_CAPTURE
     bool m_captureFixture = false;
     bool m_captureManualTime = false;
+    bool m_captureSeedSet = false;
     quint64 m_captureSeed = 1;
 #endif
     AnimationState m_animationState;

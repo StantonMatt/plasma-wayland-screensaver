@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import QtQuick
 import "visuals"
+import "settings/Catalog.js" as Catalog
 
 Item {
     id: root
     clip: true
 
+    readonly property alias legacyVisual: visualLoader.item
     property bool depthActive: false
     required property string visualModule
     required property string backgroundStyle
@@ -63,20 +65,9 @@ Item {
     }
 
     function visualSource() {
-        if (root.depthActive) return ""
-        switch (root.visualModule) {
-        case "orbs": return "visuals/Orbs.qml"
-        case "bounce": return "visuals/Bounce.qml"
-        case "starfield": return "visuals/Starfield.qml"
-        case "matrix": return "visuals/Matrix.qml"
-        case "kaleidoscope": return "visuals/Kaleidoscope.qml"
-        case "fireflies": return "visuals/Fireflies.qml"
-        case "ribbons": return "visuals/Ribbons.qml"
-        case "constellation": return "visuals/Constellation.qml"
-        case "snakes": return "visuals/Snakes.qml"
-        case "none": return ""
-        default: return "visuals/Aurora.qml"
-        }
+        if (root.depthActive || root.visualModule === "none") return ""
+        const id = Catalog.animation(root.visualModule).id
+        return "visuals/" + id[0].toUpperCase() + id.slice(1) + ".qml"
     }
 
     function backgroundTop() {

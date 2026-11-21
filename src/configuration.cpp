@@ -14,19 +14,8 @@
 namespace {
 const QStringList &visualModules()
 {
-    static const QStringList modules = {
-        QStringLiteral("aurora"),
-        QStringLiteral("orbs"),
-        QStringLiteral("none"),
-        QStringLiteral("bounce"),
-        QStringLiteral("starfield"),
-        QStringLiteral("matrix"),
-        QStringLiteral("kaleidoscope"),
-        QStringLiteral("fireflies"),
-        QStringLiteral("ribbons"),
-        QStringLiteral("constellation"),
-        QStringLiteral("snakes"),
-    };
+    static const QStringList modules = VisualDepthRegistry::keys()
+        + QStringList{QStringLiteral("none"), QStringLiteral("snakes")};
     return modules;
 }
 const QStringList &animationKeys()

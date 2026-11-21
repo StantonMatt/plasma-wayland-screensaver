@@ -96,6 +96,8 @@ extern "C"
     {
         uint64_t ticks, history_misses, p99_ns, max_ns, snapshot_bytes;
     } vd_stats;
+    /* Zero ends the enumeration. The UTF-8 key borrows static Rust storage. */
+    uint32_t visuals_depth_registry_entry(size_t index, const uint8_t** key, size_t* length);
     int32_t visuals_depth_schema(uint32_t, const vd_parameter**, size_t*);
     uint32_t visuals_depth_available(uint32_t);
     uint32_t visuals_depth_mirrored_policy(uint32_t);
