@@ -20,22 +20,26 @@ def command(arguments, environment):
 
 
 def configure_l3(environment, directory):
+    return configure_layout(environment, directory, L3)
+
+
+def configure_layout(environment, directory, roles):
     private_environment(environment)
     def state():
         return json.loads(command(['kscreen-doctor', '--json'], environment))
     before = state()
     outputs = sorted(before['outputs'], key=lambda o: o['id'])
-    if len(outputs) != 3:
-        raise RuntimeError('Private KWin did not expose exactly three outputs')
-    (directory / 'layout-requested.json').write_text(json.dumps(dict(layout='l3', dpr=1, refreshHz=60, outputs=L3), indent=2))
+    if len(outputs) != len(roles):
+        raise RuntimeError('Private KWin did not expose the requested output count')
+    (directory / 'layout-requested.json').write_text(json.dumps(dict(dpr=1, refreshHz=60, outputs=roles), indent=2))
     additions = []
-    for output, role in zip(outputs, L3):
+    for output, role in zip(outputs, roles):
         if not any(m['size'] == dict(width=role['width'], height=role['height']) for m in output['modes']):
             additions.append(f"output.{output['id']}.addCustomMode.{role['width']}.{role['height']}.60000.reduced")
     if additions:
         command(['kscreen-doctor', *additions], environment)
     settings = []
-    for output, role in zip(outputs, L3):
+    for output, role in zip(outputs, roles):
         prefix = f"output.{output['id']}"
         settings += [f"{prefix}.mode.{role['width']}x{role['height']}@60",
                      f"{prefix}.position.{role['x']},{role['y']}", f'{prefix}.scale.1']
@@ -44,8 +48,8 @@ def configure_l3(environment, directory):
     while True:
         actual = state()
         observed = sorted(actual['outputs'], key=lambda o: o['id'])
-        matches = len(observed) == 3
-        for output, role in zip(observed, L3):
+        matches = len(observed) == len(roles)
+        for output, role in zip(observed, roles):
             mode = next((m for m in output['modes'] if m['id'] == output['currentModeId']), {})
             matches &= (mode.get('size') == dict(width=role['width'], height=role['height']) and
                         output['pos'] == dict(x=role['x'], y=role['y']) and output['scale'] == 1 and
@@ -56,6 +60,6 @@ def configure_l3(environment, directory):
             (directory / 'layout-observed.json').write_text(json.dumps(actual, indent=2))
             raise RuntimeError('Private output layout did not commit the exact L3 geometry/modes')
         time.sleep(.05)
-    actual['roleMapping'] = [dict(role=r['role'], connector=o['name'], id=o['id']) for o, r in zip(observed, L3)]
+    actual['roleMapping'] = [dict(role=r['role'], connector=o['name'], id=o['id']) for o, r in zip(observed, roles)]
     (directory / 'layout-observed.json').write_text(json.dumps(actual, indent=2))
     return actual

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "applicationcontroller.h"
+#include "visualdepthregistry.h"
 #include "releasesource.h"
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -561,10 +562,7 @@ private Q_SLOTS:
             QCOMPARE(window->property("currentPage").toString(), page);
         }
         // Every animation's options, through the real Configuration profiles.
-        for (const QString &module : {QStringLiteral("none"), QStringLiteral("orbs"), QStringLiteral("bounce"),
-                 QStringLiteral("starfield"), QStringLiteral("matrix"), QStringLiteral("kaleidoscope"),
-                 QStringLiteral("fireflies"), QStringLiteral("ribbons"), QStringLiteral("constellation"),
-                 QStringLiteral("snakes"), QStringLiteral("aurora")}) {
+        for (const auto& module : VisualDepthRegistry::keys() + QStringList{QStringLiteral("none"), QStringLiteral("snakes")}) {
             config->setVisualModule(module);
             QCoreApplication::processEvents();
         }

@@ -141,9 +141,22 @@ target_link_libraries(VisualDepth PUBLIC Qt6::Quick SnakesCore::snakes_core)
 if(PVS_ENABLE_VISUAL_CAPTURE)
     target_compile_definitions(VisualDepth PUBLIC PVS_ENABLE_VISUAL_CAPTURE)
 endif()
-foreach(visual aurora constellation starfield ribbons kaleidoscope matrix bounce orbs fireflies)
+# A static library needs explicit references to its adapter and Qt resource objects.
+file(GLOB depth_slots CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/visuals"
+    "${CMAKE_CURRENT_SOURCE_DIR}/visuals/*/CMakeLists.txt")
+foreach(slot IN LISTS depth_slots)
+    get_filename_component(visual "${slot}" DIRECTORY)
     add_subdirectory(visuals/${visual})
+    string(SUBSTRING "${visual}" 0 1 initial)
+    string(TOUPPER "${initial}" initial)
+    string(SUBSTRING "${visual}" 1 -1 suffix)
+    set(adapter "registerDepth${initial}${suffix}Adapter")
+    string(APPEND depth_declarations "void ${adapter}();\n")
+    string(APPEND depth_resources "    Q_INIT_RESOURCE(depth_${visual}_settings);\n")
+    string(APPEND depth_adapters "    ${adapter}();\n")
 endforeach()
+configure_file(visualdepthregistrations.cpp.in visualdepthregistrations.cpp @ONLY)
+target_sources(VisualDepth PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/visualdepthregistrations.cpp")
 # Every existing Configuration consumer uses the same startup schema registry.
 function(link_visual_depth_consumers)
     foreach(consumer plasma-visual-screensaver test-configuration test-snakerenderer

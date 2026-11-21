@@ -16,6 +16,28 @@ class ConfigurationTest final : public QObject
 {
     Q_OBJECT
 
+    static void integerProfileRows(const QStringList& excluded = {})
+    {
+        QTest::addColumn<QString>("visual");
+        QTest::addColumn<QString>("parameter");
+        QTest::addColumn<int>("initial");
+        QTest::addColumn<int>("edited");
+        for (const auto& visual : VisualDepthRegistry::keys()) {
+            if (excluded.contains(visual)) continue;
+            for (const auto& field : VisualDepthRegistry::schema(visual)) {
+                const auto entry = field.toMap();
+                if (entry.value(QStringLiteral("kind")).toInt() != 1) continue;
+                const int initial = entry.value(QStringLiteral("default")).toInt();
+                const int minimum = entry.value(QStringLiteral("minimum")).toInt();
+                const int maximum = entry.value(QStringLiteral("maximum")).toInt();
+                if (minimum == maximum) continue;
+                QTest::newRow(qPrintable(visual)) << visual << entry.value(QStringLiteral("key")).toString()
+                    << initial << (initial == minimum ? maximum : minimum);
+                break;
+            }
+        }
+    }
+
 private Q_SLOTS:
     void defaultsAndValidation()
     {
@@ -30,9 +52,9 @@ private Q_SLOTS:
         QCOMPARE(config.animationScale(), 100);
         QCOMPARE(config.animationPalette(), QStringLiteral("ocean"));
         QCOMPARE(config.trailAmount(), 35);
-        QCOMPARE(config.ballCount(), 5);
+        QCOMPARE(config.ballCount(), VisualDepthRegistry::available(QStringLiteral("bounce")) ? 12 : 5);
         QCOMPARE(config.ballGravity(), 35);
-        QCOMPARE(config.ballElasticity(), 92);
+        QCOMPARE(config.ballElasticity(), VisualDepthRegistry::available(QStringLiteral("bounce")) ? 90 : 92);
         QCOMPARE(config.ballCollisions(), true);
         QCOMPARE(config.snakeIntelligence(), 75);
         QCOMPARE(config.snakeAggression(), 100);
@@ -210,14 +232,7 @@ private Q_SLOTS:
     {
         QTemporaryDir directory;
         Configuration config(directory.filePath(QStringLiteral("settingsrc")));
-        const QStringList modules = {
-            QStringLiteral("none"), QStringLiteral("aurora"),
-            QStringLiteral("orbs"), QStringLiteral("bounce"),
-            QStringLiteral("starfield"), QStringLiteral("matrix"),
-            QStringLiteral("kaleidoscope"), QStringLiteral("fireflies"),
-            QStringLiteral("ribbons"), QStringLiteral("constellation"),
-            QStringLiteral("snakes"),
-        };
+        const auto modules = VisualDepthRegistry::keys() + QStringList{QStringLiteral("none"), QStringLiteral("snakes")};
         for (const QString &module : modules) {
             config.setVisualModule(module);
             QCOMPARE(config.visualModule(), module);
@@ -372,8 +387,18 @@ private Q_SLOTS:
         QCOMPARE(config.snapshot({}, false), config.defaults());
     }
 
+    void depthMigrationAndPersistence_data()
+    {
+        // These three profiles carry the other migration fixtures in this file.
+        integerProfileRows({QStringLiteral("kaleidoscope"), QStringLiteral("matrix"), QStringLiteral("bounce")});
+    }
+
     void depthMigrationAndPersistence()
     {
+        QFETCH(QString, visual);
+        QFETCH(QString, parameter);
+        QFETCH(int, edited);
+        const bool kaleidoscopeEnabled = VisualDepthRegistry::available(QStringLiteral("kaleidoscope"));
         QTemporaryDir dir;
         const auto path = dir.filePath(QStringLiteral("settingsrc"));
         QFile file(path);
@@ -389,19 +414,19 @@ private Q_SLOTS:
         QVERIFY(file.open(QIODevice::ReadOnly));
         QCOMPARE(file.readAll(), input);
         file.close();
-        QCOMPARE(config.visualParameter(QStringLiteral("points")).toInt(), 8);
+        QCOMPARE(config.visualParameter(QStringLiteral("points")).toInt(), kaleidoscopeEnabled ? 14 : 8);
         QCOMPARE(config.animationPalette(), QStringLiteral("ember"));
         config.setVisualParameter(QStringLiteral("turning"), 75);
-        config.setVisualModule(QStringLiteral("constellation"));
-        config.setVisualParameter(QStringLiteral("gravity"), 80);
+        config.setVisualModule(visual);
+        config.setVisualParameter(parameter, edited);
         config.save();
         Configuration loaded(path);
-        QCOMPARE(loaded.visualModule(), QStringLiteral("constellation"));
-        QCOMPARE(loaded.visualParameter(QStringLiteral("gravity")).toInt(), 80);
+        QCOMPARE(loaded.visualModule(), visual);
+        QCOMPARE(loaded.visualParameter(parameter).toInt(), edited);
         QCOMPARE(loaded.ballCount(), 60);
         loaded.setVisualModule(QStringLiteral("kaleidoscope"));
         QCOMPARE(loaded.visualParameter(QStringLiteral("turning")).toInt(), 75);
-        QCOMPARE(loaded.visualParameter(QStringLiteral("points")).toInt(), 8);
+        QCOMPARE(loaded.visualParameter(QStringLiteral("points")).toInt(), kaleidoscopeEnabled ? 14 : 8);
         loaded.save();
         KConfig disk(path, KConfig::SimpleConfig);
         const auto animations = KConfigGroup(&disk, QStringLiteral("Animations"));
@@ -416,7 +441,7 @@ private Q_SLOTS:
         QVERIFY(!kaleidoscope.hasGroup(QStringLiteral("LegacyShared")));
         QVERIFY(!kaleidoscope.hasGroup(QStringLiteral("DepthShared")));
         QVERIFY(!animations.group(QStringLiteral("bounce")).hasKey("count"));
-        QVERIFY(!kaleidoscope.hasKey("points")); // disabled slots retain the raw legacy tuple for activation
+        QCOMPARE(kaleidoscope.hasKey("points"), kaleidoscopeEnabled);
     }
     void untouchedAndExplicitDefaults()
     {
@@ -434,8 +459,8 @@ private Q_SLOTS:
             const auto before = original.readAll();
             original.close();
             Configuration c(path);
-            QCOMPARE(c.ballCount(), 5);
-            QCOMPARE(c.ballElasticity(), 92);
+            QCOMPARE(c.ballCount(), VisualDepthRegistry::available(QStringLiteral("bounce")) ? 12 : 5);
+            QCOMPARE(c.ballElasticity(), VisualDepthRegistry::available(QStringLiteral("bounce")) ? 90 : 92);
             QCOMPARE(c.visualParameter(QStringLiteral("points")).toInt(), 8);
             c.reload();
             QFile same(path);
@@ -447,8 +472,9 @@ private Q_SLOTS:
             const auto k = KConfigGroup(&disk, QStringLiteral("Animations")).group(QStringLiteral("kaleidoscope"));
             QVERIFY(!k.hasGroup(QStringLiteral("DepthShared")));
             QVERIFY(!k.hasKey("DepthBehaviorVersion"));
-            QCOMPARE(k.readEntry("AnimationPalette", QString()), QStringLiteral("ocean"));
-            QCOMPARE(c.animationPalette(), QStringLiteral("ocean")); // legacy path still disabled
+            const QString palette = c.depthAvailable() ? QStringLiteral("spectrum") : QStringLiteral("ocean");
+            QCOMPARE(k.readEntry("AnimationPalette", QString()), palette);
+            QCOMPARE(c.animationPalette(), palette);
         }
     }
 #ifdef PVS_ENABLE_VISUAL_CAPTURE
@@ -471,7 +497,9 @@ private Q_SLOTS:
 #endif
 #ifdef PVS_ENABLE_VISUAL_CAPTURE
     void disabledProfileUsesCurrentLegacyTupleAtActivation() {
+        const auto reset=qScopeGuard([]{VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"),std::nullopt);});
         for(bool resetLegacy:{false,true}) {
+            VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"),false);
             QTemporaryDir dir;const auto path=dir.filePath(QStringLiteral("settingsrc"));
             Configuration legacy(path);legacy.setVisualModule(QStringLiteral("kaleidoscope"));
             legacy.setAnimationDensity(80);legacy.setAnimationSpeed(300);legacy.setAnimationScale(200);legacy.setAnimationPalette(QStringLiteral("ember"));legacy.setTrailAmount(100);legacy.save();
@@ -479,7 +507,6 @@ private Q_SLOTS:
             if(resetLegacy){legacy.restoreDefaults(QStringLiteral("appearance"));legacy.save();}
             {KConfig disk(path,KConfig::SimpleConfig);const auto profile=KConfigGroup(&disk,QStringLiteral("Animations")).group(QStringLiteral("kaleidoscope"));QVERIFY(!profile.hasKey("points"));QVERIFY(!profile.hasKey("DepthBehaviorVersion"));}
             VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"),true);
-            const auto reset=qScopeGuard([]{VisualDepthRegistry::setAvailabilityForTest(QStringLiteral("kaleidoscope"),std::nullopt);});
             Configuration active(path);QCOMPARE(active.visualParameter(QStringLiteral("points")).toInt(),resetLegacy?8:16);QCOMPARE(active.animationPalette(),resetLegacy?QStringLiteral("spectrum"):QStringLiteral("ember"));active.save();
             active.setAnimationSpeed(100);active.setAnimationDensity(50);active.setAnimationScale(100);active.setAnimationPalette(QStringLiteral("ocean"));active.setTrailAmount(35);active.save();active.reload();
             QCOMPARE(active.animationPalette(),QStringLiteral("spectrum")); // an exact old-default tuple receives the available visual defaults
@@ -499,7 +526,6 @@ private Q_SLOTS:
         QTemporaryDir dir;
         const auto path = dir.filePath(QStringLiteral("settingsrc"));
         Configuration c(path);
-        c.setVisualModule(QStringLiteral("constellation"));
         c.restoreDefaults(QStringLiteral("appearance"));
         c.save();
         KConfig disk(path, KConfig::SimpleConfig);
@@ -507,20 +533,33 @@ private Q_SLOTS:
         QVERIFY(!bounce.hasKey("LegacyGeneralBallKeys"));
         QVERIFY(!bounce.hasKey("DepthBehaviorVersion"));
     }
+    void appearanceDefaultsPreserveOtherVisuals_data()
+    {
+        // The four released ball values live in General and have their own migration tests.
+        integerProfileRows({QStringLiteral("bounce")});
+    }
+
     void appearanceDefaultsPreserveOtherVisuals()
     {
+        QFETCH(QString, visual);
+        QFETCH(QString, parameter);
+        QFETCH(int, initial);
+        QFETCH(int, edited);
         QTemporaryDir dir;
         Configuration c(dir.filePath(QStringLiteral("settingsrc")));
         c.setVisualModule(QStringLiteral("snakes"));
         c.setAnimationSpeed(300);
         c.setSnakeAggression(40);
-        c.setVisualModule(QStringLiteral("constellation"));
-        c.setVisualParameter(QStringLiteral("gravity"),true);QCOMPARE(c.visualParameter(QStringLiteral("gravity")).toInt(),40);
-        c.setVisualParameter(QStringLiteral("gravity"), 80);
+        c.setVisualModule(visual);
+        c.setVisualParameter(parameter, edited);
+        c.setVisualParameter(parameter, true);
+        QCOMPARE(c.visualParameter(parameter).toInt(), initial);
+        c.setVisualParameter(parameter, edited);
+        QCOMPARE(c.visualParameter(parameter).toInt(), edited);
         c.setAnimationDensity(80);
         c.restoreDefaults(QStringLiteral("appearance"));
-        QCOMPARE(c.visualModule(), QStringLiteral("constellation"));
-        QCOMPARE(c.visualParameter(QStringLiteral("gravity")).toInt(), 40);
+        QCOMPARE(c.visualModule(), visual);
+        QCOMPARE(c.visualParameter(parameter).toInt(), initial);
         QCOMPARE(c.animationDensity(), 50);
         c.setVisualModule(QStringLiteral("snakes"));
         QCOMPARE(c.animationSpeed(), 300);

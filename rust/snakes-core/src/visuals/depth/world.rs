@@ -85,6 +85,8 @@ pub struct Snapshot {
     pub circles: Arc<[Circle]>,
     pub texture: Option<Arc<DataTexture>>,
     pub payload: Arc<[u8]>,
+    /// Visual-owned immutable frame; typed sample writers borrow it through their lease.
+    pub typed: Option<Arc<dyn std::any::Any + Send + Sync>>,
     pub emission_estimate: f64,
 }
 #[repr(C)]

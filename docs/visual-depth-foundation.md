@@ -1,12 +1,14 @@
 # Living visual foundation
 
-All nine `Descriptor::available` switches are false. Production uses the released
-renderers and defaults. Snakes and its ABI are independent of this foundation.
+Each Rust `Descriptor::available` switch selects the living renderer and its
+defaults for that visual. A failed GPU probe restores its released renderer.
+Snakes and its ABI are independent of this foundation.
 
 A builder owns `rust/snakes-core/src/visuals/depth/<id>/`, the matching include
-header, `src/visuals/<id>/`, `src/shaders/depth/<id>/`, the local settings form and
-`tests/depth/<id>/`. Each owned CMake fragment is already included. Add sources,
-shaders and tests there; no central lists or dispatch arms need editing.
+header, `src/visuals/<id>/`, `src/shaders/depth/<id>/`, the local settings form,
+`tests/depth/<id>/`, `rust/snakes-core/tests/depth_<id>.rs` and
+`tests/depth/scenes/<id>/`. CMake discovers each owned source and test fragment.
+The [builder guide](visual-depth-adding-a-visual.md) describes the capture catalog.
 
 The local Rust descriptor owns the stable numeric visual ID, rate, availability,
 Mirrored ownership and uniform fit, parameter table and creation function. Return

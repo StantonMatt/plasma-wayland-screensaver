@@ -15,12 +15,36 @@
 #include <QQuickView>
 #include <QSGRendererInterface>
 #include <QScreen>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QProcess>
+#include <QStandardPaths>
+#include "visualdepthregistry.h"
+using namespace Qt::StringLiterals;
 class DepthCaptureTest final : public QObject
 {
     Q_OBJECT
 private Q_SLOTS:
+    void registeredSceneCatalogs()
+    {
+        QDir catalogs(QStringLiteral(DEPTH_SCENES_DIR));
+        for (const auto& visual : VisualDepthRegistry::keys()) {
+            const auto path = catalogs.filePath(visual + QStringLiteral("/round.json"));
+            if (!VisualDepthRegistry::available(visual) && !QFileInfo::exists(path))
+                continue;
+            QFile file(path);
+            QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(path));
+            const auto catalog = QJsonDocument::fromJson(file.readAll()).object();
+            QVERIFY2(catalog["eventIds"_L1].isArray(), qPrintable(visual));
+            QVERIFY2(!catalog["scenes"_L1].toObject().isEmpty(), qPrintable(visual));
+        }
+        for (const auto& visual : catalogs.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            if (visual != QStringLiteral("fixture") && QFileInfo::exists(catalogs.filePath(visual + "/round.json"_L1)))
+                QVERIFY2(VisualDepthRegistry::id(visual), qPrintable(visual));
+        }
+    }
+    void productScene();
     void fixture()
     {
         if (!qEnvironmentVariableIsSet("VISUALS_REQUIRE_GPU"))
@@ -32,7 +56,6 @@ private Q_SLOTS:
         QCOMPARE(QFileInfo(qEnvironmentVariable("XDG_RUNTIME_DIR")).absolutePath(), privateRoot.absolutePath());
         QVERIFY(qEnvironmentVariable("WAYLAND_DISPLAY").startsWith(QStringLiteral("depth-private-")));
         QVERIFY(qEnvironmentVariable("DBUS_SESSION_BUS_ADDRESS").contains(privateRoot.absolutePath()));
-        QCOMPARE(QGuiApplication::screens().size(), 3);
         QTemporaryDir configDir;
         Configuration config(configDir.filePath(QStringLiteral("settingsrc")));
         config.setVisualModule(QStringLiteral("none"));
@@ -43,6 +66,9 @@ private Q_SLOTS:
         QFile input(script);
         QVERIFY(input.open(QIODevice::ReadOnly));
         const auto request = QJsonDocument::fromJson(input.readAll()).object();
+        if (request["visual"_L1].toString() != QStringLiteral("fixture"))
+            QSKIP("The product slot drives visual scenes");
+        QCOMPARE(QGuiApplication::screens().size(), 3);
         QCOMPARE(request.value(QStringLiteral("formatVersion")).toInt(), 1);
         const auto mode = request.value(QStringLiteral("monitorMode")).toString();
         const QStringList modes
@@ -65,26 +91,9 @@ private Q_SLOTS:
         manager.m_captureFixture = true;
         manager.m_captureManualTime = true;
         manager.m_captureSeed = seed;
+        manager.m_captureSeedSet = true;
         const auto activationStart = VisualWorldCoordinator::monotonicNow();
         QVERIFY(manager.show());
-        // Expose is reached only after layer-shell configure. No world is made
-        // from the initially requested single-screen geometries.
-        QVERIFY(QTest::qWaitFor(
-            [&] { return manager.m_mappingViews.isEmpty() && manager.m_depthCoordinator->worldCount() > 0; }, 10000));
-        QCOMPARE(manager.m_depthCoordinator->worldCount(), mode == QStringLiteral("independent") ? 3 : 1);
-        for (auto* clock : manager.m_presentationClocks)
-            clock->setRunning(false);
-        for (const auto& value : request.value(QStringLiteral("events")).toArray())
-        {
-            const auto event = value.toObject();
-            bool ok = false;
-            const auto ns = event.value(QStringLiteral("timelineNs")).toString().toLongLong(&ok);
-            QVERIFY(ok && ns >= 0);
-            const auto anchor = event.value(QStringLiteral("anchor")).toArray();
-            QCOMPARE(anchor.size(), 2);
-            QVERIFY(manager.m_depthCoordinator->inject(uint32_t(event.value(QStringLiteral("id")).toInt()), ns,
-                { anchor[0].toDouble(), anchor[1].toDouble() }, event.value(QStringLiteral("strength")).toDouble(1.)));
-        }
         QVector<std::shared_ptr<std::atomic<qint64>>> firstFrameTimes;
         for (auto* item : manager.m_depthItems)
         {
@@ -103,6 +112,24 @@ private Q_SLOTS:
                     }
                 },
                 Qt::DirectConnection);
+        }
+        // Expose is reached only after layer-shell configure. No world is made
+        // from the initially requested single-screen geometries.
+        QVERIFY(QTest::qWaitFor(
+            [&] { return manager.m_mappingViews.isEmpty() && manager.m_depthCoordinator->worldCount() > 0; }, 10000));
+        QCOMPARE(manager.m_depthCoordinator->worldCount(), mode == QStringLiteral("independent") ? 3 : 1);
+        for (auto* clock : manager.m_presentationClocks)
+            clock->setRunning(false);
+        for (const auto& value : request.value(QStringLiteral("events")).toArray())
+        {
+            const auto event = value.toObject();
+            bool ok = false;
+            const auto ns = event.value(QStringLiteral("timelineNs")).toString().toLongLong(&ok);
+            QVERIFY(ok && ns >= 0);
+            const auto anchor = event.value(QStringLiteral("anchor")).toArray();
+            QCOMPARE(anchor.size(), 2);
+            QVERIFY(manager.m_depthCoordinator->inject(uint32_t(event.value(QStringLiteral("id")).toInt()), ns,
+                { anchor[0].toDouble(), anchor[1].toDouble() }, event.value(QStringLiteral("strength")).toDouble(1.)));
         }
         QJsonArray frames;
         QImage panorama(7920, 1440, QImage::Format_ARGB32_Premultiplied);
@@ -128,7 +155,7 @@ private Q_SLOTS:
                 qint64 last = 0;
                 for (const auto& time : firstFrameTimes)
                 {
-                    QVERIFY(time->load() > 0);
+                    QTRY_VERIFY_WITH_TIMEOUT(time->load() > 0, 10000);
                     last = std::max(last, time->load());
                 }
                 firstFrameNs = last - activationStart;
@@ -251,5 +278,6 @@ private Q_SLOTS:
         QTRY_COMPARE_WITH_TIMEOUT(manager.m_pendingViewDeletions, 0, 10000);
     }
 };
+#include "depth/productcapture.inc"
 QTEST_MAIN(DepthCaptureTest)
 #include "test_depthcapture.moc"

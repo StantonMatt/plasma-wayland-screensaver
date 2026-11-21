@@ -1,0 +1,6 @@
+{
+  "eventIds": [1],
+  "defaultEvents": [
+    {"id": 1, "timelineNs": "1000000000", "anchor": [2560, 600], "strength": 1}
+  ]
+}

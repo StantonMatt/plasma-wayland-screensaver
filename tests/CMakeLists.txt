@@ -299,14 +299,23 @@ add_test(NAME visual-matrix-renderer COMMAND test-matrixrenderer)
 set_tests_properties(visual-matrix-renderer PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
 add_test(NAME visual-matrix-parity-record COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/parity/matrix/record.py" --check)
 
-foreach(visual aurora constellation starfield ribbons kaleidoscope matrix bounce orbs fireflies)
-    add_subdirectory(depth/${visual})
+file(GLOB depth_test_slots CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/depth/*/CMakeLists.txt")
+foreach(slot IN LISTS depth_test_slots)
+    get_filename_component(directory "${slot}" DIRECTORY)
+    add_subdirectory("${directory}")
 endforeach()
 
 add_executable(test-depthworld test_depthworld.cpp)
 target_link_libraries(test-depthworld PRIVATE VisualDepth Qt6::Test)
 add_test(NAME depth-world COMMAND test-depthworld)
 if(PVS_ENABLE_VISUAL_CAPTURE)
+    add_test(NAME depth-capture-catalogs COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/depth/test_scene_catalogs.py")
+    add_executable(depth-luminance depth/luminance.cpp)
+    set_target_properties(depth-luminance PROPERTIES AUTOMOC OFF)
+    add_test(NAME depth-luminance-checker COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/depth/test_light_gate.py" "$<TARGET_FILE:depth-luminance>")
     add_executable(test-visual-depth-capture test_depthcapture.cpp
         ../src/overlaymanager.cpp ../src/overlaymanager.h
         ../src/animationstate.cpp ../src/animationstate.h
@@ -317,6 +326,8 @@ if(PVS_ENABLE_VISUAL_CAPTURE)
         ../src/configuration.cpp ../src/configuration.h ../src/resources.qrc)
     target_link_libraries(test-visual-depth-capture PRIVATE VisualDepth GraphicsBackend SnakeMaterial VisualRenderer
         Qt6::Quick Qt6::Test KF6::ConfigCore LayerShellQt::Interface)
+    target_compile_definitions(test-visual-depth-capture PRIVATE
+        DEPTH_SCENES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/depth/scenes")
     add_test(NAME depth-capture-contract COMMAND test-visual-depth-capture)
     set_tests_properties(depth-capture-contract PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
 endif()

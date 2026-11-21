@@ -37,6 +37,15 @@ opens the latest GitHub release instead.
 > It does not authenticate, lock input, protect running applications, or replace
 > Plasma's lock screen. Anyone who dismisses it can use the session.
 
+## Constellation 0.25.0
+
+Constellation is a living night sky. Stars are born in nurseries, drift on
+slow currents and pull together under gravity. They form star-chart figures
+that trace in, hold, and dissolve when a star dies or wanders off. Giants end
+as supernovae that leave a glowing remnant. Shooting stars, satellites, comets
+and meteor showers pass by, and now and then the sky gathers or goes still.
+In Spanning mode one sky crosses every monitor.
+
 ## Slithering Snakes 0.21.0
 
 Trapped snakes now fight their way out with what they hold. When a snake is

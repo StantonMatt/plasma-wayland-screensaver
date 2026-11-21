@@ -7,5 +7,6 @@ layout(location=3) in vec4 vertexShape;
 layout(location=0) out vec2 local;
 layout(location=1) out vec4 color;
 layout(location=2) out vec4 shape;
+layout(location=3) out float detail;
 layout(std140,binding=0) uniform buf { mat4 matrix; vec4 info; vec4 viewport; } ub;
-void main() {local=vertexLocal;color=vertexColor;shape=vertexShape;gl_Position=ub.matrix*vec4(position,0,1);}
+void main() {local=vertexLocal;color=vertexColor;shape=vertexShape;detail=0.0;gl_Position=ub.matrix*vec4(position,0,1);}
