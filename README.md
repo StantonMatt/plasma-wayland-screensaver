@@ -37,6 +37,23 @@ opens the latest GitHub release instead.
 > It does not authenticate, lock input, protect running applications, or replace
 > Plasma's lock screen. Anyone who dismisses it can use the session.
 
+## Aurora Drift 0.28.0
+
+Aurora Drift shows folded curtains over a starry northern horizon. Storms
+brighten the sky, send a wave across connected screens and fade into softly
+pulsing patches. Choose a forest, mountains or open sky, adjust solar activity
+and switch stars or rare sky events on and off. The old Aurora look has
+changed on purpose. Reduced motion holds a still sky and gently renews it
+about every ten minutes.
+
+## Ribbons 0.28.0
+
+Ribbons follows a school of silk strands through a changing current. They
+twist, braid, fray and grow as gusts and whirlpools pass through. Spanning
+carries one current across every monitor. The old Ribbons look has changed
+on purpose. Reduced motion holds a composition for ten minutes, then gently
+dissolves into a new one.
+
 ## Kaleidoscope 0.27.0
 
 Kaleidoscope looks into a chamber of moving coloured glass. Shards, beads and

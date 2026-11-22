@@ -54,6 +54,61 @@ class DepthWorldTest final : public QObject
 {
     Q_OBJECT
 private Q_SLOTS:
+    void reducedMotionWake()
+    {
+        const QVector<VisualOutput> outputs = {
+            { QStringLiteral("Virtual-0"), { 0, 0, 1920, 1080 }, 1., 60., true, true }
+        };
+        VisualEnvironment environment;
+        for (const auto& key : VisualDepthRegistry::keys()) {
+            const auto id = VisualDepthRegistry::id(key);
+            const vd_config config { .visual = id, .palette = 0, .seed = 7,
+                .speed = 1., .density = 50., .scale = 1., .trails = .35,
+                .reduced_motion = 1, .monitor_mode = 0 };
+            const std::vector<vd_output> arenas = { { 1, { 0, 0, 1920, 1080 }, 1., 60., 1, 0 } };
+            VisualWorld world(config, {}, arenas, environment.colours, {}, 1, 50'000'000);
+            QVERIFY(world.valid());
+            if (key == QStringLiteral("ribbons")) {
+                QCOMPARE(world.nextWake(0), 600'000'000'000LL);
+                QCOMPARE(world.nextWake(600'000'000'000LL), 600'083'333'333LL);
+                QCOMPARE(world.nextWake(608'000'000'000LL), 1'200'000'000'000LL);
+            } else if (key == QStringLiteral("aurora")) {
+                // Aurora's accepted still sky renews at a seeded interval.
+                QVERIFY(world.nextWake(0) >= 600'000'000'000LL);
+                QVERIFY(world.nextWake(0) <= 605'000'000'000LL);
+            } else if (key == QStringLiteral("orbs")) {
+                // Orbs already had this wake on 0.27.0; preserve its schedule.
+                QCOMPARE(world.nextWake(0), 360'000'000'000LL);
+                QCOMPARE(world.nextWake(604'000'000'000LL), 728'000'000'000LL);
+            } else {
+                QCOMPARE(world.nextWake(0), -1LL);
+                QCOMPARE(world.nextWake(604'000'000'000LL), -1LL);
+            }
+        }
+        // Backdate this private coordinator to just before its ten-minute wake.
+        // The real GUI single-shot must publish and continue the dissolve.
+        const vd_config config { .visual = VisualDepthRegistry::id(QStringLiteral("ribbons")), .palette = 0, .seed = 7,
+            .speed = 1., .density = 50., .scale = 1., .trails = .35,
+            .reduced_motion = 1, .monitor_mode = 0 };
+        VisualWorldCoordinator coordinator;
+        const auto epoch = VisualWorldCoordinator::monotonicNow() - 599'800'000'000LL;
+        QVERIFY(coordinator.configure(config, {}, outputs, VisualMonitorMode::Independent,
+            VisualMirroredPolicy::SharedCanonical, environment, epoch));
+        QVERIFY(!coordinator.sampleFor(QStringLiteral("Virtual-0")));
+        QVERIFY(QTest::qWaitFor([&] { return bool(coordinator.sampleFor(QStringLiteral("Virtual-0"))); }, 1500));
+        const auto timeline = [&] {
+            vd_sample_info info {};
+            const auto sample = coordinator.sampleFor(QStringLiteral("Virtual-0"));
+            return sample && visuals_depth_sample_info(sample.get(), &info) == 0 ? info.view.timeline_ns : -1;
+        };
+        const auto first = timeline();
+        QVERIFY(first >= 600'000'000'000LL);
+        QVERIFY(QTest::qWaitFor([&] {
+            return timeline() > first;
+        }, 1000));
+        coordinator.stop();
+        QCOMPARE(coordinator.worldCount(), 0);
+    }
     void seedsAndReleasedSlots()
     {
         const auto visuals = VisualDepthRegistry::keys();
