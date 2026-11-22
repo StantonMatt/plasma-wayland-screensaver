@@ -1,3 +1,14 @@
+plasma-visual-screensaver (0.28.0-1ppa1~resolute1) resolute; urgency=medium
+
+  * Aurora Drift shows folded curtains, stars and storms over a northern
+    horizon. The old Aurora look has changed on purpose.
+  * Ribbons follows silk strands through a changing current, with braids,
+    gusts and whirlpools. The old Ribbons look has changed on purpose.
+  * Reduced-motion Ribbons holds for ten minutes, then gently dissolves
+    into a new composition while presentation clocks remain stopped.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Sat, 21 Nov 2026 21:00:00 -0300
+
 plasma-visual-screensaver (0.27.0-1ppa1~resolute1) resolute; urgency=medium
 
   * Kaleidoscope is a chamber of moving coloured glass, beads and silver

@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import runpy
 from pathlib import Path
 import signal
 import statistics
@@ -31,7 +32,10 @@ def stop(process):
 LAYOUTS = {'l3': L3, 'single': L3[:1], 'wide': [dict(L3[1], x=0)],
            'pair': [L3[0], dict(L3[2], x=2560, y=0)],
            'hd': [dict(L3[2], x=0, y=0)], 'fullhd': [dict(L3[2], x=0, y=0)],
-           'wide-pair': [dict(L3[1], x=0), dict(L3[2], x=3440, y=0)]}
+           'wide-pair': [dict(L3[1], x=0), dict(L3[2], x=3440, y=0)],
+           'l3-bottom': [*L3[:2], dict(L3[2], y=360)],
+           'l3-180': [L3[0], L3[1], dict(L3[2], y=180)],
+           'l3-gap': [L3[0], dict(L3[1], x=2620), dict(L3[2], x=6060, y=180)]}
 
 
 def scene_catalogs(directory):
@@ -43,8 +47,8 @@ def worker(args):
     environment = validated_environment(os.environ, 'worker')
     if args.visual == 'fixture':
         return capture(args, environment, L3, args.output, None)
-    if args.scene == 'benchmark':
-        return capture(args, environment, L3, args.output, {'benchmark': True})
+    if args.scene in ('benchmark', 'soak'):
+        return capture(args, environment, L3, args.output, {args.scene: True})
     catalog = args.catalog
     scenes = catalog["scenes"]
     if args.scene == 'activation-study':
@@ -100,6 +104,8 @@ def run_scene(args, environment, target, product):
     script = target / 'request.json'
     script.write_text(json.dumps(product, indent=2))
     env = dict(environment, VISUALS_CAPTURE_DIR=str(target), PVS_VISUAL_CAPTURE_SCRIPT=str(script))
+    if product.get('video'):
+        env['QTEST_FUNCTION_TIMEOUT'] = '3600000'
     test_args = [str(args.build / 'bin/test-visual-depth-capture'), 'productScene']
     if product.get('gpuTiming'):
         test_args.extend(['-maxwarnings', '0'])
@@ -182,6 +188,81 @@ def finish_video(directory, scene):
     report.write_text(json.dumps(manifest,indent=2))
 
 
+def memory_soak(args, environment, target, compositor):
+    # The normal benchmark buffers a trace row for every submitted frame.
+    # External RSS sampling measures a production-style process for the full
+    # two hours without adding 1.3 million diagnostic records to its heap.
+    bench = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/benchmark-visuals.py'))
+    env = validated_environment(environment, 'client')
+    config = bench['config_text']('', args.visual, dict(MonitorBehavior='seamless', FrameRate='60',
+                                                       ShowClock='true', ClockMovement='bounce'))
+    (Path(env['XDG_CONFIG_HOME']) / 'plasma-visual-screensaverrc').write_text(config)
+    (target / 'measured-config.ini').write_text(config)
+    binary = args.build / 'bin/plasma-visual-screensaver'
+    binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
+    inhibitor = app = None
+    app_log = target / 'app.log'
+    samples = []
+
+    def rendering():
+        if app.poll() is not None or compositor.poll() is not None or inhibitor.poll() is not None:
+            raise RuntimeError('Private soak process exited early')
+        observed = app_log.read_text(errors='replace').lower()
+        if any(message in observed for message in ('screensaver activation failed', 'dismissing screensaver',
+               'living visual gpu probe failed', 'llvmpipe', 'softpipe', 'software rasterizer')):
+            raise RuntimeError(f'Hardware preview did not stay active. See {app_log}')
+        return observed.count('creating qrhi with backend opengl for window') == 3
+
+    try:
+        # The untraced --preview takes the normal activation path, which
+        # requires idle inhibition. Register only on the validated private bus.
+        helper = Path(__file__).with_name('depth') / 'soak-inhibitor.py'
+        with (target / 'inhibitor.log').open('w') as log:
+            inhibitor = subprocess.Popen([sys.executable, str(helper)], env=env,
+                                         stdout=log, stderr=subprocess.STDOUT)
+        subprocess.run(['gdbus', 'wait', '--session', '--timeout', '10', 'org.freedesktop.ScreenSaver'],
+                       env=env, check=True, timeout=15)
+        with app_log.open('w') as log:
+            app = subprocess.Popen([str(binary), '--preview'], env=dict(env, PVS_CAPTURE_DEPTH_CANDIDATE=args.visual),
+                                   stdout=log, stderr=subprocess.STDOUT)
+        print(f'Untraced soak product PID {app.pid}, private inhibitor PID {inhibitor.pid}', flush=True)
+        deadline = time.monotonic() + 30
+        while not rendering():
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f'Three hardware outputs did not activate. See {app_log}')
+            time.sleep(.1)
+        start = time.monotonic()
+        with (target / 'rss.csv').open('w', buffering=1) as output:
+            output.write('elapsed_seconds,rss_mib,cpu_ticks,anonymous_mib,swap_mib\n')
+            while True:
+                if not rendering():
+                    raise RuntimeError(f'Three hardware outputs are required for the soak. See {app_log}')
+                value = bench['proc_sample'](app.pid)
+                elapsed = time.monotonic() - start
+                # External pressure can swap out a retained trace or a real leak.
+                # Track anonymous pages in both states alongside resident memory.
+                status = Path(f'/proc/{app.pid}/status').read_text().splitlines()
+                kib = {row.split(':', 1)[0]: int(row.split()[1]) for row in status
+                       if row.startswith(('RssAnon:', 'VmSwap:'))}
+                anon, swap = kib['RssAnon']/1024, kib['VmSwap']/1024
+                samples.append((elapsed, value['rss_mib'], anon + swap))
+                output.write(f"{elapsed:.3f},{value['rss_mib']:.3f},{value['ticks']},{anon:.3f},{swap:.3f}\n")
+                if elapsed >= 7200:
+                    break
+                time.sleep(min(5, 7200 - elapsed))
+        def medians(column):
+            return [statistics.median(row[column] for row in samples if lo <= row[0] < lo+600)
+                    for lo in range(0, 7200, 600)]
+        (target / 'memory.json').write_text(json.dumps(dict(seconds=elapsed, productPid=app.pid,
+            binarySha256=binary_hash, tenMinuteMedianMiB=medians(1),
+            tenMinuteMedianAnonPlusSwapMiB=medians(2),
+            peakMiB=max(row[1] for row in samples), finalMiB=samples[-1][1]), indent=2)+'\n')
+        return 0
+    finally:
+        stop(app)
+        stop(inhibitor)
+
+
 def capture(args, compositor_environment, roles, target, product):
     compositor = None
     socket = SOCKET
@@ -199,6 +280,8 @@ def capture(args, compositor_environment, roles, target, product):
                 raise RuntimeError('Private virtual KWin unavailable; see compositor.log')
             time.sleep(.05)
         configure_layout(environment, target, roles)
+        if product and product.get('soak'):
+            return memory_soak(args, environment, target, compositor)
         if product and product.get('benchmark'):
             script = Path(__file__).resolve().parents[1] / 'scripts/benchmark-visuals.sh'
             for mode in ('independent','seamless'):
@@ -334,7 +417,7 @@ def main():
             selected = list(scenes) if args.scene == 'all' else args.scene.split(',')
             if args.scene == 'activation-study':
                 selected = ['legacy', 'activation']
-            if args.scene == 'benchmark':
+            if args.scene in ('benchmark', 'soak'):
                 selected = []
             for name in selected:
                 scene = scenes[name]
@@ -409,7 +492,7 @@ def main():
             raise KeyboardInterrupt
         previous = {s: signal.signal(s, interrupted) for s in (signal.SIGINT, signal.SIGTERM)}
         try:
-            code = process.wait(timeout=7200 if args.visual != 'fixture' else 420)
+            code = process.wait(timeout=7800 if args.scene == 'soak' else 7200 if args.visual != 'fixture' else 420)
             if not code:
                 manifests = sorted(args.output.glob('scenes/*/manifest.json'))
                 result = dict(visual=args.visual, scenes=[str(p.relative_to(args.output)) for p in manifests])
@@ -417,6 +500,8 @@ def main():
                     result['activation'] = 'activation.json'
                 if args.scene == 'benchmark':
                     result['benchmarks'] = [f'{mode}/summary.json' for mode in ('independent', 'seamless')]
+                if args.scene == 'soak':
+                    result['memory'] = 'memory.json'
                 sequences = [p for p in manifests if json.loads(p.read_text()).get('videoFrames', 0)]
                 if sequences:
                     report = args.output / 'luminance.json'

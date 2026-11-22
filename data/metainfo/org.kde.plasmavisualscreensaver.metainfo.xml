@@ -20,6 +20,12 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.28.0" date="2026-11-21">
+      <description>
+        <p>Aurora Drift shows folded curtains, stars and storms over a northern horizon. The old Aurora look has changed on purpose.</p>
+        <p>Ribbons follows silk strands through a changing current, with braids, gusts and whirlpools. The old Ribbons look has changed on purpose. Reduced motion holds for ten minutes, then gently dissolves into a new composition.</p>
+      </description>
+    </release>
     <release version="0.27.0" date="2026-11-21">
       <description>
         <p>Kaleidoscope is a chamber of moving coloured glass, beads and silver motes behind Mandala and Lattice mirrors. Spanning shares one chamber across every monitor.</p>

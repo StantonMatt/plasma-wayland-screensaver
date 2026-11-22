@@ -13,7 +13,7 @@ ALLOWED_KEYS = set(DIRECTORIES) | {
     'PATH', 'LANG', 'LC_CTYPE', 'XDG_DATA_DIRS', 'PVS_PRIVATE_HARNESS_ROOT',
     'DBUS_SYSTEM_BUS_ADDRESS', 'DBUS_SESSION_BUS_ADDRESS', 'DBUS_SESSION_BUS_PID',
     'QT_LOGGING_RULES', 'WAYLAND_DISPLAY', 'QT_QPA_PLATFORM', 'QSG_RHI_BACKEND',
-    'QSG_INFO', 'VISUALS_REQUIRE_GPU', 'VISUALS_CAPTURE_DIR', 'PVS_VISUAL_CAPTURE_SCRIPT',
+    'QSG_INFO', 'QTEST_FUNCTION_TIMEOUT', 'VISUALS_REQUIRE_GPU', 'VISUALS_CAPTURE_DIR', 'PVS_VISUAL_CAPTURE_SCRIPT',
 }
 
 
@@ -58,6 +58,8 @@ def validated_environment(environment, phase):
     if any(key in environment for key in ('DISPLAY', 'WAYLAND_SOCKET', 'XAUTHORITY', 'SESSION_MANAGER',
             'DBUS_STARTER_ADDRESS', 'DBUS_STARTER_BUS_TYPE', 'XDG_CONFIG_FILE', 'QT_QPA_PLATFORM_PLUGIN_PATH',
             'LD_PRELOAD', 'LD_LIBRARY_PATH')):
+        refuse()
+    if 'QTEST_FUNCTION_TIMEOUT' in environment and (phase != 'client' or environment['QTEST_FUNCTION_TIMEOUT'] != '3600000'):
         refuse()
     if phase == 'client':
         if environment.get('WAYLAND_DISPLAY') != SOCKET or not (root / 'runtime' / SOCKET).is_socket():

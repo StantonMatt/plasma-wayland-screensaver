@@ -128,6 +128,8 @@ pub struct FlowSettings {
     pub heading_seconds: f64,
     pub noise_speed: f64,
     pub tides: bool,
+    /// Optional angular limit around the horizontal tide axis.
+    pub tide_heading_limit: Option<f64>,
 }
 impl FlowSettings {
     pub fn orbs(swirl: bool, area: f64, scale: f64) -> Self {
@@ -147,6 +149,7 @@ impl FlowSettings {
             heading_seconds: 900.,
             noise_speed: 13. * scale,
             tides: false,
+            tide_heading_limit: Some(25f64.to_radians()),
         }
     }
     pub fn ribbons(turbulence: f64, area: f64) -> Self {
@@ -161,6 +164,7 @@ impl FlowSettings {
             heading_seconds: 260.,
             noise_speed: 8. * t,
             tides: true,
+            tide_heading_limit: None,
         }
     }
 }
@@ -371,12 +375,13 @@ impl FlowField {
         if s.tides {
             // Keep the lanes predominantly horizontal on either side of a
             // tide turn. Reflect the slow random walk at the two angle limits.
-            let axis = (self.heading / std::f64::consts::PI).round() * std::f64::consts::PI;
-            let spread = self.heading - axis;
-            let limit = 25f64.to_radians();
-            if spread.abs() > limit {
-                self.heading = axis + spread.clamp(-limit, limit);
-                self.turn = -spread.signum() * self.turn.abs();
+            if let Some(limit) = s.tide_heading_limit {
+                let axis = (self.heading / std::f64::consts::PI).round() * std::f64::consts::PI;
+                let spread = self.heading - axis;
+                if spread.abs() > limit {
+                    self.heading = axis + spread.clamp(-limit, limit);
+                    self.turn = -spread.signum() * self.turn.abs();
+                }
             }
             self.next_weather -= dt;
             if self.next_weather <= 0. {

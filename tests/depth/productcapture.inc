@@ -35,7 +35,7 @@ void DepthCaptureTest::productScene()
     config.setMonitorBehavior(scene["monitorMode"_L1].toString());
     config.setShowClock(scene["showClock"_L1].toBool(false));
     if (config.showClock()) config.setClockMovement(QStringLiteral("bounce"));
-    config.setFrameRate(scene["video"_L1].toObject()["fps"_L1].toInt(60));
+    config.setFrameRate(options["frameCap"_L1].toInt(scene["video"_L1].toObject()["fps"_L1].toInt(60)));
     config.setAnimationSpeed(options["speed"_L1].toInt(config.animationSpeed()));
     config.setAnimationDensity(options["density"_L1].toInt(config.animationDensity()));
     config.setAnimationScale(options["scale"_L1].toInt(config.animationScale()));
@@ -49,7 +49,8 @@ void DepthCaptureTest::productScene()
             config.setVisualParameter(key, options[key].toVariant());
     }
     OverlayManager manager(&config);
-    const bool sampleTimeline = !config.reducedMotion() || scene["sampleReducedTimeline"_L1].toBool();
+    const bool sampleTimeline = !config.reducedMotion() || scene["sampleReducedTimeline"_L1].toBool()
+        || scene["sampleReducedTime"_L1].toBool();
     manager.m_captureManualTime = !legacy && sampleTimeline;
     manager.m_captureSeed = scene["seed"_L1].toString().toULongLong();
     manager.m_captureSeedSet = scene.contains("seed"_L1);
@@ -206,6 +207,28 @@ void DepthCaptureTest::productScene()
                 return false;
         return true;
     };
+    const auto offsets = scene["presentationOffsetsNs"_L1].toObject();
+    const auto timeFor = [&](QScreen* screen, qint64 ns) {
+        for (const auto& value : outputs) {
+            const auto output = value.toObject();
+            if (output["x"_L1].toInt() == manager.m_views.value(screen)->x())
+                return ns + offsets.value(output["role"_L1].toString()).toInteger();
+        }
+        return ns;
+    };
+    // A lossless movie samples its physical outputs at movie FPS. Optionally
+    // render every intermediate presentation of one faster output and encode
+    // its most recent frame, as an asynchronous monitor would display it.
+    const auto cadence = video["interpolation"_L1].toObject();
+    const int sampleHz = cadence["hz"_L1].toInt();
+    const int pacedX = cadence["worldX"_L1].toInt();
+    if (!cadence.isEmpty()) {
+        QVERIFY(sampleHz >= fps && sampleHz <= 240 && length && !config.reducedMotion());
+        QVERIFY(std::any_of(outputs.begin(), outputs.end(), [=](const auto& o) {
+            return o.toObject()["x"_L1].toInt() == pacedX;
+        }));
+    }
+    qint64 lastPacedFrame = -1;
     QJsonArray frames;
     int index = 0;
     int fallbackBrightPixels = 0;
@@ -214,7 +237,8 @@ void DepthCaptureTest::productScene()
             if (index == 0 || !length)
                 QVERIFY(manager.m_depthCoordinator->seek(ns));
             for (auto* screen : manager.m_views.keys())
-                QVERIFY(manager.m_depthCoordinator->present(screen->name(), manager.m_depthEpochNs + ns));
+                if (!sampleHz || manager.m_views.value(screen)->x() != pacedX)
+                    QVERIFY(manager.m_depthCoordinator->present(screen->name(), manager.m_depthEpochNs + timeFor(screen, ns)));
         }
         world.fill(Qt::black);
         QPainter painter(&world);
@@ -226,6 +250,19 @@ void DepthCaptureTest::productScene()
                 // grabWindow synchronizes and renders at the already bound time.
                 QCOMPARE(view->rendererInterface()->graphicsApi(), QSGRendererInterface::OpenGL);
                 QVERIFY(!manager.m_depthGpuFailed);
+            }
+            qint64 sampledNs = timeFor(screen, ns);
+            if (sampleHz && view->x() == pacedX) {
+                QVERIFY(item);
+                const qint64 sampleIndex = qint64(index) * sampleHz / fps;
+                while (lastPacedFrame < sampleIndex) {
+                    sampledNs = times.front() + (++lastPacedFrame) * 1000000000LL / sampleHz;
+                    QVERIFY(manager.m_depthCoordinator->present(screen->name(), manager.m_depthEpochNs + sampledNs));
+                    if (lastPacedFrame != sampleIndex) {
+                        QVERIFY(!view->grabWindow().isNull());
+                        QCOMPARE(item->renderedTimelineNs(), sampledNs);
+                    }
+                }
             }
             const auto image = view->grabWindow();
             if (config.showClock()) {
@@ -246,7 +283,7 @@ void DepthCaptureTest::productScene()
                 fallbackBrightPixels += bright;
             }
             if (item && !fallback)
-                QCOMPARE(item->renderedTimelineNs(), sampleTimeline ? ns : 0);
+                QCOMPARE(item->renderedTimelineNs(), sampleTimeline ? sampledNs : 0);
             const QPoint offset = view->geometry().topLeft() - bounds.topLeft();
             painter.drawImage(offset, image);
             if (!length || index == 0) {
@@ -306,6 +343,8 @@ void DepthCaptureTest::productScene()
     manifest["worldCount"_L1] = manager.m_depthCoordinator->worldCount();
     manifest["timerStoppedAtActivation"_L1] = config.reducedMotion();
     manifest["videoFrames"_L1] = length;
+    if (sampleHz)
+        manifest["interpolatedFrames"_L1] = lastPacedFrame + 1;
     manifest["frameCap"_L1] = config.frameRate();
     if (fallback && !fallbackPixels.isEmpty())
         manifest["legacyBrightPixels"_L1] = fallbackBrightPixels;

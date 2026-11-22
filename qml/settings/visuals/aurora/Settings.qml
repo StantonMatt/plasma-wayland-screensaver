@@ -10,6 +10,11 @@ Kirigami.FormLayout {
     required property var config
     readonly property var sharedLabels: ({speed: qsTr("Speed"), density: qsTr("Curtains"), scale: qsTr("Height"), trail: qsTr("Afterglow")})
 
+    Kirigami.Separator {
+        Kirigami.FormData.isSection: true
+        Kirigami.FormData.label: qsTr("Sky")
+    }
+
     ValueSlider {
         Kirigami.FormData.label: qsTr("Activity:")
         accessibleName: qsTr("Activity")
@@ -34,7 +39,7 @@ Kirigami.FormLayout {
     }
 
     QQC2.CheckBox {
-        text: qsTr("Sky events")
+        text: qsTr("Rare sky events")
         checked: form.config.visualParameters.skyEvents === true
         onToggled: form.settings.writeVisualParameter("skyEvents", checked)
     }
