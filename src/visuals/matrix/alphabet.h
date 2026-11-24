@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "../common/glyphatlas.h"
-const GlyphAtlas& rainAlphabet();
+const QImage& rainAlphabetImage();
+// Keep font availability and fallback decisions local to Digital Rain.
+void roundRainBraille(QImage&, const QRawFont&);

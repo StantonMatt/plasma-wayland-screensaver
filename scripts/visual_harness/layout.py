@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Exact logical L3 layout; generated connector names are mapped to stable roles."""
 import json
+import math
 import subprocess
 import time
 from .isolation import validated_environment
@@ -8,6 +9,12 @@ from .isolation import validated_environment
 L3 = [dict(role='HDMI-A-5', x=0, y=0, width=2560, height=1440),
       dict(role='DP-5', x=2560, y=0, width=3440, height=1440),
       dict(role='DP-4', x=6000, y=195, width=1920, height=1080)]
+
+
+def with_refresh_rates(roles, rates):
+    if len(rates) != len(roles) or any(not math.isfinite(r) or not 1 <= r <= 360 for r in rates):
+        raise ValueError('one refresh rate in [1, 360] Hz is required per output')
+    return [dict(role, refreshHz=rate) for role, rate in zip(roles, rates)]
 
 
 def private_environment(environment):
@@ -31,17 +38,24 @@ def configure_layout(environment, directory, roles):
     outputs = sorted(before['outputs'], key=lambda o: o['id'])
     if len(outputs) != len(roles):
         raise RuntimeError('Private KWin did not expose the requested output count')
-    (directory / 'layout-requested.json').write_text(json.dumps(dict(dpr=1, refreshHz=60, outputs=roles), indent=2))
+    (directory / 'layout-requested.json').write_text(json.dumps(dict(dpr=1, outputs=roles), indent=2))
     additions = []
     for output, role in zip(outputs, roles):
-        if not any(m['size'] == dict(width=role['width'], height=role['height']) for m in output['modes']):
-            additions.append(f"output.{output['id']}.addCustomMode.{role['width']}.{role['height']}.60000.reduced")
+        hz = role.get('refreshHz', 60)
+        if not any(m['size'] == dict(width=role['width'], height=role['height']) and
+                   abs(m['refreshRate'] / (1000 if m['refreshRate'] > 1000 else 1) - hz) < .005
+                   for m in output['modes']):
+            additions.append(f"output.{output['id']}.addCustomMode.{role['width']}.{role['height']}.{round(hz * 1000)}.reduced")
     if additions:
         command(['kscreen-doctor', *additions], environment)
+        outputs = sorted(state()['outputs'], key=lambda o: o['id'])
     settings = []
     for output, role in zip(outputs, roles):
         prefix = f"output.{output['id']}"
-        settings += [f"{prefix}.mode.{role['width']}x{role['height']}@60",
+        mode = next(m for m in output['modes'] if
+                    m['size'] == dict(width=role['width'], height=role['height']) and
+                    abs(m['refreshRate'] / (1000 if m['refreshRate'] > 1000 else 1) - role.get('refreshHz', 60)) < .005)
+        settings += [f"{prefix}.mode.{mode['id']}",
                      f"{prefix}.position.{role['x']},{role['y']}", f'{prefix}.scale.1']
     command(['kscreen-doctor', *settings], environment)
     deadline = time.monotonic() + 10
@@ -53,7 +67,7 @@ def configure_layout(environment, directory, roles):
             mode = next((m for m in output['modes'] if m['id'] == output['currentModeId']), {})
             matches &= (mode.get('size') == dict(width=role['width'], height=role['height']) and
                         output['pos'] == dict(x=role['x'], y=role['y']) and output['scale'] == 1 and
-                        abs(mode.get('refreshRate', 0) / (1000 if mode.get('refreshRate', 0) > 1000 else 1) - 60) < .1)
+                        abs(mode.get('refreshRate', 0) / (1000 if mode.get('refreshRate', 0) > 1000 else 1) - role.get('refreshHz', 60)) < .005)
         if matches:
             break
         if time.monotonic() >= deadline:

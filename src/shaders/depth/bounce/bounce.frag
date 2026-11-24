@@ -7,7 +7,7 @@ layout(location=4) in vec4 coating;
 layout(location=5) in vec2 cabinetPosition;
 layout(location=0) out vec4 fragColor;
 layout(std140,binding=0) uniform buf {
-    mat4 matrix; vec4 viewport; vec4 mapping; vec4 ranges; vec4 top; vec4 bottom; vec4 cabinet;
+    mat4 matrix; vec4 viewport; vec4 mapping; vec4 ranges; vec4 top; vec4 bottom; vec4 cabinet; vec4 trailStyle;
 } ub;
 layout(binding=2) uniform sampler2D knots;
 vec4 trailKnot(float i,float component) {
@@ -56,6 +56,9 @@ vec3 trailSection(vec3 foot,vec3 hue,vec3 hot,float radius) {
     // Let the final few display levels spread into the body before the
     // coloured channels quantize to black at different distances.
     sigma=mix(.39*r,sigma,smoothstep(.012,.075,alpha));
+    // Narrow full-length trails by 18%, retaining the soft hot centre and
+    // leaving the approved short/default exposure unchanged.
+    sigma*=ub.trailStyle.x>0. ? ub.trailStyle.x : mix(1.,.82,smoothstep(.65,.90,surface.w));
     float body=.70*exp(-.5*foot.x/(sigma*sigma))*(1.-smoothstep(.78*radius,radius,sqrt(foot.x)));
     float coreSigma=max(1.3/ub.mapping.z,.105*r);
     float core=mix(.050,.105,longArc)*exp(-.5*foot.x/(coreSigma*coreSigma))*alpha*coreEnvelope;
@@ -63,7 +66,8 @@ vec3 trailSection(vec3 foot,vec3 hue,vec3 hot,float radius) {
 }
 vec3 trailLight(vec3 dye) {
     float r=surface.z;
-    float radius=(ub.ranges.w+.47)*r;
+    float widthScale=ub.trailStyle.x>0. ? ub.trailStyle.x : mix(1.,.82,smoothstep(.65,.90,surface.w));
+    float radius=(ub.ranges.w+.47)*r*widthScale;
     vec3 hue=dye/max(.05,max(dye.r,max(dye.g,dye.b)));
     vec3 hot=mix(hue,vec3(1.),.35);
     vec4 young=vec4(surface.xy,coating.w,light.x);

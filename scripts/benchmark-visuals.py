@@ -777,6 +777,7 @@ Examples (run heavy finite benchmarks through ~/.local/bin/heavy):
     p.add_argument('--wait-idle', type=float, default=1, metavar='MINUTES', help='real only: fresh input-idle interval (default 1; 0 arms after 1ms)')
     p.add_argument('--virtual-renderer', choices=['software', 'hardware'], default='software')
     p.add_argument('--private-depth-session', action='store_true', help=argparse.SUPPRESS)
+    p.add_argument('--refresh-rates', type=float, nargs='+', help='Private depth-session per-output refresh rates')
     p.add_argument('--graphics-api', choices=['opengl', 'vulkan'], help='force app graphics API and reject fallback')
     p.add_argument('--stall-ms', type=float, default=50, help='frame interval counted as a stall when above this (default 50ms)')
     p.add_argument('--max-cpu-regression', type=float, metavar='FRACTION', help='optional A/B gate, e.g. .10 allows 10%% more CPU')
@@ -788,6 +789,8 @@ Examples (run heavy finite benchmarks through ~/.local/bin/heavy):
 def main(argv=None):
     p = parser()
     args = p.parse_args(argv)
+    if args.refresh_rates and not args.private_depth_session:
+        p.error('--refresh-rates requires --private-depth-session')
     for key in ('duration', 'warmup', 'wait_idle', 'stall_ms'):
         value = getattr(args, key)
         if not math.isfinite(value) or value < 0 or (key in ('duration', 'stall_ms') and value == 0):
@@ -834,14 +837,15 @@ def main(argv=None):
     try:
         if args.private_depth_session:
             from visual_harness.isolation import validated_environment
-            from visual_harness.layout import configure_layout, L3
+            from visual_harness.layout import configure_layout, with_refresh_rates, L3
             if args.target != 'virtual':
                 p.error('--private-depth-session requires --target virtual')
             # The public .sh entry point starts Bash, which adds these three
             # bookkeeping variables. Pass only the validated result to children.
             environment = validated_environment({k:v for k,v in os.environ.items()
                 if k not in ('PWD', 'SHLVL', '_')}, 'client')
-            outputs = configure_layout(environment, root, L3)
+            roles = with_refresh_rates(L3, args.refresh_rates) if args.refresh_rates else L3
+            outputs = configure_layout(environment, root, roles)
             write_json(root/'outputs.json', outputs)
             for entry in job['entries']:
                 candidate = dict(environment, PVS_CAPTURE_DEPTH_CANDIDATE=entry['visual'])

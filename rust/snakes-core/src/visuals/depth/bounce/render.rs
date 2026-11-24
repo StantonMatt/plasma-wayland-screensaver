@@ -17,6 +17,7 @@ pub(super) struct Art {
     black: bool,
     mirrored: bool,
     trail_half_width: f64,
+    trail_width_scale: f64,
     lifetime: f64,
     halo: f64,
 }
@@ -60,6 +61,15 @@ impl Art {
                 (0.075 * short).clamp(24., 220.).min(0.28 * short)
             })
             .collect();
+        let exposure = if input.reduced_motion {
+            0.
+        } else {
+            0.9 * input.trails.powf(0.90)
+        };
+        let taper = ((exposure - 0.65) / 0.25).clamp(0., 1.);
+        let trail_width_scale = 1. - 0.18 * taper * taper * (3. - 2. * taper);
+        let crowd =
+            ((count as f64 - 12.) / 48.).clamp(0., 1.) * ((input.scale - 1.5) / 0.5).clamp(0., 1.);
         Self {
             reference_radii,
             rooms,
@@ -83,11 +93,8 @@ impl Art {
                     * ((count as f64 - 40.) / 20.).clamp(0., 1.)
                     * ((input.scale - 1.5) / 0.5).clamp(0., 1.)
                     * ((input.trails - 0.7) / 0.3).clamp(0., 1.),
-            lifetime: if input.reduced_motion {
-                0.
-            } else {
-                0.9 * input.trails.powf(0.90)
-            },
+            trail_width_scale,
+            lifetime: exposure * (1. - 0.64 * crowd),
             halo: match input.palette {
                 5 => 0.7,
                 1 => 1.3,
@@ -258,8 +265,10 @@ pub struct BatchInfo {
     pub trail_half_width: f32,
     pub top: [f32; 4],
     pub bottom: [f32; 4],
+    pub trail_width_scale: f32,
     pub rings: [RingView; 61],
 }
+const _: () = assert!(std::mem::offset_of!(BatchInfo, rings) == 56);
 const HALO: f32 = 1.;
 const POOL: f32 = 2.;
 const SHADOW: f32 = 3.;
@@ -362,6 +371,7 @@ fn draw(
     info.bottom = art.bottom;
     info.trails = 0;
     info.trail_half_width = art.trail_half_width as f32;
+    info.trail_width_scale = art.trail_width_scale as f32;
     for r in &mut info.rings {
         r.serial = 0;
         r.knots = std::ptr::null();
@@ -653,6 +663,7 @@ pub(super) fn test_records(w: &BounceWorld, rect: Rect) -> (Vec<Record>, usize, 
         trail_half_width: 0.,
         top: [0.; 4],
         bottom: [0.; 4],
+        trail_width_scale: 0.,
         rings: std::array::from_fn(|_| RingView {
             serial: 0,
             knots: std::ptr::null(),
@@ -728,8 +739,34 @@ pub(super) fn test_records(w: &BounceWorld, rect: Rect) -> (Vec<Record>, usize, 
             young_time = f64::from(old.time);
             struck = old.light < 0.;
         }
-        let padding = 2. * (w.art.trail_half_width + 0.47) * b.r;
+        // Match the production vertex/fragment support, including P-B1's
+        // narrower full-length body. Keeping the old support would spend
+        // fragments on a region whose Gaussian has already faded away.
+        let width_scale = w.art.trail_width_scale;
+        let padding = 2. * (w.art.trail_half_width + 0.47) * b.r * width_scale;
         area += (hi.x - lo.x + padding) * (hi.y - lo.y + padding);
     }
     (rec, info.sphere_start as usize, area / rect.area())
+}
+
+#[cfg(test)]
+#[test]
+fn dense_exposure_keeps_the_soft_body_width() {
+    let mut config = super::tests::input(&[(0., 0., 3440., 1440.)], 12, 35);
+    config.speed = 3.;
+    config.scale = 2.;
+    config.trails = 1.;
+    let sparse = BounceWorld::new(config.clone());
+    config
+        .parameters
+        .iter_mut()
+        .find(|p| p.id == 1)
+        .unwrap()
+        .payload = 60;
+    let dense = BounceWorld::new(config);
+    assert!((sparse.art.lifetime - 0.9).abs() < 1e-12);
+    assert!((dense.art.lifetime - 0.324).abs() < 1e-12);
+    assert_eq!(sparse.art.trail_width_scale, dense.art.trail_width_scale);
+    assert!((dense.art.trail_width_scale - 0.82).abs() < 1e-12);
+    assert_eq!(std::mem::offset_of!(BatchInfo, rings), 56);
 }

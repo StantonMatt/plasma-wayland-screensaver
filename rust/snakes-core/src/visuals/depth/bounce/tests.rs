@@ -1,6 +1,6 @@
 use super::*;
 use common::layout::{Layout, OutputRect, Rect};
-fn input(boxes: &[(f64, f64, f64, f64)], count: i32, gravity: i32) -> WorldInput {
+pub(super) fn input(boxes: &[(f64, f64, f64, f64)], count: i32, gravity: i32) -> WorldInput {
     let outputs = boxes
         .iter()
         .enumerate()
@@ -35,7 +35,7 @@ fn input(boxes: &[(f64, f64, f64, f64)], count: i32, gravity: i32) -> WorldInput
         environment: Default::default(),
     }
 }
-const L3: &[(f64, f64, f64, f64)] = &[
+pub(super) const L3: &[(f64, f64, f64, f64)] = &[
     (0., 0., 2560., 1440.),
     (2560., 0., 3440., 1440.),
     (6000., 195., 1920., 1080.),
@@ -215,13 +215,15 @@ fn recording_has_time_for_the_return_to_gravity() {
         .unwrap();
     }
     for tick in 1..=9000 {
+        // Recharges now release at a low contact before a long sleep. Observe
+        // the charge reset rather than requiring a sleeping pile in the film.
         let charged: [bool; 12] = std::array::from_fn(|i| {
             let b = &w.balls[i];
-            b.sleeping && b.charge > b.period * 0.5
+            b.charge > b.period * 0.5
         });
         w.step(tick);
         for (i, b) in w.balls.iter().enumerate() {
-            if charged[i] && !b.sleeping && b.v.y < -100. {
+            if charged[i] && !b.sleeping && b.charge == 0. && b.v.y < -100. {
                 if (1800..2040).contains(&tick) {
                     cascade.push((tick, i));
                 } else if w.moment.is_none() && natural.is_none() {
@@ -237,7 +239,7 @@ fn recording_has_time_for_the_return_to_gravity() {
         if tick == 13 * 120 {
             let hero = w.balls.iter().max_by(|a, b| a.r.total_cmp(&b.r)).unwrap();
             println!(
-                "Resting hero at 13 s: center {:.3},{:.3}, radius {:.3}, charge {:.3}/{:.3}",
+                "Hero at 13 s: center {:.3},{:.3}, radius {:.3}, charge {:.3}/{:.3}",
                 hero.p.x, hero.p.y, hero.r, hero.charge, hero.period
             );
         }
@@ -277,8 +279,8 @@ fn stress_soak() {
         let mut peak_mass_speed = 0f64;
         let mut frames = std::collections::VecDeque::with_capacity(6);
         for tick in 1..=216_000 {
-            let before: [bool; 61] =
-                std::array::from_fn(|i| w.balls.get(i).is_some_and(|b| b.sleeping));
+            let before: [f64; 61] =
+                std::array::from_fn(|i| w.balls.get(i).map_or(0., |b| b.charge));
             let start = Instant::now();
             w.step(tick);
             if frames.len() == 6 {
@@ -300,8 +302,8 @@ fn stress_soak() {
                     b.r
                 );
                 peaks = peaks.max(b.v.len() / w.height);
-                hops +=
-                    usize::from(before.get(i) == Some(&true) && !b.sleeping && b.v.len() > 100.);
+                // Elastic rooms no longer need to sleep before recharging.
+                hops += usize::from(before[i] > 0. && b.charge == 0. && b.v.len() > 100.);
             }
             let energy = w.balls.iter().map(|b| b.v.len2() / b.inv_mass).sum::<f64>();
             peak_mass_speed = peak_mass_speed.max(energy / w.kinetic_limit);
@@ -348,7 +350,9 @@ fn upload_and_additive_coverage() {
     let mut prior = [0u64; 61];
     let mut peak_area = 0f64;
     let mut peak_bytes = 0;
-    for t in 1..=7200 {
+    // Preserve the original physical duration when a room uses slower pacing.
+    let ticks = (7200. * w.input.speed / w.pace).ceil() as u64;
+    for t in 1..=ticks {
         w.step(t);
         if t % 2 != 0 {
             continue;
@@ -530,39 +534,20 @@ fn heavy_drop_displaces_the_pit() {
 
 #[test]
 fn restitution_extremes_and_lifted_crimson() {
-    for elasticity in [50, 100] {
-        let mut config = input(&[L3[0]], 12, 35);
-        config.seed = common::rng::output_seed(7, 7, "Virtual-0");
-        config.parameters.push(super::super::schema::Value {
-            id: 3,
-            kind: 1,
-            payload: elasticity,
-        });
-        let mut w = BounceWorld::new(config);
-        let mut first_all = None;
-        for tick in 1..=840 {
-            w.step(tick);
-            if tick == 360 && elasticity == 50 {
-                println!(
-                    "soft at 3s: {} sleepers",
-                    w.balls.iter().filter(|b| b.sleeping).count()
-                );
-            }
-            if elasticity == 100 {
-                assert!(
-                    w.balls
-                        .iter()
-                        .filter(|b| b.mat == Material::Rubber)
-                        .all(|b| !b.sleeping)
-                );
-            } else if w.balls.iter().all(|b| b.sleeping) {
-                first_all.get_or_insert(tick);
-            }
-        }
-        if elasticity == 50 {
-            println!("soft scene all asleep at {first_all:?} ticks");
-            assert!(first_all.is_some_and(|tick| tick <= 440));
-        }
+    // At the elastic endpoint every material retains its bounce. The old
+    // assertion that the soft room all sleeps within 3.7 s conflicts with the
+    // liveliness requirement; passive slider decay is measured in longevity.
+    let mut config = input(&[L3[0]], 12, 35);
+    config.seed = common::rng::output_seed(7, 7, "Virtual-0");
+    config.parameters.push(super::super::schema::Value {
+        id: 3,
+        kind: 1,
+        payload: 100,
+    });
+    let mut w = BounceWorld::new(config);
+    for tick in 1..=840 {
+        w.step(tick);
+        assert!(w.balls.iter().all(|b| !b.sleeping));
     }
     let colour = paint::packed(crate::visuals::palette::color(2, 4), true) as u32;
     let [r, g, b] =
@@ -687,10 +672,20 @@ fn accelerated_crowds_share_the_swept_area_and_distant_balls_move_freely() {
     let max = 2.2 * w.height;
     assert!((w.balls[0].flow_limit - max).abs() < 1e-8);
     assert!(w.balls[6].flow_limit < max / 5.);
+    let b = &mut w.balls[6];
+    b.v = v(0., -1200.);
+    b.limit_motion(max, v(0., 1.));
+    assert_eq!(b.v.y, -1200.);
     w.input.speed = 1.;
     let mut ordinary = BounceWorld::new(w.input.clone());
     ordinary.update_flow_limits();
-    assert!(ordinary.balls.iter().all(|b| b.flow_limit.is_infinite()));
+    // Large rooms retain lateral separation at every Speed; removing this
+    // guard at 100 makes launches collide before gaining their target height.
+    assert!(ordinary.balls.iter().any(|b| b.flow_limit < max));
+    ordinary.input.scale = 1.;
+    let mut defaults = BounceWorld::new(ordinary.input.clone());
+    defaults.update_flow_limits();
+    assert!(defaults.balls.iter().all(|b| b.flow_limit.is_infinite()));
 }
 #[test]
 fn landing_compresses_at_the_wall_and_large_impacts_keep_their_halo() {
@@ -795,5 +790,42 @@ fn fast_small_pair_cannot_tunnel() {
     assert!(
         w.balls[0].p.x < w.balls[1].p.x,
         "solid balls crossed without exchanging momentum"
+    );
+}
+#[test]
+fn negative_layout_origin_keeps_floor_launches() {
+    // A layout whose top output sits above the primary has a negative world y
+    // origin. Mid-height launch gates must follow the layout, not y = 0.
+    let run = |dy: f64| {
+        let mut config = input(&[(0., dy, 2560., 1440.)], 12, 35);
+        // Large balls use the mid-height high-arc launch gate.
+        config.scale = 2.;
+        let mut w = BounceWorld::new(config);
+        assert!(w.balls.iter().all(|b| b.high_arc));
+        let mut launches = 0;
+        let mut was_up = vec![false; w.balls.len()];
+        let mut ys = Vec::new();
+        for tick in 1..=1800 {
+            w.step(tick);
+            for (i, b) in w.balls.iter().enumerate() {
+                let up = b.v.y < -0.5 * w.height;
+                launches += usize::from(up && !was_up[i]);
+                was_up[i] = up;
+            }
+            if tick == 240 {
+                ys = w.balls.iter().map(|b| b.p.y - dy).collect::<Vec<_>>();
+            }
+        }
+        (launches, ys)
+    };
+    let (base, base_y) = run(0.);
+    let (raised, raised_y) = run(-1440.);
+    assert!(base > 0, "the reference room must launch");
+    for (a, b) in base_y.iter().zip(&raised_y) {
+        assert!((a - b).abs() < 1., "early motion differs: {a} vs {b}");
+    }
+    assert!(
+        raised * 10 >= base * 8,
+        "raised layout launches {raised} vs {base}"
     );
 }

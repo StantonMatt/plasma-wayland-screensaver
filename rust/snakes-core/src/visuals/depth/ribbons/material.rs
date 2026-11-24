@@ -19,7 +19,7 @@ const PAIRS: [[(usize, usize); 6]; 6] = [
     [(0, 2), (4, 3), (0, 3), (4, 2), (0, 2), (4, 3)],
     [(0, 4), (1, 5), (2, 1), (3, 0), (0, 4), (1, 5)],
 ];
-fn adjust_oklab(rgb: [f32; 4], chroma: f32, light_scale: f32) -> [f32; 4] {
+pub(super) fn adjust_oklab(rgb: [f32; 4], chroma: f32, light_scale: f32) -> [f32; 4] {
     let linear = |s: f32| {
         if s <= 0.04045 {
             s / 12.92
@@ -66,7 +66,7 @@ impl Art {
                 let face = |index| {
                     let mut c = color(input.palette, index);
                     if palette == 5 && input.environment.background == 0 {
-                        c = adjust_oklab(c, 1.25, 1.);
+                        c = adjust_oklab(c, 1.75, 1.);
                     }
                     if layer == 0 {
                         let gray = 0.21 * c[0] + 0.72 * c[1] + 0.07 * c[2];
@@ -106,14 +106,40 @@ impl Art {
                     0.90,
                     0.85,
                 ][layer]
-                    * if palette == 5 { 0.8 } else { 1. };
+                    * if palette == 5 {
+                        // Lift the emitted core, retaining its chromaticity.
+                        // Peak highlights take the shader's soft knee instead
+                        // of dimming every isolated face by 20 percent.
+                        if input.environment.background == 0 {
+                            1.16
+                        } else {
+                            0.8
+                        }
+                    } else {
+                        1.
+                    };
                 let mut back = back;
                 back[3] = layer as f32;
-                let accent = if palette == 1 {
+                let mut accent = if palette == 5 && input.environment.background == 0 {
+                    // Pastel highlights retain the face's hue instead of
+                    // blending every ribbon toward the same pale pink.
+                    let mut c = front;
+                    c[3] = -1.; // owned shader's soft highlight knee
+                    c
+                } else if palette == 1 {
                     [1.; 4]
                 } else {
                     color(input.palette, 0)
                 };
+                if palette == 2 {
+                    // The existing unused alpha channel selects Ember's faint
+                    // glow treatment without changing faces or palette values.
+                    // The halo uniform must hold its emitted colour: the
+                    // head/shoulder slope limiter uses this same radiance.
+                    halo[1] = halo[0] * 0.4202;
+                    halo[2] = halo[0] * 0.3562;
+                    accent[3] = -3.;
+                }
                 Silk {
                     front,
                     back,

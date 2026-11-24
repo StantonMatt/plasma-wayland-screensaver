@@ -423,7 +423,13 @@ fn measure_prewarm() {
 #[test]
 #[ignore = "release timing on the 7920 world"]
 fn stress_tick_export() {
-    let i = input();
+    let mut i = input();
+    i.palette = 0;
+    i.parameters = vec![super::super::schema::Value {
+        id: 2,
+        kind: 1,
+        payload: 14,
+    }];
     let views = i
         .layout
         .outputs
@@ -431,9 +437,13 @@ fn stress_tick_export() {
         .map(|o| view(o.rect))
         .collect::<Vec<_>>();
     let mut w = Kaleidoscope::new(i);
+    inject_event_fixture(&mut w);
     let mut last = Arc::new(w.snapshot());
-    let mut samples = Vec::with_capacity(7200);
-    for t in 1..=7200 {
+    const TICKS: usize = 95 * 120;
+    let mut samples = Vec::with_capacity(TICKS);
+    let mut cpu_samples = Vec::with_capacity(TICKS);
+    for t in 1..=TICKS as u64 {
+        let cpu = thread_cpu_ns();
         let now = std::time::Instant::now();
         w.step(t);
         let frame = Arc::new(w.snapshot());
@@ -442,13 +452,44 @@ fn stress_tick_export() {
         }
         last = frame;
         samples.push(now.elapsed().as_nanos() as u64);
+        if let (Some(start), Some(end)) = (cpu, thread_cpu_ns()) {
+            cpu_samples.push(end - start);
+        }
     }
     samples.sort_unstable();
     println!(
         "tick + snapshot + three exports (ns) median {} p99 {} max {}",
-        samples[3600], samples[7128], samples[7199]
+        samples[TICKS / 2],
+        samples[TICKS * 99 / 100],
+        samples[TICKS - 1]
     );
-    assert!(samples[7128] <= 500_000 && samples[7199] <= 2_000_000);
+    let cpu_max = cpu_samples.into_iter().max().unwrap_or(samples[TICKS - 1]);
+    println!("max same-call thread CPU (ns) {cpu_max}");
+    assert!(samples[TICKS * 99 / 100] <= 500_000 && cpu_max <= 2_000_000);
+}
+
+// The max gate excludes descheduling, per the foundation's timing contract.
+fn thread_cpu_ns() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        #[repr(C)]
+        struct Time {
+            seconds: std::ffi::c_long,
+            nanoseconds: std::ffi::c_long,
+        }
+        unsafe extern "C" {
+            fn clock_gettime(id: std::ffi::c_int, time: *mut Time) -> std::ffi::c_int;
+        }
+        let mut time = Time {
+            seconds: 0,
+            nanoseconds: 0,
+        };
+        // Linux CLOCK_THREAD_CPUTIME_ID, with a valid writable timespec.
+        if unsafe { clock_gettime(3, &mut time) } == 0 {
+            return Some(time.seconds as u64 * 1_000_000_000 + time.nanoseconds as u64);
+        }
+    }
+    None
 }
 #[test]
 #[ignore = "two simulated hours, 864000 fixed ticks"]
@@ -801,8 +842,8 @@ fn glass_distance(w: &Kaleidoscope, p: chamber::V) -> f64 {
 }
 
 #[test]
-fn events_respect_startup_holds_and_opt_out() {
-    let mut w = Kaleidoscope::new(input());
+fn events_respect_startup_queue_visibility_and_envelopes() {
+    let mut w = Kaleidoscope::new(risky_input(7, 3.));
     w.moments.time = 59.;
     w.hand.begin(Mood::Twist, &mut w.rng);
     w.enact(SWAP);
@@ -810,12 +851,13 @@ fn events_respect_startup_holds_and_opt_out() {
     w.moments.time = 60.;
     w.hand.begin(Mood::Hold, &mut w.rng);
     w.enact(SWAP);
-    assert!(w.moments.age(SWAP) > 1e5);
-    w.hand.begin(Mood::Twist, &mut w.rng);
-    w.enact(SWAP);
-    assert_eq!(w.moments.aperture(), 1.);
-    for (time, open) in [(62.5, 0.), (64., 0.), (67., 1.)] {
-        w.moments.time = time;
+    assert!(w.swap_requested_at.is_some() || w.moments.start[2] == 60.);
+    w.moments.time = 68.;
+    w.try_begin_swap();
+    let swap_start = w.moments.start[2];
+    assert!((60.0..=68.0).contains(&swap_start));
+    for (time, open) in [(2.5, 0.), (4., 0.), (7., 1.)] {
+        w.moments.time = swap_start + time;
         assert_eq!(w.moments.aperture(), open);
     }
     w.enact(CLOUD);
@@ -831,4 +873,743 @@ fn events_respect_startup_holds_and_opt_out() {
         (w.moments.glint(), w.moments.cloud(), w.moments.dust()),
         (0., 0., 0.)
     );
+}
+
+/// Ten minutes of the real profile, sampled on each capped output's own grid.
+/// CSV keeps the raw measurements so motion changes can be compared honestly.
+#[test]
+#[ignore = "writes a ten-minute motion diagnostic when PVS_KALEIDOSCOPE_TRACE is set"]
+fn real_refresh_motion_trace() {
+    use std::{collections::VecDeque, io::Write, time::Instant};
+    let path = std::env::var("PVS_KALEIDOSCOPE_TRACE").expect("PVS_KALEIDOSCOPE_TRACE");
+    let mut csv = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+    writeln!(csv, "output,timeline_ns,ticks,tick_export_ns,fold,hand,guide_x,guide_y,piece_x,piece_y,piece_angle,glint_age,swap_age").unwrap();
+    let mut i = input();
+    i.palette = 0; // Ocean.
+    i.parameters = vec![super::super::schema::Value {
+        id: 2,
+        kind: 1,
+        payload: 14,
+    }];
+    let views: Vec<_> = i.layout.outputs.iter().map(|o| view(o.rect)).collect();
+    let mut w = Kaleidoscope::new(i);
+    let mut history = VecDeque::from([(0, Arc::new(w.snapshot()))]);
+    let rate = w.rate();
+    let mut tick = 0;
+    let mut requests = Vec::new();
+    for (id, (hz, divisor)) in [(59.95, 1.), (174.96, 3.), (239.76, 4.)]
+        .into_iter()
+        .enumerate()
+    {
+        for frame in 0..=(600. * hz / divisor) as u64 {
+            requests.push(((frame as f64 * 1e9 * divisor / hz).round() as i64, id));
+        }
+    }
+    requests.sort_unstable();
+    for (ns, id) in requests {
+        let b = rate.bracket(ns);
+        let before = tick;
+        let now = Instant::now();
+        while tick < b.upper {
+            tick += 1;
+            w.step(tick);
+            history.push_back((tick, Arc::new(w.snapshot())));
+            if history.len() > 16 {
+                history.pop_front();
+            }
+        }
+        let a = &history.iter().find(|(t, _)| *t == b.lower).unwrap().1;
+        let upper = &history.iter().find(|(t, _)| *t == b.upper).unwrap().1;
+        let (lens, poses) = sample(a, upper, views[id], b.alpha);
+        let cost = now.elapsed().as_nanos();
+        writeln!(
+            csv,
+            "{id},{ns},{},{cost},{},{},{},{},{},{},{},{},{}",
+            tick - before,
+            lens.motion[1],
+            lens.motion[0],
+            lens.guide[0],
+            lens.guide[1],
+            poses[0].0[0],
+            poses[0].0[1],
+            poses[0].0[2],
+            lens.flare[2],
+            lens.flare[3]
+        )
+        .unwrap();
+    }
+}
+
+#[test]
+fn fractional_physics_and_focus_have_constant_presented_velocity() {
+    // Isolate sampling from collisions and the deliberately easing hand. Each
+    // feature has known constant velocity, including the 15 Hz focus targets.
+    for (hz, divisor) in [(59.95, 1.), (174.96, 3.), (239.76, 4.)] {
+        let mut w = Kaleidoscope::new(input());
+        let v = view(w.input.layout.bounds);
+        let mut frames = Vec::new();
+        for tick in 0..=242 {
+            w.tick = tick;
+            w.moments.time = tick as f64 / 120.;
+            let physical = tick as f64 * 1.5;
+            w.fraction = physical.fract();
+            w.chamber.bodies[0].pos = chamber::V(physical.floor() * 0.0001, 0.);
+            w.physics_previous[0] = (chamber::V((physical.floor() - 1.) * 0.0001, 0.), 0.);
+            w.focus_previous = chamber::V((tick / 8) as f64 * 0.001, 0.);
+            w.focus = w.focus_previous + chamber::V(0.001, 0.);
+            frames.push(Arc::new(w.snapshot()));
+        }
+        let mut prior: Option<(f32, f32)> = None;
+        for frame in 0..=(2. * hz / divisor) as usize {
+            let ns = (frame as f64 * 1e9 * divisor / hz).round() as i64;
+            let b = w.rate().bracket(ns);
+            let (lens, poses) = sample(
+                &frames[b.lower as usize],
+                &frames[b.upper as usize],
+                v,
+                b.alpha,
+            );
+            if let Some((piece, focus)) = prior {
+                let dt = divisor / hz;
+                assert!(
+                    (f64::from(poses[0].0[0] - piece) - dt * 0.018).abs() < 1e-8,
+                    "physics at {hz} Hz"
+                );
+                assert!(
+                    (f64::from(lens.guide[0] - focus) - dt * 0.015).abs() < 1e-8,
+                    "focus at {hz} Hz"
+                );
+            }
+            prior = Some((poses[0].0[0], lens.guide[0]));
+        }
+    }
+}
+
+#[test]
+fn recipe_change_preserves_the_continuous_optical_timeline() {
+    let mut w = Kaleidoscope::new(input());
+    w.hand.begin(Mood::Twist, &mut w.rng);
+    for tick in 1..=240 {
+        w.step(tick);
+    }
+    let a = Arc::new(w.snapshot());
+    w.step(241);
+    w.cell = Arc::new(Cell::new(&w.chamber, 2));
+    let b = Arc::new(w.snapshot());
+    let v = view(w.input.layout.bounds);
+    let lo = sample(&a, &b, v, 0.).0;
+    let mid = sample(&a, &b, v, 0.5).0;
+    let hi = sample(&a, &b, v, 1.).0;
+    assert!(hi.motion[1] > lo.motion[1]);
+    assert!((mid.motion[1] - (lo.motion[1] + hi.motion[1]) * 0.5).abs() < 1e-8);
+    assert_ne!(hi.motion[0], lo.motion[0]);
+    assert!((mid.motion[0] - (lo.motion[0] + hi.motion[0]) * 0.5).abs() < 1e-7);
+    let light = [lo.light[0] + hi.light[0], lo.light[1] + hi.light[1]];
+    let length = light[0].hypot(light[1]);
+    for j in 0..2 {
+        assert!((mid.light[j] - light[j] / length).abs() < 1e-7);
+        assert!((mid.guide[j] - (lo.guide[j] + hi.guide[j]) * 0.5).abs() < 1e-7);
+    }
+}
+
+fn risky_input(seed: u64, speed: f64) -> WorldInput {
+    let mut i = input();
+    i.seed = seed;
+    i.speed = speed;
+    i.palette = 0;
+    i.parameters = vec![super::super::schema::Value {
+        id: 2,
+        kind: 1,
+        payload: 14,
+    }];
+    i
+}
+fn inject_event_fixture(w: &mut Kaleidoscope) {
+    for (id, second) in [
+        (DUST, 35),
+        (TWIST, 42),
+        (GLINT, 49),
+        (TWIST, 59),
+        (SWAP, 60),
+        (HOLD, 65),
+    ] {
+        w.inject(Event {
+            id,
+            at_ns: second * 1_000_000_000,
+            anchor: [4280., 720.],
+            strength: 1.,
+        })
+        .unwrap();
+    }
+}
+#[test]
+fn magnified_physics_pose_is_canonical() {
+    let mut w = Kaleidoscope::new(risky_input(7, 3.));
+    inject_event_fixture(&mut w);
+    let mut max_penetration: f64 = 0.;
+    let mut max_error: f64 = 0.;
+    let mut max_optical: f64 = 0.;
+    for tick in 1..=95 * 120 {
+        w.step(tick);
+        if tick < 42 * 120 {
+            continue;
+        }
+        let snapshot = Arc::new(w.snapshot());
+        let (_, poses) = sample(&snapshot, &snapshot, view(w.input.layout.bounds), 0.);
+        for (i, b) in w.chamber.bodies.iter().enumerate() {
+            let (before, angle) = w.physics_previous[i];
+            let p = before + (b.pos - before) * w.fraction + w.chamber.transport;
+            let a = angle + (b.angle - angle) * w.fraction;
+            let error = (f64::from(poses[i].0[0]) - p.0).hypot(f64::from(poses[i].0[1]) - p.1)
+                + (f64::from(poses[i].0[2]) - a).abs() * b.cut.reach;
+            max_error = max_error.max(error);
+        }
+        let swap = w.moments.age(SWAP);
+        if !(3.25..4.).contains(&swap) {
+            let depth = w.chamber.max_penetration();
+            if depth > max_penetration {
+                println!(
+                    "penetration peak {depth:.6} at {:.3}, mood {:?}, swap {swap:.3}",
+                    tick as f64 / 120.,
+                    w.hand.mood
+                );
+            }
+            max_penetration = max_penetration.max(depth);
+            max_optical = max_optical.max(w.chamber.max_optical_penetration());
+        }
+    }
+    println!("canonical pose max error {max_error}, same-layer penetration {max_penetration}");
+    assert!(
+        max_error < 2e-6,
+        "no presentation-only pose lag: {max_error}"
+    );
+    println!("visible optical penetration {max_optical}");
+    assert!(
+        max_optical < 0.001,
+        "rendered glass must not cross: {max_optical}"
+    );
+    assert!(
+        max_penetration < 0.01,
+        "contact-resolved glass: {max_penetration}"
+    );
+}
+#[test]
+fn magnified_physics_material_sweep_is_bounded() {
+    use std::collections::VecDeque;
+    let mut worst: f64 = 0.;
+    for seed in [7, 11, 23] {
+        for speed in [1., 3.] {
+            let mut w = Kaleidoscope::new(risky_input(seed, speed));
+            inject_event_fixture(&mut w);
+            let mut old = Vec::new();
+            let mut window = VecDeque::new();
+            let mut peak: f64 = 0.;
+            for tick in 1..=95 * 120 {
+                w.step(tick);
+                let poses: Vec<_> = w
+                    .chamber
+                    .bodies
+                    .iter()
+                    .map(|b| (b.pos, b.angle, b.cut.reach))
+                    .collect();
+                if old.len() == poses.len() && (42 * 120..=49 * 120).contains(&tick) {
+                    let rms = (poses
+                        .iter()
+                        .zip(&old)
+                        .map(|((p, a, r), (q, b, _))| {
+                            let d: chamber::V = *p - *q;
+                            (d.0.hypot(d.1) + (a - b).abs() * r).powi(2)
+                        })
+                        .sum::<f64>()
+                        / poses.len() as f64)
+                        .sqrt();
+                    window.push_back(rms);
+                    if window.len() > 12 {
+                        window.pop_front();
+                    }
+                    if window.len() == 12 {
+                        peak = peak.max(window.iter().sum::<f64>() * 10. * 2. / (1.67 * 0.65));
+                    }
+                }
+                old = poses;
+            }
+            println!(
+                "seed {seed}, speed {speed}: physical 100ms RMS surface sweep {peak:.6} eye radii/s"
+            );
+            worst = worst.max(peak);
+        }
+    }
+    assert!(
+        worst <= EVENT_SURFACE_SPEED_LIMIT * 1.15,
+        "physical surface rate: {worst}"
+    );
+}
+#[test]
+fn magnified_swap_key_follows_outward_travel_and_refill_finishes() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    w.moments.time = 60.25;
+    w.moments.start[(SWAP - 1) as usize] = 60.;
+    for (p, b) in w.swap_origins.iter_mut().zip(&w.chamber.bodies) {
+        *p = b.pos;
+    }
+    assert_eq!(
+        w.transit_key(0),
+        Some(1.),
+        "no fade before outward movement"
+    );
+    w.moments.time = 60.5;
+    w.chamber.transport = chamber::V(0.1, -0.01);
+    let k = w.transit_key(0).unwrap();
+    assert!(k > 0.05 && k < 1.);
+    for cap in [0.5, 0.65, 0.8, 1.] {
+        let speed = cap * 1.67 * 0.65 / 2. * 0.7 / 1.01_f64.sqrt();
+        assert_eq!(chamber::transfer_distance(3., speed, 0.4), 0.4);
+        assert_eq!(chamber::transfer_speed(0., speed, 0.4), 0.);
+        assert_eq!(chamber::transfer_speed(3., speed, 0.4), 0.);
+        let mut before = 0.;
+        for tick in 1..=360 {
+            let d = chamber::transfer_distance(tick as f64 / 120., speed, 0.4);
+            assert!(d >= before && d - before <= speed / 120. + 1e-9);
+            before = d;
+        }
+    }
+}
+
+#[test]
+fn magnified_refill_aim_stays_on_filled_glass() {
+    for seed in [7, 11, 23] {
+        for speed in [1., 3.] {
+            let mut w = Kaleidoscope::new(risky_input(seed, speed));
+            for (id, second) in [(TWIST, 59), (SWAP, 60)] {
+                w.inject(Event {
+                    id,
+                    at_ns: second * 1_000_000_000,
+                    anchor: [4280., 720.],
+                    strength: 1.,
+                })
+                .unwrap();
+            }
+            let mut worst: f64 = 1.;
+            let mut samples = 0;
+            let mut max_pose_error: f64 = 0.;
+            for tick in 1..=85 * 120 {
+                w.step(tick);
+                let age = w.moments.age(SWAP);
+                if (6.5..=8.5).contains(&age) && tick % 8 == 0 {
+                    let frame = Arc::new(w.snapshot());
+                    let (lens, poses) = sample(&frame, &frame, view(w.input.layout.bounds), 0.);
+                    let focus = chamber::V(f64::from(lens.guide[0]), f64::from(lens.guide[1]));
+                    worst = worst.min(w.apex_fill(focus));
+                    if age >= 7. {
+                        for (i, body) in w.chamber.bodies.iter().enumerate() {
+                            let p = poses[i].0;
+                            let q = body.pos + w.chamber.transport;
+                            let translation = (f64::from(p[0]) - q.0).hypot(f64::from(p[1]) - q.1);
+                            let rotation = ((f64::from(p[2]) - body.angle + std::f64::consts::PI)
+                                .rem_euclid(TAU)
+                                - std::f64::consts::PI)
+                                .abs()
+                                * body.cut.reach;
+                            max_pose_error = max_pose_error
+                                .max((translation + rotation) * w.input.scale / (1.67 * 0.65));
+                        }
+                    }
+                    samples += 1;
+                }
+            }
+            assert!(
+                samples >= 28,
+                "the test must observe two seconds after the actual refill"
+            );
+            println!(
+                "seed {seed}, speed {speed}: refill focus coverage after actual start+6.5..8.5 {worst}, focus {:?}, target {:?}",
+                w.focus, w.refill_target
+            );
+            println!("refill material pose error {max_pose_error} reference eye radii");
+            assert!(
+                max_pose_error <= 0.02,
+                "the presented glass has settled by refill+3s"
+            );
+            assert!(
+                worst >= 0.9,
+                "the incoming core must fill and stay filled: {worst}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_overlapping_twist_keeps_the_whole_swap_motion_budget() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    inject_event_fixture(&mut w);
+    for tick in 1..=60 * 120 + 1 {
+        w.step(tick);
+    }
+    assert!(
+        w.physical_event_until >= 70.,
+        "the ongoing twist must not shorten a swap's ten-second motion budget"
+    );
+}
+
+#[test]
+fn queued_swap_waits_for_visible_glass_and_has_a_timeout() {
+    let mut w = Kaleidoscope::new(risky_input(7, 3.));
+    for (id, second) in [(TWIST, 59), (SWAP, 60)] {
+        w.inject(Event {
+            id,
+            at_ns: second * 1_000_000_000,
+            anchor: [4280., 720.],
+            strength: 1.,
+        })
+        .unwrap();
+    }
+    let mut started = false;
+    for tick in 1..=68 * 120 {
+        w.step(tick);
+        if tick == 60 * 120 {
+            assert!(w.swap_requested_at.is_some());
+            assert!(w.moments.age(SWAP) > 1e5, "don't pour an invisible heap");
+        }
+        if w.moments.start[2] >= 60. {
+            assert!(w.apex_fill(w.focus) >= SWAP_VISIBLE_COVERAGE);
+            assert!(w.swap_queue_delay > 0. && w.swap_queue_delay < SWAP_MAX_WAIT);
+            let frame = Arc::new(w.snapshot());
+            let (lens, _) = sample(&frame, &frame, view(w.input.layout.bounds), 0.);
+            assert!((f64::from(lens.mote[3]) - w.swap_queue_delay).abs() < 1e-6);
+            started = true;
+            break;
+        }
+    }
+    assert!(started);
+    let mut empty = Kaleidoscope::new(risky_input(7, 3.));
+    empty.chamber.bodies.clear();
+    empty.moments.time = 60.;
+    empty.enact(SWAP);
+    empty.moments.time = 68. - 1. / 120.;
+    empty.try_begin_swap();
+    assert!(empty.swap_requested_at.is_some());
+    empty.moments.time = 68.;
+    empty.try_begin_swap();
+    assert_eq!(empty.moments.start[2], 68.);
+    assert_eq!(empty.swap_queue_delay, 8.);
+}
+
+#[test]
+fn scheduled_swaps_use_the_same_visibility_queue() {
+    let mut w = Kaleidoscope::new(risky_input(7, 3.));
+    w.moments.due[2] = 60.;
+    w.inject(Event {
+        id: TWIST,
+        at_ns: 59_000_000_000,
+        anchor: [4280., 720.],
+        strength: 1.,
+    })
+    .unwrap();
+    for tick in 1..=68 * 120 {
+        w.step(tick);
+    }
+    assert!(w.moments.start[2] > 60. && w.moments.start[2] <= 68.);
+    assert!(w.swap_queue_delay > 0. && w.swap_queue_delay <= 8.);
+}
+
+#[test]
+fn refill_hold_lasts_six_seconds_even_at_restless_turning() {
+    let mut rng = Pcg32::new(7, 19);
+    let mut hand = Hand::new(&mut rng, 1.);
+    hand.hold_for(6., 3., &mut rng);
+    let angle = hand.angle;
+    for _ in 0..6 * 120 - 1 {
+        hand.step(1. / 120., 3., &mut rng);
+        assert_eq!(hand.mood, Mood::Hold);
+        assert_eq!(hand.angle, angle);
+    }
+}
+
+#[test]
+fn refill_guide_paths_match_position_velocity_and_acceleration() {
+    use chamber::V;
+    let norm = |p: V| p.0.hypot(p.1);
+    let initial = (V(0.1, -0.2), V(0.03, 0.02), V(-0.01, 0.02));
+    let end = (V(-0.3, 0.4), V(-0.01, 0.03), V(0.02, -0.01));
+    let path = GuidePath::with_end(60., 2.5, initial, end);
+    for (time, expected) in [(60., initial), (62.5, end)] {
+        let actual = path.sample(time);
+        assert!(norm(actual.0 - expected.0) < 1e-12);
+        assert!(norm(actual.1 - expected.1) < 1e-12);
+        assert!(norm(actual.2 - expected.2) < 1e-12);
+    }
+    let following = GuidePath::new(62.5, 1.5, end.0, end.1, end.2, V(0., 0.));
+    let a = path.sample(62.5);
+    let b = following.sample(62.5);
+    assert!(norm(a.0 - b.0) < 1e-12 && norm(a.1 - b.1) < 1e-12 && norm(a.2 - b.2) < 1e-12);
+    let stopped = following.sample(64.);
+    assert!(norm(stopped.0) < 1e-12 && norm(stopped.1) < 1e-12 && norm(stopped.2) < 1e-12);
+}
+
+#[test]
+fn refill_guide_is_sampled_at_the_presented_time() {
+    use chamber::V;
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    let path = GuidePath::new(60., 2.5, V(0.2, 0.1), V(0., 0.), V(0., 0.), V(-0.3, 0.2));
+    w.refill_guide = Some(path);
+    w.moments.time = 61.;
+    let a = Arc::new(w.snapshot());
+    w.moments.time = 61. + 1. / 120.;
+    let b = Arc::new(w.snapshot());
+    for alpha in [0., 0.25, 0.5, 0.75, 1.] {
+        let (lens, _) = sample(&a, &b, view(w.input.layout.bounds), alpha);
+        let expected = path.sample(61. + alpha / 120.).0;
+        assert!((f64::from(lens.guide[0]) - expected.0).abs() < 1e-7);
+        assert!((f64::from(lens.guide[1]) - expected.1).abs() < 1e-7);
+    }
+}
+
+#[test]
+fn a_following_refill_guide_does_not_skip_the_next_recipe_check() {
+    use chamber::V;
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    w.refill_guide = Some(GuidePath::new(
+        59.,
+        1.,
+        w.focus,
+        V::default(),
+        V::default(),
+        w.focus,
+    ));
+    w.refill_guide_phase = RefillGuide::Following;
+    w.moments.time = 60.;
+    w.swap_requested_at = Some(52.);
+    w.try_begin_swap();
+    assert!(w.refill_guide_phase == RefillGuide::Unchecked);
+    w.guide_magnified_eye();
+    assert!(w.refill_guide_phase == RefillGuide::Unchecked);
+}
+
+#[test]
+fn sparse_incoming_recipes_aim_continuously_and_hold_the_refill() {
+    let mut exercised = 0;
+    for angle in [-2.0, -1.5, -1.0, -0.5, 0., 0.5, 1., 1.5, 2.] {
+        let mut w = Kaleidoscope::new(risky_input(23, 1.));
+        w.hand.angle = angle;
+        for _ in 0..800 {
+            w.chamber.step_limited(angle, Some(f64::INFINITY));
+        }
+        if w.apex_fill(w.ordinary_guide_offset()) >= 0.9
+            || w.apex_fill(w.filled_refill_target()) < 0.95
+        {
+            continue;
+        }
+        w.moments.start[2] = 60.;
+        w.moments.time = 63.95;
+        let before = w.focus;
+        w.guide_magnified_eye();
+        assert!(w.refill_guide_phase == RefillGuide::Braking);
+        let path = w.refill_guide.unwrap();
+        let (p, v, a) = path.sample(63.95);
+        assert!((p - before).0.hypot((p - before).1) < 1e-12);
+        assert!(v.0.hypot(v.1) < 1e-12 && a.0.hypot(a.1) < 1e-12);
+        let mut previous = path;
+        for step in 1..=125 {
+            w.moments.time = 63.95 + step as f64 * (8. / 120.);
+            w.guide_magnified_eye();
+            let next = w.refill_guide.unwrap();
+            if next.start != previous.start {
+                let old = previous.sample(next.start);
+                let new = next.sample(next.start);
+                for d in [old.0 - new.0, old.1 - new.1, old.2 - new.2] {
+                    assert!(d.0.hypot(d.1) < 1e-10, "C2 path handoff");
+                }
+            }
+            let age = w.moments.age(SWAP);
+            if (6.5..8.5).contains(&age) {
+                assert!(
+                    w.apex_fill(next.sample(w.moments.time).0) >= 0.9,
+                    "refill stays full"
+                );
+            }
+            previous = next;
+        }
+        exercised += 1;
+    }
+    assert!(
+        exercised > 0,
+        "exercise sparse but recoverable incoming glass"
+    );
+}
+
+#[test]
+fn mouth_shadow_floor_is_a_quarter_in_encoded_light() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    w.moments.time = 60.5;
+    w.moments.start[2] = 60.;
+    for (origin, body) in w.swap_origins.iter_mut().zip(&w.chamber.bodies) {
+        *origin = body.pos;
+    }
+    w.chamber.transport = chamber::V(
+        MOUTH_SHADOW_FADE_DISTANCE * (1.67 * 0.65) / w.input.scale,
+        0.,
+    );
+    let linear = w.transit_key(0).unwrap();
+    let encoded = 1.055 * linear.powf(1. / 2.4) - 0.055;
+    assert!((encoded - 0.25).abs() < 1e-12, "encoded floor: {encoded}");
+}
+
+#[test]
+fn swap_shadow_phase_uses_presented_time_and_only_magnified_mandala() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    w.moments.time = 60.;
+    let before = Arc::new(w.snapshot());
+    w.moments.start[2] = 60. + 1. / 120.;
+    w.moments.time = 60. + 1. / 120.;
+    let start = Arc::new(w.snapshot());
+    let (lens, _) = sample(&before, &start, view(w.input.layout.bounds), 0.5);
+    assert!(lens.motion[2] >= 0., "the future swap must not start early");
+    w.moments.time = 60.5;
+    let a = Arc::new(w.snapshot());
+    w.moments.time = 60.5 + 1. / 120.;
+    let b = Arc::new(w.snapshot());
+    for alpha in [0., 0.25, 0.5, 1.] {
+        let (lens, _) = sample(&a, &b, view(w.input.layout.bounds), alpha);
+        let age = 60.5 + alpha / 120. - w.moments.start[2];
+        assert!((f64::from(lens.motion[2]) + 1. + age).abs() < 1e-6);
+    }
+    let mut normal = input();
+    normal.scale = 1.;
+    normal.parameters.clear();
+    let mut w = Kaleidoscope::new(normal);
+    w.moments.time = 60.5;
+    w.moments.start[2] = 60.;
+    let frame = Arc::new(w.snapshot());
+    let (lens, _) = sample(&frame, &frame, view(w.input.layout.bounds), 0.);
+    assert!(
+        lens.motion[2] >= 0.,
+        "ordinary Mandala retains its drift value"
+    );
+}
+
+#[test]
+fn mouth_shadow_waits_for_the_actual_pour() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    w.moments.start[2] = 60.;
+    for (origin, body) in w.swap_origins.iter_mut().zip(&w.chamber.bodies) {
+        *origin = body.pos;
+    }
+    w.chamber.bodies[0].pos.0 += 0.1;
+    for age in [0., 0.1, 0.25, 0.4, 0.43999] {
+        w.moments.time = 60. + age;
+        assert_eq!(
+            w.transit_key(0),
+            Some(1.),
+            "no shadow from the hand's leading turn"
+        );
+    }
+    let origin = w.chamber.bodies[0].pos;
+    w.step(60 * 120 + 53);
+    assert!(w.swap_shadow_started);
+    assert_eq!(w.swap_origins[0].0, origin.0);
+    assert_eq!(w.swap_origins[0].1, origin.1);
+}
+
+#[test]
+fn outgoing_mouth_shadow_preserves_the_visible_pour() {
+    let mut w = Kaleidoscope::new(risky_input(7, 3.));
+    w.moments.start[2] = 60.;
+    w.moments.time = 61.;
+    for (origin, body) in w.swap_origins.iter_mut().zip(&w.chamber.bodies) {
+        *origin = body.pos;
+    }
+    let radius = (1.67 * 0.65) / w.input.scale;
+    w.chamber.transport = chamber::V(0.35 * radius, 0.);
+    assert!(
+        w.transit_key(0).unwrap() >= 0.20,
+        "the outgoing glass must remain visible through the first 0.35 eye radii"
+    );
+    w.chamber.transport = chamber::V(0.80 * radius, 0.);
+    assert!(
+        w.transit_key(0).unwrap() <= 0.08,
+        "the departing glass must still fall into the mouth shadow"
+    );
+}
+
+#[test]
+fn outgoing_physics_budget_holds_the_visible_pour() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    w.moments.start[(SWAP - 1) as usize] = 60.;
+    let units = 1.67 * 0.65 / w.input.scale;
+    for age in [0.44, 0.8, 1.5, 2.5, 3.25] {
+        w.moments.time = 60. + age;
+        let rate = w.event_chamber_speed() / units;
+        assert!(
+            rate <= 0.500001,
+            "outgoing physics rate {rate} at age {age}"
+        );
+    }
+    for age in [-1., 0., 4., 5.] {
+        w.moments.time = 60. + age;
+        assert!((w.event_chamber_speed() / units - EVENT_SURFACE_SPEED_LIMIT).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn protected_regime_review_fix_replay_hashes() {
+    let expected = [
+        5313357173972988209,
+        10908128967897937758,
+        11409611796725437913,
+        10015235541385782537,
+        13135176690608000559,
+        13135176690608000559,
+        297378341058335350,
+        11319169603408311099,
+        4425675554295095040,
+        14842021055863398255,
+        8896634023765858265,
+        8896634023765858265,
+        16219896831434078688,
+        970666556926324043,
+        17731251838158255012,
+        922966055243706939,
+        17966781708134214784,
+        8949284229085846275,
+    ];
+    let mut hashes = vec![];
+    for seed in [7, 11, 19] {
+        let mut w = Kaleidoscope::new(risky_input(seed, 3.));
+        inject_event_fixture(&mut w);
+        for tick in 1..=70 * 120 {
+            w.step(tick);
+            if [42 * 120, 49 * 120, 60 * 120, 63 * 120, 67 * 120, 70 * 120].contains(&tick) {
+                hashes.push(w.state_hash());
+            }
+        }
+    }
+    assert_eq!(hashes, expected);
+}
+
+#[test]
+fn swap_queue_and_hold_changes_are_limited_to_magnified_mandala() {
+    for (points, scale) in [(8, 2.), (14, 1.)] {
+        let mut config = risky_input(7, 3.);
+        config.parameters[0].payload = points;
+        config.scale = scale;
+        let mut w = Kaleidoscope::new(config);
+        assert!(!w.magnified_mandala());
+        w.chamber.bodies.clear();
+        w.moments.time = 60.;
+        w.hand.begin(Mood::Hold, &mut w.rng);
+        w.enact(SWAP);
+        assert!(w.moments.age(SWAP) > 1e5);
+        assert!(w.swap_requested_at.is_none());
+        w.hand.begin(Mood::Twist, &mut w.rng);
+        w.enact(SWAP);
+        assert_eq!(w.moments.start[2], 60.);
+        assert!(w.swap_requested_at.is_none());
+    }
+    let mut w = Kaleidoscope::new(risky_input(7, 3.));
+    w.chamber.bodies.clear();
+    w.moments.time = 60.;
+    w.hand.begin(Mood::Hold, &mut w.rng);
+    w.enact(SWAP);
+    assert_eq!(w.swap_requested_at, Some(60.));
+    assert!(w.moments.age(SWAP) > 1e5);
 }

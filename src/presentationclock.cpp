@@ -36,6 +36,30 @@ long double PresentationPacing::periodNanoseconds(int targetFrameRate, qreal ref
         / validRefreshRate(refreshRate);
 }
 
+void PresentationTelemetry::StallCounter::observe(
+    qint64 intervalNs, qint64 expectedPeriodNs, qint64 coordinatorNs, qint64 guiPrepNs) noexcept
+{
+    if (expectedPeriodNs <= 0 || intervalNs <= 2.5L * expectedPeriodNs) return;
+    ++m_summary.count;
+    if (intervalNs > m_summary.worstIntervalNs) {
+        m_summary.worstIntervalNs = intervalNs;
+        m_summary.expectedPeriodNs = expectedPeriodNs;
+        m_summary.coordinatorNs = coordinatorNs;
+        m_summary.guiPrepNs = guiPrepNs;
+    }
+}
+
+std::optional<PresentationTelemetry::StallSummary>
+PresentationTelemetry::StallCounter::takeSummary(qint64 nowNs) noexcept
+{
+    if (!m_summary.count || nowNs < m_lastReportNs
+        || nowNs - m_lastReportNs < 60'000'000'000LL) return std::nullopt;
+    const auto summary = m_summary;
+    m_summary = {};
+    m_lastReportNs = nowNs;
+    return summary;
+}
+
 PresentationPacing::Schedule PresentationPacing::schedule(
     qint64 nowNanoseconds, long double nextTargetNanoseconds,
     int targetFrameRate, qreal refreshRate, std::optional<qint64> phaseAnchorNanoseconds)
@@ -195,15 +219,40 @@ public:
     qint64 syncStart = 0, renderStart = 0, previousSwap = 0;
 };
 
+class PresentationStallState
+{
+public:
+    struct Prep { qint64 coordinator = 0, gui = 0; } pending, frame;
+    std::mutex mutex;
+    PresentationTelemetry::StallCounter counter {traceNow()};
+    qint64 previousSwap = 0;
+    qint64 period = 0;
+    bool active = false;
+};
+
 PresentationClock::PresentationClock(QQuickWindow *window, int targetFrameRate, QObject *parent)
     : QObject(parent)
     , m_swapTimestamp(std::make_shared<std::atomic<qint64>>(0))
     , m_window(window)
     , m_targetFrameRate(targetFrameRate)
 {
+    m_stalls = std::make_shared<PresentationStallState>();
+    const auto stalls = m_stalls;
     const auto swapTimestamp = m_swapTimestamp;
-    connect(window, &QQuickWindow::frameSwapped, this, [swapTimestamp] {
-        swapTimestamp->store(traceNow(), std::memory_order_relaxed);
+    connect(window, &QQuickWindow::beforeSynchronizing, this, [stalls] {
+        std::lock_guard lock(stalls->mutex);
+        stalls->frame = stalls->pending;
+        stalls->pending = {};
+    }, Qt::DirectConnection);
+    connect(window, &QQuickWindow::frameSwapped, this, [swapTimestamp, stalls] {
+        const qint64 now = traceNow();
+        swapTimestamp->store(now, std::memory_order_relaxed);
+        std::lock_guard lock(stalls->mutex);
+        if (!stalls->active) return;
+        if (stalls->previousSwap)
+            stalls->counter.observe(now - stalls->previousSwap, stalls->period,
+                                    stalls->frame.coordinator, stalls->frame.gui);
+        stalls->previousSwap = now;
     }, Qt::DirectConnection);
     if (!qEnvironmentVariableIsEmpty("PVS_FRAME_TRACE")) {
         m_trace = std::make_shared<PresentationTraceState>();
@@ -278,6 +327,11 @@ void PresentationClock::setTargetFrameRate(int targetFrameRate)
 {
     if (m_targetFrameRate == targetFrameRate) return;
     m_targetFrameRate = targetFrameRate;
+    {
+        std::lock_guard lock(m_stalls->mutex);
+        m_stalls->period = std::llround(PresentationPacing::periodNanoseconds(targetFrameRate, m_refreshRate));
+        m_stalls->previousSwap = 0; // A policy change is not a stalled frame.
+    }
     if (m_running) {
         const qint64 now = traceNow();
         m_nextTargetNanoseconds = now
@@ -301,6 +355,12 @@ void PresentationClock::setRunning(bool running)
         return;
     }
     m_running = running;
+    {
+        std::lock_guard lock(m_stalls->mutex);
+        m_stalls->active = running;
+        m_stalls->previousSwap = 0;
+        m_stalls->pending = m_stalls->frame = {};
+    }
     m_wakeTimer.stop();
     m_waitingForSwap = false;
     m_lastSwapNanoseconds.reset();
@@ -311,6 +371,10 @@ void PresentationClock::setRunning(bool running)
         m_lastObservedSwapNanoseconds = m_runStartNanoseconds - 1;
         m_refreshRate = PresentationPacing::validRefreshRate(
             m_window->screen() ? m_window->screen()->refreshRate() : 60.0);
+        {
+            std::lock_guard lock(m_stalls->mutex);
+            m_stalls->period = std::llround(PresentationPacing::periodNanoseconds(m_targetFrameRate, m_refreshRate));
+        }
         m_nextTargetNanoseconds = m_runStartNanoseconds;
         m_lastTickPresentationNanoseconds = m_runStartNanoseconds - std::llround(
             PresentationPacing::periodNanoseconds(m_targetFrameRate, m_refreshRate));
@@ -329,6 +393,20 @@ void PresentationClock::handleFrameSwapped()
     m_lastSwapNanoseconds = swap;
     m_waitingForSwap = false;
     m_lastSwapCallbackNanoseconds = traceNow();
+    std::optional<PresentationTelemetry::StallSummary> summary;
+    {
+        std::lock_guard lock(m_stalls->mutex);
+        summary = m_stalls->counter.takeSummary(m_lastSwapCallbackNanoseconds);
+    }
+    if (summary) {
+        // Same default category and PVS prefix as the backend/EGL diagnostics.
+        // Formatting and journal I/O occur only on this minute-limited slow path.
+        const QString output = m_window->screen() ? m_window->screen()->name() : m_window->objectName();
+        qInfo("PVS frame stalls: output=%s count=%llu worst_ms=%.3f expected_ms=%.3f coordinator_ms=%.3f gui_prep_ms=%.3f",
+              qPrintable(output), static_cast<unsigned long long>(summary->count),
+              summary->worstIntervalNs / 1e6, summary->expectedPeriodNs / 1e6,
+              summary->coordinatorNs / 1e6, summary->guiPrepNs / 1e6);
+    }
     updateRefreshRate(m_lastSwapCallbackNanoseconds);
     if (firstSwap) {
         // Bootstrap/fallback ticks have no display phase. Lock the ideal grid
@@ -393,6 +471,8 @@ void PresentationClock::tickAndRequestUpdate(qint64 presentationNanoseconds)
         / 1'000'000'000.0;
     if (deltaSeconds > 0.0) {
         m_lastTickPresentationNanoseconds = presentationNanoseconds;
+        const quint64 coordinatorBefore = PresentationTelemetry::coordinatorTotalNs;
+        const qint64 prepStart = traceNow();
         if (m_trace) {
             QObject *source = m_trace->simulationSource.data();
             const qreal before = source ? source->property("simulationTime").toDouble() : 0;
@@ -410,6 +490,12 @@ void PresentationClock::tickAndRequestUpdate(qint64 presentationNanoseconds)
             Q_EMIT presentationTick(presentationNanoseconds);
             Q_EMIT frameTick(deltaSeconds);
         }
+        const qint64 prep = traceNow() - prepStart;
+        const qint64 coordinator = qint64(PresentationTelemetry::coordinatorTotalNs - coordinatorBefore);
+        std::lock_guard lock(m_stalls->mutex);
+        m_stalls->pending.coordinator += coordinator;
+        // GUI frame-signal/render preparation, excluding the separately timed world work.
+        m_stalls->pending.gui += std::max<qint64>(0, prep - coordinator);
     }
     if (m_running) {
         if (m_trace) {
@@ -446,6 +532,11 @@ void PresentationClock::updateRefreshRate(qint64 nowNanoseconds)
         m_window->screen() ? m_window->screen()->refreshRate() : 60.0);
     if (refreshRate != m_refreshRate) {
         m_refreshRate = refreshRate;
+        {
+            std::lock_guard lock(m_stalls->mutex);
+            m_stalls->period = std::llround(PresentationPacing::periodNanoseconds(m_targetFrameRate, refreshRate));
+            m_stalls->previousSwap = 0;
+        }
         m_phaseAnchorNanoseconds = m_lastSwapNanoseconds;
         m_nextTargetNanoseconds = m_lastSwapNanoseconds
             ? *m_lastSwapNanoseconds + PresentationPacing::periodNanoseconds(m_targetFrameRate, refreshRate)

@@ -217,6 +217,7 @@ pub(super) struct Frame {
     effects: Vec<Quad>,
     overlap: [[f32; 4]; 8],
     pub time: f64,
+    corona: f32,
 }
 impl Frame {
     /// Project the illuminated portions of the sheets into column bands. Counts
@@ -348,6 +349,7 @@ impl Frame {
             effects: Vec::with_capacity(16),
             overlap: [[0.; 4]; 8],
             time: 0.,
+            corona: 0.,
         }
     }
     pub fn update(&mut self, arcs: &[Curtain], weather: &Weather, pace: f32) {
@@ -365,6 +367,7 @@ impl Frame {
                 c.power * smooth(age / 11.) * smooth((c.life - age) / 15.),
             )
         });
+        self.corona = crown.map_or(0., |(_, _, strength)| strength);
         let storm = weather.storm.map(|s| {
             let age = ((weather.time - s.start) as f32) / pace;
             (
@@ -464,7 +467,7 @@ impl Frame {
                     // converge continuously on one magnetic meridian. Far
                     // sheets project the shortest, least-inclined rays.
                     let toward = sky.zenith - x;
-                    let lean = (0.31 + 0.32 / (1. + z / 210.)) * toward / toward.hypot(0.085 * h);
+                    let lean = (0.12 + 0.13 / (1. + z / 210.)) * toward / toward.hypot(0.085 * h);
                     let quiet = x + lean * (lifted - top);
                     let (hem, cap, tip) = if corona > 0. {
                         let arc_height =
@@ -557,7 +560,14 @@ impl Frame {
             }
             let distance_per_node = (along / cover).max(1.);
             let crowding = smooth((sky.style[1] - 0.60) / 0.25);
-            let amplitude = mix(6., 12., crowding) * h / 1440.;
+            // Dense tall Pastel needs a little more transverse curvature after
+            // tension and overlap filtering, so long hems do not form plateaus.
+            let crowded_amplitude = if sky.style[2] == 5. && sky.style[3] > 1. {
+                16.
+            } else {
+                12.
+            };
+            let amplitude = mix(6., crowded_amplitude, crowding) * h / 1440.;
             let wavelength = (mix(600., 408., crowding) + 32. * arc.variation) * h / 1440.;
             ribbon.finish_curve(
                 48. * h / 1440.,
@@ -602,7 +612,12 @@ impl Frame {
                 let y = b.y as f32 + p.y;
                 let mut q = Quad::rect(x - p.width, y - p.height, x + p.width, y + p.height, PATCH);
                 q.material[1] = (i % 8) as f32;
-                q.field[2] = weather.recovery * (0.13 + 0.59 * pulse);
+                // Recovery stays subordinate to the curtains, particularly after
+                // their temporary merge gain has returned to its baseline.
+                let patch_gain = 1. - 0.65 * smooth((weather.activity - 0.4) / 0.6);
+                let corona = crown.map_or(0., |(_, _, strength)| strength);
+                q.field[2] =
+                    weather.recovery * (0.13 + 0.59 * pulse) * patch_gain * (1. - 0.92 * corona);
                 q.field[3] = q.field[2];
                 self.effects.push(q);
             }
@@ -676,6 +691,17 @@ pub struct Atmosphere {
     pub view: [f32; 4],
     pub optics: [f32; 4],
     pub overlap: [[f32; 4]; 8],
+    pub phases: [f32; 4],
+}
+// Reduce each periodic phase in f64, independently of the coarse shader clock.
+// In particular, 32768 * .026 is not an integer number of Spectrum hue turns.
+pub(super) fn phases(time: f64) -> [f32; 4] {
+    [
+        (time * 0.026).rem_euclid(std::f64::consts::TAU) as f32,
+        (time * 60.).floor().rem_euclid(65536.) as f32,
+        0.,
+        0.,
+    ]
 }
 fn frame(lease: &Lease, upper: bool) -> Option<&Frame> {
     let ep = if upper {
@@ -733,6 +759,11 @@ pub unsafe extern "C" fn visuals_aurora_atmosphere(
             bounds.width as f32,
             bounds.height as f32,
         ],
+        phases: {
+            let mut p = phases(time);
+            p[2] = mix(a.corona, b.corona, l.sample.alpha as f32);
+            p
+        },
         colors: sky.colors,
         overlap: std::array::from_fn(|i| {
             std::array::from_fn(|j| mix(a.overlap[i][j], b.overlap[i][j], l.sample.alpha as f32))

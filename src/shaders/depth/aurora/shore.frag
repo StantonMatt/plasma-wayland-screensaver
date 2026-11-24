@@ -89,8 +89,16 @@ void main() {
     float nw=max(fwidth(nearRidge)*0.55,0.00002);
     sky=mix(sky,scene.skyBottom.rgb*0.59,smoothstep(-fw,fw,far));
     sky=mix(sky,scene.skyBottom.rgb*0.33,smoothstep(-nw,nw,nearRidge));
-    uvec2 px=uvec2(gl_FragCoord.xy)&15u;
+    uvec2 pixel=uvec2(gl_FragCoord.xy);
+    uint frame=uint(scene.limit.w);
+    uvec2 tile=pixel>>4u;
+    uint hash=tile.x*0x9e3779b9u+tile.y*0x85ebca6bu+frame*0xc2b2ae35u;
+    hash^=hash>>16u; hash*=0x7feb352du; hash^=hash>>15u;
+    uvec2 px=(pixel+uvec2(hash,hash>>8u))&15u;
     uint packed=blueNoise[px.y*4u+(px.x>>2u)];
     float grain=(float((packed>>(8u*(px.x&3u)))&255u)/255.-.5)/255.;
+    // A one-bit change near black can alternate between black and saturated
+    // red. Keep temporal grain out of that range; visible hems retain it.
+    grain*=smoothstep(4./255.,16./255.,max(max(sky.r,sky.g),sky.b));
     color=vec4(clamp(sky+grain,0.,1.),1.)*scene.display.x;
 }

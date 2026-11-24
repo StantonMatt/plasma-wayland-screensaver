@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "visualworldcoordinator.h"
 #include "livingvisualitem.h"
+#include "presentationclock.h"
 #include <QCoreApplication>
 #include <algorithm>
 #include <chrono>
@@ -223,9 +224,11 @@ bool VisualWorldCoordinator::present(const QString& connector, qint64 ns)
     // Bounded catch-up. Even if still behind, publish the latest available
     // endpoints; sampling clamps their timeline rather than starving a window.
     // A delayed output reads history; no other output repaints.
+    const auto started = monotonicNow();
     m_worlds[b.world]->ensureThrough(elapsed, m_tickBudget);
     b.view.timeline_ns = elapsed;
     auto lease = m_worlds[b.world]->sample(b.view);
+    PresentationTelemetry::coordinatorTotalNs += quint64(monotonicNow() - started);
     if (!lease)
         return false;
     b.lease = std::move(lease);

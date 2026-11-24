@@ -989,6 +989,161 @@
     "head-trails100-6": {"layout":"single","monitorMode":"independent","seed":"7","captureTimesNs":["60000000000"],"settings":{"trails":100,"background":"black"},"events":[],"ribbonHeadOrdinal":6},
     "head-trails100-7": {"layout":"single","monitorMode":"independent","seed":"7","captureTimesNs":["60000000000"],"settings":{"trails":100,"background":"black"},"events":[],"ribbonHeadOrdinal":7},
     "head-trails100-8": {"layout":"single","monitorMode":"independent","seed":"7","captureTimesNs":["60000000000"],"settings":{"trails":100,"background":"black"},"events":[],"ribbonHeadOrdinal":8},
-    "head-trails100-9": {"layout":"single","monitorMode":"independent","seed":"7","captureTimesNs":["60000000000"],"settings":{"trails":100,"background":"black"},"events":[],"ribbonHeadOrdinal":9}
+    "head-trails100-9": {"layout":"single","monitorMode":"independent","seed":"7","captureTimesNs":["60000000000"],"settings":{"trails":100,"background":"black"},"events":[],"ribbonHeadOrdinal":9},
+      "polish-motes": {
+        "layout": "single",
+        "monitorMode": "independent",
+        "seed": "7",
+        "captureTimesNs": [
+          "60000000000"
+        ],
+        "settings": {},
+        "events": [],
+        "video": {
+          "name": "ribbons",
+          "start": 60,
+          "frames": 120,
+          "fps": 60
+        }
+      },
+      "polish-gust": {
+        "layout": "single",
+        "monitorMode": "independent",
+        "seed": "23",
+        "captureTimesNs": [
+          "601000000000",
+          "604000000000"
+        ],
+        "settings": {},
+        "events": [
+          {
+            "id": 1,
+            "timelineNs": "600000000000",
+            "anchor": [
+              0,
+              720
+            ],
+            "strength": 1
+          }
+        ],
+        "video": {
+          "name": "ribbons",
+          "start": 602,
+          "frames": 240,
+          "fps": 60
+        }
+      },
+      "polish-maelstrom": {
+        "layout": "single",
+        "monitorMode": "independent",
+        "seed": "23",
+        "captureTimesNs": [
+          "130000000000",
+          "142000000000"
+        ],
+        "settings": {},
+        "events": [
+          {
+            "id": 2,
+            "timelineNs": "120000000000",
+            "anchor": [
+              1130,
+              715
+            ],
+            "strength": 1
+          }
+        ],
+        "video": {
+          "name": "ribbons",
+          "start": 130,
+          "frames": 180,
+          "fps": 60
+        }
+      },
+      "polish-far": {
+        "layout": "hd",
+        "monitorMode": "independent",
+        "seed": "7",
+        "captureTimesNs": [
+          "22000000000"
+        ],
+        "settings": {},
+        "events": [
+          {
+            "id": 2,
+            "timelineNs": "30000000000",
+            "anchor": [
+              950,
+              530
+            ],
+            "strength": 1
+          }
+        ],
+        "video": {
+          "name": "ribbons",
+          "start": 18,
+          "frames": 720,
+          "fps": 60
+        }
+      },
+      "polish-G": {
+        "layout": "single",
+        "monitorMode": "independent",
+        "seed": "7",
+        "captureTimesNs": [
+          "600000000000"
+        ],
+        "settings": {
+          "density": 80,
+          "speed": 300,
+          "scale": 200,
+          "trails": 100,
+          "palette": "ember",
+          "background": "black"
+        },
+        "events": [],
+        "video": {
+          "name": "ribbons",
+          "start": 600,
+          "frames": 180,
+          "fps": 60
+        }
+      },
+      "polish-G-spanning": {
+        "layout": "l3",
+        "monitorMode": "seamless",
+        "seed": "7",
+        "captureTimesNs": [
+          "600000000000"
+        ],
+        "settings": {
+          "density": 80,
+          "speed": 300,
+          "scale": 200,
+          "trails": 100,
+          "palette": "ember",
+          "background": "black"
+        },
+        "events": []
+      },
+      "polish-pastel": {
+        "layout": "hd",
+        "monitorMode": "independent",
+        "seed": "11",
+        "captureTimesNs": [
+          "90000000000"
+        ],
+        "settings": {
+          "palette": "pastel",
+          "background": "black"
+        },
+        "events": [],
+        "video": {
+          "name": "ribbons",
+          "start": 90,
+          "frames": 180,
+          "fps": 60
+        }
+      }
   }
 }

@@ -3,12 +3,15 @@
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
 #include <QQuickWindow>
+#include <QString>
 #include <atomic>
+#include <utility>
 
 // Render-thread hooks for the private GPU timing scene. Qt's OpenGL ES RHI
 // does not always expose a timestamp even when the driver has timer queries.
 class CaptureGpuTimer {
 public:
+  explicit CaptureGpuTimer(QString label = {}) : m_label(std::move(label)) {}
   void begin(QQuickWindow *window) {
     window->beginExternalCommands();
     auto *context = QOpenGLContext::currentContext();
@@ -58,13 +61,14 @@ public:
     window->endExternalCommands();
     if (ns && !disjoint) {
       ++samples;
-      qInfo("GL GPU scene time %.6f ms", ns * 0.000001);
+      qInfo("GL GPU scene time %.6f ms window %s", ns * 0.000001, qPrintable(m_label));
     }
   }
 
   std::atomic<int> samples{0};
 
 private:
+  QString m_label;
   using Gen = void (*)(GLsizei, GLuint *);
   using Begin = void (*)(GLenum, GLuint);
   using End = void (*)(GLenum);

@@ -180,7 +180,7 @@ protected:
                 Q_EMIT gpuUnavailable();
                 return nullptr;
             }
-            const auto& atlas = rainAlphabet().image();
+            const auto& atlas = rainAlphabetImage();
             if (!RainMaterial::supported(window(), atlas.size()))
             {
                 Q_EMIT gpuUnavailable();

@@ -28,7 +28,32 @@ Schedule schedule(qint64 nowNanoseconds, long double nextTargetNanoseconds,
                   std::optional<qint64> phaseAnchorNanoseconds = std::nullopt);
 }
 
+namespace PresentationTelemetry {
+// GUI-thread accounting avoids per-frame signals, properties or allocations.
+inline thread_local quint64 coordinatorTotalNs = 0;
+
+struct StallSummary {
+    quint64 count = 0;
+    qint64 worstIntervalNs = 0;
+    qint64 expectedPeriodNs = 0;
+    qint64 coordinatorNs = 0;
+    qint64 guiPrepNs = 0;
+};
+
+class StallCounter {
+public:
+    explicit StallCounter(qint64 startNs = 0) : m_lastReportNs(startNs) {}
+    void observe(qint64 intervalNs, qint64 expectedPeriodNs,
+                 qint64 coordinatorNs, qint64 guiPrepNs) noexcept;
+    std::optional<StallSummary> takeSummary(qint64 nowNs) noexcept;
+private:
+    StallSummary m_summary;
+    qint64 m_lastReportNs;
+};
+}
+
 class PresentationTraceState;
+class PresentationStallState;
 
 class QQuickWindow;
 
@@ -61,6 +86,7 @@ private:
     void armTimer(qint64 deadlineNanoseconds);
 
     std::shared_ptr<PresentationTraceState> m_trace;
+    std::shared_ptr<PresentationStallState> m_stalls;
     // frameSwapped can originate on the render thread. Capture its time there,
     // rather than measuring when the queued GUI callback eventually runs.
     std::shared_ptr<std::atomic<qint64>> m_swapTimestamp;

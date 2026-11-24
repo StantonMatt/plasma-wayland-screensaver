@@ -91,7 +91,8 @@ void main(){
     c*=relief*(1.-0.35*u.light.z);
     // Incoming pieces travel together through the shadow at the mouth of
     // the tube. Restore the key as they spread out and settle into the cell.
-    if(u.flare.w>=3.25 && u.flare.w<7.)
+    bool magnifiedMandala=u.motion.w<0.5 && u.glass.y>=1.5 && u.eye.w>=12.;
+    if(!magnifiedMandala && u.flare.w>=3.25 && u.flare.w<7.)
         c*=mix(0.30,1.,u.glass.w*u.glass.w);
     float darkBeat=1.-u.glass.w;
     c+=u.rim.rgb*seam;

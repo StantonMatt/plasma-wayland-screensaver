@@ -2,7 +2,67 @@
 #include "alphabet.h"
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QPainterPath>
 #include <QStandardPaths>
+#include <algorithm>
+#include <array>
+#include <cmath>
+
+void roundRainBraille(QImage &image, const QRawFont &font) {
+  if (image.format() != QImage::Format_Alpha8 || !font.isValid())
+    return;
+  std::array<QRectF, 8> dots;
+  for (int bit = 0; bit < 8; ++bit) {
+    const char32_t cp = 0x2800 + (1 << bit);
+    if (!font.supportsCharacter(cp))
+      return;
+    const auto ids = font.glyphIndexesForString(QString::fromUcs4(&cp, 1));
+    if (ids.isEmpty() || !ids.front())
+      return;
+    dots[bit] = font.pathForGlyph(ids.front()).boundingRect();
+    if (dots[bit].isEmpty())
+      return;
+  }
+  for (int i = 0; i < 96; ++i) {
+    const unsigned pattern = 1 + (i * 73) % 255;
+    const char32_t cp = 0x2800 + pattern;
+    if (!font.supportsCharacter(cp))
+      continue; // The shared atlas has already installed the numeric fallback.
+    const auto ids = font.glyphIndexesForString(QString::fromUcs4(&cp, 1));
+    if (ids.isEmpty() || !ids.front())
+      continue;
+    const auto bounds = font.pathForGlyph(ids.front()).boundingRect();
+    const qreal fit = std::min({1., 35. / std::max(1., bounds.width()),
+                               35. / std::max(1., bounds.height())});
+    const QPointF offset(24. - bounds.center().x() * fit,
+                         std::clamp(34., 4. - bounds.top() * fit,
+                                    44. - bounds.bottom() * fit));
+    const auto tile = GlyphAtlas::tile(225 + i);
+    if (!image.rect().contains(tile))
+      continue;
+    // Sample the exact disc distance, rather than distance-transforming a
+    // rasterised font dot. Its round contour survives magnification to G's
+    // 84 px near layer without inheriting the font's square dot outline.
+    for (int y = 0; y < 48; ++y) {
+      auto *row = image.scanLine(tile.y() + y) + tile.x();
+      for (int x = 0; x < 48; ++x) {
+        qreal distance = -8.;
+        for (int bit = 0; bit < 8; ++bit) {
+          if (!(pattern & (1u << bit)))
+            continue;
+          const auto centre = dots[bit].center() * fit + offset;
+          const auto radius =
+              0.5 * std::min(dots[bit].width(), dots[bit].height()) * fit;
+          distance = std::max(
+              distance,
+              radius - std::hypot(x + .5 - centre.x(), y + .5 - centre.y()));
+        }
+        row[x] = uchar(
+            std::clamp(std::lround(255. * (.5 + distance / 16.)), 0l, 255l));
+      }
+    }
+  }
+}
 
 namespace {
 QRawFont face(const QString &family, const QString &pinned) {
@@ -20,7 +80,7 @@ QRawFont face(const QString &family, const QString &pinned) {
   font.setHintingPreference(QFont::PreferNoHinting);
   return QRawFont::fromFont(font);
 }
-GlyphAtlas build() {
+QImage build() {
   auto mono = face(
       QStringLiteral("DejaVu Sans Mono"),
       QStringLiteral("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"));
@@ -64,12 +124,14 @@ GlyphAtlas build() {
   add(321, QStringLiteral("∑∂∞≈≠±√∫"), 0);
   const auto cache =
       QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
-  return GlyphAtlas(
+  auto image = GlyphAtlas(
       glyphs, {mono, kana, dots}, fallback,
-      cache.isEmpty() ? QString() : cache + QStringLiteral("/matrix-sdf.bin"));
+      cache.isEmpty() ? QString() : cache + QStringLiteral("/matrix-sdf.bin")).image();
+  roundRainBraille(image, dots);
+  return image;
 }
 } // namespace
-const GlyphAtlas &rainAlphabet() {
-  static const GlyphAtlas atlas = build();
-  return atlas;
+const QImage &rainAlphabetImage() {
+  static const QImage image = build();
+  return image;
 }

@@ -10,6 +10,7 @@
 #include <rhi/qshader.h>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstring>
 
 namespace {
@@ -106,6 +107,10 @@ public:
         // target accounts for both curtain coverage and fractional DPR.
         m_guard = (3 * std::max(m_atmosphere.optics[3], 16.3f * m_atmosphere.bounds[3] / 1440.f) + 2)
             * m_atmosphere.view[2];
+        // Keep the optical margin an integral number of physical texels. A
+        // fractional margin resamples the entire emission target at composition.
+        const qreal pixelScale = view.dpr * scale;
+        m_guard = std::ceil(m_guard * pixelScale) / pixelScale;
         const QSize pixels(std::max(1, qRound((logical.width() + 2 * m_guard) * view.dpr * scale)),
             std::max(1, qRound(logical.height() * view.dpr * scale)));
         const quint64 pose = side == 0 ? info.lower_tick : info.upper_tick;
@@ -118,7 +123,9 @@ public:
             m_rhi = m_window->rhi();
             if (!m_rhi || m_rhi->backend() == QRhi::Null)
                 return false;
-            m_target = OffscreenTarget::create(m_window, m_rhi, pixels);
+            // Avoid quantisation hatch when many weak sheets screen together.
+            // The star and terrain paths retain their existing formats.
+            m_target = OffscreenTarget::create(m_window, m_rhi, pixels, {}, QRhiTexture::RGBA16F);
             m_stars = OffscreenTarget::create(m_window, m_rhi, pixels);
             if (!m_target || !m_stars || !setup(endpoint, lease, side))
                 return false;
@@ -134,6 +141,10 @@ public:
                 m_landWidth, m_atmosphere, logical, m_guard);
             appendChildNode(m_display);
         }
+        // The native composite also consumes live time and optical envelopes.
+        // Updating only the offscreen camera freezes its dither and aperture.
+        if (!changed)
+            m_display->sync(m_atmosphere);
         m_logical = logical;
         m_pending = true;
         markDirty(DirtyForceUpdate);
@@ -168,10 +179,11 @@ public:
         updates->updateDynamicBuffer(m_uniforms.get(), 64, sizeof(m_atmosphere), &m_atmosphere);
         // Filter the extended sheets independently of point sources. Otherwise a
         // star can change the reconstruction weights of brighter nearby rays.
-        const auto draw = [&](OffscreenTarget& target, const Layer& layer, QRhiResourceUpdateBatch* changes) {
+        const auto draw = [&](OffscreenTarget& target, QRhiGraphicsPipeline* pipeline,
+                              const Layer& layer, QRhiResourceUpdateBatch* changes) {
             cb->beginPass(target.target(), Qt::transparent, { 1, 0 }, changes);
             if (layer.count) {
-                cb->setGraphicsPipeline(m_screen.get());
+                cb->setGraphicsPipeline(pipeline);
                 cb->setViewport({ 0, 0, float(m_size.width()), float(m_size.height()) });
                 cb->setShaderResources(m_bindings.get());
                 const QRhiCommandBuffer::VertexInput input { layer.buffer.get(), 0 };
@@ -180,8 +192,8 @@ public:
             }
             cb->endPass();
         };
-        draw(*m_stars, m_layers[0], updates);
-        draw(*m_target, m_layers[1], nullptr);
+        draw(*m_stars, m_starsScreen.get(), m_layers[0], updates);
+        draw(*m_target, m_screen.get(), m_layers[1], nullptr);
         m_pending = false;
     }
     void render(const RenderState*) override { }
@@ -191,6 +203,7 @@ public:
         delete m_display;
         m_display = nullptr;
         m_screen.reset();
+        m_starsScreen.reset();
         m_horizon.reset();
         m_landBytes.clear();
         m_bindings.reset();
@@ -236,15 +249,18 @@ private:
         layout.setBindings({ { sizeof(aurora_vertex) } });
         layout.setAttributes({ { 0, 0, QRhiVertexInputAttribute::Float4, 0 },
             { 0, 1, QRhiVertexInputAttribute::Float4, 16 }, { 0, 2, QRhiVertexInputAttribute::Float4, 32 } });
-        m_screen.reset(m_rhi->newGraphicsPipeline());
-        m_screen->setShaderStages(
-            { { QRhiShaderStage::Vertex, vertex }, { QRhiShaderStage::Fragment, fragment } });
-        m_screen->setTopology(QRhiGraphicsPipeline::TriangleStrip);
-        m_screen->setVertexInputLayout(layout);
-        m_screen->setShaderResourceBindings(m_bindings.get());
-        m_screen->setRenderPassDescriptor(m_target->target()->renderPassDescriptor());
-        m_screen->setTargetBlends({ OffscreenTarget::screenBlend() });
-        if (!m_screen->create())
+        const auto createPipeline = [&](std::unique_ptr<QRhiGraphicsPipeline>& pipeline, OffscreenTarget& target) {
+            pipeline.reset(m_rhi->newGraphicsPipeline());
+            pipeline->setShaderStages(
+                { { QRhiShaderStage::Vertex, vertex }, { QRhiShaderStage::Fragment, fragment } });
+            pipeline->setTopology(QRhiGraphicsPipeline::TriangleStrip);
+            pipeline->setVertexInputLayout(layout);
+            pipeline->setShaderResourceBindings(m_bindings.get());
+            pipeline->setRenderPassDescriptor(target.target()->renderPassDescriptor());
+            pipeline->setTargetBlends({ OffscreenTarget::screenBlend() });
+            return pipeline->create();
+        };
+        if (!createPipeline(m_screen, *m_target) || !createPipeline(m_starsScreen, *m_stars))
             return false;
         const uint8_t* land = visuals_aurora_horizon(lease.get(), side, &m_landWidth);
         if (!land || !m_landWidth)
@@ -274,7 +290,7 @@ private:
     std::unique_ptr<QRhiTexture> m_field;
     std::unique_ptr<QRhiSampler> m_sampler;
     std::unique_ptr<QRhiShaderResourceBindings> m_bindings;
-    std::unique_ptr<QRhiGraphicsPipeline> m_screen;
+    std::unique_ptr<QRhiGraphicsPipeline> m_screen, m_starsScreen;
     QByteArray m_fieldBytes;
     std::array<Layer, 2> m_layers;
     uint32_t m_landWidth = 0;

@@ -144,6 +144,8 @@ impl BounceWorld {
                         ball.start_impact_light(e.strength.clamp(0., 1.));
                     }
                 }
+                #[cfg(feature = "visual-capture")]
+                9 => self.set_capture_pace(e.strength),
                 _ => {}
             }
         }

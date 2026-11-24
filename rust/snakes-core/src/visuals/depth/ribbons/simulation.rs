@@ -6,7 +6,10 @@ use super::{
         layout::{Rect, Vec2},
         rng::Pcg32,
     },
-    water::{Kind, Lanes, Neighbours, Weather},
+    water::{
+        GUST_FORCE_PIXELS_PER_SECOND, Kind, Lanes, MAELSTROM_MOTOR_PIXELS_PER_SECOND, Neighbours,
+        Weather,
+    },
     world::WorldInput,
 };
 
@@ -20,6 +23,14 @@ pub(super) struct Mote {
     pub radius: f64,
     pub hue: usize,
     pub id: u32,
+}
+impl Mote {
+    pub fn twinkle(&self) -> f64 {
+        let hash = super::common::rng::hash64(self.id as u64 ^ 0x6d6f_7465);
+        let at = 0.6 + (self.life - 1.2) * (hash >> 11) as f64 / (1_u64 << 53) as f64;
+        let u = ((self.age - at).abs() / 0.15).clamp(0., 1.);
+        1. + 0.30 * (1. - smooth(u))
+    }
 }
 #[derive(Clone, Copy)]
 struct Bond {
@@ -335,10 +346,16 @@ impl Sea {
             || self.weather.script.first().is_some_and(|e| e.at_ns <= ns);
         // Ambient events have their own clock. At Speed 300 the current still
         // advances threefold, while event pacing tops out at one and a half.
-        let event_dt = dt * input.speed.min(1.5) / input.speed.max(0.01);
-        let ended = self
-            .weather
-            .step(layout, &mut self.rng, event_dt, ns, params.world_events);
+        let event_pace = input.speed.min(1.5);
+        let event_dt = dt * event_pace / input.speed.max(0.01);
+        let ended = self.weather.step(
+            layout,
+            &mut self.rng,
+            event_dt,
+            event_pace,
+            ns,
+            params.world_events,
+        );
         if ended.is_some_and(|m| m.kind == Kind::Still) {
             self.tide_bias = polar(range(&mut self.rng, 0., std::f64::consts::TAU)) * 75.;
         }
@@ -514,6 +531,11 @@ impl Sea {
                 + self.directions[i].limited(28.);
             let mut curl = water.vorticity;
             let mut gust = 0.;
+            let mut launch = if r.release_age > 0. {
+                smooth(r.release_age / 6.)
+            } else {
+                0.
+            };
             let mut still = 0.;
             let braid = self.partners[i];
             if let Some((drive, _)) = braid {
@@ -526,11 +548,20 @@ impl Sea {
                         // A gust carries both up- and down-current swimmers. Its
                         // translation is applied to the whole scarf in swim().
                         desired = desired * (1. - gust) + p(r.course_sign * 90., 0.) * gust;
+                        // Turn the existing swimming drive downwind without
+                        // spending any extra translation or changing its length.
+                        let angle = turn(desired, p(1., 0.)) * m.gust_steering();
+                        let (sn, cs) = angle.sin_cos();
+                        desired = desired * cs + desired.perpendicular() * sn;
                     }
                     Kind::Maelstrom if r.caught => {
                         let (flow, spin) = m.swirl(pos, r.layer);
                         desired = desired * (1. - m.weight()) + flow;
                         curl += spin;
+                        launch = m.release_weight();
+                        if launch > 0. {
+                            r.prepare_release(m.centre);
+                        }
                     }
                     Kind::Maelstrom => {}
                     Kind::Still => {
@@ -548,13 +579,16 @@ impl Sea {
                     let d = pos - m.centre;
                     d.y.atan2(d.x) + r.layer as f64 * std::f64::consts::TAU / 3.
                 });
-            if r.release_age > 0. {
-                desired = desired * 0.25;
+            if launch > 0. {
+                desired = desired * (1. - 0.75 * launch);
             }
             let steering = Steering {
                 desired,
                 curl,
                 gust,
+                gust_force_limit: GUST_FORCE_PIXELS_PER_SECOND / input.speed.max(0.01),
+                maelstrom_motor_limit: MAELSTROM_MOTOR_PIXELS_PER_SECOND / input.speed.max(0.01),
+                launch,
                 gust_front: self
                     .weather
                     .active
@@ -624,11 +658,18 @@ impl Sea {
             while fray > r.shed_at && r.shed < r.shed_limit && self.motes.len() < 472 {
                 let knot = (r.count - 1) as f64 * r.extent();
                 let index = (knot as usize).min(r.count - 2);
+                let tangent = (r.nodes[index + 1].pos - r.nodes[index].pos).unit();
+                let side = tangent.perpendicular();
+                let sign = if r.shed.is_multiple_of(2) { -1. } else { 1. };
+                // Reuse the original two random draws: scattering sparks must
+                // not perturb the seeded births, schools or weather schedule.
+                let angle = range(&mut self.rng, 0., std::f64::consts::TAU);
+                let kick = range(&mut self.rng, 20., 40.);
                 let pos = r.nodes[index].pos
-                    + (r.nodes[index + 1].pos - r.nodes[index].pos) * (knot - index as f64);
-                let scatter = polar(range(&mut self.rng, 0., std::f64::consts::TAU))
-                    * range(&mut self.rng, 10., 25.);
-                let vel = self.flow.sample(pos).velocity * 0.33 + scatter;
+                    + (r.nodes[index + 1].pos - r.nodes[index].pos) * (knot - index as f64)
+                    + side * (sign * r.width * (0.75 + 0.25 * angle.sin()));
+                let scatter = (side * sign + tangent * (0.45 * angle.cos())).unit() * kick;
+                let vel = self.flow.sample(pos).velocity * 0.33;
                 self.motes.push(Mote {
                     pos,
                     vel,
@@ -716,10 +757,9 @@ impl Sea {
         }
         self.motes.retain_mut(|m| {
             m.age += dt;
-            m.pos += m.vel * dt;
+            m.pos += (m.vel + m.scatter * (-m.age / 1.5).exp()) * dt;
             if self.step.is_multiple_of(8) {
-                m.vel += (self.flow.sample(m.pos).velocity * 0.62 + m.scatter - m.vel)
-                    * (dt * 1.4).min(1.);
+                m.vel += (self.flow.sample(m.pos).velocity * 0.62 - m.vel) * (dt * 1.4).min(1.);
             }
             m.age < m.life
         });

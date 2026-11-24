@@ -54,12 +54,16 @@ impl Material {
             Self::Metal => 2.6,
         }
     }
-    pub fn bounce(self) -> f64 {
-        match self {
-            Self::Rubber => 1.,
-            Self::Glass => 0.95,
-            Self::Metal => 0.85,
-        }
+    pub fn restitution(self, elasticity: f64) -> f64 {
+        // The slider controls energy loss, with distinct losses per material.
+        // At 100 every material is elastic; multiplying by a fixed material
+        // factor made even that endpoint dissipate most of a drop in seconds.
+        let loss = match self {
+            Self::Rubber => 0.20,
+            Self::Glass => 0.30,
+            Self::Metal => 0.40,
+        };
+        1. - loss * (1. - elasticity)
     }
     pub fn friction(self) -> f64 {
         match self {
@@ -208,7 +212,12 @@ pub(super) struct Ball {
     attack_target: f64,
     target_axis: V,
     pub near_ball: bool,
+    pub contact: bool,
     pub flow_limit: f64,
+    pub high_arc: bool,
+    pub below_mid_time: f64,
+    pub loft_due: bool,
+    pub loft_retry_delay: f64,
     pub light: f64,
     pub flash: f64,
     pub flash_age: f64,
@@ -226,6 +235,10 @@ pub(super) struct Ball {
     pub sleeping: bool,
     pub rest: f64,
     pub charge: f64,
+    #[cfg(test)]
+    pub hop_serial: u64,
+    #[cfg(test)]
+    pub hop_origin: V,
     pub period: f64,
     pub phase: f64,
     pub birth: f64,
@@ -258,7 +271,12 @@ impl Ball {
             attack_target: 0.,
             target_axis: v(0., 1.),
             near_ball: false,
+            contact: false,
             flow_limit: f64::INFINITY,
+            high_arc: false,
+            below_mid_time: 0.,
+            loft_due: false,
+            loft_retry_delay: 0.,
             light: 0.,
             flash: 0.,
             flash_age: 1.,
@@ -276,11 +294,29 @@ impl Ball {
             sleeping: false,
             rest: 0.,
             charge: 0.,
-            period: between(rng, 6., 16.),
+            #[cfg(test)]
+            hop_serial: 0,
+            #[cfg(test)]
+            hop_origin: V::default(),
+            period: between(rng, 0.55, 1.45),
             phase: between(rng, 0., TAU),
             birth: 0.,
             alpha: 1.,
             trail: Trail::default(),
+        }
+    }
+    pub fn limit_motion(&mut self, cap: f64, _down: V) {
+        if self.high_arc && !self.floating && self.flow_limit < cap {
+            // Crowding limits lateral sweeps, not the energy of a vertical
+            // bounce. A norm clamp here was cutting tall launches back down
+            // to a few percent of the room height on every integration step.
+            let velocity = self.v.limit(cap);
+            self.v = v(
+                velocity.x.clamp(-self.flow_limit, self.flow_limit),
+                velocity.y,
+            );
+        } else {
+            self.v = self.v.limit(cap.min(self.flow_limit));
         }
     }
     pub fn set_material(&mut self, material: Material) {
@@ -329,6 +365,7 @@ impl Ball {
         }
     }
     pub fn wall_impulse(&mut self, n: V, wall: Wall, elasticity: f64, height: f64) {
+        self.contact = true;
         let vn = self.v.dot(n);
         if vn >= 0. {
             return;
@@ -338,12 +375,11 @@ impl Ball {
         } else {
             42. + height * 0.60 * (0.80 - elasticity).max(0.)
         };
-        let restitution =
-            if vn < -settle_speed || (self.mat == Material::Rubber && elasticity == 1.) {
-                self.mat.bounce() * elasticity
-            } else {
-                0.
-            };
+        let restitution = if vn < -settle_speed || elasticity == 1. {
+            self.mat.restitution(elasticity)
+        } else {
+            0.
+        };
         let impulse = -(1. + restitution) * vn;
         let t = n.perp();
         let slip = self.v.dot(t) - self.spin * self.r;
@@ -414,15 +450,48 @@ impl Ball {
     pub fn wake(&mut self) {
         self.sleeping = false;
         self.rest = 0.;
-        self.charge = 0.;
+        // A nudge can wake a large ball many times while it is trapped in a
+        // pile. Keep its stored launch energy until it actually spends it.
+        if !self.high_arc {
+            self.charge = 0.;
+        }
     }
     pub fn hop(&mut self, g: V, height: f64, rng: &mut Pcg32) {
         let gravity = g.len();
+        #[cfg(test)]
+        {
+            self.hop_serial += 1;
+            self.hop_origin = self.p;
+        }
         self.wake();
+        // A due loft keeps its stored charge until it reaches the upper half.
+        // A collision may interrupt it; retry at contact, never in free air.
+        // Repeated solver samples of the same bed contact are not separate
+        // launch attempts. Let the contact respond before another retry.
+        self.loft_retry_delay = if self.loft_due && gravity > 2. {
+            0.12
+        } else {
+            0.
+        };
+        self.charge = if self.loft_due && gravity > 2. {
+            self.period + 0.18
+        } else {
+            0.
+        };
         if gravity > 2. {
-            let up = -g / gravity;
-            let speed = (2. * gravity * height.max(self.r) * between(rng, 0.25, 0.70)).sqrt();
-            self.v = up * speed + up.perp() * between(rng, -0.37, 0.37) * speed;
+            let up = if self.loft_due {
+                v(0., -1.)
+            } else {
+                -g / gravity
+            };
+            let (low, high) = if self.high_arc {
+                (1.10, 1.30)
+            } else {
+                (0.25, 0.70)
+            };
+            let speed = (2. * gravity * height.max(self.r) * between(rng, low, high)).sqrt();
+            let side = if self.high_arc { 0.12 } else { 0.37 };
+            self.v = up * speed + up.perp() * between(rng, -side, side) * speed;
             self.axis = up;
         } else {
             let angle = between(rng, 0., TAU);
@@ -443,7 +512,8 @@ impl Ball {
             return 0.25;
         }
         let charge = (self.charge / self.period).min(1.);
-        let rise = ((self.charge - self.period + 1.5) / 1.5).clamp(0., 1.);
+        let anticipation = self.period.min(1.5);
+        let rise = ((self.charge - self.period + anticipation) / anticipation).clamp(0., 1.);
         (0.25 + 0.35 * rise + (0.045 + 0.32 * charge) * self.phase.sin()).clamp(0.04, 1.) as f32
     }
     pub fn glow(&self) -> f32 {

@@ -1,6 +1,6 @@
 //! Rounded convex cores. A bead has one support point, a capsule two, a shard
 //! three to six. Contacts use both face axes and the closest rounded features.
-use super::{Pcg32, range};
+use super::{range, Pcg32};
 use std::{
     f64::consts::{PI, TAU},
     ops::{Add, Mul, Neg, Sub},
@@ -88,11 +88,36 @@ pub(super) struct Body {
     friction: f64,
     offsets: [V; 6],
     normals: [V; 6],
+    own_extrema: [[u8; 2]; 6],
+    own_extrema_ready: bool,
     quiet: u16,
     touched: bool,
 }
 impl Body {
+    fn limit_surface_speed(&mut self, limit: f64) {
+        let speed = self.vel.norm2().sqrt() + self.spin.abs() * self.cut.reach;
+        if speed > limit {
+            let k = limit / speed;
+            self.vel = self.vel * k;
+            self.spin *= k;
+        }
+    }
+    pub fn contains_optical(&self, point: V) -> bool {
+        let p = point - self.pos;
+        if self.cut.sides == 1 {
+            return p.norm2() <= (0.93 * self.cut.rounding).powi(2);
+        }
+        if self.cut.sides == 2 {
+            let a = self.offsets[0] * 0.93;
+            let edge = (self.offsets[1] - self.offsets[0]) * 0.93;
+            let along = ((p - a).dot(edge) / edge.norm2()).clamp(0., 1.);
+            return (p - a - edge * along).norm2() <= (0.93 * self.cut.rounding).powi(2);
+        }
+        (0..self.cut.sides)
+            .all(|i| (p - self.offsets[i] * 0.93).dot(self.normals[i]) <= 0.93 * self.cut.rounding)
+    }
     fn orient(&mut self) {
+        self.own_extrema_ready = false;
         let rotation = self.angle.sin_cos();
         for (dest, src) in self.offsets[..self.cut.sides]
             .iter_mut()
@@ -104,6 +129,43 @@ impl Body {
             let axis = (self.offsets[i] - self.offsets[(i + 1) % self.cut.sides]).perp();
             self.normals[i] = axis * (1. / axis.norm2().max(1e-18).sqrt());
         }
+    }
+    // Orientation is fixed throughout the contact relaxation sweeps. Cache
+    // the original strict-tie scan's vertex for each signed own-face normal.
+    // Positions and impulses can change between sweeps; these indices cannot.
+    fn prepare_own_extrema(&mut self) {
+        if self.own_extrema_ready {
+            return;
+        }
+        let count = match self.cut.sides {
+            1 => 0,
+            2 => 1,
+            n => n,
+        };
+        for j in 0..count {
+            for sign in 0..2 {
+                let n = if sign == 0 {
+                    self.normals[j]
+                } else {
+                    -self.normals[j]
+                };
+                let mut best = 0;
+                let mut height = self.offsets[0].dot(n);
+                for i in 1..self.cut.sides {
+                    let h = self.offsets[i].dot(n);
+                    if h > height {
+                        height = h;
+                        best = i;
+                    }
+                }
+                self.own_extrema[j][sign] = best as u8;
+            }
+        }
+        self.own_extrema_ready = true;
+    }
+    fn own_support(&self, axis: usize, negative: bool, n: V) -> V {
+        self.offsets[usize::from(self.own_extrema[axis][usize::from(negative)])]
+            + n * self.cut.rounding
     }
     pub fn reflection_score(&self, point: V, light: V) -> f64 {
         let relative = point - self.pos;
@@ -173,31 +235,48 @@ impl Body {
     }
 }
 
-fn contact(a: &Body, b: &Body, delta: V) -> Option<(V, f64)> {
+fn contact(a: &Body, b: &Body, delta: V) -> Option<(V, f64, [V; 2])> {
     // Face-normal separation is exact for two polygons. For rounded cores
     // also test vertex pairs to catch end caps and polygon corners.
     let rounding = a.cut.rounding + b.cut.rounding;
     let mut depth = f64::MAX;
     let mut normal = V(0., 1.);
-    let mut test = |axis: V| {
-        let n = if delta.dot(axis) < 0. { -axis } else { axis };
-        let overlap = (a.support(n) - b.support(-n) - delta).dot(n);
+    let mut supports = None;
+    let mut test = |axis: V, owner: usize, index: usize| {
+        let negative = delta.dot(axis) < 0.;
+        let n = if negative { -axis } else { axis };
+        let sa = if owner == 0 && a.own_extrema_ready {
+            a.own_support(index, negative, n)
+        } else {
+            a.support(n)
+        };
+        let sb = if owner == 1 && b.own_extrema_ready {
+            b.own_support(index, !negative, -n)
+        } else {
+            b.support(-n)
+        };
+        let overlap = (sa - sb - delta).dot(n);
         if overlap <= 0. {
             return false;
         }
         if overlap < depth {
             depth = overlap;
             normal = n;
+            supports = Some([sa, sb]);
         }
         true
     };
-    for body in [a, b] {
+    for (owner, body) in [a, b].into_iter().enumerate() {
         let n = match body.cut.sides {
             1 => 0,
             2 => 1,
             n => n,
         };
-        if !body.normals[..n].iter().all(|&axis| test(axis)) {
+        if !body.normals[..n]
+            .iter()
+            .enumerate()
+            .all(|(index, &axis)| test(axis, owner, index))
+        {
             return None;
         }
     }
@@ -215,28 +294,33 @@ fn contact(a: &Body, b: &Body, delta: V) -> Option<(V, f64)> {
                 }
             }
         }
-        if shortest > 1e-16 && !test(closest * (1. / shortest.sqrt())) {
+        if shortest > 1e-16 && !test(closest * (1. / shortest.sqrt()), 2, 0) {
             return None;
         }
     }
-    Some((normal, depth))
+    // Keep the supports of the selected axis instead of scanning them again
+    // in collide. Degenerate coincident rounded points still use the original
+    // default normal and support calls.
+    Some((
+        normal,
+        depth,
+        supports.unwrap_or_else(|| [a.support(normal), b.support(-normal)]),
+    ))
 }
 const SLEEP: u16 = 54;
-fn collide(a: &mut Body, b: &mut Body) {
-    if a.quiet >= SLEEP && b.quiet >= SLEEP {
+fn collide(a: &mut Body, b: &mut Body, resolve_sleeping: bool) {
+    if !resolve_sleeping && a.quiet >= SLEEP && b.quiet >= SLEEP {
         return;
     }
     let d = b.pos - a.pos;
     if d.norm2() >= (a.cut.reach + b.cut.reach).powi(2) {
         return;
     }
-    let Some((n, depth)) = contact(a, b, d) else {
+    let Some((n, depth, [r1, r2])) = contact(a, b, d) else {
         return;
     };
     a.touched = true;
     b.touched = true;
-    let r1 = a.support(n);
-    let r2 = b.support(-n);
     // Use one shared contact point, so tangential impulses conserve torque.
     let arm_a = (r1 + d + r2) * 0.5;
     let arm_b = arm_a - d;
@@ -265,10 +349,12 @@ fn collide(a: &mut Body, b: &mut Body) {
 
 pub(super) struct Chamber {
     pub bodies: Vec<Body>,
+    pub transport: V,
     split: usize,
     sleep_angle: f64,
     asleep: bool,
     stable_steps: u16,
+    refined: bool,
 }
 impl Chamber {
     pub fn new(rng: &mut Pcg32, n: usize, glass: u32, recipe: u32, palette: u32) -> Self {
@@ -288,7 +374,11 @@ impl Chamber {
                     } else {
                         0.85
                     };
-                    if draw < beads { 1 } else { 4 }
+                    if draw < beads {
+                        1
+                    } else {
+                        4
+                    }
                 }
                 2 => {
                     if draw < 0.10 {
@@ -384,13 +474,25 @@ impl Chamber {
         }
         Self {
             bodies,
+            transport: V::default(),
             split,
             sleep_angle: 0.,
             asleep: false,
             stable_steps: 0,
+            refined: false,
         }
     }
     pub fn step(&mut self, angle: f64) {
+        self.step_limited(angle, None);
+    }
+    pub fn step_limited(&mut self, angle: f64, limit: Option<f64>) {
+        if limit.is_some() && !self.refined {
+            self.asleep = false;
+            for b in &mut self.bodies {
+                b.quiet = 0;
+            }
+        }
+        self.refined = limit.is_some();
         if (angle - self.sleep_angle).abs() > 0.038 {
             self.sleep_angle = angle;
             self.stable_steps = 0;
@@ -416,17 +518,32 @@ impl Chamber {
             b.touched = false;
             b.vel = (b.vel + gravity) * 0.997;
             b.spin = (b.spin * 0.989).clamp(-7., 7.);
+            if let Some(limit) = limit {
+                b.limit_surface_speed(limit);
+            }
             b.pos = b.pos + b.vel * DT;
             b.angle += b.spin * DT;
             b.orient();
             b.wall();
         }
-        let (back, front) = self.bodies.split_at_mut(self.split);
-        for layer in [back, front] {
-            for j in 1..layer.len() {
-                let (earlier, rest) = layer.split_at_mut(j);
-                for a in earlier {
-                    collide(a, &mut rest[0]);
+        if limit.is_some() {
+            for b in &mut self.bodies {
+                b.prepare_own_extrema();
+            }
+        }
+        for _ in 0..if limit.is_some() { 4 } else { 1 } {
+            let (back, front) = self.bodies.split_at_mut(self.split);
+            for layer in [back, front] {
+                for j in 1..layer.len() {
+                    let (earlier, rest) = layer.split_at_mut(j);
+                    for a in earlier {
+                        collide(a, &mut rest[0], limit.is_some());
+                    }
+                }
+            }
+            if limit.is_some() {
+                for b in &mut self.bodies {
+                    b.wall();
                 }
             }
         }
@@ -440,6 +557,9 @@ impl Chamber {
                 // otherwise carry invisible downward energy during a Hold.
                 let travel = (b.pos - b.before) * (1. / DT);
                 b.vel = b.vel * 0.40 + travel * 0.60;
+            }
+            if let Some(limit) = limit {
+                b.limit_surface_speed(limit);
             }
             supported &= b.touched;
             energy += b.vel.norm2() + (b.spin * b.cut.reach).powi(2);
@@ -470,6 +590,67 @@ impl Chamber {
         } else {
             self.stable_steps = 0;
         }
+    }
+}
+
+// Integral of a trapezoidal velocity profile: continuous starts and stops.
+// The reference rate is a maximum, not an average over a slow quintic chase.
+pub(super) fn transfer_speed(time: f64, speed: f64, distance: f64) -> f64 {
+    const RAMP: f64 = 0.25;
+    let duration = distance / speed + RAMP;
+    if time <= 0. || time >= duration {
+        0.
+    } else {
+        speed * (time / RAMP).min((duration - time) / RAMP).min(1.)
+    }
+}
+pub(super) fn transfer_distance(time: f64, speed: f64, distance: f64) -> f64 {
+    const RAMP: f64 = 0.25;
+    let duration = distance / speed + RAMP;
+    let t = time.clamp(0., duration);
+    if t < RAMP {
+        speed * t * t / (2. * RAMP)
+    } else if t > duration - RAMP {
+        distance - speed * (duration - t).powi(2) / (2. * RAMP)
+    } else {
+        speed * (t - RAMP / 2.)
+    }
+}
+
+#[cfg(test)]
+impl Chamber {
+    pub fn max_penetration(&self) -> f64 {
+        self.max_penetration_at_scale(1.)
+    }
+    pub fn max_optical_penetration(&self) -> f64 {
+        self.max_penetration_at_scale(0.93)
+    }
+    fn max_penetration_at_scale(&self, scale: f64) -> f64 {
+        let bodies: Vec<_> = self
+            .bodies
+            .iter()
+            .map(|b| {
+                let mut b = *b;
+                for v in &mut b.cut.core {
+                    *v = *v * scale;
+                }
+                b.cut.rounding *= scale;
+                b.cut.reach *= scale;
+                b.orient();
+                b
+            })
+            .collect();
+        let mut worst: f64 = 0.;
+        for layer in [&bodies[..self.split], &bodies[self.split..]] {
+            for j in 1..layer.len() {
+                for a in &layer[..j] {
+                    if let Some((_, depth, _)) = contact(a, &layer[j], layer[j].pos - a.pos) {
+                        worst = worst.max(depth);
+                    }
+                }
+            }
+        }
+        worst
     }
 }
 
@@ -537,12 +718,51 @@ mod tests {
         for _ in 0..240 {
             chamber.step(1.1);
         }
-        assert!(
-            chamber
-                .bodies
-                .iter()
-                .zip(centers)
-                .any(|(p, c)| (p.pos - c).norm2() > 0.01)
-        );
+        assert!(chamber
+            .bodies
+            .iter()
+            .zip(centers)
+            .any(|(p, c)| (p.pos - c).norm2() > 0.01));
+    }
+}
+
+#[cfg(test)]
+mod support_cache_tests {
+    use super::*;
+    #[test]
+    fn cached_support_matches_original_scan_after_rotations() {
+        let mut rng = Pcg32::new(11, 5);
+        let mut chamber = Chamber::new(&mut rng, 64, 0, 0, 0);
+        let mut checks = 0;
+        for b in &mut chamber.bodies {
+            for i in 0..64 {
+                b.angle = f64::from(i) * 0.17320508075688773 - 3.;
+                b.orient();
+                b.prepare_own_extrema();
+                let count = match b.cut.sides {
+                    1 => 0,
+                    2 => 1,
+                    n => n,
+                };
+                for j in 0..count {
+                    for negative in [false, true] {
+                        let n = if negative {
+                            -b.normals[j]
+                        } else {
+                            b.normals[j]
+                        };
+                        let old = b.support(n);
+                        let cached = b.own_support(j, negative, n);
+                        assert_eq!(
+                            [old.0.to_bits(), old.1.to_bits()],
+                            [cached.0.to_bits(), cached.1.to_bits()],
+                            "stale support after rotation {i}, face {j}"
+                        );
+                        checks += 1;
+                    }
+                }
+            }
+        }
+        assert!(checks > 1000);
     }
 }

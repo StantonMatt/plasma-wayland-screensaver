@@ -11,12 +11,13 @@
 class OffscreenTarget final {
 public:
     static std::unique_ptr<OffscreenTarget> create(
-        QQuickWindow* window, QRhi* rhi, QSize size, QQuickWindow::CreateTextureOptions textureOptions = {})
+        QQuickWindow* window, QRhi* rhi, QSize size, QQuickWindow::CreateTextureOptions textureOptions = {},
+        QRhiTexture::Format format = QRhiTexture::RGBA8)
     {
         if (!window || !rhi || size.isEmpty())
             return {};
         auto attachment = std::unique_ptr<QRhiTexture>(
-            rhi->newTexture(QRhiTexture::RGBA8, size, 1, QRhiTexture::RenderTarget));
+            rhi->newTexture(format, size, 1, QRhiTexture::RenderTarget));
         if (!attachment->create())
             return {};
         auto result = std::unique_ptr<OffscreenTarget>(new OffscreenTarget);

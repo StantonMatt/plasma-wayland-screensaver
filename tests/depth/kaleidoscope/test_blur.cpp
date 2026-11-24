@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "visuals/kaleidoscope/blur.h"
+#include "visuals/kaleidoscope/chambercache.h"
 #include <QtTest>
 #include <algorithm>
 #include <cmath>
@@ -8,6 +9,28 @@ class BlurTest : public QObject
 {
     Q_OBJECT
 private Q_SLOTS:
+    void mouthShadowPhaseInvalidatesChamber()
+    {
+        KaleidoscopeMouthShadowState state;
+        kaleidoscope_lens lens {};
+        lens.motion[2] = 300.f; // Ordinary Lattice drift is not a chamber input.
+        QVERIFY(!state.sync(lens));
+        lens.motion[2] = -1.f;
+        QVERIFY(state.sync(lens));
+        QVERIFY(!state.sync(lens));
+        lens.motion[2] = -1.25f; // Poses and key light remain completely still.
+        QVERIFY(state.sync(lens));
+        QVERIFY(!state.sync(lens));
+        lens.rim[3] = 1.f; // Neutral transmission treatment belongs to Ocean.
+        QVERIFY(state.sync(lens));
+        lens.motion[2] = -1.5f;
+        QVERIFY(!state.sync(lens));
+        lens.rim[3] = 0.f;
+        QVERIFY(state.sync(lens));
+        lens.motion[2] = 400.f;
+        QVERIFY(state.sync(lens));
+        QVERIFY(!state.sync(lens));
+    }
     void liveInputsUpdateWithoutResize()
     {
         KaleidoscopeBlurUniforms state;

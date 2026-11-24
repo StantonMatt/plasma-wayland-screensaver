@@ -143,7 +143,8 @@ bool BounceMaterial::supported(QQuickWindow *window) {
   if (!target || !target->renderPassDescriptor())
     return false;
   std::unique_ptr<QRhiBuffer> uniform(
-      rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 160));
+      rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
+                     64 + sizeof(BounceMaterial::uniforms)));
   std::unique_ptr<QRhiTexture> texture(
       rhi->newTexture(QRhiTexture::RGBA32F, {4, 512}));
   std::unique_ptr<QRhiSampler> sampler(rhi->newSampler(

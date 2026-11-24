@@ -1,6 +1,10 @@
 // Included by the private capture test, which has access to OverlayManager's
 // configured views. A scene always runs in a freshly isolated application.
 #include "matrix/gputimer.h"
+#include "visuals_depth_kaleidoscope.h"
+#include <array>
+#include <cmath>
+#include <vector>
 void DepthCaptureTest::productScene()
 {
     if (!qEnvironmentVariableIsSet("VISUALS_REQUIRE_GPU"))
@@ -130,41 +134,84 @@ void DepthCaptureTest::productScene()
     QImage world(bounds.size(), QImage::Format_RGB32);
     const auto video = scene["video"_L1].toObject();
     const int fps = video["fps"_L1].toInt(60), length = video["frames"_L1].toInt();
+    const double cadenceHz = video["cadenceHz"_L1].toDouble(fps);
+    QVERIFY(std::isfinite(cadenceHz) && cadenceHz >= 1. && cadenceHz <= 240.);
     QList<qint64> times;
     if (length) {
         for (int i = 0; i < length; ++i)
-            times.append(qint64(video["start"_L1].toInt()) * 1000000000 + i * 1000000000LL / fps);
+            times.append(qint64(video["start"_L1].toInt()) * 1000000000
+                + (video.contains("cadenceHz"_L1) ? qint64(i * 1000000000. / cadenceHz) : i * 1000000000LL / fps));
     } else
         for (auto time : scene["captureTimesNs"_L1].toArray())
             times.append(time.toString().toLongLong());
+    const auto gpuStudy = scene["gpuStudy"_L1].toObject();
+    if (!gpuStudy.isEmpty()) {
+        times.clear();
+        const int frames = gpuStudy["frames"_L1].toInt();
+        QVERIFY(frames > 0 && frames <= 36001);
+        for (int frame = 0; frame < frames; ++frame)
+            times.append(frame * 1000000000LL / 60);
+    }
     if (scene["gpuTiming"_L1].toBool()) {
-        // Time the normal window render pass on the GPU. grabWindow() below
+        // Time the normal window render (including offscreen passes) on the GPU. grabWindow() below
         // has its own offscreen target and synchronous readback; keep it out
         // of the timing interval.
-        QCOMPARE(manager.m_views.size(), 1);
         QVERIFY(!times.isEmpty());
-        auto* view = manager.m_views.cbegin().value();
-        auto swaps = std::make_shared<std::atomic<int>>(0);
-        auto gpu = std::make_shared<CaptureGpuTimer>();
-        const auto gpuStart = connect(view, &QQuickWindow::beforeRenderPassRecording, view,
-            [gpu, view] { gpu->begin(view); }, Qt::DirectConnection);
-        const auto gpuEnd = connect(view, &QQuickWindow::afterRenderPassRecording, view,
-            [gpu, view] { gpu->finish(view); }, Qt::DirectConnection);
-        const auto countSwaps = connect(view, &QQuickWindow::frameSwapped, view,
-            [swaps] { ++*swaps; }, Qt::DirectConnection);
+        struct GpuOutput {
+            QQuickWindow* view;
+            std::shared_ptr<std::atomic<int>> swaps;
+            std::shared_ptr<CaptureGpuTimer> timer;
+            std::array<QMetaObject::Connection, 3> connections;
+        };
+        std::vector<GpuOutput> measured;
+        for (auto* view : manager.m_views) {
+            auto swaps = std::make_shared<std::atomic<int>>(0);
+            auto gpu = std::make_shared<CaptureGpuTimer>(view->objectName());
+            measured.push_back({view, swaps, gpu, {
+                connect(view, &QQuickWindow::beforeRendering, view,
+                    [gpu, view] { gpu->begin(view); }, Qt::DirectConnection),
+                connect(view, &QQuickWindow::afterRendering, view,
+                    [gpu, view] { gpu->finish(view); }, Qt::DirectConnection),
+                connect(view, &QQuickWindow::frameSwapped, view,
+                    [swaps] { ++*swaps; }, Qt::DirectConnection)}});
+        }
         QVERIFY(manager.m_depthCoordinator->seek(times.first()));
         qInfo("GPU timing begin");
+        int gpuFrames = 0;
         for (qint64 ns : times) {
-            const int prior = swaps->load();
-            QVERIFY(manager.m_depthCoordinator->present(view->screen()->name(), manager.m_depthEpochNs + ns));
-            view->update();
-            QVERIFY(QTest::qWaitFor([&] { return swaps->load() > prior; }, 5000));
+            std::vector<int> prior;
+            for (const auto& output : measured) {
+                prior.push_back(output.swaps->load());
+                QVERIFY(manager.m_depthCoordinator->present(output.view->screen()->name(), manager.m_depthEpochNs + ns));
+                output.view->update();
+            }
+            QVERIFY(QTest::qWaitFor([&] {
+                for (size_t i = 0; i < measured.size(); ++i)
+                    if (measured[i].swaps->load() <= prior[i]) return false;
+                return true;
+            }, 5000));
+            if (++gpuFrames == 10)
+                for (const auto& output : measured)
+                    QVERIFY2(output.timer->samples.load() > 0, "GPU elapsed-time query unavailable");
         }
         qInfo("GPU timing end");
-        disconnect(countSwaps);
-        disconnect(gpuStart);
-        disconnect(gpuEnd);
-        QVERIFY2(gpu->samples.load() >= times.size() * 9 / 10, "Insufficient valid GPU timer samples");
+        QJsonArray gpuSamples;
+        for (const auto& output : measured) {
+            for (const auto& connection : output.connections) disconnect(connection);
+            QVERIFY2(output.timer->samples.load() >= times.size() * 9 / 10, "Insufficient valid GPU timer samples");
+            gpuSamples.append(QJsonObject{{"window"_L1, output.view->objectName()}, {"samples"_L1, output.timer->samples.load()}});
+        }
+        if (!gpuStudy.isEmpty()) {
+            auto manifest = scene;
+            manifest["gpuSamples"_L1] = gpuSamples;
+            QFile report(dir.filePath(QStringLiteral("manifest.json")));
+            QVERIFY(report.open(QIODevice::WriteOnly));
+            report.write(QJsonDocument(manifest).toJson());
+            report.close();
+            manager.hide();
+            QTRY_COMPARE_WITH_TIMEOUT(manager.m_pendingViewDeletions, 0, 10000);
+            return;
+        }
     }
     const auto movieName = video["name"_L1].toString(QStringLiteral("world"));
     const bool seam = video["seam"_L1].toBool();
@@ -230,6 +277,8 @@ void DepthCaptureTest::productScene()
     }
     qint64 lastPacedFrame = -1;
     QJsonArray frames;
+    QMap<QString, qint64> kaleidoscopeSwapStarts;
+    QMap<QString, double> kaleidoscopeQueueDelays;
     int index = 0;
     int fallbackBrightPixels = 0;
     for (qint64 ns : times) {
@@ -239,6 +288,23 @@ void DepthCaptureTest::productScene()
             for (auto* screen : manager.m_views.keys())
                 if (!sampleHz || manager.m_views.value(screen)->x() != pacedX)
                     QVERIFY(manager.m_depthCoordinator->present(screen->name(), manager.m_depthEpochNs + timeFor(screen, ns)));
+        }
+        if (visual == QStringLiteral("kaleidoscope") && !legacy && !fallback && sampleTimeline) {
+            for (auto* screen : manager.m_views.keys()) {
+                const auto lease = manager.m_depthCoordinator->sampleFor(screen->name());
+                kaleidoscope_lens lens {};
+                QVERIFY(visuals_depth_kaleidoscope_sample(lease.get(), &lens, nullptr, 0) > 0);
+                const double age = lens.flare[3];
+                // Ignore the no-swap sentinel and recipe-boundary endpoint.
+                // Ages below one second retain sub-microsecond precision.
+                if (age > 0.05 && age < 9.99
+                    && (!kaleidoscopeSwapStarts.contains(screen->name()) || age < 1.)) {
+                    const auto estimate = timeFor(screen, ns) - qRound64(age * 1e9);
+                    const auto tick = qRound64(estimate * (120. / 1e9));
+                    kaleidoscopeSwapStarts[screen->name()] = tick * 1000000000LL / 120;
+                    kaleidoscopeQueueDelays[screen->name()] = lens.mote[3];
+                }
+            }
         }
         world.fill(Qt::black);
         QPainter painter(&world);
@@ -333,6 +399,15 @@ void DepthCaptureTest::productScene()
         stats.append(QJsonObject {
             { "ticks"_L1, qint64(s.ticks) }, { "p99Ns"_L1, qint64(s.p99_ns) }, { "maxNs"_L1, qint64(s.max_ns) } });
     auto manifest = scene;
+    QJsonArray swaps;
+    for (auto it = kaleidoscopeSwapStarts.cbegin(); it != kaleidoscopeSwapStarts.cend(); ++it) {
+        swaps.append(QJsonObject {{"output"_L1,it.key()},
+            {"swapStartNs"_L1,QString::number(it.value())},
+            {"pourOnsetNs"_L1,QString::number(it.value()+440000000)},
+            {"refillStartNs"_L1,QString::number(it.value()+4000000000LL)},
+            {"queueDelaySeconds"_L1,kaleidoscopeQueueDelays.value(it.key())}});
+    }
+    if (!swaps.isEmpty()) manifest["kaleidoscopeSwaps"_L1] = swaps;
     manifest["frames"_L1] = frames;
     manifest["tickExport"_L1] = stats;
     if (legacy)

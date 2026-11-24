@@ -225,7 +225,7 @@ impl Curtain {
         }
         let wanted = if self.retiring() { 0. } else { 1. };
         if let Some((delay, end, recovery)) = self.expansion {
-            self.light = smooth((self.age - delay) / 15.) * smooth((end - self.age) / recovery);
+            self.light = smooth((self.age - delay) / 45.) * smooth((end - self.age) / recovery);
         } else if let Some((from, to, elapsed)) = self.fade {
             let progress = if to == 0. {
                 (dt / 8.).min(0.05 / 2.5)

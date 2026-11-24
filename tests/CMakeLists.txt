@@ -180,6 +180,9 @@ add_test(NAME snakes-core-rust
     COMMAND "${CMAKE_COMMAND}" -E env ${SNAKES_CORE_CARGO_ENV}
         "${CARGO_EXECUTABLE}" test --frozen
         --manifest-path "${SNAKES_CORE_MANIFEST}" --profile "${SNAKES_CORE_PROFILE}")
+# cargo test compiles every test target first (about 18 minutes on a hosted
+# runner), so CTest's 1500 s default no longer covers compile plus run.
+set_tests_properties(snakes-core-rust PROPERTIES TIMEOUT 3600)
 
 # Build fixture-only hooks separately; the production C ABI remains feature-free.
 find_package(Python3 REQUIRED COMPONENTS Interpreter)

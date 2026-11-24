@@ -390,7 +390,10 @@ impl Frame {
                 }
                 if let Some(front) = gust {
                     let long_wave = (arc * gust_wave_number - r.motion_age * 0.85).sin();
-                    let residual = 0.4 * r.width * u * u * long_wave;
+                    // A gust bends the head end of every lane as well as its tail.
+                    // The displacement has a 2,200 px curvature radius at its
+                    // extrema, independent of width; there is no u² flat zone.
+                    let residual = 0.4 * r.width * long_wave;
                     offset += (residual - offset) * front.gust(pos, sea.left);
                 }
                 pos += side * offset;
@@ -545,9 +548,7 @@ impl Frame {
                 let silk = self.art.0[1][m.hue % 6];
                 let c =
                     std::array::from_fn::<_, 3, _>(|i| 0.3 * silk.front[i] + 0.7 * silk.accent[i]);
-                let alpha = smooth(m.age / 0.4)
-                    * smooth((m.life - m.age) / 2.)
-                    * (1.18 + 0.25 * (m.age * 11.5 + m.id as f64).sin());
+                let alpha = smooth(m.age / 0.4) * smooth((m.life - m.age) / 2.) * m.twinkle();
                 self.sparks.push(Spark {
                     id: m.id,
                     vertex: Vertex {
@@ -1045,3 +1046,7 @@ const _: () = {
 #[cfg(test)]
 #[path = "../../../../../../tests/depth/ribbons/acceptance.rs"]
 mod acceptance;
+
+#[cfg(test)]
+#[path = "../../../../../../tests/depth/ribbons/polish.rs"]
+mod polish;

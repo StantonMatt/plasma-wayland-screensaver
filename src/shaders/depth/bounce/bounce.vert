@@ -14,7 +14,7 @@ layout(std140,binding=0) uniform buf {
     vec4 ranges; // count of effects, trail headers and spheres
     vec4 top;
     vec4 bottom;
-    vec4 cabinet;
+    vec4 cabinet; vec4 trailStyle;
 } ub;
 layout(binding=1) uniform sampler2D records;
 layout(binding=2) uniform sampler2D knots;
@@ -88,7 +88,8 @@ void main(){
             hi=max(hi,max(k0,max(k1,k2)));
             young=old;velocity=v0;
         }
-        float padding=g.z*(.47+ub.ranges.w);
+        float widthScale=ub.trailStyle.x>0. ? ub.trailStyle.x : mix(1.,.82,smoothstep(.65,.90,g.w));
+        float padding=g.z*(.47+ub.ranges.w)*widthScale;
         p=g.xy+basis*mix(lo-padding,hi+padding,.5+.5*corner);
         surface=g;coating=a;uv=vec2(headDistance,path);
     }

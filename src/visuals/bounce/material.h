@@ -33,5 +33,5 @@ public:
   static bool supported(QQuickWindow *);
   VisualDataTexture records;
   BounceTrails trails;
-  std::array<float, 24> uniforms{};
+  std::array<float, 28> uniforms{};
 };

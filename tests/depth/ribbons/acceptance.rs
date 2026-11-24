@@ -328,11 +328,17 @@ fn spanning_balance_and_gaps() {
                         }
                     }
                 }
-                hits.extend(
-                    intersections(&body)
-                        .into_iter()
-                        .filter(|p| w.input.layout.contains(*p)),
-                );
+                let crossings: Vec<_> = intersections(&body)
+                    .into_iter()
+                    .filter(|p| w.input.layout.contains(*p))
+                    .collect();
+                if !crossings.is_empty() && std::env::var_os("PVS_RIBBON_LOOP_TRACE").is_some() {
+                    println!(
+                        "{name} tick {tick} strand {} layer {} crossings {crossings:?}",
+                        s.id, s.layer
+                    );
+                }
+                hits.extend(crossings);
             }
             token_max = token_max.max(*tokens.iter().max().unwrap());
             for (i, q) in hits.iter().enumerate() {
@@ -389,6 +395,7 @@ fn released_bodies_clear_orbit() {
         let mut growth = vec![];
         let mut radii = [f64::INFINITY; 3];
         let mut max_turn = 0_f64;
+        let mut max_turn_at = (0, 0, 0.);
         let mut closed = 0;
         let mut frames = 0;
         let mut count = 0;
@@ -459,7 +466,11 @@ fn released_bodies_clear_orbit() {
                     lo = lo.min(total);
                     hi = hi.max(total);
                 }
-                max_turn = max_turn.max((hi - lo).to_degrees());
+                let excursion = (hi - lo).to_degrees();
+                if excursion > max_turn {
+                    max_turn = excursion;
+                    max_turn_at = (tick, r.id, r.release_age);
+                }
             }
         }
         if name == "C-maelstrom" {
@@ -468,6 +479,7 @@ fn released_bodies_clear_orbit() {
         println!(
             "{name}: released {count}, body samples {frames}, closed {closed}, maximum tangent excursion {max_turn:.2}°, path radius by layer {radii:?}, radial growth at +3 {growth:?}, radii at +8 {distances:?}"
         );
+        println!("{name} maximum body turn at tick/strand/release age: {max_turn_at:?}");
         assert!(
             (3..=6).contains(&count)
                 && distances.len() == count
@@ -553,4 +565,146 @@ fn still_water_angles() {
         "Still 400–445s: {links} phase differences, maximum {worst:.6}°; 415–417s: {measurements} exported transverse sections, narrowest projected fraction {min_face:.6}"
     );
     assert!(worst <= 20. && actual <= 20. && fitted <= 20. && min_face >= 0.25);
+}
+
+#[test]
+#[ignore = "measure real Speed300 release identity beyond the event lockout"]
+fn real_maelstrom_release_keeps_radius_through_recovery() {
+    for span in [false, true] {
+        for seed in [1, 7, 23] {
+            let mut cfg = input(seed, (2560., 1440.));
+            cfg.speed = 3.;
+            cfg.density = 80.;
+            cfg.scale = 2.;
+            cfg.trails = 1.;
+            cfg.palette = 2;
+            cfg.environment.background = 0;
+            if span {
+                cfg.seed = seed;
+                cfg.mode = MonitorMode::Spanning;
+                cfg.layout = Layout::new(
+                    [
+                        (0., 0., 2560., 1440.),
+                        (2560., 0., 3440., 1440.),
+                        (6000., 195., 1920., 1080.),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(id, (x, y, width, height))| OutputRect {
+                        id: id as u64,
+                        rect: Rect {
+                            x,
+                            y,
+                            width,
+                            height,
+                        },
+                        primary: id == 0,
+                    })
+                    .collect(),
+                    1,
+                )
+                .unwrap();
+            }
+            let centre = if span { [4280., 720.] } else { [1280., 720.] };
+            let origin = p(centre[0], centre[1]);
+            let mut w = Ribbons::new(cfg);
+            w.inject(Event {
+                id: 2,
+                at_ns: 602_000_000_000,
+                anchor: centre,
+                strength: 1.,
+            })
+            .unwrap();
+            let mut tracked = std::collections::BTreeMap::<u32, (Option<u64>, [Vec2; 3])>::new();
+            let mut radii = [f64::INFINITY; 3];
+            let mut closed = 0;
+            let mut max_turn = 0_f64;
+            let mut max_visible_turn = 0_f64;
+            let mut worst = (0_u64, 0_u32, 0_f64);
+            let mut samples = 0;
+            let mut distances = vec![];
+            for tick in 1..=19800_u64 {
+                w.step(tick);
+                for r in w.sea.agents.iter().filter(|r| r.alive) {
+                    if (18060..=18120).contains(&tick) && r.caught {
+                        tracked.entry(r.id).or_insert((None, [r.head(); 3]));
+                    }
+                    let Some((release, history)) = tracked.get_mut(&r.id) else {
+                        continue;
+                    };
+                    if release.is_none() && r.release_age > 0. {
+                        *release = Some(tick);
+                        *history = [r.head(); 3];
+                    }
+                    let Some(start) = *release else {
+                        continue;
+                    };
+                    let elapsed = tick - start;
+                    if elapsed > 450 {
+                        continue;
+                    }
+                    history.rotate_left(1);
+                    history[2] = r.head();
+                    if elapsed >= 2 {
+                        radii[r.layer] =
+                            radii[r.layer].min(radius(history[0], history[1], history[2]));
+                    }
+                    if elapsed == 240 {
+                        distances.push((r.id, (r.head() - origin).length()));
+                    }
+                    if !(60..=450).contains(&elapsed) || elapsed % 15 != 0 {
+                        continue;
+                    }
+                    let body = visible_body(r);
+                    if !body.iter().any(|q| w.input.layout.contains(*q)) {
+                        continue;
+                    }
+                    samples += 1;
+                    closed += intersections(&body)
+                        .iter()
+                        .filter(|q| w.input.layout.contains(**q))
+                        .count();
+                    let (mut total, mut lo, mut hi) = (0_f64, 0_f64, 0_f64);
+                    let (mut local, mut local_lo, mut local_hi) = (0_f64, 0_f64, 0_f64);
+                    for a in body.windows(3) {
+                        let delta = turn(a[1] - a[0], a[2] - a[1]);
+                        total += delta;
+                        lo = lo.min(total);
+                        hi = hi.max(total);
+                        if a.iter().all(|q| w.input.layout.contains(*q)) {
+                            local += delta;
+                            local_lo = local_lo.min(local);
+                            local_hi = local_hi.max(local);
+                            max_visible_turn =
+                                max_visible_turn.max((local_hi - local_lo).to_degrees());
+                        } else {
+                            local = 0.;
+                            local_lo = 0.;
+                            local_hi = 0.;
+                        }
+                    }
+                    let excursion = (hi - lo).to_degrees();
+                    if excursion > max_turn {
+                        max_turn = excursion;
+                        worst = (tick, r.id, r.release_age);
+                    }
+                }
+            }
+
+            let released = tracked.values().filter(|(r, _)| r.is_some()).count();
+            assert!(released >= 3 && samples > 20 && !distances.is_empty());
+            println!(
+                "REAL_RELEASE spanning{span} seed{seed}: captured={},released={released},visibleSamples={samples},closedVisible={closed},maxWholeTurn={max_turn:.6},maxVisibleTurn={max_visible_turn:.6},pathRadii={radii:?},headDistancesAt8={distances:?},worst={worst:?}",
+                tracked.len()
+            );
+            assert!(
+                closed == 0
+                    && max_turn <= 270.
+                    && radii[0] >= 160.
+                    && radii[1] >= 220.
+                    && radii[2] >= 300.,
+                "radius or coil regression: {radii:?}, turn {max_turn}, closed {closed}"
+            );
+        }
+    }
 }

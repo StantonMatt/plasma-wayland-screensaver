@@ -73,7 +73,7 @@ public:
         const int palette = int(sky.style[2]);
         const int lightestRole = palette == 0 ? 5 : palette == 5 ? 1 : 0;
         const auto* lightest = sky.colors[lightestRole];
-        float limit[] = { 0.95f * lightest[0], 0.95f * lightest[1], 0.95f * lightest[2], 1.f };
+        float limit[] = { 0.95f * lightest[0], 0.95f * lightest[1], 0.95f * lightest[2], sky.phases[1] };
         if (palette == 1) {
             // Spectrum contains both a magenta fringe and high green emission.
             for (int channel = 0; channel < 3; ++channel) {
@@ -82,7 +82,12 @@ public:
             }
         }
         std::memcpy(data + 176, limit, 16);
-        std::memcpy(data + 192, sky.optics, 16);
+        float optics[4];
+        std::memcpy(optics, sky.optics, 16);
+        // Preserve faint striation in the crown's diffuse islands. The central
+        // convergence aperture remains protected by the shader's canopy rule.
+        optics[3] *= 1.f - .65f * sky.phases[2];
+        std::memcpy(data + 192, optics, 16);
         return true;
     }
     void updateSampledImage(
@@ -178,4 +183,10 @@ bool AuroraShore::supports(QQuickWindow* window, QRhi* rhi, QRhiBuffer* uniforms
         return false;
     proven.push_back(key);
     return true;
+}
+
+void AuroraShore::sync(const aurora_atmosphere& sky)
+{
+    static_cast<Material*>(material())->sky = sky;
+    markDirty(DirtyMaterial);
 }
