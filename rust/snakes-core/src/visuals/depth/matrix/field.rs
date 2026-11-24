@@ -209,16 +209,7 @@ impl Layer {
                         })
                         .unwrap_or(input.layout.outputs.len()),
                     floor: (floor - b.y) as f32 / pitch[1],
-                    landing_band: 0.23
-                        * input
-                            .layout
-                            .outputs
-                            .iter()
-                            .find(|o| {
-                                x >= o.rect.x && x < o.rect.right() && o.rect.bottom() == floor
-                            })
-                            .map_or(b.height, |o| o.rect.height) as f32
-                        / pitch[1],
+                    landing_band: 1.,
                     next_spawn: 1 + (hash64(seed ^ ((c as u64) << 31)) % 30) as u32,
                     ..Column::default()
                 }
@@ -364,8 +355,8 @@ impl Layer {
         };
         Self::dirty(c, stamp, r);
     }
-    // In a wide, fast sheet of rain the last ranks dissolve into the floor.
-    // Distance is measured from the physical output under this column.
+    // Only the final cell dims at the physical floor. The landing-strip
+    // occupancy masks, rather than a dark lower quarter, separate dense ink.
     fn landing_light(amount: f32, col: &Column, y: f32) -> f32 {
         if amount == 0. || y < col.floor - col.landing_band {
             return 1.;
@@ -815,7 +806,7 @@ impl Layer {
                 s.tint,
                 s.fade
                     * (0.70 + 0.20 * s.mass.min(2.))
-                    * Self::landing_light(self.landing_fade, &self.cols[s.col], s.y),
+                    * Self::landing_light(self.landing_fade, &self.cols[s.col], s.y).max(0.70),
                 if s.lantern { 2. } else { 0. },
                 s.flare / 0.3,
             );
@@ -1157,6 +1148,28 @@ impl LandingStrip {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn large_rain_reaches_the_last_cell_before_dimming() {
+        let mut config = input(7, true);
+        config.scale = 2.;
+        config.density = 80.;
+        let mut layer = Layer::new(1, &config, &Params::default());
+        for col in &layer.cols {
+            assert!(col.landing_band <= 1.);
+            assert_eq!(
+                Layer::landing_light(layer.landing_fade, col, col.floor - 1.),
+                1.
+            );
+        }
+        layer.spawn(0, 100, false, false, &Params::default());
+        let stream = &mut layer.streams[0];
+        stream.fade = 1.;
+        stream.y = layer.cols[0].floor - 0.01;
+        let full_light = 0.70 + 0.20 * stream.mass.min(2.);
+        let mut heads = Vec::new();
+        layer.heads(&mut heads);
+        assert!(heads[0].light[0] >= 0.70 * full_light);
+    }
     use super::*;
     use crate::visuals::depth::matrix::tests::input;
 

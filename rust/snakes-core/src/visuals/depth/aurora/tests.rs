@@ -654,3 +654,296 @@ fn corona_begins_on_the_existing_material_field() {
         records(&start, &start, world.sky.bounds, 0., 1)
     );
 }
+
+#[test]
+fn spectrum_hue_is_continuous_across_shader_clock_wraps() {
+    // Presentation steps at both reported speed settings, before and after
+    // several coarse-clock wraps, plus the hue's own periodic boundary.
+    let mut config = input(false, false);
+    config.palette = 1;
+    let mut world = Aurora::new(config);
+    let mut exported_phase = |time: f64| {
+        // Exercise interpolation and the exported block consumed by the shader.
+        world.weather.time = time - 0.025;
+        let lower = Arc::new(world.snapshot());
+        world.weather.time = time + 0.025;
+        let upper = Arc::new(world.snapshot());
+        let lease = super::super::ffi::Lease {
+            sample: super::super::common::clock::Sample {
+                lower,
+                upper,
+                alpha: 0.5,
+                missed: false,
+            },
+            view: view(world.sky.bounds),
+            bounds: world.sky.bounds,
+        };
+        let mut out = render::Atmosphere::default();
+        assert!(unsafe { render::visuals_aurora_atmosphere(&lease, -1, &mut out) } > 0.);
+        f64::from(out.phases[0])
+    };
+    for speed in [1., 3.] {
+        let dt = speed / 60.;
+        for centre in [32768., 65536., 98304., std::f64::consts::TAU / 0.026] {
+            for offset in [0., -2., -1., 1.] {
+                let before = centre + offset * dt - dt * 0.5;
+                let after = before + dt;
+                let (before_phase, after_phase) = (exported_phase(before), exported_phase(after));
+                let delta = (after_phase - before_phase + std::f64::consts::PI)
+                    .rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI;
+                assert!(
+                    (delta - dt * 0.026).abs() < 1e-6,
+                    "speed={speed} time={before}: hue step={delta}"
+                );
+                for spatial_phase in [0., 1., 3., 5.] {
+                    let change = ((after_phase + spatial_phase).sin()
+                        - (before_phase + spatial_phase).sin())
+                    .abs();
+                    assert!(change < dt * 0.026 + 1e-6);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn ordinary_rays_stay_upright_and_coronas_keep_their_fan() {
+    for span in [false, true] {
+        let mut world = Aurora::new(input(true, span));
+        let mut max = 0.0f32;
+        for tick in 1..=1200 {
+            world.step(tick);
+            if tick % 100 != 0 {
+                continue;
+            }
+            let snap = world.snapshot();
+            for q in records(&snap, &snap, world.sky.bounds, 0., 1) {
+                if q.material[0] != render::CURTAIN {
+                    continue;
+                }
+                for p in [q.left, q.right] {
+                    let rise = p[1] - p[3];
+                    if rise > 20. {
+                        max = max.max(((p[2] - p[0]) / rise).abs());
+                    }
+                }
+            }
+        }
+        println!(
+            "ordinary rays span={span}: max {:.3} degrees",
+            max.atan().to_degrees()
+        );
+        assert!(
+            max <= 15.0f32.to_radians().tan(),
+            "span={span}: {} degrees",
+            max.atan().to_degrees()
+        );
+        world.enact(CORONA, Some([world.sky.zenith as f64, 110.]), 1.);
+        for tick in 1201..=1320 {
+            world.step(tick);
+        }
+        let snap = world.snapshot();
+        let fan = records(&snap, &snap, world.sky.bounds, 0., 1)
+            .iter()
+            .filter(|q| q.material[0] == render::CURTAIN)
+            .flat_map(|q| [q.left, q.right])
+            .filter(|p| p[1] - p[3] > 20.)
+            .map(|p| ((p[2] - p[0]) / (p[1] - p[3])).abs())
+            .fold(0.0f32, f32::max);
+        println!(
+            "corona rays span={span}: max {:.3} degrees",
+            fan.atan().to_degrees()
+        );
+        assert!(fan > 0.35, "span={span}: corona fan {fan}");
+    }
+}
+
+#[test]
+fn expansion_sheets_brighten_over_a_long_exhale() {
+    let mut world = Aurora::new(input(false, true));
+    world.arcs.truncate(1); // Leave room for all three staggered births.
+    world.enact(SUBSTORM, Some([650., 500.]), 1.);
+    assert_eq!(
+        world.arcs.iter().filter(|a| a.expansion.is_some()).count(),
+        3
+    );
+    let mut previous_delay = None;
+    for curtain in world.arcs.iter_mut().filter(|a| a.expansion.is_some()) {
+        let (delay, _, _) = curtain.expansion.unwrap();
+        if let Some(previous) = previous_delay {
+            assert!((15. ..=30.).contains(&(delay - previous)));
+        }
+        previous_delay = Some(delay);
+        // Hold the recovery edge away from the growth edge to isolate pacing.
+        curtain.expansion = Some((delay, 1000., 100.));
+        curtain.age = delay + 10. - 0.05;
+        curtain.step(0.05, 0., 0.7, 1., &mut world.rng);
+        assert!(curtain.light < 0.15, "ten-second fill {}", curtain.light);
+        curtain.age = delay + 30. - 0.05;
+        curtain.step(0.05, 0., 0.7, 1., &mut world.rng);
+        assert!((0.65..0.80).contains(&curtain.light));
+        curtain.age = delay + 45. - 0.05;
+        curtain.step(0.05, 0., 0.7, 1., &mut world.rng);
+        assert!(curtain.light > 0.999);
+    }
+}
+
+#[test]
+fn recovery_patches_yield_to_curtains_and_to_coronas() {
+    let mut world = Aurora::new(input(false, false));
+    world.enact(SUBSTORM, Some([650., 500.]), 1.);
+    world.weather.time += 180.;
+    world.weather.recovery = 1.;
+    world.weather.activity = 0.4;
+    let flux = |world: &mut Aurora| {
+        let snap = world.snapshot();
+        records(&snap, &snap, world.sky.bounds, 0., 1)
+            .iter()
+            .filter(|q| q.material[0] == 4.)
+            .map(|q| q.field[2])
+            .sum::<f32>()
+    };
+    let ordinary = flux(&mut world);
+    assert!(ordinary > 0.);
+    world.weather.activity = 1.;
+    let maximum = flux(&mut world);
+    assert!(maximum < ordinary * 0.60);
+    world.enact(CORONA, Some([1200., 110.]), 1.);
+    world.weather.crown.as_mut().unwrap().born -= 15.;
+    let corona = flux(&mut world);
+    println!("patch flux: activity 40={ordinary:.6}, 100={maximum:.6}, corona={corona:.6}");
+    assert!(
+        corona < maximum * 0.10,
+        "corona {corona}, maximum {maximum}"
+    );
+}
+
+#[test]
+fn corona_exports_an_eased_diffuse_material_envelope() {
+    let mut world = Aurora::new(input(false, false));
+    world.enact(CORONA, Some([1830., 110.]), 1.);
+    let born = world.weather.crown.unwrap().born;
+    let life = world.weather.crown.unwrap().life;
+    let mut envelope = |age: f64| {
+        world.weather.time = born + age;
+        let snap = Arc::new(world.snapshot());
+        let lease = super::super::ffi::Lease {
+            sample: super::super::common::clock::Sample {
+                lower: snap.clone(),
+                upper: snap,
+                alpha: 0.5,
+                missed: false,
+            },
+            view: view(world.sky.bounds),
+            bounds: world.sky.bounds,
+        };
+        let mut out = render::Atmosphere::default();
+        assert!(unsafe { render::visuals_aurora_atmosphere(&lease, -1, &mut out) } > 0.);
+        out.phases[2]
+    };
+    assert_eq!(envelope(0.), 0.);
+    assert_eq!(envelope(5.5), 0.5);
+    assert_eq!(envelope(11.), 1.);
+    assert!((envelope(f64::from(life) - 7.5) - 0.5).abs() < 1e-6);
+    assert_eq!(envelope(f64::from(life)), 0.);
+}
+
+#[test]
+fn dense_tall_pastel_hems_keep_curvature_over_four_hundred_pixels() {
+    // The reviewed E-max/600 seed, through the production projected cubics.
+    let mut spec = input(true, false);
+    spec.seed = super::super::common::rng::output_seed(5, 1, "Virtual-0");
+    spec.palette = 5;
+    spec.parameters = vec![(1, 100), (2, 2)]
+        .into_iter()
+        .map(|(id, payload)| super::super::schema::Value {
+            id,
+            kind: PARAMETERS[id as usize - 1].kind,
+            payload,
+        })
+        .collect();
+    let mut world = Aurora::new(spec);
+    for tick in 1..=12000 {
+        world.step(tick);
+    }
+    let snap = world.snapshot();
+    let mut traces: Vec<Vec<[f64; 2]>> = vec![];
+    let mut prior = None;
+    for q in records(&snap, &snap, world.sky.bounds, 1., 1)
+        .iter()
+        .filter(|q| q.material[0] == render::CURTAIN)
+    {
+        let arc = q.material[1] as i32 / 8;
+        let steps = ((q.right[0] - q.left[0]).hypot(q.right[1] - q.left[1]) / 4.)
+            .ceil()
+            .max(1.) as usize;
+        for k in 0..steps {
+            let u = k as f32 / steps as f32;
+            if mix(q.field[2], q.field[3], u) < 0.006 {
+                prior = None;
+                continue;
+            }
+            let p = q.column(u);
+            let point = [mix(p[0], p[2], 0.12) as f64, mix(p[1], p[3], 0.12) as f64];
+            if prior.is_none_or(|(a, x)| a != arc || point[0] < x - 0.1) {
+                traces.push(vec![]);
+            }
+            traces.last_mut().unwrap().push(point);
+            prior = Some((arc, point[0]));
+        }
+    }
+    let mut checked = 0;
+    let mut closest = f64::INFINITY;
+    for mut trace in traces {
+        trace.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        let start = trace[0][0].ceil().max(0.) as i32;
+        let end = trace.last().unwrap()[0].floor().min(2560.) as i32;
+        let mut ys = vec![];
+        let mut j = 0;
+        for x in start..=end {
+            let x = f64::from(x);
+            while j + 1 < trace.len() - 1 && trace[j + 1][0] < x {
+                j += 1;
+            }
+            let a = trace[j];
+            let b = trace[(j + 1).min(trace.len() - 1)];
+            let u = (x - a[0]) / (b[0] - a[0]).max(1e-9);
+            ys.push(a[1] + u * (b[1] - a[1]));
+        }
+        for piece in ys.windows(401) {
+            if piece.iter().copied().fold(f64::NEG_INFINITY, f64::max) < 0.
+                || piece.iter().copied().fold(f64::INFINITY, f64::min) > 1250.
+            {
+                continue;
+            }
+            let width = |slope: f64| {
+                let residuals = piece
+                    .iter()
+                    .enumerate()
+                    .map(|(i, y)| y - slope * (i as f64 - 200.));
+                residuals.clone().fold(f64::NEG_INFINITY, f64::max)
+                    - residuals.fold(f64::INFINITY, f64::min)
+            };
+            let slope = (piece[400] - piece[0]) / 400.;
+            let (mut lo, mut hi) = (slope - 0.06, slope + 0.06);
+            for _ in 0..15 {
+                let a = (2. * lo + hi) / 3.;
+                let b = (lo + 2. * hi) / 3.;
+                if width(a) < width(b) {
+                    hi = b;
+                } else {
+                    lo = a;
+                }
+            }
+            closest = closest.min(width(0.5 * (lo + hi)) / 2.);
+            checked += 1;
+        }
+    }
+    println!("E-max/600: {checked} spans, closest straight fit ±{closest:.4}px");
+    assert!(checked > 1000);
+    assert!(
+        closest > 3.,
+        "400px hem fits within ±{closest:.4}px of a line"
+    );
+}

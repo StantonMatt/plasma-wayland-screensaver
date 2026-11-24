@@ -1205,6 +1205,23 @@
         "frames": 120,
         "fps": 30
       }
+    },
+    "polish-G-saved": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "1",
+      "captureTimesNs": [
+        "600000000000"
+      ],
+      "settings": {
+        "density": 80,
+        "palette": "ember",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "background": "black"
+      },
+      "events": []
     }
   }
 }

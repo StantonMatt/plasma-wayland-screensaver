@@ -21,6 +21,7 @@ public:
     setFlag(OwnsMaterial);
   }
   bool sync(const VisualSampleLease &lease, const vd_sample_info &info) {
+    m_batch.trail_width_scale = 0.f;
     if (!visuals_depth_bounce_write(lease.get(), m_records.data(),
                                     m_records.size(), &m_batch)) {
       if (m_batch.count <= m_records.size() || m_batch.count > 8192)
@@ -84,6 +85,7 @@ public:
     for (size_t i = 0; i < counts.size(); ++i)
       u[8 + i] = float(counts[i]);
     u[11] = m_batch.trail_half_width;
+    u[24] = m_batch.trail_width_scale;
     std::copy_n(m_batch.top, 4, u.begin() + 12);
     std::copy_n(m_batch.bottom, 4, u.begin() + 16);
     markDirty(DirtyMaterial);

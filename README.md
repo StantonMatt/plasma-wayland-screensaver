@@ -37,6 +37,22 @@ opens the latest GitHub release instead.
 > It does not authenticate, lock input, protect running applications, or replace
 > Plasma's lock screen. Anyone who dismisses it can use the session.
 
+## Visual polish 0.29.0
+
+Aurora Drift has smoother curtain detail, gentler storm growth and more
+consistent colour through long sessions. Digital Rain keeps bright heads
+near the floor, gives Pastel glyphs richer colour and draws round Braille
+dots. Bouncing Balls bounce longer, with
+narrower heavy trails and steadier pacing across monitors. Kaleidoscope has
+smoother glass motion and chamber turns, clearer shadows and lower simulation
+cost.
+
+Ribbons gives Pastel strands richer colour on black, scatters its silver
+motes more loosely and lets Gust lanes curve. Maelstrom rings are less
+regular, faint far strands draw fewer tight loops and long strands no
+longer whip. At high Speed, Gust and Maelstrom move more calmly, and Ember
+glows warmer.
+
 ## Aurora Drift 0.28.0
 
 Aurora Drift shows folded curtains over a starry northern horizon. Storms

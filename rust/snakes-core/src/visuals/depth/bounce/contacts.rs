@@ -77,6 +77,34 @@ impl Solver {
             return;
         }
         drop.landed = true;
+        drop.contact = true;
+        // Transfer the impact only through the bed's actual touching graph.
+        // Nearby airborne bodies are not part of that reaction chain.
+        let mut connected = [false; MAX];
+        let mut queue = [0usize; MAX];
+        let mut length = 0;
+        for (i, b) in bed.iter().enumerate() {
+            if b.room == drop.room && (b.p - drop.p).len2() <= (b.r + drop.r + 0.5).powi(2) {
+                connected[i] = true;
+                queue[length] = i;
+                length += 1;
+            }
+        }
+        let mut cursor = 0;
+        while cursor < length {
+            let from = queue[cursor];
+            cursor += 1;
+            for (i, b) in bed.iter().enumerate() {
+                if !connected[i]
+                    && b.room == drop.room
+                    && (b.p - bed[from].p).len2() <= (b.r + bed[from].r + 0.5).powi(2)
+                {
+                    connected[i] = true;
+                    queue[length] = i;
+                    length += 1;
+                }
+            }
+        }
         // Transfer a bounded share of the incident energy into the two sides
         // of the loaded bed. Floor reactions redirect these impulses upward.
         // Neighbours farther along the bed respond to the usual contact solve.
@@ -84,6 +112,9 @@ impl Solver {
         let mut nearest = [(f64::INFINITY, usize::MAX); 4];
         for (i, b) in bed.iter().enumerate().filter(|(_, b)| b.room == drop.room) {
             let d = b.p - drop.p;
+            if !connected[i] {
+                continue;
+            }
             if d.y < 0. || d.y > drop.r + 2.2 * b.r || d.x.abs() > 1.8 * drop.r + b.r {
                 continue;
             }
@@ -99,6 +130,7 @@ impl Solver {
         let mut distributed = 0.;
         for (_, i) in nearest.into_iter().filter(|&(_, i)| i != usize::MAX) {
             let b = &mut bed[i];
+            b.contact = true;
             b.wake();
             let direction = v(if b.p.x < drop.p.x { -0.82 } else { 0.82 }, -0.57);
             let speed =
@@ -158,6 +190,7 @@ impl Solver {
                 } else {
                     d.unit()
                 };
+                b.contact = true;
                 b.supported |= n.dot(down) < -0.55;
                 if floating {
                     away += n;
@@ -210,6 +243,8 @@ impl Solver {
                 }
                 a.near_ball = true;
                 b.near_ball = true;
+                a.contact = true;
+                b.contact = true;
                 let dist = d.len();
                 let n = if dist > 1e-8 { d / dist } else { v(1., 0.) };
                 let nd = n.dot(down);
@@ -286,7 +321,9 @@ impl Solver {
                 let restitution = if a.heavy || b.heavy {
                     0.12
                 } else {
-                    elasticity * a.mat.bounce().min(b.mat.bounce())
+                    a.mat
+                        .restitution(elasticity)
+                        .min(b.mat.restitution(elasticity))
                 };
                 let j = (1. + restitution) * speed * c.inv_sum;
                 let slip = (b.v - a.v).dot(c.n.perp()) - a.spin * a.r - b.spin * b.r;

@@ -843,6 +843,462 @@
         "frames": 900,
         "fps": 60
       }
+    },
+    "G-real": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "600000000000"
+      ],
+      "settings": {
+        "density": 100,
+        "palette": "ocean",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "points": 14,
+        "mirrors": "mandala",
+        "glass": "mixed",
+        "turning": 40,
+        "events": true
+      },
+      "events": []
+    },
+    "G-real-span": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "7",
+      "captureTimesNs": [
+        "600000000000"
+      ],
+      "settings": {
+        "density": 100,
+        "palette": "ocean",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "points": 14,
+        "mirrors": "mandala",
+        "glass": "mixed",
+        "turning": 40,
+        "events": true
+      },
+      "events": []
+    },
+    "cadence-hdmi": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "7",
+      "captureTimesNs": [
+        "30000000000"
+      ],
+      "settings": {
+        "density": 100,
+        "palette": "ocean",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "points": 14,
+        "mirrors": "mandala",
+        "glass": "mixed",
+        "turning": 40,
+        "events": true
+      },
+      "events": [],
+      "video": {
+        "name": "hdmi",
+        "start": 30,
+        "frames": 360,
+        "fps": 60,
+        "cadenceHz": 59.95,
+        "reviewCopy": true
+      }
+    },
+    "cadence-dp5": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "7",
+      "captureTimesNs": [
+        "30000000000"
+      ],
+      "settings": {
+        "density": 100,
+        "palette": "ocean",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "points": 14,
+        "mirrors": "mandala",
+        "glass": "mixed",
+        "turning": 40,
+        "events": true
+      },
+      "events": [],
+      "video": {
+        "name": "dp5",
+        "start": 30,
+        "frames": 360,
+        "fps": 60,
+        "cadenceHz": 58.32,
+        "reviewCopy": true
+      }
+    },
+    "cadence-dp4": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "7",
+      "captureTimesNs": [
+        "30000000000"
+      ],
+      "settings": {
+        "density": 100,
+        "palette": "ocean",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "points": 14,
+        "mirrors": "mandala",
+        "glass": "mixed",
+        "turning": 40,
+        "events": true
+      },
+      "events": [],
+      "video": {
+        "name": "dp4",
+        "start": 30,
+        "frames": 360,
+        "fps": 60,
+        "cadenceHz": 59.94,
+        "reviewCopy": true
+      }
+    },
+    "G-gpu": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "7",
+      "captureTimesNs": [
+        "600000000000"
+      ],
+      "settings": {
+        "density": 100,
+        "palette": "ocean",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "points": 14,
+        "mirrors": "mandala",
+        "glass": "mixed",
+        "turning": 40,
+        "events": true
+      },
+      "events": [],
+      "gpuTiming": true,
+      "gpuStudy": {
+        "frames": 36001
+      },
+      "showClock": true
+    },
+    "G-real-light": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "7",
+      "captureTimesNs": [
+        "20000000000"
+      ],
+      "settings": {
+        "density": 100,
+        "palette": "ocean",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "points": 14,
+        "mirrors": "mandala",
+        "glass": "mixed",
+        "turning": 40,
+        "events": true
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "35000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 5,
+          "timelineNs": "42000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 4,
+          "timelineNs": "49000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 6,
+          "timelineNs": "65000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        }
+      ],
+      "video": {
+        "name": "G-events",
+        "start": 20,
+        "frames": 4500,
+        "fps": 60,
+        "halfScale": true,
+        "reviewCopy": true
+      }
+    },
+    "G-real-swap": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "11",
+      "captureTimesNs": [
+        "58000000000"
+      ],
+      "settings": {
+        "density": 100,
+        "palette": "ocean",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "points": 14,
+        "mirrors": "mandala",
+        "glass": "mixed",
+        "turning": 40,
+        "events": true
+      },
+      "events": [
+        {
+          "id": 5,
+          "timelineNs": "59000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 3,
+          "timelineNs": "60000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        }
+      ],
+      "video": {
+        "name": "G-swap",
+        "start": 58,
+        "frames": 600,
+        "fps": 60,
+        "halfScale": true,
+        "reviewCopy": true
+      }
+    },
+    "G-event-detail": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "7",
+      "captureTimesNs": [
+        "42000000000",
+        "44183333333",
+        "46000000000",
+        "49000000000",
+        "52000000000"
+      ],
+      "settings": {
+        "density": 100,
+        "palette": "ocean",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "points": 14,
+        "mirrors": "mandala",
+        "glass": "mixed",
+        "turning": 40,
+        "events": true
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "35000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 5,
+          "timelineNs": "42000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 4,
+          "timelineNs": "49000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 6,
+          "timelineNs": "65000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "G-swap-detail": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "11",
+      "captureTimesNs": [
+        "58000000000",
+        "60883333333",
+        "62500000000",
+        "64000000000",
+        "67000000000"
+      ],
+      "settings": {
+        "density": 100,
+        "palette": "ocean",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "points": 14,
+        "mirrors": "mandala",
+        "glass": "mixed",
+        "turning": 40,
+        "events": true
+      },
+      "events": [
+        {
+          "id": 5,
+          "timelineNs": "59000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 3,
+          "timelineNs": "60000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        }
+      ]
+    },
+    "G-area-gpu": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "7",
+      "captureTimesNs": [
+        "0"
+      ],
+      "settings": {
+        "density": 100,
+        "palette": "ocean",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "points": 14,
+        "mirrors": "mandala",
+        "glass": "mixed",
+        "turning": 40,
+        "events": true
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "35000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 5,
+          "timelineNs": "42000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 4,
+          "timelineNs": "49000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 5,
+          "timelineNs": "59000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 3,
+          "timelineNs": "60000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        },
+        {
+          "id": 6,
+          "timelineNs": "65000000000",
+          "anchor": [
+            4280,
+            720
+          ],
+          "strength": 1
+        }
+      ],
+      "gpuTiming": true,
+      "gpuStudy": {
+        "frames": 4321
+      },
+      "showClock": true
     }
   }
 }

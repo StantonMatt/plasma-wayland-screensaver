@@ -3,7 +3,7 @@ layout(location=0) in vec4 positionUV;
 layout(location=1) in vec4 field;
 layout(location=2) in vec4 material;
 layout(std140,binding=0) uniform Camera {
-    mat4 projection; vec4 bounds; vec4 colors[6]; vec4 top; vec4 bottom; vec4 style; vec4 clock; vec4 view; vec4 optics; vec4 overlap[8];
+    mat4 projection; vec4 bounds; vec4 colors[6]; vec4 top; vec4 bottom; vec4 style; vec4 clock; vec4 view; vec4 optics; vec4 overlap[8]; vec4 phases;
 } sky;
 layout(location=0) out vec2 uv;
 layout(location=1) out vec4 light;

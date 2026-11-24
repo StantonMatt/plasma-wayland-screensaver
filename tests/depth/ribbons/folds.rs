@@ -627,3 +627,50 @@ fn certify_folds() {
     );
     assert_eq!((stats.flipped, stats.adjacent), (0, 0));
 }
+
+#[test]
+#[ignore = "continuous native-scale certificate for the high-speed Maelstrom audit matrix"]
+fn certify_high_speed_maelstrom_unwind() {
+    let mut stats = Counts::default();
+    let ticks: Vec<_> = (18_000..=19_860).collect();
+    for spanning in [false, true] {
+        for seed in [1, 7, 23] {
+            let name = format!("Maelstrom speed 300 spanning={spanning} seed={seed}");
+            let mut input = profile(
+                if spanning { "Balance-spanning" } else { "G" },
+                seed,
+                false,
+                false,
+            );
+            input.speed = 3.;
+            input.density = 80.;
+            input.scale = 2.;
+            input.trails = 1.;
+            input.palette = 2;
+            input.environment.background = 0;
+            check_scenario(
+                &name,
+                input,
+                &ticks,
+                2,
+                Some(Event {
+                    id: 2,
+                    at_ns: 602_000_000_000,
+                    anchor: [if spanning { 4280. } else { 1280. }, 720.],
+                    strength: 1.,
+                }),
+                Section::Mixed,
+                &mut stats,
+            );
+            println!(
+                "{name}: cumulative {} triangles, {} flipped, {} local errors",
+                stats.triangles, stats.flipped, stats.adjacent
+            );
+        }
+    }
+    println!(
+        "{} viewport/fraction samples, {} shared joints",
+        stats.brackets, stats.joins
+    );
+    assert_eq!((stats.flipped, stats.adjacent), (0, 0));
+}

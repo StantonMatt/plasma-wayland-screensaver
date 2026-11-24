@@ -3,6 +3,12 @@ mod arena;
 mod body;
 mod contacts;
 mod events;
+#[cfg(test)]
+mod flight_audit;
+#[cfg(test)]
+mod height_tests;
+#[cfg(test)]
+mod longevity;
 mod paint;
 pub mod render;
 mod spawn;
@@ -78,6 +84,30 @@ impl Params {
         p
     }
 }
+// Calibrated from native two-seed G films; capture can override the pace.
+const CROWDED_PACE_AT_300: f64 = 1.;
+// Native L3 G sweep calibration, seeds 7/19/31, every physical output.
+const OUTPUT_SWEEP_PACE_AT_300: f64 = 0.9;
+// Measured unfitted-cast ceiling. Release smoothly below the smallest native
+// calibration size, so ordinary tiny balls can still use the full slider.
+const UNFITTED_SWEEP_PACE_AT_300: f64 = 2.0;
+
+fn paced_speed(requested: f64, cap: f64) -> f64 {
+    // Keep Speed 100 useful when a large-field sweep budget is below one.
+    // Both branches remain strictly increasing, including the lowest cap.
+    let low = if cap < 1. {
+        0.6_f64.min(0.75 * cap)
+    } else {
+        0.6 * cap
+    };
+    let scaled = if requested <= 1. {
+        low * requested
+    } else {
+        low + (cap - low) * (requested - 1.) / 2.
+    };
+    requested.min(scaled)
+}
+
 pub struct BounceWorld {
     input: WorldInput,
     params: Params,
@@ -90,7 +120,10 @@ pub struct BounceWorld {
     tick: u64,
     sim_time: f64,
     height: f64,
+    /// World y of the layout's vertical midpoint (origins may be negative).
+    mid_y: f64,
     base_g: f64,
+    pace: f64,
     substeps: u32,
     dt: f64,
     wall_dt: f64,
@@ -103,6 +136,8 @@ pub struct BounceWorld {
     frames: RefCell<Vec<Arc<render::Frame>>>,
     empty: Snapshot,
     art: Arc<render::Art>,
+    #[cfg(test)]
+    flight_audit: flight_audit::FlightAudit,
 }
 impl BounceWorld {
     pub fn new(input: WorldInput) -> Self {
@@ -112,8 +147,10 @@ impl BounceWorld {
         let impact_fields = rooms.iter().map(ImpactField::new).collect();
         let counts = spawn::population(&rooms, params.count as usize);
         let height = input.layout.bounds.height;
+        let mid_y = input.layout.bounds.y + height * 0.5;
         let mut balls = Vec::with_capacity(61);
         let mut medians = Vec::new();
+        let mut fitting_areas = Vec::with_capacity(rooms.len());
         for (i, room) in rooms.iter().enumerate() {
             let short = room
                 .outputs
@@ -132,12 +169,17 @@ impl BounceWorld {
                 .iter()
                 .map(|r| std::f64::consts::PI * r * r)
                 .sum::<f64>();
-            let fit = (0.21 * room.area / area.max(1e-12)).sqrt().min(1.);
+            let mut output_areas: Vec<f64> = room.outputs.iter().map(|o| o.area()).collect();
+            output_areas.sort_by(f64::total_cmp);
+            let fitting_area = room.area.min(output_areas[output_areas.len() / 2]);
+            fitting_areas.push(fitting_area);
+            let fit = (0.21 * fitting_area / area.max(1e-12)).sqrt().min(1.);
             medians.push(nominal * fit);
             for radius in radii {
                 let mat = spawn::material(params.material, &mut rng);
                 let pigment = rng.bounded(6).unwrap() as usize;
                 let mut b = Ball::new(&mut rng, i, radius * fit, mat, pigment);
+                b.high_arc = input.scale > 1.5 && params.gravity.abs() >= 2;
                 b.p = spawn::initial(&b, room, &balls, &mut rng);
                 b.v = v(
                     between(&mut rng, -0.19, 0.19),
@@ -163,8 +205,95 @@ impl BounceWorld {
         } else {
             height * 0.018 * params.gravity as f64
         };
-        let substeps = input.speed.ceil() as u32;
-        let dt = input.speed / (120. * substeps as f64);
+        // Preserve the spatial arc while sharing a wall-time sweep budget.
+        // Clamping velocity alone lowers the apex; pacing gravity and motion
+        // together makes large, crowded rooms calmer without flattening them.
+        let pace = if base_g.abs() > 2. {
+            // Actual fitted bodies determine the sweep risk. Scale can produce
+            // identical radii on both sides of a fit threshold, and a sparse
+            // spanning room can still have a large body on its smallest output.
+            let (low_speed_budget, high_speed_budget) = rooms
+                .iter()
+                .enumerate()
+                .map(|(i, room)| {
+                    let area: f64 = balls
+                        .iter()
+                        .filter(|b| b.room == i)
+                        .map(|b| std::f64::consts::PI * b.r * b.r)
+                        .sum();
+                    let radius = balls
+                        .iter()
+                        .filter(|b| b.room == i)
+                        .map(|b| b.r)
+                        .fold(0., f64::max);
+                    let short = room
+                        .outputs
+                        .iter()
+                        .map(|o| o.width.min(o.height))
+                        .fold(f64::INFINITY, f64::min);
+                    // Retain the proven room-wide sweep budget, and bound a
+                    // fitted cast by one representative output as well. The
+                    // shoulder preserves the approved, unfitted default pace.
+                    let room_coverage_cap = (0.11 * room.area / area.max(1e-12)).clamp(1., 3.);
+                    let output_coverage_cap = (0.21 * fitting_areas[i] / area.max(1e-12))
+                        .powi(4)
+                        .clamp(1., 3.);
+                    let coverage_cap = room_coverage_cap.min(output_coverage_cap);
+                    let radius_cap = (0.23 * short / radius).powi(3).clamp(0.6, 3.);
+                    let rms_radius =
+                        (area / (std::f64::consts::PI * counts[i].max(1) as f64)).sqrt();
+                    // A sweep occupies more of a smaller physical output.
+                    // The shoulder keeps ordinary unfitted casts at their
+                    // original clock, while fitted large casts use the native
+                    // flash calibration. Quantize the empirical budget to
+                    // avoid seed-dependent floating-point clock differences.
+                    let sweep_cap = (OUTPUT_SWEEP_PACE_AT_300
+                        * (0.13268 * short / rms_radius.max(1e-12)).powi(10)
+                        * 1000.)
+                        .round()
+                        / 1000.;
+                    let low_speed_budget = CROWDED_PACE_AT_300
+                        * coverage_cap.min(radius_cap).min(sweep_cap.clamp(0.6, 3.));
+                    // Native L3 fitting gives RMS 143.30 px on a 1080 px
+                    // output. A cubic shoulder bounds the pace ratio of casts
+                    // within 10% RMS size to 1.1^3, even across different seeds.
+                    // Total coverage has the same radius exponent; a single
+                    // large hero ball cannot introduce a second pace cliff.
+                    let reference_radius = (143.2997117146043 / 1080.) * short;
+                    let cubic = OUTPUT_SWEEP_PACE_AT_300
+                        * (reference_radius / rms_radius.max(1e-12)).powi(3);
+                    let cubic = (cubic * 1e9).round() / 1e9;
+                    let output_coverage = (0.21 * fitting_areas[i] / area.max(1e-12))
+                        .powf(1.5)
+                        .clamp(1., 3.);
+                    let small_reference = (96.68942336409975 / 1080.) * short;
+                    let measured = UNFITTED_SWEEP_PACE_AT_300
+                        * (small_reference / rms_radius.max(1e-12)).max(1.).powi(3);
+                    let measured = (measured * 1e9).round() / 1e9;
+                    let high_speed_budget = CROWDED_PACE_AT_300
+                        * room_coverage_cap
+                            .min(output_coverage)
+                            .min(cubic.min(measured).clamp(0.6, 3.));
+                    (low_speed_budget, high_speed_budget)
+                })
+                .fold((3_f64, 3_f64), |(low, high), (a, b)| {
+                    (low.min(a), high.min(b))
+                });
+            if input.speed <= 1. {
+                // Keep approved low-Speed trajectories bit-for-bit, including
+                // default Spanning. Only the fast end needs a smooth shoulder.
+                paced_speed(input.speed, low_speed_budget)
+            } else {
+                let low = paced_speed(1., low_speed_budget);
+                input
+                    .speed
+                    .min(low + (high_speed_budget - low) * (input.speed - 1.) / 2.)
+            }
+        } else {
+            input.speed
+        };
+        let substeps = pace.ceil() as u32;
+        let dt = pace / (120. * substeps as f64);
         let wall_dt = 1. / (120. * substeps as f64);
         let decay = Relaxation::new(wall_dt);
         let mass: f64 = balls.iter().map(|b| 1. / b.inv_mass).sum();
@@ -194,7 +323,9 @@ impl BounceWorld {
             tick: 0,
             sim_time: 0.,
             height,
+            mid_y,
             base_g,
+            pace,
             substeps,
             dt,
             wall_dt,
@@ -207,10 +338,20 @@ impl BounceWorld {
             frames: RefCell::new(vec![]),
             empty: Snapshot::default(),
             art,
+            #[cfg(test)]
+            flight_audit: flight_audit::FlightAudit::default(),
         }
     }
     fn rate_ns(&self) -> i64 {
         self.rate().tick_ns(self.tick)
+    }
+    #[cfg(any(test, feature = "visual-capture"))]
+    fn set_capture_pace(&mut self, pace: f64) {
+        self.pace = pace.clamp(0.1, 3.);
+        self.substeps = self.pace.ceil() as u32;
+        self.dt = self.pace / (120. * f64::from(self.substeps));
+        self.wall_dt = 1. / (120. * f64::from(self.substeps));
+        self.decay = Relaxation::new(self.wall_dt);
     }
     // In an accelerated, large-scale pile, several fully lit silhouettes can
     // repeatedly sweep across the same field even with every impact dark.
@@ -218,8 +359,12 @@ impl BounceWorld {
     // between neighbours, fading their contribution as they leave the field.
     fn update_flow_limits(&mut self) {
         let max = 2.2 * self.height;
-        let mix =
-            (self.input.speed - 1.).clamp(0., 2.) * 0.5 * (self.input.scale - 1.).clamp(0., 1.);
+        let speed_mix = if self.balls.iter().any(|b| b.high_arc) {
+            1.
+        } else {
+            (self.input.speed - 1.).clamp(0., 2.) * 0.5
+        };
+        let mix = speed_mix * (self.input.scale - 1.).clamp(0., 1.);
         if mix == 0. || self.balls.len() < 2 {
             return;
         }
@@ -236,9 +381,17 @@ impl BounceWorld {
                 let y = (1. - (delta.y.abs() - 0.6 * other.r).max(0.) / field.y).max(0.);
                 breadth += 2. * other.r * x * y;
             }
-            let swept = self.input.speed * breadth;
+            let swept = self.pace * breadth;
             let inverse_limit = swept / (1.5 * field.x * field.y);
-            limits[i] = 1. / ((1. - mix) / max + mix * inverse_limit.max(1. / max));
+            let flow = 1. / ((1. - mix) / max + mix * inverse_limit.max(1. / max));
+            // Large-ball gravity rooms preserve vertical energy separately.
+            // Keep the cooperative budget for lateral sweeps; a floor on the
+            // whole speed was neither a height guarantee nor a light budget.
+            limits[i] = if ball.high_arc {
+                flow
+            } else {
+                flow.max((0.12 * self.height * self.base_g.abs()).sqrt())
+            };
         }
         for (ball, limit) in self.balls.iter_mut().zip(limits) {
             ball.flow_limit = limit;
@@ -272,8 +425,12 @@ impl BounceWorld {
         let elastic = self.params.elasticity as f64 * 0.01;
         let zero = g.len2() < 4.;
         let mut energy = 0.;
+        #[cfg(test)]
+        let mut expected_free = [None; 61];
         for (i, b) in self.balls.iter_mut().enumerate() {
             b.supported = false;
+            b.contact = false;
+            b.loft_retry_delay = (b.loft_retry_delay - dt).max(0.);
             b.floating = zero;
             b.near_ball = false;
             b.knot_impulse = 0.;
@@ -286,7 +443,12 @@ impl BounceWorld {
             }
             let magnus = (b.v.perp() * ((if zero { 0.085 } else { 0.0016 }) * b.spin))
                 .limit(0.04 * self.base_g.abs().max(0.15 * self.height));
-            b.v = (b.v + (g + magnus) * dt).limit(cap.min(b.flow_limit));
+            #[cfg(test)]
+            {
+                expected_free[i] = Some(b.v + (g + magnus) * dt);
+            }
+            b.v += (g + magnus) * dt;
+            b.limit_motion(cap, down);
             let spin_limit = (b.flow_limit / b.r).min(38.);
             b.spin = b.spin.clamp(-spin_limit, spin_limit);
             b.angle += b.spin * dt;
@@ -314,16 +476,75 @@ impl BounceWorld {
         } else {
             1.
         };
-        for b in &mut self.balls {
+        for (ball_index, b) in self.balls.iter_mut().enumerate() {
+            #[cfg(not(test))]
+            let _ = ball_index;
             let room = &self.rooms[b.room];
-            let lively = elastic == 1. && b.mat == Material::Rubber;
+            let lively = elastic == 1.;
             if b.sleeping && !zero && !b.supported {
                 b.wake();
             }
+            // The minimum possible bottom edge is 2r. A larger body cannot
+            // clear mid-height, so it must not pursue an impossible loft.
+            if b.high_arc && self.base_g > 2. && 4. * b.r < self.height {
+                if b.p.y + b.r < self.mid_y {
+                    b.below_mid_time = 0.;
+                    if b.loft_due {
+                        b.charge = 0.;
+                    }
+                } else {
+                    b.below_mid_time += wall_dt;
+                }
+                // A tilted pile or horizontal Zero-G drift can strand one
+                // ball below the others. Its seeded patience releases a loft
+                // at contact, or a gentle rising current in an interlude.
+                let patience = 12. + 8. * f64::from(b.glass_pattern) / 65535.;
+                b.loft_due = b.below_mid_time > patience;
+                if zero && b.loft_due {
+                    b.wake();
+                    b.v.y -= self.height * 0.06 * dt;
+                }
+            }
+            // Charge in wall time, including during flight. At the next low
+            // rebound, release the stored energy through contact instead of
+            // letting the room decay into a long sleeping pile. Seeded periods
+            // and launch heights keep the rebounds staggered. Positions never
+            // change here; swept integration handles the ensuing flight.
+            // A flow-limited crowd has much shorter flights. Match its
+            // recharge to that physical flight scale, so the light-safety
+            // speed guard cannot turn an accelerated pile into a still life.
+            let charge_rate = if b.high_arc {
+                // A Speed-300 flight lasts a third as long on screen. Keep
+                // recharge in step with that flight instead of spending most
+                // of each short cycle resting after a tall landing.
+                self.pace
+            } else if zero {
+                1.
+            } else {
+                (cap / b.flow_limit).clamp(1., 24.)
+            };
+            b.charge = (b.charge + wall_dt * charge_rate).min(b.period + 0.18);
+            let rebound = if b.loft_due { b.v.y } else { b.v.dot(down) };
+            let low_rebound = !zero && rebound.powi(2) < 0.60 * g.len() * self.height;
+            // An incidental contact near the top should exchange momentum,
+            // not spend the next launch on a short hop into the ceiling.
+            let launch_zone = !b.high_arc || self.base_g <= 2. || b.p.y >= self.mid_y || b.loft_due;
+            let launch_contact = b.supported || (b.loft_due && b.contact);
+            if launch_contact
+                && low_rebound
+                && launch_zone
+                && b.charge >= b.period + 0.18
+                && b.loft_retry_delay == 0.
+            {
+                let launch_up = if b.loft_due { v(0., -1.) } else { -down };
+                let free = room
+                    .sweep(b.p, launch_up * self.height * 3., b.r)
+                    .map_or(self.height, |(u, _, _)| 3. * self.height * u);
+                b.hop(g, free, &mut self.rng);
+            }
             if b.sleeping {
-                b.charge += dt;
-                if b.charge >= b.period + 0.18 {
-                    let up = -down;
+                if b.charge >= b.period + 0.18 && b.loft_retry_delay == 0. {
+                    let up = if b.loft_due { v(0., -1.) } else { -down };
                     let free = room
                         .sweep(b.p, up * self.height * 3., b.r)
                         .map_or(self.height, |(u, _, _)| 3. * self.height * u);
@@ -335,7 +556,8 @@ impl BounceWorld {
                 } else {
                     drag
                 };
-                b.v = b.v.limit(cap.min(b.flow_limit)) * drag;
+                b.limit_motion(cap, down);
+                b.v = b.v * drag;
                 b.spin *= drag;
                 if b.supported && !lively {
                     // Rolling resistance removes the final horizontal drift after
@@ -369,6 +591,23 @@ impl BounceWorld {
                     b.charge = 0.;
                 }
             }
+            #[cfg(test)]
+            self.flight_audit.observe(
+                ball_index,
+                b,
+                expected_free[ball_index],
+                cap,
+                drag,
+                elastic,
+                self.pace,
+                wall_dt,
+                self.tick as f64 / 120.,
+                g.y,
+                !zero
+                    && !self
+                        .moment
+                        .is_some_and(|m| matches!(m.kind, events::Kind::Float)),
+            );
             b.emit_contact_light(&mut self.impact_fields[b.room], self.tick as f64 / 120.);
             if self.input.trails > 0. {
                 b.trail.record(
@@ -440,7 +679,12 @@ impl LivingWorld for BounceWorld {
             / self.input.layout.visible_area
     }
     fn inject(&mut self, e: Event) -> Result<(), &'static str> {
-        if !(1..=8).contains(&e.id)
+        let last_event = if cfg!(feature = "visual-capture") {
+            9
+        } else {
+            8
+        };
+        if !(1..=last_event).contains(&e.id)
             || e.at_ns < 0
             || !e.anchor.iter().all(|v| v.is_finite())
             || !e.strength.is_finite()
@@ -457,7 +701,18 @@ impl LivingWorld for BounceWorld {
         let mut h = hash64(self.input.seed);
         for b in &self.balls {
             for x in [
-                b.p.x, b.p.y, b.v.x, b.v.y, b.spin, b.angle, b.squash, b.light, b.charge, b.alpha,
+                b.p.x,
+                b.p.y,
+                b.v.x,
+                b.v.y,
+                b.spin,
+                b.angle,
+                b.squash,
+                b.light,
+                b.charge,
+                b.alpha,
+                b.below_mid_time,
+                b.loft_retry_delay,
             ] {
                 h = hash64(h ^ x.to_bits());
             }

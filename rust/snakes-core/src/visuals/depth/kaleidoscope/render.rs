@@ -20,11 +20,15 @@ pub struct Template {
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
+/// Chamber-space x/y, angle, and optical weight. Positive weights are glints;
+/// a negative weight is a linear-light transit key encoded as (key - 1), so
+/// crossing into or out of a transfer remains continuous at the neutral zero.
 pub struct Pose(pub [f32; 4]);
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct Lens {
     pub eye: [f32; 4],
+    // Mandala reserves negative motion.z for the active swap age; Lattice uses drift.
     pub motion: [f32; 4],
     pub glass: [f32; 4],
     pub light: [f32; 4],
@@ -32,7 +36,7 @@ pub struct Lens {
     pub colors: [[f32; 4]; 6],
     pub rim: [f32; 4],
     pub guide: [f32; 4], // chamber offset at the apex, glint radius and wedge fraction
-    pub mote: [f32; 4],  // radius, wedge fraction and light
+    pub mote: [f32; 4],  // radius, wedge fraction, light, last swap queue delay (seconds)
 }
 const _: () =
     assert!(size_of::<Template>() == 80 && size_of::<Pose>() == 16 && size_of::<Lens>() == 224);
@@ -144,6 +148,9 @@ pub(super) struct Frame {
     guide: [f32; 4],
     mote: [f32; 4],
     speed: f64,
+    swap_queue_delay: f32,
+    swap_start: f64,
+    refill_guide: Option<super::GuidePath>,
 }
 impl Frame {
     pub fn new(optics: Arc<Optics>, cell: Arc<Cell>) -> Self {
@@ -160,10 +167,20 @@ impl Frame {
             guide: [0.; 4],
             mote: [0.; 4],
             speed: 1.,
+            swap_queue_delay: 0.,
+            swap_start: -1e6,
+            refill_guide: None,
         }
     }
     pub(super) fn update(&mut self, w: &Kaleidoscope) {
         self.cell.clone_from(&w.cell);
+        self.swap_queue_delay = w.swap_queue_delay as f32;
+        self.swap_start = if w.magnified_mandala() {
+            w.moments.start[2]
+        } else {
+            -1e6
+        };
+        self.refill_guide = w.refill_guide;
         self.time = w.moments.time;
         self.angle = w.hand.angle;
         self.light_angle = w.light_angle();
@@ -173,9 +190,12 @@ impl Frame {
         let q = w.moments.glint_point;
         let glint_age = w.moments.age(super::GLINT);
         let swap_age = w.moments.age(super::SWAP);
+        // The heap target is selected at 15 Hz. Traverse the entire interval
+        // between targets instead of holding for seven ticks then jumping.
+        let focus = w.focus_previous + (w.focus - w.focus_previous) * ((w.tick % 8) as f64 / 8.);
         self.guide = [
-            w.focus.0 as f32,
-            w.focus.1 as f32,
+            focus.0 as f32,
+            focus.1 as f32,
             w.moments.glint_sector.0 as f32,
             w.moments.glint_sector.1 as f32,
         ];
@@ -187,10 +207,24 @@ impl Frame {
         ];
         let glint = w.moments.glint() as f32;
         for (i, b) in w.chamber.bodies.iter().enumerate() {
+            // Fractional speeds alternate fixed physics steps (1/2 at 1.5x).
+            // Sampling the last two physics poses removes that velocity ripple
+            // without changing contacts, RNG, or the simulated trajectory.
+            let (position, angle) = if self.speed.fract() != 0. {
+                let (previous, angle) = w.physics_previous[i];
+                (
+                    previous + (b.pos - previous) * w.fraction,
+                    angle + (b.angle - angle) * w.fraction,
+                )
+            } else {
+                (b.pos, b.angle)
+            };
             // Slide each piece past the outer edge, with a little separation
             // between pieces. The optics stay open throughout the exchange.
             let stagger = (i % 7) as f64 * 0.027;
-            let travel = if swap_age < 3.25 {
+            let travel = if w.magnified_mandala() {
+                0.
+            } else if swap_age < 3.25 {
                 // Drift visibly across the sector before clearing the short
                 // remaining guard band beyond the illuminated outer rim.
                 let slide = (swap_age - 0.44 - stagger) / 3.27;
@@ -206,10 +240,13 @@ impl Frame {
             };
             let exit = 1.04 + b.cut.reach;
             self.poses[i] = Pose([
-                (b.pos.0 + (exit - b.pos.0) * travel) as f32,
-                (b.pos.1 - 0.22 * travel) as f32,
-                (b.angle + travel * (if i % 2 == 0 { 0.40 } else { -0.31 })) as f32,
-                if i == w.moments.glint { glint } else { 0. },
+                (position.0 + w.chamber.transport.0 + (exit - position.0) * travel) as f32,
+                (position.1 + w.chamber.transport.1 - 0.22 * travel) as f32,
+                (angle + travel * (if i % 2 == 0 { 0.40 } else { -0.31 })) as f32,
+                w.transit_key(i).map_or_else(
+                    || if i == w.moments.glint { glint } else { 0. },
+                    |key| key as f32 - 1.,
+                ),
             ]);
         }
         let dust = (w.moments.dust() * self.aperture) as f32;
@@ -229,7 +266,8 @@ impl Frame {
         let mix = |x, y| x + (y - x) * t;
         let mut lens = self.optics.base;
         lens.eye = self.optics.eye(v);
-        let time = mix(self.time, b.time) * b.speed;
+        let presented = mix(self.time, b.time);
+        let time = presented * b.speed;
         let tube = mix(self.angle, b.angle);
         lens.motion[0] = (tube * if lens.motion[3] > 0.5 { 0.08 } else { 0.30 }) as f32;
         lens.motion[1] = (time.to_radians() * 0.5 % std::f64::consts::TAU) as f32;
@@ -244,6 +282,18 @@ impl Frame {
         } else {
             ((time * 20.) % (3. * f64::from(lens.eye[2]) * 0.68)) as f32
         };
+        // The Mandala does not consume the Lattice's drift channel. Carry a
+        // continuous event phase there so mouth transmission can ease for a
+        // full second without touching ordinary optics or the public ABI.
+        let swap_start = if presented >= b.swap_start {
+            b.swap_start
+        } else {
+            self.swap_start
+        };
+        let swap_age = presented - swap_start;
+        if (0.0..8.).contains(&swap_age) {
+            lens.motion[2] = (-1. - swap_age) as f32;
+        }
         lens.glass[3] = mix(self.aperture, b.aperture) as f32;
         lens.flare = b.flare;
         lens.guide = b.guide;
@@ -251,12 +301,26 @@ impl Frame {
         for i in 0..2 {
             lens.guide[i] = self.guide[i] + (b.guide[i] - self.guide[i]) * t as f32;
         }
+        let path = b
+            .refill_guide
+            .filter(|p| presented >= p.start)
+            .or(self.refill_guide);
+        if let Some(path) = path {
+            let p = path.sample(presented).0;
+            lens.guide[0] = p.0 as f32;
+            lens.guide[1] = p.1 as f32;
+        }
         if self.mote[2] > 0. && b.mote[2] > 0. {
             lens.mote =
                 std::array::from_fn(|i| self.mote[i] + (b.mote[i] - self.mote[i]) * t as f32);
         }
+        // Reserved optical metadata; shaders use only the mote's xyz.
+        lens.mote[3] = b.swap_queue_delay;
         if (b.flare[2] - self.flare[2]).abs() < 1. {
             lens.flare[2] = self.flare[2] + (b.flare[2] - self.flare[2]) * t as f32;
+        }
+        if (b.flare[3] - self.flare[3]).abs() < 1. {
+            lens.flare[3] = self.flare[3] + (b.flare[3] - self.flare[3]) * t as f32;
         }
         let (s, c) = mix(self.light_angle, b.light_angle).sin_cos();
         lens.light = [
@@ -304,12 +368,14 @@ pub unsafe extern "C" fn visuals_depth_kaleidoscope_sample(
         return 0;
     };
     let Some((a, b)) = frames(l) else { return 0 };
+    // The glass recipe changes while it is out of view. Only its transforms
+    // need a hard boundary; the hand, fold and light keep their own timeline.
+    *dest = a.lens(b, &l.view, l.sample.alpha);
     let a = if a.cell.revision == b.cell.revision {
         a
     } else {
         b
     };
-    *dest = a.lens(b, &l.view, l.sample.alpha);
     let count = b.cell.cuts.len();
     if out.is_null() || capacity < count {
         return count;

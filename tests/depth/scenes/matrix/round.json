@@ -1222,6 +1222,50 @@
       ],
       "settings": {},
       "events": []
+    },
+    "polish-G-saved": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "600000000000"
+      ],
+      "settings": {
+        "density": 80,
+        "palette": "ember",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "background": "black",
+        "wind": 85
+      },
+      "events": []
+    },
+    "polish-G-saved-motion": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "590000000000"
+      ],
+      "settings": {
+        "density": 80,
+        "palette": "ember",
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "background": "black",
+        "wind": 85
+      },
+      "events": [],
+      "video": {
+        "name": "saved-profile",
+        "start": 590,
+        "frames": 1200,
+        "fps": 60,
+        "halfScale": true,
+        "reviewCopy": true
+      }
     }
   }
 }

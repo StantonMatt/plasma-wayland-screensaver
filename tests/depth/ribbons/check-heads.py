@@ -67,9 +67,23 @@ def sample(path, meta):
     peak=np.max(profile[bare],initial=0)
     stop=np.flatnonzero(bare & (profile>=peak/2))
     extent=d[stop[-1]]/r if len(stop) and peak>0 else 0.
+    native_peak=float(np.max(lum,initial=0))
+    fraction=meta.get('fraction',0.)
+    widths=[]
+    for lower,upper in meta.get('sections',[]):
+        half=(1-fraction)*lower[4]+fraction*upper[4]
+        facing=(1-fraction)*lower[5]+fraction*upper[5]
+        widths.append(2*half*(.12+.88*abs(facing)))
+    projected_width=max(widths,default=float('inf'))
+    # A fading, subpixel lens can emit only one RGB level. Its halo is
+    # entirely below quantization outside the 2 px face-mask dilation, so
+    # there is no half-peak contour to measure. Keep both slope gates, and
+    # require the extent gate for a bright or geometrically resolved head.
+    extent_resolved=native_peak>1. or projected_width>1.
     return dict(**meta,rays=13,maxRise=rise,rises=radial,nativeRises=native_rises,at=where,outsideRises=outside_rises,maxAdjacent=max(steps),
                 halfExtent=extent,photometricHalfExtent=4.7*extent,peak=peak,
-                passed=bool(rise<1. and max(steps)<=3 and 4.7*extent>=.6))
+                nativePeak=native_peak,projectedFaceWidth=projected_width,extentResolved=extent_resolved,
+                passed=bool(rise<1. and max(steps)<=3 and (not extent_resolved or 4.7*extent>=.6)))
 
 
 def flank_samples(path, meta):
@@ -147,11 +161,15 @@ def main():
     if not args.partial and len(flankExpected)!=122:raise ValueError(f'Expected E-max and 121 G times, found {len(flankExpected)}')
     if not args.partial and len(expected)!=20:raise ValueError(f'Expected 20 complete times, found {len(expected)}')
     if not rows:raise ValueError('No measured heads')
+    resolved=[m for m in rows if m['extentResolved']]
+    if not resolved:raise ValueError('No measurable head halos')
     summary=dict(heads=len(rows),rays=len(rows)*13,missing=missing,
                  nativeRise=max(max(m['nativeRises']) for m in rows),biggestRise=max(m['maxRise'] for m in rows),biggestStep=max(m['maxAdjacent'] for m in rows),
                  monotonicToleranceExclusive=1., raysWithPositiveRise=sum(v>1e-6 for m in rows for v in m['rises']),
                  minimumExtent=min(m['halfExtent'] for m in rows),
                  minimumPhotometricExtent=min(m['photometricHalfExtent'] for m in rows),
+                 extentResolvedHeads=len(resolved),unresolvedExtents=len(rows)-len(resolved),
+                 minimumResolvedPhotometricExtent=min(m['photometricHalfExtent'] for m in resolved),
                  flankHeads=len(flanks),flankDistances=[20,50,80,120,160],flankTimes=len(flankExpected),
                  missingFlanks=missingFlanks,flankFailures=sum(not m['passed'] for m in flanks),
                  maximumFlankExcess=max((m['maxExcess'] for m in flanks),default=0),failures=sum(not m['passed'] for m in rows))

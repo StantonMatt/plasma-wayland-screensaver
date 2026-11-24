@@ -809,6 +809,210 @@
           "strength": 1
         }
       ]
+    },
+    "polish-expansion": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "7",
+      "captureTimesNs": [
+        "120000000000"
+      ],
+      "settings": {
+        "activity": 70,
+        "horizon": "mountains",
+        "palette": "spectrum",
+        "background": "black"
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "120000000000",
+          "anchor": [
+            7560,
+            600
+          ],
+          "strength": 1
+        }
+      ],
+      "video": {
+        "name": "polish-expansion",
+        "start": 120,
+        "frames": 1800,
+        "fps": 30
+      }
+    },
+    "polish-corona": {
+      "layout": "wide",
+      "monitorMode": "independent",
+      "seed": "3",
+      "captureTimesNs": [
+        "55000000000"
+      ],
+      "settings": {
+        "activity": 60,
+        "palette": "forest",
+        "background": "ocean"
+      },
+      "events": [
+        {
+          "id": 2,
+          "timelineNs": "60000000000",
+          "anchor": [
+            1830,
+            110
+          ],
+          "strength": 1
+        }
+      ],
+      "video": {
+        "name": "polish-corona",
+        "start": 55,
+        "frames": 900,
+        "fps": 30
+      }
+    },
+    "polish-G": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "600000000000"
+      ],
+      "settings": {
+        "density": 80,
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "palette": "ember"
+      },
+      "events": [],
+      "video": {
+        "name": "polish-G",
+        "start": 600,
+        "frames": 1800,
+        "fps": 30
+      }
+    },
+    "polish-E": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "5",
+      "captureTimesNs": [
+        "600000000000"
+      ],
+      "settings": {
+        "density": 100,
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "activity": 100,
+        "horizon": "mountains",
+        "palette": "pastel",
+        "background": "plum"
+      },
+      "events": [],
+      "pending": [
+        "Lake reflection"
+      ],
+      "video": {
+        "name": "polish-E",
+        "start": 600,
+        "frames": 150,
+        "fps": 30
+      }
+    },
+    "polish-recovery": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "7",
+      "captureTimesNs": [
+        "300000000000"
+      ],
+      "settings": {
+        "activity": 70,
+        "horizon": "mountains",
+        "palette": "spectrum",
+        "background": "black"
+      },
+      "events": [
+        {
+          "id": 1,
+          "timelineNs": "120000000000",
+          "anchor": [
+            7560,
+            600
+          ],
+          "strength": 1
+        }
+      ],
+      "video": {
+        "name": "polish-recovery",
+        "start": 300,
+        "frames": 300,
+        "fps": 30
+      }
+    },
+    "polish-G-real": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "600000000000"
+      ],
+      "settings": {
+        "density": 80,
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "palette": "ember",
+        "background": "black",
+        "frameCap": 60
+      },
+      "events": []
+    },
+    "polish-wrap": {
+      "layout": "single",
+      "monitorMode": "independent",
+      "seed": "7",
+      "captureTimesNs": [
+        "10922500000000",
+        "10922600000000",
+        "10922700000000",
+        "10922800000000"
+      ],
+      "settings": {
+        "density": 80,
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "palette": "spectrum",
+        "background": "black"
+      },
+      "events": []
+    },
+    "polish-G-span": {
+      "layout": "l3",
+      "monitorMode": "seamless",
+      "seed": "7",
+      "captureTimesNs": [
+        "600000000000"
+      ],
+      "settings": {
+        "density": 80,
+        "scale": 200,
+        "speed": 300,
+        "trails": 100,
+        "palette": "ember",
+        "background": "black",
+        "frameCap": 60
+      },
+      "events": [],
+      "video": {
+        "name": "G-span",
+        "start": 600,
+        "frames": 600,
+        "fps": 60
+      }
     }
   }
 }

@@ -15,6 +15,7 @@
 #include <cmath>
 #include <limits>
 #include <vector>
+#include <type_traits>
 
 using PresentationPacing::periodNanoseconds;
 using PresentationPacing::schedule;
@@ -24,6 +25,51 @@ class PresentationClockTest final : public QObject
     Q_OBJECT
 
 private Q_SLOTS:
+    void stallCounterThresholdWorstFrameAndRateLimit()
+    {
+        using PresentationTelemetry::StallCounter;
+        static_assert(std::is_trivially_copyable_v<StallCounter>);
+        StallCounter counter;
+        counter.observe(50'000'000, 20'000'000, 1, 2); // Exactly 2.5x is not a stall.
+        QVERIFY(!counter.takeSummary(60'000'000'000LL));
+        counter.observe(50'000'001, 20'000'000, 11, 17);
+        counter.observe(90'000'000, 30'000'000, 23, 31);
+        counter.observe(40'000'000, 20'000'000, 999, 999);
+        QVERIFY(!counter.takeSummary(59'999'999'999LL));
+        const auto first = counter.takeSummary(60'000'000'000LL);
+        QVERIFY(first);
+        QCOMPARE(first->count, quint64(2));
+        QCOMPARE(first->worstIntervalNs, 90'000'000LL);
+        QCOMPARE(first->expectedPeriodNs, 30'000'000LL);
+        QCOMPARE(first->coordinatorNs, 23LL);
+        QCOMPARE(first->guiPrepNs, 31LL);
+        QVERIFY(!counter.takeSummary(60'000'000'000LL));
+        counter.observe(80'000'000, 20'000'000, 3, 4);
+        QVERIFY(!counter.takeSummary(119'999'999'999LL));
+        const auto second = counter.takeSummary(120'000'000'000LL);
+        QVERIFY(second);
+        QCOMPARE(second->count, quint64(1));
+        QCOMPARE(second->worstIntervalNs, 80'000'000LL);
+        QCOMPARE(second->coordinatorNs, 3LL);
+        QCOMPARE(second->guiPrepNs, 4LL);
+    }
+
+    void stallCountersStaySilentAndAreIndependentPerOutput()
+    {
+        PresentationTelemetry::StallCounter quiet, first, second;
+        for (qint64 frame = 1; frame <= 10'000; ++frame) {
+            quiet.observe(16'666'667, 16'666'667, 0, 0);
+            QVERIFY(!quiet.takeSummary(frame * 16'666'667));
+        }
+        first.observe(100'000'000, 16'666'667, 10, 20);
+        second.observe(200'000'000, 17'146'776, 30, 40);
+        const auto a = first.takeSummary(60'000'000'000LL);
+        const auto b = second.takeSummary(60'000'000'000LL);
+        QVERIFY(a && b);
+        QCOMPARE(a->worstIntervalNs, 100'000'000LL);
+        QCOMPARE(b->worstIntervalNs, 200'000'000LL);
+    }
+
     void divisorSelection_data()
     {
         QTest::addColumn<qreal>("refresh");

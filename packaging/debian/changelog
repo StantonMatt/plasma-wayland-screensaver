@@ -1,3 +1,21 @@
+plasma-visual-screensaver (0.29.0-1) unstable; urgency=medium
+
+  * Aurora Drift has smoother curtain detail, gentler storm growth and
+    more consistent colour through long sessions.
+  * Digital Rain keeps bright heads near the floor, gives Pastel glyphs
+    richer colour and draws round Braille dots.
+  * Bouncing Balls bounce longer, with narrower heavy trails and steadier
+    pacing across monitors.
+  * Kaleidoscope has smoother glass motion and chamber turns, clearer
+    shadows and lower simulation cost.
+  * Ribbons gives Pastel strands richer colour on black, scatters its
+    silver motes more loosely and lets Gust lanes curve. Maelstrom rings
+    are less regular, faint far strands draw fewer tight loops and long
+    strands no longer whip. At high Speed, Gust and Maelstrom move more
+    calmly, and Ember glows warmer.
+
+ -- Matthew Stanton <stantonmatthewj@gmail.com>  Mon, 23 Nov 2026 12:00:00 -0300
+
 plasma-visual-screensaver (0.28.0-1) unstable; urgency=medium
 
   * Aurora Drift shows folded curtains, stars and storms over a northern

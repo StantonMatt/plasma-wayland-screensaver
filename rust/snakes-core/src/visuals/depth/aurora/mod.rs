@@ -278,7 +278,7 @@ impl Aurora {
             curtain.gain_target = curtain.gain;
             curtain.gain_baseline = curtain.gain;
             curtain.expansion = Some((
-                10. + 16. * layer as f32,
+                10. + 15. * layer as f32,
                 storm.expansion + storm.recovery,
                 storm.recovery,
             ));

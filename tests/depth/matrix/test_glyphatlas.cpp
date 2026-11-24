@@ -1,14 +1,82 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "visuals/common/glyphatlas.h"
+#include "visuals/matrix/alphabet.h"
 #include "visuals/matrix/stillclock.h"
 #include <QFileInfo>
+#include <QPainterPath>
 #include <QTemporaryDir>
 #include <QTimeZone>
 #include <QtTest>
+#include <cmath>
 
 class AtlasTest : public QObject {
   Q_OBJECT
 private Q_SLOTS:
+  void brailleUsesDiscDistancesAndKeepsFontFallback() {
+    const QRawFont font(
+        QStringLiteral("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        33., QFont::PreferNoHinting);
+    QVERIFY(font.isValid());
+    QImage image(768, 1536, QImage::Format_Alpha8);
+    image.fill(37);
+    const auto original = image.copy();
+    roundRainBraille(image, QRawFont());
+    QCOMPARE(image, original);
+    roundRainBraille(image, font);
+    QCOMPARE(image.copy(GlyphAtlas::tile(1)), original.copy(GlyphAtlas::tile(1)));
+    QCOMPARE(image.copy(GlyphAtlas::tile(321)),
+             original.copy(GlyphAtlas::tile(321)));
+    // Slot 225 is one dot. Equal radial distances must have equal SDF values,
+    // including diagonal samples that the square font outline filled before.
+    const auto tile = image.copy(GlyphAtlas::tile(225));
+    const auto oldTile = GlyphAtlas({{225, 0x2801, 0, U'0'}}, {font}, font)
+                             .image().copy(GlyphAtlas::tile(225));
+    const char32_t cp = 0x2801;
+    const auto ids = font.glyphIndexesForString(QString::fromUcs4(&cp, 1));
+    const auto bounds = font.pathForGlyph(ids.front()).boundingRect();
+    const double radius = .5 * std::min(bounds.width(), bounds.height());
+    const QPointF centre(24., 34. + bounds.center().y());
+    double maxError = 0., oldMaxError = 0.;
+    for (int y = 4; y < 18; ++y) {
+      for (int x = 17; x < 31; ++x) {
+        const double expected = std::clamp(
+            radius - std::hypot(x + .5 - centre.x(), y + .5 - centre.y()), -8., 8.);
+        const double actual = (tile.constScanLine(y)[x] / 255. - .5) * 16.;
+        const double old = (oldTile.constScanLine(y)[x] / 255. - .5) * 16.;
+        maxError = std::max(maxError, std::abs(expected - actual));
+        oldMaxError = std::max(oldMaxError, std::abs(expected - old));
+        QVERIFY2(std::abs(expected - actual) <= 8. / 255. + 1e-6,
+                 "Braille SDF must describe a circle");
+      }
+    }
+    qInfo() << "Braille disc distance error in atlas pixels: before"
+            << oldMaxError << "after" << maxError;
+    // All 96 addresses keep their Unicode bit pattern, including bottom-row
+    // bits 6 and 7. A four-neighbour flood fill counts isolated discs.
+    for (int i = 0; i < 96; ++i) {
+      auto dots = image.copy(GlyphAtlas::tile(225 + i));
+      int components = 0;
+      for (int y = 0; y < 48; ++y) {
+        for (int x = 0; x < 48; ++x) {
+          if (dots.constScanLine(y)[x] <= 128)
+            continue;
+          ++components;
+          QList<QPoint> pending{{x, y}};
+          while (!pending.isEmpty()) {
+            const auto p = pending.takeLast();
+            if (!dots.rect().contains(p) ||
+                dots.constScanLine(p.y())[p.x()] <= 128)
+              continue;
+            dots.scanLine(p.y())[p.x()] = 0;
+            for (const auto step :
+                 {QPoint(1, 0), QPoint(-1, 0), QPoint(0, 1), QPoint(0, -1)})
+              pending.append(p + step);
+          }
+        }
+      }
+      QCOMPARE(components, qPopulationCount(unsigned(1 + (i * 73) % 255)));
+    }
+  }
   void stillAlarmAndDissolve() {
     auto left = RainStillClock::acquire();
     auto right = RainStillClock::acquire();

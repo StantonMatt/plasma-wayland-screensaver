@@ -138,7 +138,20 @@ impl Frame {
         self.background = w.input.environment.bottom;
         self.background_id = w.input.environment.background;
         self.half = w.layers.each_ref().map(|l| l.half);
-        self.colors = std::array::from_fn(|i| palette::color(w.input.palette, i));
+        self.colors = std::array::from_fn(|i| {
+            let mut color = palette::color(w.input.palette, i);
+            if w.input.palette == 5 {
+                // Keep each front's palette hue and peak, but give pink,
+                // peach and mint enough pigment to read against Midnight.
+                let peak = color[..3].iter().copied().fold(0., f32::max);
+                let low = color[..3].iter().copied().fold(1., f32::min);
+                let gain = 0.36 * peak / (peak - low).max(0.001);
+                for channel in &mut color[..3] {
+                    *channel = peak - (peak - *channel) * gain;
+                }
+            }
+            color
+        });
         let t = w.tick as f32 / 30.;
         let lull = w.weather.moments[LULL];
         self.hush = lull.envelope(t, 3.);
@@ -339,6 +352,42 @@ pub unsafe extern "C" fn visuals_rain_still(lease: *const Lease, epoch: u64) -> 
 pub unsafe extern "C" fn visuals_rain_release_still(ptr: *mut Frame) {
     if !ptr.is_null() {
         drop(unsafe { Arc::from_raw(ptr) });
+    }
+}
+
+#[cfg(test)]
+mod polish_tests {
+    use super::*;
+
+    #[test]
+    fn pastel_fronts_keep_their_own_hue_and_saturation() {
+        let mut input = super::super::tests::input(11, false);
+        input.palette = 5;
+        let world = MatrixWorld::new(input);
+        let mut frame = Frame::default();
+        frame.update(&world);
+        for (i, color) in frame.colors.iter().enumerate() {
+            let original = palette::color(5, i);
+            let peak = color[..3].iter().copied().fold(0., f32::max);
+            let low = color[..3].iter().copied().fold(1., f32::min);
+            let saturation = (peak - low) / peak;
+            assert!(
+                (0.30..=0.40).contains(&saturation),
+                "front {i}: {saturation}"
+            );
+            // The channel ratios retain the source hue; no adjacent front or
+            // neutral highlight can substitute for that front's body colour.
+            let source_low = original[..3].iter().copied().fold(1., f32::min);
+            let source_peak = original[..3].iter().copied().fold(0., f32::max);
+            for channel in 0..3 {
+                assert!(
+                    ((peak - color[channel]) / (peak - low)
+                        - (source_peak - original[channel]) / (source_peak - source_low))
+                        .abs()
+                        < 0.0001
+                );
+            }
+        }
     }
 }
 

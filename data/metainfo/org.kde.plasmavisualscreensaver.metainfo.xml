@@ -20,6 +20,13 @@
     <binary>plasma-visual-screensaver</binary>
   </provides>
   <releases>
+    <release version="0.29.0" date="2026-11-23">
+      <description>
+        <p>Aurora Drift has smoother curtain detail, gentler storm growth and more consistent colour through long sessions. Digital Rain keeps bright heads near the floor, gives Pastel glyphs richer colour and draws round Braille dots.</p>
+        <p>Bouncing Balls bounce longer, with narrower heavy trails and steadier pacing across monitors. Kaleidoscope has smoother glass motion and chamber turns, clearer shadows and lower simulation cost.</p>
+        <p>Ribbons gives Pastel strands richer colour on black, scatters its silver motes more loosely and lets Gust lanes curve. Maelstrom rings are less regular, faint far strands draw fewer tight loops and long strands no longer whip. At high Speed, Gust and Maelstrom move more calmly, and Ember glows warmer.</p>
+      </description>
+    </release>
     <release version="0.28.0" date="2026-11-21">
       <description>
         <p>Aurora Drift shows folded curtains, stars and storms over a northern horizon. The old Aurora look has changed on purpose.</p>

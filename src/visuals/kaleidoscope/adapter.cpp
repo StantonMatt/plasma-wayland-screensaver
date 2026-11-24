@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "fold.h"
 #include "blur.h"
+#include "chambercache.h"
 #include "livingvisualitem.h"
 #include "visualdepthregistry.h"
 #include "visuals/common/offscreentarget.h"
@@ -64,7 +65,8 @@ public:
         const std::array<int, 4> key { qRound(m_lens.light[0] * 4096), qRound(m_lens.light[1] * 4096),
             qRound(m_lens.light[2] * 256), qRound(m_lens.light[3] * 256) };
         const bool blurDirty = m_blurState.sync(m_lens);
-        m_pending |= m_cutsDirty || m_initialize || blurDirty || key != m_lightKey
+        const bool mouthShadowDirty = m_mouthShadowState.sync(m_lens);
+        m_pending |= m_cutsDirty || m_initialize || blurDirty || mouthShadowDirty || key != m_lightKey
             || std::memcmp(m_poses.data(), m_previous.data(), m_count * sizeof(m_poses[0])) != 0;
         if (m_pending) {
             m_lightKey = key;
@@ -231,6 +233,7 @@ private:
     Buffer m_quad, m_templates, m_transforms, m_scene;
     std::array<Buffer, 2> m_blurUniforms;
     KaleidoscopeBlurUniforms m_blurState;
+    KaleidoscopeMouthShadowState m_mouthShadowState;
     std::unique_ptr<QRhiSampler> m_sampler;
     std::array<Bindings, 3> m_bindings;
     Pipeline m_chamber, m_blur;

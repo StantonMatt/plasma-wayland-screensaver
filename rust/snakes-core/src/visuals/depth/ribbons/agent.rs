@@ -90,6 +90,9 @@ pub(super) struct Steering {
     pub desired: Vec2,
     pub curl: f64,
     pub gust: f64,
+    pub gust_force_limit: f64,
+    pub maelstrom_motor_limit: f64,
+    pub launch: f64,
     pub gust_front: Option<(super::water::Moment, f64)>,
     pub turbulence: f64,
     pub still: f64,
@@ -210,12 +213,13 @@ impl Ribbon {
     pub fn fringe_strength(&self) -> f64 {
         if self.using_relaxed_phase { 0. } else { 1. }
     }
-    pub fn release_orbit(&mut self, centre: Vec2) {
+    pub fn prepare_release(&mut self, centre: Vec2) {
         let outward = (self.head() - centre).unit();
         let (sin, cos) = 20_f64.to_radians().sin_cos();
         self.release = outward.perpendicular() * cos + outward * sin;
-        self.heading = self.release;
-        self.speed = self.speed.max(290.);
+    }
+    pub fn release_orbit(&mut self, centre: Vec2) {
+        self.prepare_release(centre);
         self.release_age = 20.;
         self.caught = false;
         self.eddy_age = 0.;
@@ -294,6 +298,9 @@ impl Ribbon {
             mut desired,
             curl,
             gust,
+            gust_force_limit,
+            maelstrom_motor_limit,
+            launch,
             gust_front,
             turbulence,
             still,
@@ -308,7 +315,7 @@ impl Ribbon {
             desired += self.escape_axis * (0.4 * self.speed);
             self.escape_for -= dt;
         }
-        let calm = turbulence <= 0.15 && orbit.is_none() && gust == 0.;
+        let calm = turbulence <= 0.15 && orbit.is_none() && gust_front.is_none();
         if calm {
             let tide = water.drift.unit();
             let horizontal = p(1.0_f64.copysign(tide.x), 0.);
@@ -321,44 +328,81 @@ impl Ribbon {
                 (tide * offset.cos() + tide.perpendicular() * offset.sin()) * desired.length();
         }
         let departing = self.release_age > 0.;
-        let shared_lane = spanning
-            && self.layer > 0
+        // Launch expiry must not drop the geometric budget while the head
+        // accelerates back into free flow. A release vector lives until this
+        // ribbon retires, so the same path/bend bounds survive the handoff.
+        let released_free = self.release.dot(self.release) > 0. && orbit.is_none();
+        let open_lane = self.layer > 0
             && self.knot_for == 0.
             && orbit.is_none()
             && !departing
-            && still == 0.;
-        if shared_lane {
-            // Even beside a bezel or a short output, the swimming direction
-            // continues downstream. All steering still goes through the turn budget.
+            && still == 0.
+            && gust_front.is_none();
+        if open_lane {
+            // Outside a knot or event, keep swimming downstream in open
+            // water too. Otherwise a displaced far lane can make a neighbour
+            // double back and recreate the accepted R21 loop clusters.
+            // Every correction still goes through the same turn budget.
             desired.x =
                 self.course_sign * (desired.x * self.course_sign).max(0.26 * desired.length());
         }
-        if departing {
-            desired += self.release * (300. * smooth(self.release_age / 6.));
+        if launch > 0. {
+            desired += self.release * (300. * launch);
         }
         let target_speed = (desired.length() * rate).clamp(
             38. * rate,
-            if departing {
-                315.
-            } else if gust > 0. {
-                500.
+            if departing || launch > 0. {
+                230. + 85. * launch
             } else {
                 230.
             },
         ) * (1. - 0.70 * still);
         let target_speed = if departing {
             target_speed.max(240. * smooth(self.release_age / 8.))
+        } else if launch > 0. {
+            target_speed.max(240. * launch)
+        } else {
+            target_speed
+        };
+        // Orbital bands share the ordinary screen-space motion band. The
+        // launch floor spends this motor budget too, with the same damped
+        // acceleration; free flow keeps the configured Speed response.
+        let target_speed = if orbit.is_some() || departing || launch > 0. {
+            target_speed.min(maelstrom_motor_limit)
         } else {
             target_speed
         };
         self.speed += (target_speed - self.speed) * (dt * 1.25).min(1.);
         let angle = turn(self.heading, desired);
-        let radius = [160., 220., 300.][self.layer];
-        let max_rate = if calm {
+        let radius = [200., 220., 300.][self.layer];
+        // Lose orbital tension as the eddy subsides. Release the coiled tail
+        // before the head receives its exit pulse, while leaving the layered
+        // full-strength orbit intact.
+        let unwind = if departing {
+            smooth(self.release_age / 5.)
+        } else {
+            orbit.map_or(0., |m| m.unwinding())
+        };
+        let mut max_rate = if calm {
             (self.speed / 520.).min(15_f64.to_radians())
         } else {
             (self.speed / radius).min(0.88)
         };
+        if unwind > 0. && gust_front.is_none() && maelstrom_motor_limit < 315. {
+            // Turning an extended scarf spends part of its existing motion
+            // budget: head translation plus at most two head steps of rigid
+            // rotation fits transport_body's three-head-step allowance.
+            let head = old_nodes[0].pos;
+            let lever = old_nodes[..self.count]
+                .iter()
+                .map(|n| {
+                    let d = n.pos - head;
+                    d.dot(d)
+                })
+                .fold(0_f64, f64::max)
+                .sqrt();
+            max_rate = max_rate.min(2. * self.speed / lever.max(1.));
+        }
         let max_rate = max_rate * if self.release_age > 14. { 0.30 } else { 1. };
         let delta = angle.clamp(-max_rate * dt, max_rate * dt);
         if self.turn_sum * delta < 0. {
@@ -374,10 +418,23 @@ impl Ribbon {
         }
         let (s, c) = delta.sin_cos();
         self.heading = self.heading * c + self.heading.perpendicular() * s;
-        let wind_push = p(395., -10.) * [0.72, 0.90, 1.0][self.layer];
-        let mut velocity = self.heading * self.speed + wind_push * gust;
-        let shared_radius = spanning && self.layer > 0 && orbit.is_none() && !departing;
-        if shared_radius && self.previous_velocity.dot(self.previous_velocity) > 1e-6 {
+        let wind_layer = [0.72, 0.90, 1.0][self.layer];
+        let wind_push = p(395., -10.) * wind_layer;
+        let gust_limit = gust_force_limit * wind_layer;
+        // Limit the added drive in wall-space before applying the travelling
+        // envelope, retaining its full onset and release instead of clipping it.
+        let head_wind = if gust > 0. {
+            wind_push.limited(gust_limit) * gust
+        } else {
+            wind_push * gust
+        };
+        let mut velocity = self.heading * self.speed + head_wind;
+        // Far strands share the resultant-velocity and body radius budget
+        // in normal flow too; a heading-only cap undershoots while accelerating.
+        let bounded_radius = (spanning || self.layer == 0) && orbit.is_none() && !departing;
+        if (bounded_radius || launch > 0. || released_free)
+            && self.previous_velocity.dot(self.previous_velocity) > 1e-6
+        {
             // A travelling gust also translates the head. Bound the resultant
             // velocity, after adding the wind, in the same native units as the
             // steering limit. The shorter chord bounds the three-point radius.
@@ -390,11 +447,19 @@ impl Ribbon {
                 velocity = (before * cs + before.perpendicular() * sn) * speed;
             }
         }
+        if launch > 0. && gust == 0. && velocity.dot(velocity) > 1e-6 {
+            self.heading = velocity.unit();
+        }
         self.previous_velocity = velocity;
         self.nodes[0].pos += velocity * dt;
         let head_y = self.nodes[0].pos.y;
         self.spin += dt * (self.spin_rate + curl.clamp(-1.8, 1.8) * 1.6) * (twist / 0.55);
-        let desired_phase = braid_phase.unwrap_or(self.spin);
+        let mut desired_phase = braid_phase.unwrap_or(self.spin);
+        if let Some(m) = orbit {
+            let offset = (desired_phase - self.spin + std::f64::consts::PI).rem_euclid(TAU)
+                - std::f64::consts::PI;
+            desired_phase = self.spin + offset * m.weight();
+        }
         let phase = self.nodes[0].phase;
         // Tight turns fold silk toward the nearest edge-on orientation.
         let edge = FRAC_PI_2
@@ -420,6 +485,7 @@ impl Ribbon {
         }
         self.sink = (self.sink + (6. * still - 16. * (1. - still)) * dt).clamp(0., 40.);
         let propagation = (self.speed + 46.) * dt / self.spacing;
+        let mut advection_squared = 0_f64;
         // Transport the angle independently of node positions. Read backwards
         // so a flip travels a finite distance during each step.
         for i in (1..self.count).rev() {
@@ -438,8 +504,16 @@ impl Ribbon {
             let current = a + (b - a) * ((i % 8) as f64 / 8.);
             let gust = gust_front.map_or(0., |(front, left)| front.gust(node.pos, left));
             let wind = current * (1. - gust);
-            let mut v = wind * ((0.15 + 0.45 * u) * (1. - 0.92 * still)) + wind_push * gust;
-            v.y += (head_y - node.pos.y).clamp(-135., 135.) * gust;
+            let mut v = wind * ((0.15 + 0.45 * u) * (1. - 0.92 * still));
+            let pull = (head_y - node.pos.y).clamp(-135., 135.);
+            if gust > 0. {
+                // Translation and vertical alignment spend one shared force
+                // budget; the body must not receive an uncapped lateral kick.
+                v += (wind_push + p(0., pull)).limited(gust_limit) * gust;
+            } else {
+                v += wind_push * gust;
+                v.y += pull * gust;
+            }
             let k = i / 8;
             v += (self.pressure[k]
                 + (self.pressure[(k + 1).min(16)] - self.pressure[k]) * ((i % 8) as f64 / 8.))
@@ -450,6 +524,7 @@ impl Ribbon {
             v.y += self.sink * u * u * still;
             // Keep loose tails in their own band as streamlines approach a shore.
             v.y += (self.lane - node.pos.y).clamp(-320., 320.) * 0.12 * u * (1. - still);
+            advection_squared = advection_squared.max(v.dot(v));
             node.pos += v * dt;
         }
         self.using_relaxed_phase = smooth_twist;
@@ -496,9 +571,9 @@ impl Ribbon {
         let relaxed_limit = calm_limit + (max_bend - calm_limit) * smooth(turbulence / 0.20);
         let angle_limit =
             relaxed_limit + gust * ((self.spacing / 720.).min(relaxed_limit) - relaxed_limit);
-        let bounded_body = shared_radius || departing;
+        let bounded_body = bounded_radius || departing || released_free;
         let angle_limit = if bounded_body {
-            angle_limit.min(self.spacing / (if shared_radius { 1.30 } else { 0.62 } * radius))
+            angle_limit.min(self.spacing / (if bounded_radius { 1.30 } else { 0.62 } * radius))
         } else {
             angle_limit
         };
@@ -520,18 +595,11 @@ impl Ribbon {
         } else {
             0.
         };
-        // Lose orbital tension as the eddy subsides. Release the coiled tail
-        // before the head receives its exit pulse, while leaving the layered
-        // full-strength orbit intact.
-        let unwind = if departing {
-            smooth(self.release_age / 5.)
-        } else {
-            orbit.map_or(0., |m| m.unwinding())
-        };
         let mut last_old_tangent = -self.heading;
         let mut old_angle = 0.;
         let mut last_new_angle = 0.;
         let orbit_weight = orbit.map_or(0., |m| m.weight());
+        let orbit_contour = orbit.map(|m| m.orbit_contour(self.layer));
         // The spatial projection walks from head to tail. A strongly bent
         // body straightened by a gust must retain the previous side of each
         // turn while it relaxes; a spatial limit alone permits an entire
@@ -574,18 +642,19 @@ impl Ribbon {
                 let radial = prev - m.centre;
                 let distance = radial.length().max(1.);
                 let outward = radial / distance;
-                let correction = ((m.orbit_radius(self.layer) - distance) / 80.).clamp(-1.4, 1.4);
+                let correction =
+                    ((orbit_contour.unwrap().radius(outward) - distance) / 80.).clamp(-1.4, 1.4);
                 let guide = (-outward.perpendicular() + outward * correction).unit();
                 let weight = orbit_weight * 0.19 * (1. - unwind);
                 axis = (axis * (1. - weight) + guide * weight).unit();
             }
             if let Some((front, left)) = gust_front {
                 let local = front.gust(prev, left);
-                let target = p(-self.course_sign, 0.);
+                let target = p(-1., 0.);
                 let weight = 0.62 * local;
                 axis = (axis * (1. - weight) + target * weight).unit();
             }
-            if shared_lane {
+            if open_lane {
                 let back = p(-self.course_sign, 0.);
                 let along = axis.dot(back);
                 if along < 0.12 {
@@ -633,7 +702,83 @@ impl Ribbon {
             }
             self.nodes[i].pos = prev + dir * self.spacing;
         }
+        // Projection enforces length and curvature spatially, but a small
+        // change near the head can rotate its entire suffix. Spend only the
+        // motion supplied by advection and the travelling bending wave.
+        let driven_step = (self.nodes[0].pos - old_nodes[0].pos).length()
+            + dt * (advection_squared.sqrt() + (self.speed + 46.) * angle_limit);
+        // Translate with the head, then allow a reflected bending wave up to
+        // twice the head/current drive. Spatial projection must not create
+        // any further motion merely by rotating a long suffix.
+        let maximum = (self.nodes[0].pos - old_nodes[0].pos).length() + 2. * driven_step;
+        self.transport_body(&old_nodes, maximum);
         self.motion_age += dt;
         self.light = (1. + 0.20 * gust) * (1. + 0.04 * still * (self.age * 0.32).sin());
     }
+
+    fn transport_body(&mut self, old: &[Node; NODES], maximum: f64) {
+        let head_step = self.nodes[0].pos - old[0].pos;
+        let relative_step = (maximum - head_step.length()).max(0.);
+        let requested = self.nodes[..self.count]
+            .iter()
+            .zip(old)
+            .fold(0_f64, |largest, (a, b)| {
+                let movement = a.pos - b.pos;
+                largest.max(movement.dot(movement))
+            });
+        if requested <= maximum * maximum {
+            return;
+        }
+
+        let mut rotations = [0.; NODES];
+        let mut previous = 0.;
+        let mut cost = 0.;
+        for (i, rotation) in rotations.iter_mut().enumerate().take(self.count).skip(1) {
+            let before = old[i].pos - old[i - 1].pos;
+            let after = self.nodes[i].pos - self.nodes[i - 1].pos;
+            let wrapped = turn(before, after);
+            *rotation = wrapped + TAU * ((previous - wrapped) / TAU).round();
+            previous = *rotation;
+            cost += self.spacing * rotation.abs();
+        }
+        // |R(a)v-v| <= |a| |v|. This common fraction therefore bounds
+        // every prefix's displacement, including the furthest body point.
+        // Interpolating unwrapped link angles also interpolates neighbouring
+        // bends: both the exact arclength and the curvature bounds survive.
+        let guaranteed = (relative_step / cost.max(1e-9)).min(1.);
+        // Use the available motion rather than the conservative sum of
+        // absolute rotations when bends cancel each other. Backtracking is
+        // checked on the reconstructed curve; the analytic bound guarantees
+        // a feasible fallback without stretching or clipping body points.
+        let mut fraction = (0.9 * maximum / requested.sqrt()).max(guaranteed).min(1.);
+        for _ in 0..8 {
+            let actual = self.rotate_body(old, &rotations, fraction);
+            if actual <= maximum * maximum + 1e-9 {
+                return;
+            }
+            fraction *= 0.8;
+            if fraction <= guaranteed {
+                break;
+            }
+        }
+        let furthest = self.rotate_body(old, &rotations, guaranteed);
+        debug_assert!(furthest.sqrt() <= maximum + 1e-7);
+    }
+
+    fn rotate_body(&mut self, old: &[Node; NODES], rotations: &[f64; NODES], fraction: f64) -> f64 {
+        let mut furthest = 0_f64;
+        for i in 1..self.count {
+            let before = (old[i].pos - old[i - 1].pos).unit();
+            let (sn, cs) = (rotations[i] * fraction).sin_cos();
+            let axis = before * cs + before.perpendicular() * sn;
+            self.nodes[i].pos = self.nodes[i - 1].pos + axis * self.spacing;
+            let movement = self.nodes[i].pos - old[i].pos;
+            furthest = furthest.max(movement.dot(movement));
+        }
+        furthest
+    }
 }
+
+#[cfg(test)]
+#[path = "../../../../../../tests/depth/ribbons/transport.rs"]
+mod transport;

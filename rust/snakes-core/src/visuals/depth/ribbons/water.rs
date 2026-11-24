@@ -6,6 +6,10 @@ use super::common::{
 };
 use super::world::Event;
 
+pub(super) const EVENT_ONSET_WALL_SECONDS: f64 = 1.25;
+pub(super) const GUST_FORCE_PIXELS_PER_SECOND: f64 = 150.;
+pub(super) const MAELSTROM_MOTOR_PIXELS_PER_SECOND: f64 = 350.;
+
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Kind {
     Gust,
@@ -20,23 +24,63 @@ pub(super) struct Moment {
     duration: f64,
     radius: f64,
     strength: f64,
+    event_pace: f64,
 }
 impl Moment {
+    fn onset_span(self, nominal: f64) -> f64 {
+        nominal.max(EVENT_ONSET_WALL_SECONDS * self.event_pace)
+    }
     pub fn weight(self) -> f64 {
-        smooth(self.age / 5.) * smooth((self.duration - self.age) / 6.) * self.strength
+        smooth(self.age / self.onset_span(5.))
+            * smooth((self.duration - self.age) / 6.)
+            * self.strength
+            * (1. - self.release_weight())
     }
     pub fn gust(self, pos: Vec2, left: f64) -> f64 {
         if self.kind != Kind::Gust {
             return 0.;
         }
         let lag = self.age - (pos.x - left) / 1200.;
-        smooth(lag / 0.75) * smooth((6. - lag) / 3.) * self.strength
+        let rise = self.onset_span(0.75);
+        // Preserve the full-strength hold and fall while slowing the front's
+        // arrival in wall time, including on accelerated event clocks.
+        smooth(lag / rise) * smooth((rise + 5.25 - lag) / 3.) * self.strength
+    }
+    pub fn gust_steering(self) -> f64 {
+        if self.kind != Kind::Gust {
+            return 0.;
+        }
+        let span = self.onset_span(0.75);
+        smooth(self.age / span) * smooth((self.duration - self.age) / span) * self.strength
     }
     pub fn orbit_radius(self, layer: usize) -> f64 {
         self.radius * [0.55, 0.80, 1.05][layer]
     }
+    // Cache the rotating ellipse once per strand, rather than evaluating
+    // trigonometry at every transported body node.
+    pub fn orbit_contour(self, layer: usize) -> OrbitContour {
+        let phase = layer as f64 * std::f64::consts::TAU / 3.;
+        let breathe = 1.
+            + 0.06 * (self.age * std::f64::consts::TAU * [0.08, 0.10, 0.12][layer] + phase).sin();
+        OrbitContour {
+            radius: self.orbit_radius(layer) * breathe,
+            axis: super::agent::polar(self.age * 0.09 + phase * 0.25),
+        }
+    }
     pub fn unwinding(self) -> f64 {
-        smooth((5.5 - (self.duration - self.age)) / 2.)
+        let span = self.onset_span(2.);
+        // Establish tail tension before the head's launch ramp. A bounded
+        // body needs preparation time instead of an instantaneous projection.
+        smooth((4.5 + span - (self.duration - self.age)) / span)
+    }
+    pub fn release_weight(self) -> f64 {
+        if self.kind != Kind::Maelstrom {
+            return 0.;
+        }
+        let span = (EVENT_ONSET_WALL_SECONDS * self.event_pace).max(1e-6);
+        // Finish handing orbital force and facing back to free silk before
+        // the captured flag changes, instead of dropping them in one tick.
+        smooth((span + 2.5 - (self.duration - self.age)) / span)
     }
     pub fn collapsing(self) -> bool {
         self.kind == Kind::Maelstrom && self.duration - self.age <= 2.5
@@ -50,9 +94,21 @@ impl Moment {
             circulation: self.radius * 235.,
         }
         .sample(pos);
-        let pull = (self.orbit_radius(layer) - radial.length()).clamp(-260., 220.);
+        let pull = (self.orbit_contour(layer).radius(outward) - radial.length()).clamp(-260., 220.);
         let drive = outward * (pull * 1.6) + outward.perpendicular() * 205. + eddy.velocity;
         (drive * self.weight(), eddy.vorticity * self.weight())
+    }
+}
+#[derive(Clone, Copy)]
+pub(super) struct OrbitContour {
+    radius: f64,
+    axis: Vec2,
+}
+impl OrbitContour {
+    pub fn radius(self, outward: Vec2) -> f64 {
+        let cos = outward.dot(self.axis);
+        let sin = outward.dot(self.axis.perpendicular());
+        self.radius * (1.07 * 0.93) / ((0.93 * cos).powi(2) + (1.07 * sin).powi(2)).sqrt()
     }
 }
 pub(super) struct Weather {
@@ -91,6 +147,7 @@ impl Weather {
         layout: &Layout,
         rng: &mut Pcg32,
         dt: f64,
+        event_pace: f64,
         ns: i64,
         enabled: bool,
     ) -> Option<Moment> {
@@ -130,7 +187,9 @@ impl Weather {
             let (kind, duration, next) = match i {
                 0 => (
                     Kind::Gust,
-                    layout.bounds.width / 1200. + 6.,
+                    layout.bounds.width / 1200.
+                        + 0.75_f64.max(EVENT_ONSET_WALL_SECONDS * event_pace)
+                        + 5.25,
                     range(rng, 180., 360.),
                 ),
                 1 => (
@@ -148,6 +207,7 @@ impl Weather {
                 duration,
                 radius: layout.bounds.height * 0.40,
                 strength,
+                event_pace,
             });
         }
         ended

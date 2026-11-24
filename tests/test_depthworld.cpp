@@ -2,6 +2,7 @@
 #include "livingvisualitem.h"
 #include "visualdepthregistry.h"
 #include "visualworldcoordinator.h"
+#include "presentationclock.h"
 #include <QTest>
 #include <QGuiApplication>
 #include <QSGNode>
@@ -385,6 +386,7 @@ private Q_SLOTS:
             node = item.synchronize(node);
         }
         const auto ticks = coordinator.statistics().first().ticks;
+        const auto measuredBefore = PresentationTelemetry::coordinatorTotalNs;
         allocations = 0;
         countAllocations = true;
         bool ready = true;
@@ -396,6 +398,7 @@ private Q_SLOTS:
         countAllocations = false;
         QCOMPARE(allocations, size_t(0));
         QVERIFY(ready);
+        QVERIFY(PresentationTelemetry::coordinatorTotalNs > measuredBefore);
         QCOMPARE(coordinator.statistics().first().ticks, ticks);
         vd_sample_info retained {};
         QCOMPARE(visuals_depth_sample_info(pinned.get(), &retained), 0);

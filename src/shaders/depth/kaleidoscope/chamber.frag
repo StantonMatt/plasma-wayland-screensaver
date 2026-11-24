@@ -12,6 +12,9 @@ layout(location=6) flat in vec4 optics;
 layout(location=0) out vec4 color;
 
 vec3 chroma(vec3 c) { return c / max(0.001, max(c.r, max(c.g,c.b))); }
+vec3 linearRGB(vec3 c) { return mix(c/12.92,pow((c+0.055)/1.055,vec3(2.4)),step(vec3(0.04045),c)); }
+vec3 encodedRGB(vec3 c) { return mix(c*12.92,1.055*pow(c,vec3(1./2.4))-0.055,step(vec3(0.0031308),c)); }
+float eventEase(float v) { float t=clamp(v,0.,1.); return t*t*t*(t*(t*6.-15.)+10.); }
 
 void main() {
     int n=int(form.z+0.5);
@@ -112,7 +115,7 @@ void main() {
         edge=mix(edge,gold*max(edge.r,max(edge.g,edge.b)),0.30);
     }
     vec3 emission=body*face*inside + edge + hot*inside;
-    emission+=chroma(mix(rim,vec3(1.),0.60))*optics.z*pow(max(facing,0.),18.)*core;
+    emission+=chroma(mix(rim,vec3(1.),0.60))*max(0.,optics.z)*pow(max(facing,0.),18.)*core;
     emission*=mix(1.,0.60+0.17*opal,form.w);
     if(pigment.z>0.5) {
         float d=length(local)*zoom;
@@ -122,5 +125,31 @@ void main() {
     // The target's alpha accumulates optical depth through garnet cuts.
     // Gold retains its hue along rays that only pass through beads.
     float garnet=pal==2 && n>2 ? inside*mix(0.22,1.,smoothstep(0.025,0.32,t)) : 0.;
+    // Negative pose weights carry a linear-light transit dimmer. Apply it
+    // per piece, before screen blending, so the drain retains its glass hue.
+    if(optics.z<0.) {
+        float key=clamp(1.+optics.z,0.,1.);
+        if(pal==0 && u.motion.z<0.) {
+            float age=-u.motion.z-1.;
+            float envelope=eventEase(age)*eventEase(8.-age);
+            float travel=age<3.25 ? eventEase((age-0.44)/0.1)*eventEase((1.-key)/0.001) : 1.-key;
+            // Ocean's neutral transmission can be pale before the pour starts.
+            // Let that neutral component leave the mouth light first, keeping
+            // the same RGB hue and its coloured rims. No component is added.
+            // The leading edge remains unchanged until actual outward travel;
+            // event attack/release each have a full one-second C2 shoulder.
+            float hi=max(emission.r,max(emission.g,emission.b));
+            float lo=min(emission.r,min(emission.g,emission.b));
+            float neutral=max(0.,(lo-0.25*hi)/0.75);
+            vec3 transmitted=max(vec3(0.),emission-vec3(neutral));
+            transmitted*=hi/max(hi-neutral,0.00001);
+            // Preserve the leading colour's value while absorbing neutral
+            // transmission. Every RGB component still stays at or below its
+            // original value; this does not brighten an empty eye.
+            emission=mix(emission,transmitted,envelope*travel);
+        }
+        emission=encodedRGB(linearRGB(max(emission,vec3(0.)))*key);
+        garnet*=key;
+    }
     color=vec4(emission,garnet);
 }

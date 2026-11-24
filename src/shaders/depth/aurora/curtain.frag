@@ -1,6 +1,6 @@
 #version 440
 layout(std140,binding=0) uniform Camera {
-    mat4 projection; vec4 bounds; vec4 colors[6]; vec4 top; vec4 bottom; vec4 style; vec4 clock; vec4 view; vec4 optics; vec4 overlap[8];
+    mat4 projection; vec4 bounds; vec4 colors[6]; vec4 top; vec4 bottom; vec4 style; vec4 clock; vec4 view; vec4 optics; vec4 overlap[8]; vec4 phases;
 } sky;
 layout(binding=1) uniform sampler2D fieldAtlas;
 layout(location=0) in vec2 uv;
@@ -48,7 +48,7 @@ void main() {
         float bend=(.0022+.0027*crowded)*sin(y/36.+1.5*phase+2.1*broad.a)
                    +.0013*sin(y/19.-phase);
         float rayU=light.x+.028*broad.a+.028*h*h+bend;
-        float spread=clamp(2.1*fwidth(light.x),.0015,.012);
+        float spread=clamp(2.1*fwidth(rayU),.0015,.012);
         // Resolve each ray bundle against both its spatial footprint and
         // the exposure of a fast camera. Eight mip levels belong to each arc.
         float exposure=max(surface.y-band,1.4+2.3*crowded);
@@ -94,8 +94,9 @@ void main() {
             // Neighbouring sheets follow the same magnetic flux bundles. Their
             // diffuse overlap must preserve gaps in precipitation before screen blending.
             float nx=(world.x-sky.clock.w)*1440./sky.bounds.w;
+            float fieldLean=mix(.22,.44,clamp(sky.phases.z,0.,1.));
             float foot=(world.x-sky.bounds.x)*1440./sky.bounds.w
-                    -.44*nx/sqrt(nx*nx+150.*150.)*(y-740.);
+                    -fieldLean*nx/sqrt(nx*nx+150.*150.)*(y-740.);
             float fieldU=(foot-12.*sky.clock.x)/1024.;
             float flux=.5*texture(fieldAtlas,vec2(fieldU,3.5/64.)).g
                       +.25*(texture(fieldAtlas,vec2(fieldU-.007,3.5/64.)).g
@@ -110,7 +111,7 @@ void main() {
             weight=max(.5,weight);
         // At grazing angles several fine rays can cover a pixel. Their mean
         // emission survives filtering and the individual rays disappear gently.
-        weight*=1.-smoothstep(.0025,.010,fwidth(light.x));
+        weight*=1.-smoothstep(.0025,.010,fwidth(rayU));
         // The ray material coordinate is constant along a field line. Its
         // screen derivatives give the line's tilt during a corona.
         float tilt=abs(dFdy(light.x))/max(.00001,abs(dFdx(light.x)));
@@ -121,13 +122,29 @@ void main() {
         weight*=1.-max(.55*light.w,.96*stormFoot);
         if (densePastel)
             weight=max(.5,weight);
+        // Broad mottling can dominate a compressed corona sheet. Keep faint
+        // field-aligned striation and let that diffuse excitation yield to the
+        // resolved rays and bright hem as the crown opens.
+        float corona=clamp(sky.phases.z,0.,1.);
+        if (corona>0.) {
+            weight=max(weight,.20*corona);
+            body*=1.-.70*corona*broad.r;
+            // Use angular sky spacing for these faint bundles: a highly folded
+            // material coordinate would compress them back into a blurred blob.
+            float nx=(world.x-sky.clock.w)*1440./sky.bounds.w;
+            float foot=(world.x-sky.bounds.x)*1440./sky.bounds.w
+                -.44*nx/sqrt(nx*nx+150.*150.)*(y-740.);
+            float strands=smoothstep(.18,.82,patchNoise(vec2(
+                foot/28.+19.1*surface.w,y/450.+surface.w)));
+            body*=1.+.40*corona*smoothstep(.10,.25,up)*(strands-.5);
+        }
         float rays=1.+weight*(2.*ray-1.);
         vec3 base=mix(sky.colors[1].rgb,sky.colors[2].rgb,.16+.48*broad.a);
         vec3 crown=mix(sky.colors[3].rgb,sky.colors[4].rgb,.30+.33*broad.r);
         if(sky.style.z==1.) {
             // Hue moves on the continuous sky. The advected ray coordinate
             // wraps every two texture repeats and cannot drive a long-period tint.
-            float hue=(world.x-sky.bounds.x)/1850.+surface.w+sky.clock.x*.026;
+            float hue=(world.x-sky.bounds.x)/1850.+surface.w+sky.phases.x;
             base=mix(sky.colors[1].rgb,sky.colors[2].rgb,.12+.16*sin(hue));
         } else if(sky.style.z==5.) {
             base=surface.w<.25?sky.colors[1].rgb:surface.w<.75?sky.colors[2].rgb:sky.colors[3].rgb;
@@ -143,9 +160,17 @@ void main() {
         }
         float fringe=exp(-abs(distance)/mix(3.8+3.2*light.w,9.,far));
         if (kind==3.) {
-            rgb=crown*(.18*trail)*exp(-abs(distance)/(4.+48.*trail))*(1.-smoothstep(.8,1.,uv.y));
+            // Pastel's wide afterglow shares the sheet hue instead of carrying
+            // a desaturated crown band below the lower edge.
+            vec3 ghostDye=sky.style.z==5. ? base : crown;
+            float ghostGain=(.18*trail)*(sky.style.z==5.?.70:1.);
+            rgb=ghostDye*ghostGain*exp(-abs(distance)/(4.+48.*trail))
+                *(1.-smoothstep(.8,1.,uv.y));
         } else {
-            rgb=dye*(body*rays+halo)*envelope;
+            // The wide Pastel halo inherits the sheet's chroma rather than
+            // carrying a desaturated grey ramp below its lower edge.
+            vec3 haloDye=sky.style.z==5. ? mix(base,sky.colors[0].rgb,.18) : dye;
+            rgb=(dye*body*rays+haloDye*halo*(sky.style.z==5.?.70:1.))*envelope;
             vec3 hem=mix(base,sky.colors[0].rgb,.72);
             if(sky.style.z==1.) {
                 float wide=exp(-abs(distance)/20.);
@@ -170,6 +195,12 @@ void main() {
         float contour=1.-dot(p,p)/(radius*radius);
         rgb=mix(sky.colors[1].rgb,sky.colors[2].rgb,.36)*light.y
             *(.60+.80*m)*pow(max(0.,contour),1.65);
+        // Faint magnetic striation keeps diffuse islands related to the rays.
+        float toward=sky.clock.w-world.x;
+        float lean=.20*toward/sqrt(toward*toward+150.*150.);
+        float rayX=(world.x+lean*(world.y-sky.bounds.y))*1440./sky.bounds.w;
+        float striation=patchNoise(vec2(rayX/12.+phase,site.y*.16));
+        rgb*=.8+.4*striation;
     } else {
         float along=surface.y>=1. ? smoothstep(0.,.12,light.x)*(1.-smoothstep(.85,1.,light.x)) : smoothstep(0.,.83,uv.x)*(1.-smoothstep(.90,1.,uv.x));
         float width=0.45+0.55*uv.x;

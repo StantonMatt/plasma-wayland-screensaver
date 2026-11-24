@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from visual_harness.layout import configure_layout, L3
+from visual_harness.layout import configure_layout, with_refresh_rates, L3
 from visual_harness.isolation import SOCKET, bus_configuration, validated_environment
 
 
@@ -48,7 +48,8 @@ def worker(args):
     if args.visual == 'fixture':
         return capture(args, environment, L3, args.output, None)
     if args.scene in ('benchmark', 'soak'):
-        return capture(args, environment, L3, args.output, {args.scene: True})
+        roles = with_refresh_rates(L3, args.refresh_rates) if args.refresh_rates else L3
+        return capture(args, environment, roles, args.output, {args.scene: True})
     catalog = args.catalog
     scenes = catalog["scenes"]
     if args.scene == 'activation-study':
@@ -77,6 +78,14 @@ def scene_request(args, name):
     request = dict(spec, formatVersion=1, visual=args.visual, scene=name, outputs=LAYOUTS[spec['layout']],
                    settings={**args.catalog['defaults'], **spec.get('settings', {})},
                    events=args.events if args.event_script else spec.get('events', []))
+    if args.scene_defaults:
+        request['settings'] = dict(args.catalog['defaults'])
+    if args.scene_seed is not None:
+        request['seed'] = args.scene_seed
+    if args.scene_speed is not None:
+        request['settings']['speed'] = args.scene_speed
+    if args.refresh_rates:
+        request['outputs'] = with_refresh_rates(request['outputs'], args.refresh_rates)
     if spec.get('legacy') or spec.get('softwareProbe'):
         request['events'] = []
     if 'prewarmSeconds' in args.catalog:
@@ -104,7 +113,7 @@ def run_scene(args, environment, target, product):
     script = target / 'request.json'
     script.write_text(json.dumps(product, indent=2))
     env = dict(environment, VISUALS_CAPTURE_DIR=str(target), PVS_VISUAL_CAPTURE_SCRIPT=str(script))
-    if product.get('video'):
+    if product.get('video') or product.get('gpuStudy'):
         env['QTEST_FUNCTION_TIMEOUT'] = '3600000'
     test_args = [str(args.build / 'bin/test-visual-depth-capture'), 'productScene']
     if product.get('gpuTiming'):
@@ -114,7 +123,7 @@ def run_scene(args, environment, target, product):
                                 env=validated_environment(env,'client'), stdout=log, stderr=subprocess.STDOUT)
         print(f"{product['scene']} capture PID {test.pid}", flush=True)
         try:
-            code = test.wait(timeout=3600 if product.get('video') else 300)
+            code = test.wait(timeout=3600 if product.get('video') or product.get('gpuStudy') else 300)
         finally:
             stop(test)
     if not code and product.get('video'):
@@ -284,16 +293,19 @@ def capture(args, compositor_environment, roles, target, product):
             return memory_soak(args, environment, target, compositor)
         if product and product.get('benchmark'):
             script = Path(__file__).resolve().parents[1] / 'scripts/benchmark-visuals.sh'
-            for mode in ('independent','seamless'):
+            for mode in args.benchmark_modes:
                 argv = [str(script), '--target', 'virtual', '--private-depth-session', '--virtual-renderer', 'hardware',
-                        '--binary', str(args.build / 'bin/plasma-visual-screensaver'), '--visuals', 'none', args.visual,
+                        '--binary', str(args.build / 'bin/plasma-visual-screensaver'), '--visuals',
+                        *([args.visual] if args.benchmark_visual_only else ['none', args.visual]),
                         *(part for value in args.benchmark_set for part in ('--set', value)),
+                        *(['--config', str(args.benchmark_config)] if args.benchmark_config else []),
+                        *(['--refresh-rates', *map(str, args.refresh_rates)] if args.refresh_rates else []),
                         '--set', 'MonitorBehavior='+mode, '--set', 'FrameRate=60', '--set', 'ShowClock=true',
-                        '--set', 'ClockMovement=bounce', '--duration', '30', '--warmup', '5',
+                        '--set', 'ClockMovement=bounce', '--duration', str(args.benchmark_duration), '--warmup', '5',
                         '--output-dir', str(target / mode)]
                 with (target / (mode+'.log')).open('w') as log:
                     result = subprocess.run(argv, env=validated_environment(environment,'client'), stdout=log,
-                                            stderr=subprocess.STDOUT, timeout=300)
+                                            stderr=subprocess.STDOUT, timeout=2 * args.benchmark_duration + 120)
                 if result.returncode:
                     print((target / (mode+'.log')).read_text()[-3000:])
                     return result.returncode
@@ -383,15 +395,29 @@ def main():
                         help='Capture a shorter diagnostic interval from one scripted video scene')
     parser.add_argument('--benchmark-set', action='append', default=[], metavar='KEY=VALUE',
                         help='Use a benchmark-visuals.sh General setting for the private CPU study')
+    parser.add_argument('--refresh-rates', type=float, nargs='+', help='Private per-output refresh rates in layout order')
+    parser.add_argument('--benchmark-duration', type=float, default=30, help='Measured seconds per benchmark visual/mode')
+    parser.add_argument('--benchmark-config', type=Path, help='Read-only source profile for the private benchmark')
+    parser.add_argument('--benchmark-modes', nargs='+', choices=['independent', 'seamless'], default=['independent', 'seamless'])
+    parser.add_argument('--benchmark-visual-only', action='store_true', help='Omit the none baseline for a long cadence run')
     parser.add_argument('--warm-activation', action='store_true',
                         help='Warm both renderers in one private driver/Qt cache before ten interleaved activation pairs')
     parser.add_argument('--round', type=int, default=1)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--seed', default='1')
+    parser.add_argument('--scene-seed', help='Override the registered scene seed (decimal u64)')
+    parser.add_argument('--scene-speed', type=int, help='Override the registered scene animation speed (10 to 300)')
+    parser.add_argument('--scene-defaults', action='store_true', help='Use catalog animation defaults instead of scene settings')
     parser.add_argument('--times', default='0,1000000000,1005000000,2000000000,3500000000', help='Comma-separated integer timeline nanoseconds')
     parser.add_argument('--event-script', type=Path, help='JSON array of visual events (id,timelineNs,anchor,strength)')
     parser.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if (not math.isfinite(args.benchmark_duration) or not 1 <= args.benchmark_duration <= 900):
+        parser.error('--benchmark-duration must be in [1, 900] seconds')
+    if args.refresh_rates and any(not math.isfinite(r) or not 1 <= r <= 360 for r in args.refresh_rates):
+        parser.error('--refresh-rates must be in [1, 360] Hz')
+    if args.benchmark_config:
+        args.benchmark_config = args.benchmark_config.resolve(strict=True)
     if args.warm_activation and args.scene != 'activation-study':
         parser.error('--warm-activation requires --scene activation-study')
     if args.benchmark_set and args.scene != 'benchmark':
@@ -401,6 +427,10 @@ def main():
         parser.error('--clip needs one video scene, a start in [0, 3600] and 60 to 3600 frames')
     if not args.seed.isdecimal() or not 0 <= int(args.seed) < 2**64:
         parser.error('seed must be a decimal u64 string')
+    if args.scene_seed is not None and (not args.scene_seed.isdecimal() or not 0 <= int(args.scene_seed) < 2**64):
+        parser.error('scene seed must be a decimal u64 string')
+    if args.scene_speed is not None and not 10 <= args.scene_speed <= 300:
+        parser.error('scene speed must be in [10, 300]')
     if not all(t.isdecimal() and int(t) <= 3_600_000_000_000 for t in args.times.split(',')):
         parser.error('times must be integer nanoseconds in [0, 3600 seconds]')
     try:
@@ -480,11 +510,19 @@ def main():
             binarySha256=hashlib.sha256(binary.read_bytes()).hexdigest(), argv=sys.argv, layout=args.layout,
             schemaSourceHashes=schema_hashes, untrackedSourceHashes=untracked_hashes, trackedDiffSha256=hashlib.sha256(diff).hexdigest(),
             shaderProvider='Qt RHI; see scene log for observed backend',
-            scope='Private virtual KWin, 60 Hz outputs, DPR 1'), indent=2))
+            scope='Private virtual KWin, DPR 1', refreshRatesHz=args.refresh_rates or [60]), indent=2))
         process = subprocess.Popen(['dbus-run-session', '--config-file=' + str(bus), '--', sys.executable,
             str(Path(__file__).resolve()), '--worker', '--build', str(args.build), '--output', str(args.output),
             '--visual', args.visual, '--scene', args.scene, '--seed', args.seed, '--times', args.times,
+            *(['--scene-seed', args.scene_seed] if args.scene_seed is not None else []),
+            *(['--scene-speed', str(args.scene_speed)] if args.scene_speed is not None else []),
+            *(['--scene-defaults'] if args.scene_defaults else []),
             *(['--warm-activation'] if args.warm_activation else []),
+            '--benchmark-duration', str(args.benchmark_duration),
+            '--benchmark-modes', *args.benchmark_modes,
+            *(['--benchmark-visual-only'] if args.benchmark_visual_only else []),
+            *(['--benchmark-config', str(args.benchmark_config)] if args.benchmark_config else []),
+            *(['--refresh-rates', *map(str, args.refresh_rates)] if args.refresh_rates else []),
             *(part for value in args.benchmark_set for part in ('--benchmark-set', value)), *(['--clip', *map(str, args.clip)] if args.clip else []), *(['--event-script', str(args.event_script.resolve())] if args.event_script else [])],
             env=validated_environment(environment, 'bootstrap'), start_new_session=True)
         print(f'Private capture process group {process.pid}', flush=True)
@@ -499,7 +537,7 @@ def main():
                 if args.scene == 'activation-study':
                     result['activation'] = 'activation.json'
                 if args.scene == 'benchmark':
-                    result['benchmarks'] = [f'{mode}/summary.json' for mode in ('independent', 'seamless')]
+                    result['benchmarks'] = [f'{mode}/summary.json' for mode in args.benchmark_modes]
                 if args.scene == 'soak':
                     result['memory'] = 'memory.json'
                 sequences = [p for p in manifests if json.loads(p.read_text()).get('videoFrames', 0)]
