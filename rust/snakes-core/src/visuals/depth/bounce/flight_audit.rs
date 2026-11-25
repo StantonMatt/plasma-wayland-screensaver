@@ -51,9 +51,10 @@ impl FlightAudit {
         if free && let Some(mut velocity) = expected {
             velocity = if b.high_arc && !b.floating && b.flow_limit < cap {
                 let limited = velocity.limit(cap);
-                v(limited.x.clamp(-b.flow_limit, b.flow_limit), limited.y)
+                let lateral_limit = b.flow_limit.max(b.lateral_launch_budget);
+                v(limited.x.clamp(-lateral_limit, lateral_limit), limited.y)
             } else {
-                velocity.limit(cap.min(b.flow_limit))
+                velocity.limit(cap)
             };
             let applied = if elastic == 1. && velocity.len2() <= 100. / (drag * drag) {
                 1.

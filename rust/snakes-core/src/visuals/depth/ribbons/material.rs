@@ -131,14 +131,17 @@ impl Art {
                 } else {
                     color(input.palette, 0)
                 };
+                // Positive shader metadata controls how much light an overlap
+                // retains. Pastel keeps its existing negative highlight marker.
                 if palette == 2 {
-                    // The existing unused alpha channel selects Ember's faint
-                    // glow treatment without changing faces or palette values.
-                    // The halo uniform must hold its emitted colour: the
-                    // head/shoulder slope limiter uses this same radiance.
+                    accent[3] = 0.10;
+                } else if palette == 0 {
+                    accent[3] = 0.25;
+                }
+                if palette == 2 {
+                    // Keep the shipped warm Ember atmosphere as a palette choice.
                     halo[1] = halo[0] * 0.4202;
                     halo[2] = halo[0] * 0.3562;
-                    accent[3] = -3.;
                 }
                 Silk {
                     front,

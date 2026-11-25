@@ -2,6 +2,7 @@
 mod field;
 #[path = "../common/glyph_sdf.rs"]
 mod glyph_sdf;
+mod lightning;
 mod render;
 mod weather;
 use super::{
@@ -256,8 +257,14 @@ impl LivingWorld for MatrixWorld {
                     * [0.18, 0.7, 0.35][layer.index]
             })
             .sum();
-        (wet_area / self.input.layout.visible_area).min(0.08)
-            + if (0. ..0.3).contains(&age) { 0.025 } else { 0. }
+        // Endpoint diagnostics report the unbounded rain estimate and the
+        // same strike envelope used by the renderer; they do not limit light.
+        wet_area / self.input.layout.visible_area
+            + if self.input.reduced_motion {
+                0.
+            } else {
+                f64::from(self.weather.rhythm.lift(age))
+            }
     }
     fn inject(&mut self, mut e: Event) -> Result<(), &'static str> {
         e.anchor[0] -= self.input.layout.bounds.x;

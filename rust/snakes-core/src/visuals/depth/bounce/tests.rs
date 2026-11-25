@@ -634,7 +634,7 @@ fn floating_contacts_release_and_impact_light_has_a_wall_time_attack() {
         b.relax_light(1. / 120., Relaxation::new(1. / 120.));
     }
     b.strike(v(0., -1.), 1440., 1440., false);
-    b.emit_contact_light(&mut w.impact_fields[b.room], 100.);
+    b.emit_contact_light();
     assert_eq!(b.body_light(), 0.);
     assert!(b.glow() >= 0.99);
     for _ in 0..3 {
@@ -647,19 +647,25 @@ fn floating_contacts_release_and_impact_light_has_a_wall_time_attack() {
     assert!((b.body_light() - b.light).abs() < 1e-8);
 }
 #[test]
-fn shared_field_groups_simultaneous_impacts_and_reopens_in_wall_time() {
-    let w = BounceWorld::new(input(&[L3[0]], 4, 35));
-    let mut field = ImpactField::new(&w.rooms[0]);
-    let center = v(150., 1200.);
-    assert!(field.admit(0., center, 80.));
-    assert!(field.admit(0.02, center + v(100., 0.), 60.));
-    assert!(!field.admit(0.48, center + v(850., 0.), 80.));
-    assert!(field.admit(0.48, center + v(1650., 0.), 80.));
-    assert!(field.admit(0.63, center, 80.));
+fn successive_contacts_light_without_a_regional_or_per_ball_cooldown() {
+    let mut w = BounceWorld::new(input(&[L3[0]], 2, 35));
+    for b in &mut w.balls {
+        b.p = v(600., 600.);
+    }
+    for time in [0., 0.1, 0.2] {
+        for b in &mut w.balls {
+            b.pending_light = 0.7 + time;
+            b.emit_contact_light();
+            assert_eq!(b.flash, 0.7 + time);
+            assert_eq!(b.flash_age, 0.);
+            assert_eq!(b.pending_light, 0.);
+            b.relax_light(0.1, Relaxation::new(0.1));
+        }
+    }
 }
 
 #[test]
-fn accelerated_crowds_share_the_swept_area_and_distant_balls_move_freely() {
+fn tall_launches_keep_lateral_room_and_distant_balls_move_freely() {
     let mut config = input(&[L3[0]], 12, 35);
     config.speed = 3.;
     config.scale = 2.;
@@ -672,10 +678,24 @@ fn accelerated_crowds_share_the_swept_area_and_distant_balls_move_freely() {
     let max = 2.2 * w.height;
     assert!((w.balls[0].flow_limit - max).abs() < 1e-8);
     assert!(w.balls[6].flow_limit < max / 5.);
+    let limits: Vec<_> = w.balls.iter().map(|b| b.flow_limit).collect();
+    w.set_capture_pace(3.);
+    w.update_flow_limits();
+    assert_eq!(
+        limits,
+        w.balls.iter().map(|b| b.flow_limit).collect::<Vec<_>>()
+    );
     let b = &mut w.balls[6];
     b.v = v(0., -1200.);
     b.limit_motion(max, v(0., 1.));
     assert_eq!(b.v.y, -1200.);
+    b.floating = true;
+    b.v = v(1200., 0.);
+    b.limit_motion(max, V::default());
+    assert_eq!(
+        b.v.x, 1200.,
+        "Zero-G does not spend a lateral launch budget"
+    );
     w.input.speed = 1.;
     let mut ordinary = BounceWorld::new(w.input.clone());
     ordinary.update_flow_limits();

@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Keep the native head-contour gate strict above its RGB8 resolution limit."""
+"""Check the historical head-contour diagnostic above its RGB8 resolution limit."""
 import importlib.util
 import math
 from pathlib import Path

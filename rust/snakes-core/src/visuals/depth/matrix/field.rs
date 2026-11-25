@@ -152,6 +152,9 @@ pub struct Layer {
     pub(super) overlay_limit: usize,
     bolt_start: Option<f32>,
     next_bolt_row: i32,
+    bolt_trunk_count: usize,
+    bolt_endpoint: [f32; 2],
+    grounds: Vec<[f32; 3]>,
     heat: Vec<HotInterval>,
     hot_lifetime: [[u16; 256]; 4],
     pub half: f32,
@@ -260,6 +263,20 @@ impl Layer {
             overlay_limit: usize::MAX,
             bolt_start: None,
             next_bolt_row: 0,
+            bolt_trunk_count: 0,
+            bolt_endpoint: [0.; 2],
+            grounds: input
+                .layout
+                .outputs
+                .iter()
+                .map(|o| {
+                    [
+                        (o.rect.x - b.x) as f32,
+                        (o.rect.right() - b.x) as f32,
+                        (o.rect.bottom() - b.y) as f32,
+                    ]
+                })
+                .collect(),
             landing_fade: (input.scale as f32 - 1.).clamp(0., 1.)
                 * ((input.density as f32 - 50.) / 30.).clamp(0., 1.),
             shelter: ((input.scale as f32 - 1.).clamp(0., 1.)
@@ -827,6 +844,7 @@ impl Layer {
             );
         }
     }
+    #[cfg(test)]
     fn bolt_segment(&mut self, row: i32, start: f32, end: f32, power: f32, stamp: u32) {
         let last = self.cols.len() as f32 - 0.5;
         let (a, b) = (start.clamp(0.5, last), end.clamp(0.5, last));
@@ -877,82 +895,66 @@ impl Layer {
         if age >= 6.5 {
             self.bolt_segments.clear();
             self.bolt_cells.clear();
+            return;
         }
         if !(0. ..0.14 + dt).contains(&age) {
             return;
         }
-        let centre = (m.x / self.pitch[0])
-            .floor()
-            .clamp(0., (self.cols.len() - 1) as f32) as i32;
-        let nominal_rows = self.cols[centre as usize].floor.ceil() as i32;
-        // A strike near a step in the desk's skyline can lean across it. The
-        // first ground intersection determines the splash, even on a raised floor.
-        let step = (1..=12).find_map(|distance| {
-            [-distance, distance].into_iter().find(|off| {
-                let k = centre + off;
-                k >= 0
-                    && k < self.cols.len() as i32
-                    && (self.cols[k as usize].floor - self.cols[centre as usize].floor).abs() > 1.
-            })
-        });
-        let lean = step.map_or_else(
-            || if m.key & 1 == 0 { 4.5 } else { -4.5 },
-            |off| off as f32 + 2. * (off as f32).signum(),
-        );
-        let bend = |r: i32| {
-            let k = r.div_euclid(6);
-            let f = r.rem_euclid(6) as f32 / 6.;
-            let a = unit(hash64(m.key ^ k as u64));
-            let b = unit(hash64(m.key ^ (k + 1) as u64));
-            let along = (r as f32 / nominal_rows.max(1) as f32 * 1.42).clamp(0., 1.);
-            centre
-                + ((a + (b - a) * f - 0.5) * 3.0 + (r as f32 * 0.11).sin() * 1.7 + lean * along)
-                    .round() as i32
-        };
-        let rows = (0..=nominal_rows)
-            .find(|&r| {
-                let c = bend(r).clamp(0, self.cols.len() as i32 - 1) as usize;
-                r as f32 >= self.cols[c].floor - 0.5
-            })
-            .unwrap_or(nominal_rows);
         if self.bolt_start != Some(m.start) {
             self.bolt_start = Some(m.start);
-            self.bolt_segments.clear();
+            let birth = stamp.saturating_sub((age * 30.).round() as u32);
+            let channel =
+                super::lightning::channel(m.key, m.x, self.pitch, &self.grounds, birth as f32);
+            debug_assert!((3..=6).contains(&channel.branch_count));
+            self.bolt_segments = channel.heads;
+            self.bolt_trunk_count = channel.trunk_count;
+            self.bolt_endpoint = channel.endpoint;
             self.bolt_cells.clear();
             self.next_bolt_row = 0;
-        }
-        let joint = |r: i32| 0.5 + 0.5 * (bend(r - 1) + bend(r)) as f32;
-        let to = (((age / 0.12).clamp(0., 1.) * rows as f32) as i32).min(rows);
-        for r in self.next_bolt_row..=to {
-            let c = bend(r).clamp(0, self.cols.len() as i32 - 1);
-            self.bolt_segment(r, joint(r), joint(r + 1), 1., stamp);
-            for (branch, fork, sign) in [(1, rows / 3, 1.), (2, rows / 2, -1.)] {
-                let length = 3 + (hash64(m.key ^ branch) % 4) as i32;
-                let n = r - fork;
-                if m.key % 3 < branch || !(0..length).contains(&n) {
-                    continue;
-                }
-                // One resting row in four gives a short, angled fork with a shared root.
-                let side = |k: i32| joint(fork) + sign * (k - k / 4) as f32;
-                self.bolt_segment(
-                    r,
-                    side(n),
-                    side(n + 1),
-                    1. - 0.5 * n as f32 / (length - 1) as f32,
-                    stamp,
-                );
+            // One field fallback/mask per cached overlay. Geometry is built
+            // once; per-segment timestamps reveal the leader in the GPU pass.
+            for i in 0..self.bolt_segments.len() {
+                let h = self.bolt_segments[i];
+                let col = (((h.path[0] + h.path[2]) * 0.5 / self.pitch[0]).floor() as usize)
+                    .min(self.cols.len() - 1);
+                let row = ((h.path[1] / self.pitch[1]).round() as usize).min(self.rows - 1);
+                let start_col = (h.path[0] / self.pitch[0]).floor();
+                let end_col = (h.path[2] / self.pitch[0]).floor();
+                let glyph = if end_col < start_col {
+                    210
+                } else if end_col > start_col {
+                    211
+                } else {
+                    209
+                };
+                self.write(col, row as i32, birth, glyph, 16, h.light[0]);
+                self.bolt_cells.push(col * self.rows + row);
             }
+        }
+        while (self.next_bolt_row as usize) < self.bolt_trunk_count {
+            let h = self.bolt_segments[self.next_bolt_row as usize];
+            if h.ink[2] > age {
+                break;
+            }
+            self.next_bolt_row += 1;
+            let c = ((h.path[0] + h.path[2]) * 0.5 / self.pitch[0]).floor() as i32;
+            let row = (h.path[1] / self.pitch[1]).floor() as i32;
             for side in -6i32..=6 {
                 let k = c + side;
-                if side == 0 || k < 0 || k >= self.cols.len() as i32 || r >= self.rows as i32 {
+                if side == 0
+                    || k < 0
+                    || k >= self.cols.len() as i32
+                    || row < 0
+                    || row >= self.rows as i32
+                {
                     continue;
                 }
-                let cell = self.cells[k as usize * self.rows + r as usize];
+                let cell = self.cells[k as usize * self.rows + row as usize];
                 if cell.power > 0 && !(cell.style & (16 | 64) != 0 && cell.age(stamp) < 3.) {
                     let energy = cell.power as f32 / 255. * (-cell.age(stamp) / self.half).exp2();
                     self.write(
                         k as usize,
-                        r,
+                        row,
                         stamp,
                         cell.id(),
                         (cell.style & 7) | 64,
@@ -961,10 +963,11 @@ impl Layer {
                 }
             }
         }
-        self.next_bolt_row = to + 1;
         if age >= 0.12 && age - dt < 0.12 {
             self.splash(
-                bend(rows).clamp(0, self.cols.len() as i32 - 1) as usize,
+                (self.bolt_endpoint[0] / self.pitch[0])
+                    .floor()
+                    .clamp(0., self.cols.len() as f32 - 1.) as usize,
                 m.key,
                 3.,
                 0,
@@ -1230,17 +1233,12 @@ mod art_tests {
             layer.bolt(m, t as f32 / 30., 1. / 30., 930 + t);
         }
         let mut trunk = None;
-        let mut last_start = None;
-        for segment in &layer.bolt_segments {
+        for segment in layer.bolt_segments.iter().filter(|h| h.light[3] == 0.) {
             let [x, y, end_x, end_y] = segment.path;
-            // The trunk is always the first segment emitted for a row.
-            if last_start != Some(y) {
-                if let Some(endpoint) = trunk {
-                    assert_eq!([x, y], endpoint);
-                }
-                trunk = Some([end_x, end_y]);
-                last_start = Some(y);
+            if let Some(endpoint) = trunk {
+                assert_eq!([x, y], endpoint);
             }
+            trunk = Some([end_x, end_y]);
             assert!(end_y > y);
             assert!((segment.ink[0] - 1.6 * 22.).abs() < 0.001);
         }

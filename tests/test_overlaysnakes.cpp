@@ -20,6 +20,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <limits>
 
 class OverlaySnakesTest final : public QObject
 {
@@ -34,6 +35,47 @@ class OverlaySnakesTest final : public QObject
         QTRY_VERIFY(manager.m_depthGpuFailed);
     }
 private Q_SLOTS:
+    void depthSeedOverride_data()
+    {
+        QTest::addColumn<QByteArray>("value");
+        QTest::addColumn<quint64>("expected"); // Zero means random fallback (seeds are always odd).
+        QTest::newRow("odd") << QByteArray("7") << quint64(7);
+        QTest::newRow("even") << QByteArray("22") << quint64(23);
+        QTest::newRow("zero") << QByteArray("0") << quint64(1);
+        QTest::newRow("maximum") << QByteArray("18446744073709551615") << std::numeric_limits<quint64>::max();
+        for (const char* value : {"", "bad", "-1", "+7", " 7", "7 ", "0x7", "18446744073709551616"})
+            QTest::newRow(value) << QByteArray(value) << quint64(0);
+        QTest::newRow("unset") << QByteArray() << quint64(0);
+    }
+    void depthSeedOverride()
+    {
+        QFETCH(QByteArray, value);
+        QFETCH(quint64, expected);
+        const QByteArray previous = qgetenv("PVS_DEPTH_SEED");
+        const auto restore = qScopeGuard([&] {
+            if (previous.isNull()) qunsetenv("PVS_DEPTH_SEED");
+            else qputenv("PVS_DEPTH_SEED", previous);
+        });
+        if (value.isNull()) qunsetenv("PVS_DEPTH_SEED");
+        else qputenv("PVS_DEPTH_SEED", value);
+        QTemporaryDir dir;
+        Configuration config(dir.filePath(QStringLiteral("settingsrc")));
+        config.setVisualModule(QStringLiteral("none"));
+        quint64 first = 0;
+        for (int activation = 0; activation < 2; ++activation) {
+            OverlayManager manager(&config);
+            QVERIFY(manager.show());
+            if (expected) QCOMPARE(manager.m_depthSeed, expected);
+            else {
+                QVERIFY(manager.m_depthSeed & 1U);
+                // Two random u64 draws coinciding has probability 1 / 2^63.
+                if (activation) QVERIFY(manager.m_depthSeed != first);
+            }
+            first = manager.m_depthSeed;
+            manager.hide();
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        }
+    }
     void futureBounceCountKeepsLegacyRendererWithinItsAbi()
     {
         QTemporaryDir dir;

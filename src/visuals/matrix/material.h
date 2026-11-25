@@ -31,6 +31,8 @@ public:
     QSGMaterialShader* createShader(QSGRendererInterface::RenderMode) const override;
     int compare(const QSGMaterial*) const override;
     static bool supported(QQuickWindow*, QSize atlas);
+    static QShader vertexShader(bool heads);
+    static QShader fragmentShader(bool heads);
     bool heads;
     QSGTexture *data = nullptr, *atlas = nullptr;
     vd_rain_uniforms uniforms {};

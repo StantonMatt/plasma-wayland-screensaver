@@ -132,8 +132,13 @@ void main(){
         c=mix(c,amber*(peak/max(amber.r,0.001)),olive*(1.-smoothstep(0.57,0.68,peak)));
     }
 
-    c+=u.rim.rgb*catchLight*darkBeat*(1.-smoothstep(4.,4.55,u.flare.w));
+    float swapPhase=magnifiedMandala && u.motion.z<0. ? -1.-u.motion.z : u.flare.w;
+    c+=u.rim.rgb*catchLight*darkBeat*(1.-smoothstep(4.,4.55,swapPhase));
 
+    // During a magnified pour, stars belong to the transmitted glass beneath
+    // them. A departing body cannot leave a brighter white point in an empty eye.
+    bool keyedGlints=magnifiedMandala && u.motion.z<0.;
+    float glassPeak=max(c.r,max(c.g,c.b));
     float ring=u.motion.w<0.5 ? k : 0.;
     float age=u.flare.z-0.25*ring;
     if(age>0. && age<1.9 && ring<=2. && darkBeat<0.01) {
@@ -146,7 +151,8 @@ void main(){
             float halo=0.35*exp2(-dist/0.019)*(1.-smoothstep(0.032,0.04,dist));
             float rays=0.22*exp2(-min(abs(pixel.x),abs(pixel.y))/(0.0015*u.eye.z))*exp2(-dist/0.019);
             float flash=smoothstep(0.,0.4,age)*(1.-smoothstep(0.4,1.9,age));
-            c+=star*(core+halo+rays)*flash*relief;
+            vec3 highlight=star*(core+halo+rays)*flash*relief;
+            c=keyedGlints ? max(c,min(highlight,vec3(glassPeak))) : c+highlight;
         } else {
             // The echo is light scattered at each reflected point. Project it
             // into the inner half of the band so the copies fit a wide window.
@@ -162,7 +168,8 @@ void main(){
             // Encoded silver peaks correspond to about 60% and 35% linear light.
             vec3 silver=mix(star,vec3(1.),0.8)*(ring<1.5?0.86:0.64);
             float reflected=min(1.,core+halo+rays)*flash*relief;
-            c=max(c,silver*reflected);
+            vec3 highlight=silver*reflected;
+            c=max(c,keyedGlints ? min(highlight,vec3(glassPeak)) : highlight);
         }
     }
     if(u.motion.w<0.5 && u.mote.z>0.) {
@@ -170,7 +177,8 @@ void main(){
         float d=length(pixel)*676.8/u.eye.z;
         float core=1.-smoothstep(3.6,4.3,d);
         float halo=0.25*(1.-smoothstep(3.5,12.,d));
-        c+=vec3(0.98,0.99,1.)*(core+halo)*u.mote.z*gain*relief;
+        vec3 highlight=vec3(0.98,0.99,1.)*(core+halo)*u.mote.z*gain*relief;
+        c=keyedGlints ? max(c,min(highlight,vec3(glassPeak))) : c+highlight;
     }
     float grain=(fract(52.9829189*fract(dot(floor(p*u.eye.z),vec2(0.06711056,0.00583715))))-0.5)/255.;
     color=vec4(clamp(c+grain,0.,1.)*u.display.x,0.);

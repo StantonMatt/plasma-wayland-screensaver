@@ -6,6 +6,14 @@ use crate::visuals::{
     depth::{common::layout::Rect, ffi::Lease},
     palette,
 };
+#[cfg(test)]
+fn lightning_lift(age: f32) -> f32 {
+    lightning::Rhythm::default().lift(age)
+}
+#[cfg(test)]
+fn lightning_core(age: f32) -> f32 {
+    lightning::Rhythm::default().core(age)
+}
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Dirty {
@@ -57,11 +65,14 @@ pub struct Frame {
     half: [f32; 3],
     colors: [[f32; 4]; 6],
     background: [f32; 4],
+    sky_top: [f32; 4],
     bounds: Rect,
     background_id: u32,
     palette: u32,
     sweep: [f32; 2],
-    strike: [f32; 2],
+    strike_age: f32,
+    strike_x: f32,
+    rhythm: lightning::Rhythm,
     hush: f32,
     stills: Option<Arc<StillSource>>,
     pub still: bool,
@@ -136,6 +147,7 @@ impl Frame {
         self.depth = w.params.depth;
         self.palette = w.input.palette;
         self.background = w.input.environment.bottom;
+        self.sky_top = w.input.environment.top;
         self.background_id = w.input.environment.background;
         self.half = w.layers.each_ref().map(|l| l.half);
         self.colors = std::array::from_fn(|i| {
@@ -162,7 +174,9 @@ impl Frame {
             w.input.layout.bounds.height as f32,
         ];
         let strike = w.weather.moments[LIGHTNING];
-        self.strike = [strike.x, strike.age(t)];
+        self.strike_age = strike.age(t);
+        self.strike_x = strike.x;
+        self.rhythm = w.weather.rhythm;
     }
 }
 #[repr(C)]
@@ -173,6 +187,9 @@ pub struct Uniforms {
     section: [f32; 4],
     light: [f32; 4],
     weather: [f32; 4],
+    strike: [f32; 4],
+    returns: [f32; 4],
+    sky_top: [f32; 4],
     background: [f32; 4],
     colors: [[f32; 4]; 6],
 }
@@ -245,24 +262,10 @@ pub unsafe extern "C" fn visuals_rain_layer(
         1.,
         0.45 * (f.depth / 0.60).min(1.),
     ][index];
-    let flash_age = f.strike[1] + offset / 30.;
-    let dx = if f.strike[0] < x {
-        x - f.strike[0]
-    } else {
-        (f.strike[0] - x - v.width as f32).max(0.)
-    };
-    let flash = if (0. ..0.32).contains(&flash_age) && !f.still {
-        0.042
-            * ((-flash_age * 23.).exp() + 0.23 * (-((flash_age - 0.18) / 0.045).powi(2)).exp())
-            * if dx == 0. {
-                1.
-            } else if dx < 2700. {
-                0.5
-            } else {
-                0.25
-            }
-    } else {
+    let flash = if f.still {
         0.
+    } else {
+        f.rhythm.lift(f.strike_age + offset / 30.)
     };
     *result = LayerView {
         cells: ink.cells.as_ptr(),
@@ -294,6 +297,23 @@ pub unsafe extern "C" fn visuals_rain_layer(
                 f.depth,
                 f.hush,
             ],
+            strike: [
+                f.strike_x,
+                f.bounds.height as f32,
+                if f.still {
+                    1.
+                } else {
+                    f.rhythm.core(f.strike_age + offset / 30.)
+                },
+                f.strike_age + offset / 30.,
+            ],
+            returns: [
+                0.120 + f.rhythm.times[0],
+                0.120 + f.rhythm.times[1],
+                0.120 + f.rhythm.times[2],
+                f.rhythm.count as f32,
+            ],
+            sky_top: f.sky_top,
             background: f.background,
             colors: f.colors,
         },
@@ -358,6 +378,35 @@ pub unsafe extern "C" fn visuals_rain_release_still(ptr: *mut Frame) {
 #[cfg(test)]
 mod polish_tests {
     use super::*;
+
+    #[test]
+    fn return_stroke_waits_for_the_leader_and_holds_a_sampled_peak() {
+        assert_eq!(std::mem::size_of::<Uniforms>(), 240);
+        for frame in 0..120 {
+            let age = frame as f32 / 1000.;
+            assert!((0.03..0.061).contains(&lightning_lift(age)));
+            assert!(lightning_core(age) < 0.51);
+        }
+        for hz in [60, 100, 175, 240] {
+            for phase in 0..100 {
+                let phase = phase as f32 / (100. * hz as f32);
+                let peak = (0..hz)
+                    .map(|n| lightning_lift(n as f32 / hz as f32 + phase))
+                    .fold(0., f32::max);
+                assert!(
+                    (peak - 0.30).abs() < 0.00001,
+                    "{hz} Hz, phase {phase}: {peak}"
+                );
+            }
+        }
+        for (age, power) in [(0.120, 1.), (0.220, 0.65), (0.330, 0.40)] {
+            assert!((lightning_lift(age) - 0.30 * power).abs() < 0.00001);
+            assert!(lightning_core(age) > lightning_core(age - 0.001));
+        }
+        assert_eq!(lightning_lift(-0.01), 0.);
+        assert_eq!(lightning_lift(1.2), 0.);
+        assert_eq!(lightning_core(2.), 1.);
+    }
 
     #[test]
     fn pastel_fronts_keep_their_own_hue_and_saturation() {

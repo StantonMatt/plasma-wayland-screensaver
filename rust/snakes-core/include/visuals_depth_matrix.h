@@ -14,7 +14,7 @@ extern "C"
     } vd_rain_dirty;
     typedef struct
     {
-        float viewport[4], grid[4], section[4], light[4], weather[4], background[4], colors[6][4];
+        float viewport[4], grid[4], section[4], light[4], weather[4], strike[4], returns[4], sky_top[4], background[4], colors[6][4];
     } vd_rain_uniforms;
     typedef struct
     {
@@ -33,5 +33,5 @@ extern "C"
     void visuals_rain_release_still(vd_rain_still*);
 #ifdef __cplusplus
 }
-static_assert(sizeof(vd_rain_head) == 48 && sizeof(vd_rain_dirty) == 8 && sizeof(vd_rain_uniforms) == 192);
+static_assert(sizeof(vd_rain_head) == 48 && sizeof(vd_rain_dirty) == 8 && sizeof(vd_rain_uniforms) == 240);
 #endif

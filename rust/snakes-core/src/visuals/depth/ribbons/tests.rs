@@ -273,6 +273,231 @@ fn measure_composition() {
 }
 
 #[test]
+fn gust_banks_downstream_swimmers_before_the_world_edge() {
+    for seed in [1, 7, 23] {
+        let mut input = film(seed);
+        input.speed = 3.;
+        input.density = 30.;
+        input.scale = 0.65;
+        input.mode = MonitorMode::Spanning;
+        input.layout = Layout::new(
+            [
+                (0., 2560., 1440.),
+                (2560., 3440., 1440.),
+                (6000., 1920., 1080.),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (x, width, height))| OutputRect {
+                id: i as u64 + 1,
+                primary: i == 0,
+                rect: Rect {
+                    x,
+                    y: 0.,
+                    width,
+                    height,
+                },
+            })
+            .collect(),
+            1,
+        )
+        .unwrap();
+        let mut world = Ribbons::new(input);
+        for ribbon in &mut world.sea.agents {
+            let shift = common::flow::p(6750., 600.) - ribbon.head();
+            for node in &mut ribbon.nodes[..ribbon.count] {
+                node.pos += shift;
+            }
+            ribbon.heading = common::flow::p(1., 0.);
+            ribbon.course_sign = 1.;
+            ribbon.age = 35.;
+            ribbon.life = 300.;
+        }
+        let original: Vec<_> = world.sea.agents.iter().map(|r| r.id).collect();
+        world
+            .inject(Event {
+                id: 1,
+                at_ns: 0,
+                anchor: [0., 720.],
+                strength: 1.,
+            })
+            .unwrap();
+        let mut furthest = 0_f64;
+        let mut returning = 0;
+        for tick in 1..=250 {
+            world.step(tick);
+            for ribbon in world.sea.agents.iter().filter(|r| original.contains(&r.id)) {
+                furthest = furthest.max(ribbon.head().x);
+                assert!(
+                    ribbon.head().x < 7920.,
+                    "seed={seed} tick={tick} x={}",
+                    ribbon.head().x
+                );
+                assert!(
+                    !ribbon.leaving,
+                    "seed={seed} tick={tick}: Gust retired a swimmer"
+                );
+            }
+            if tick == 250 {
+                returning = world
+                    .sea
+                    .agents
+                    .iter()
+                    .filter(|r| original.contains(&r.id) && r.alive && r.head().x < 6500.)
+                    .count();
+            }
+        }
+        println!(
+            "Gust shore seed={seed}: max x={furthest:.1}, returned={returning}/{}",
+            original.len()
+        );
+        assert_eq!(returning, original.len());
+        for tick in 251..=260 {
+            world.step(tick);
+        }
+        assert!(
+            world
+                .sea
+                .weather
+                .active
+                .is_none_or(|m| m.kind != water::Kind::Gust)
+        );
+        for ribbon in world.sea.agents.iter().filter(|r| original.contains(&r.id)) {
+            assert_eq!(
+                ribbon.course_sign, 1.,
+                "seed={seed}: bank leaked into normal departure routing"
+            );
+        }
+    }
+}
+
+#[test]
+fn gust_does_not_bank_natural_swimmers_out_the_opposite_shore() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let mut failures = Vec::new();
+    for width in [1080., 1920., 2560., 3440., 7920.] {
+        for gust in [false, true] {
+            let mut input = film(1);
+            input.seed = 1;
+            input.speed = 3.;
+            input.density = 30.;
+            input.scale = 0.65;
+            input.parameters = vec![
+                crate::visuals::depth::schema::Value {
+                    id: 1,
+                    kind: 1,
+                    payload: 10,
+                },
+                crate::visuals::depth::schema::Value {
+                    id: 5,
+                    kind: 2,
+                    payload: 0,
+                },
+            ];
+            if width == 7920. {
+                input.mode = MonitorMode::Spanning;
+                input.layout = Layout::new(
+                    [
+                        (0., 0., 2560., 1440.),
+                        (2560., 0., 3440., 1440.),
+                        (6000., 195., 1920., 1080.),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (x, y, width, height))| OutputRect {
+                        id: i as u64 + 1,
+                        primary: i == 0,
+                        rect: Rect {
+                            x,
+                            y,
+                            width,
+                            height,
+                        },
+                    })
+                    .collect(),
+                    1,
+                )
+                .unwrap();
+            } else {
+                let mut output = input.layout.outputs[0].clone();
+                output.rect.width = width;
+                input.layout = Layout::new(vec![output], 1).unwrap();
+            }
+            let mut world = Ribbons::new(input);
+            if gust {
+                world
+                    .inject(Event {
+                        id: 1,
+                        at_ns: 600_000_000_000,
+                        anchor: [0., 540.],
+                        strength: 1.,
+                    })
+                    .unwrap();
+            }
+            let mut courses = BTreeMap::new();
+            let mut banked = BTreeSet::new();
+            let mut wrong = BTreeSet::new();
+            let mut stale = BTreeSet::new();
+            for tick in 1..=18600 {
+                world.step(tick);
+                if tick < 18000 {
+                    continue;
+                }
+                let active = world
+                    .sea
+                    .weather
+                    .active
+                    .is_some_and(|m| m.kind == water::Kind::Gust);
+                for (i, ribbon) in world.sea.agents.iter().enumerate().filter(|(_, r)| r.alive) {
+                    let saved = world.sea.gust_saved_course(i);
+                    let course = *courses
+                        .entry(ribbon.id)
+                        .or_insert(saved.unwrap_or(ribbon.course_sign));
+                    if saved.is_some() {
+                        banked.insert(ribbon.id);
+                    }
+                    if course > 0.
+                        && ribbon.course_sign < 0.
+                        && ribbon.head().x < -35.
+                        && wrong.insert(ribbon.id)
+                    {
+                        println!(
+                            "WRONG_EXIT width={width} gust={gust} id={} t={:.3} x={:.3} savedCourse={course} currentCourse={} active={active}",
+                            ribbon.id,
+                            (tick - 18000) as f64 / 30.,
+                            ribbon.head().x,
+                            ribbon.course_sign
+                        );
+                    }
+                    if !active
+                        && banked.contains(&ribbon.id)
+                        && ribbon.leaving
+                        && world.input.layout.bounds.contains(ribbon.head())
+                    {
+                        stale.insert(ribbon.id);
+                    }
+                }
+            }
+            println!(
+                "SUMMARY width={width} gust={gust} tide={:.1} banked={} wrongExits={} staleLeaving={}",
+                world.sea.flow.drift.x,
+                banked.len(),
+                wrong.len(),
+                stale.len()
+            );
+            if !wrong.is_empty() || !stale.is_empty() {
+                failures.push((width, gust, wrong, stale));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "Gust bank exits or stale departure flags: {failures:?}"
+    );
+}
+
+#[test]
 fn gust_cannot_reverse_a_live_body_link_in_one_tick() {
     let mut input = film(7);
     input.density = 80.;

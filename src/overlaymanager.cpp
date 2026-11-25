@@ -19,6 +19,7 @@
 #include <LayerShellQt/Window>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDebug>
 #include <QEvent>
 #include <QGuiApplication>
 #include <QPointer>
@@ -87,7 +88,15 @@ bool OverlayManager::show()
     qApp->installEventFilter(this);
     m_animationEpochMs = QDateTime::currentMSecsSinceEpoch();
     m_depthEpochNs = VisualWorldCoordinator::monotonicNow();
-    m_depthSeed = QRandomGenerator::global()->generate64() | 1U;
+    // Explicit benchmark/test hook only; ordinary activations stay random.
+    const QByteArray seedText = qgetenv("PVS_DEPTH_SEED");
+    bool seedOk = false;
+    const quint64 seed = seedText.toULongLong(&seedOk, 10);
+    seedOk = seedOk && !seedText.isEmpty()
+        && std::all_of(seedText.cbegin(), seedText.cend(), [](char c) { return c >= '0' && c <= '9'; });
+    m_depthSeed = (seedOk ? seed : QRandomGenerator::global()->generate64()) | 1U;
+    if (seedOk)
+        qInfo().noquote() << "PVS depth seed override:" << QString::number(m_depthSeed);
     m_depthLayoutKey.clear();
     updateAnimationState();
     const QList<QScreen *> screens = QGuiApplication::screens();

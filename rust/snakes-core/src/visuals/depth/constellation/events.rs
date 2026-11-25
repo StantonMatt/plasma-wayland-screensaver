@@ -435,7 +435,8 @@ impl ConstellationWorld {
                 let (a, b) = k.period();
                 self.next[i] =
                     t + rand(&mut self.rng, a, b) / (self.area * self.pace.min(2.)).max(0.1);
-                // Stellar deaths trigger the nova clock, so no independent flashes are scheduled.
+                // Novae belong to the star life cycle: an old giant triggers them,
+                // rather than the area-scaled visitor schedule.
                 if k != Kind::Nova {
                     self.spawn(k, None, t)
                 }
@@ -488,6 +489,11 @@ impl ConstellationWorld {
                     {
                         self.events[j].p = self.stars[i].p;
                     }
+                    if (4. ..7.).contains(&age) {
+                        let center = e.star.map(|i| self.stars[i].p).unwrap_or(e.p);
+                        self.events[j].p = center;
+                        self.graph.shock(center, e.start, t, &self.stars);
+                    }
                     if age >= 4.
                         && let Some(i) = e.star
                     {
@@ -502,7 +508,6 @@ impl ConstellationWorld {
                             let dist = d.len();
                             if dist >= last && dist <= radius && self.stars[i].alive {
                                 self.stars[i].v += d.unit() * 14.;
-                                self.graph.sever(i, t, &self.stars);
                                 self.binaries.retain(|pair| pair.a != i && pair.b != i);
                             }
                         }

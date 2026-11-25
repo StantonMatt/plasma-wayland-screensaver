@@ -26,7 +26,6 @@ struct Scene {
     float matrix[16], info[4];
     std::array<vd_ribbon_silk, 18> materials;
     std::array<std::array<float,4>,80> shoulders;
-    std::array<std::array<float,4>,80> glowTipsLower, glowTipsUpper;
 };
 static_assert(sizeof(vd_ribbon_silk) == 64 && offsetof(Scene, materials) == 80);
 
@@ -125,11 +124,17 @@ public:
         m_pipeline->setRenderPassDescriptor(m_pass.get());
         QRhiGraphicsPipeline::TargetBlend blend;
         blend.enable = true;
-        blend.srcColor = blend.dstColor = blend.srcAlpha = blend.dstAlpha = QRhiGraphicsPipeline::One;
+        // Uniform peak attenuation keeps stacked light coloured. It has the
+        // same fixed-function cost as ordinary alpha blending and needs no
+        // floating-point target or extra resolve pass.
+        // Retain the still's opacity for a dissolve over a non-black background.
+        blend.srcColor = blend.srcAlpha = QRhiGraphicsPipeline::One;
+        blend.dstColor = blend.dstAlpha = QRhiGraphicsPipeline::OneMinusSrcAlpha;
         if (!fading) {
             m_pipeline->setSampleCount(mainTarget->sampleCount());
             m_pipeline->setFlags(QRhiGraphicsPipeline::UsesScissor);
             blend.srcAlpha = QRhiGraphicsPipeline::Zero;
+            blend.dstAlpha = QRhiGraphicsPipeline::One;
         }
         m_pipeline->setTargetBlends({ blend });
         if (!m_pipeline->create())
@@ -211,31 +216,7 @@ public:
             m_scene.materials[range.material] = range.silk;
             if (!range.motes) {
                 m_scene.shoulders[range.strand] = { range.shoulder_gain[0], range.shoulder_gain[1], 0.f, 0.f };
-                auto& lower = m_scene.glowTipsLower[range.strand];
-                auto& upper = m_scene.glowTipsUpper[range.strand];
-                lower = upper = {};
-                if (range.silk.accent[3] < -1.5f) {
-                    // Publish the existing tip/radius for the whole visible strip.
-                    // Body vertices have no cap tag once the head support ends.
-                    for (size_t j = range.first; j < range.first + range.count; ++j) {
-                        const auto& node = m_nodes[j];
-                        const uint32_t capIndex = node.tag >> 16;
-                        if (!capIndex)
-                            continue;
-                        const auto& cap = m_caps[capIndex - 1];
-                        auto origin = [](const vd_ribbon_body& body, const float* params) {
-                            const float magnitude = std::hypot(body.normal[0], body.normal[1]);
-                            const float inverse = 1.f / std::max(magnitude, 0.00001f);
-                            return std::array<float,4> {
-                                body.position[0] + body.normal[1] * inverse * params[2],
-                                body.position[1] - body.normal[0] * inverse * params[2],
-                                params[0], 1.f };
-                        };
-                        lower = origin(node.lower, cap.lower);
-                        upper = origin(node.upper, cap.upper);
-                        break;
-                    }
-                }
+
             }
         }
         m_pending = true;

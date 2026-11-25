@@ -37,6 +37,23 @@ opens the latest GitHub release instead.
 > It does not authenticate, lock input, protect running applications, or replace
 > Plasma's lock screen. Anyone who dismisses it can use the session.
 
+## Visual polish 0.30.0
+
+Visuals are no longer held back by photosensitivity limits. Flashes,
+lightning and impacts can now be brighter and faster.
+
+Digital Rain lightning strikes as a branching bolt with a cool blue-white
+glow and restrikes, and the rain glints in the flash. Bouncing Balls light
+up on every impact and drift sideways more naturally instead of hopping in
+place. Kaleidoscope twists sooner and more briskly, pours its glass out
+gradually and refills sooner.
+
+Ribbons gusts are livelier without emptying the screen, heads glow warm
+right to the tip and Maelstrom rings glow hot while keeping their colour.
+Fireflies flash more freely at high Speed, with less rigid group timing.
+Constellation figures fade smoothly when a star dies, and nearby stars no
+longer dim when a comet or nova passes.
+
 ## Visual polish 0.29.0
 
 Aurora Drift has smoother curtain detail, gentler storm growth and more

@@ -45,6 +45,13 @@ snake/ball/clock settings, and overrides both General and animation profiles.
 Use repeated `--set Key=value` options to change the workload. A/B repeats use
 ABBA blocks per visual. Choose gate tolerances using an A/A run on the same
 target; the reported CV is observed variation, not a confidence interval.
+Depth worlds use seed 7 by default. Repeat `--seed`, e.g. `--seed 7 --seed 23`,
+to compare each world in its own ABBA block; JSON reports per-seed and pooled
+ratios. Seeds are decimal u64 values, normalized with `| 1`. Both binaries
+must support the explicit `PVS_DEPTH_SEED` environment override (acknowledged
+in the app log); empty/invalid values keep normal random activation seeding.
+Use `--random-seed` for random worlds, including when benchmarking older
+binaries. This hook controls depth worlds, not legacy or snake randomness.
 Ranked Markdown/JSON, per-output FPS and interval
 percentiles, CPU/RSS samples, optional system-wide NVIDIA telemetry, logs and
 binary/config hashes go to a new directory under

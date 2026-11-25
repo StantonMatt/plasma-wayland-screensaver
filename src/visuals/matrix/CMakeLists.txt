@@ -1,6 +1,7 @@
 target_sources(VisualDepth PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/descriptor.h" "${CMAKE_CURRENT_LIST_DIR}/adapter.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/material.cpp" "${CMAKE_CURRENT_LIST_DIR}/alphabet.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/bolts.cpp" "${CMAKE_CURRENT_LIST_DIR}/bolts.h"
     "${CMAKE_CURRENT_LIST_DIR}/../common/glyphatlas.cpp")
 target_link_libraries(VisualDepth PRIVATE VisualRenderer)
 add_subdirectory("${PROJECT_SOURCE_DIR}/src/shaders/depth/matrix" "${CMAKE_CURRENT_BINARY_DIR}/shaders")

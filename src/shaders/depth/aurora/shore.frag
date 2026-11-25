@@ -97,8 +97,5 @@ void main() {
     uvec2 px=(pixel+uvec2(hash,hash>>8u))&15u;
     uint packed=blueNoise[px.y*4u+(px.x>>2u)];
     float grain=(float((packed>>(8u*(px.x&3u)))&255u)/255.-.5)/255.;
-    // A one-bit change near black can alternate between black and saturated
-    // red. Keep temporal grain out of that range; visible hems retain it.
-    grain*=smoothstep(4./255.,16./255.,max(max(sky.r,sky.g),sky.b));
     color=vec4(clamp(sky+grain,0.,1.),1.)*scene.display.x;
 }

@@ -91,7 +91,9 @@ impl World {
                 // Continue the beat estimated from the flashes this individual
                 // actually saw. Outside sight of its neighbours it free-runs.
                 f.heard_phase = (f.heard_phase + dt / f.heard_period).fract();
-                let error = (f.heard_phase - f.phase + 0.5).rem_euclid(1.) - 0.5;
+                let error = (f.heard_phase - f.sync_offset / f.heard_period - f.phase + 0.5)
+                    .rem_euclid(1.)
+                    - 0.5;
                 phase_speed = (phase_speed + self.phase_coupling * error).max(0.007);
             }
             f.phase += dt * phase_speed;
@@ -368,7 +370,10 @@ impl World {
                 Fading => {
                     f.pulse * smooth(f.since / 0.033) * (1. - smooth((f.since - 0.076) / 0.04))
                 }
-                _ => f.envelope(wet_attack, afterglow) * (if active { 1. } else { 0.08 }),
+                _ => {
+                    f.envelope(wet_attack, afterglow, self.cadence)
+                        * (if active { 1. } else { 0.08 })
+                }
             };
             if f.tree.is_some() && tree_ready {
                 light = 0.19 + 0.81 * f.tree_gain * f32::from(f.tree_pulse) * crown_pulse(f.since);
@@ -382,6 +387,8 @@ impl World {
                 * (dt
                     * if matches!(f.state, Court | Fading) {
                         30.
+                    } else if f.species == Syncer && f.tree.is_none() {
+                        22. * self.cadence
                     } else {
                         22.
                     })
@@ -430,7 +437,8 @@ impl World {
                     // eastward transit delay gives a local front a finite speed.
                     let beat = (source.burst.saturating_sub(1 + source.remaining)) as f32;
                     let observed =
-                        (beat * self.flash_interval + dx / (740. * size)) / source.period;
+                        (beat * self.flash_interval + dx / (740. * size) + source.sync_offset)
+                            / source.period;
                     let correction = (observed - f.heard_phase + 0.5).rem_euclid(1.) - 0.5;
                     let learn = if f.heard_age > 12. { 1. } else { 0.4 };
                     f.heard_phase = (f.heard_phase + learn * correction).rem_euclid(1.);

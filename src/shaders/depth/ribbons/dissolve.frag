@@ -6,7 +6,6 @@ layout(binding=1) uniform sampler2D oldStill;
 layout(binding=2) uniform sampler2D newStill;
 void main() {
     fragColor=mix(texture(oldStill,coords),texture(newStill,coords),ub.blend.x)*ub.blend.y;
-    // The two textures contain emitted light. Add their mixture to the same
-    // background used by the main-pass holds on both sides of the dissolve.
-    fragColor.a=0.;
+    // The stills carry premultiplied colour and opacity from the same blend
+    // as the main-pass holds. Interpolate both to preserve their background.
 }

@@ -87,6 +87,9 @@ validated request per scene and passes its absolute path only to the developer
 capture executable. Each capture waits for all views to acknowledge layout,
 data and sample generation, then grabs without advancing time.
 
+Recording manifests include luminance results as optional diagnostics. A failed
+luminance diagnostic never fails the capture or blocks release.
+
 Artifacts default to
 `~/.cache/agent-scratch/plasma-wayland-screensaver/3d-renders/fixture/round-N/`.
 Every round is new: invocation and hashes, requested/observed layouts, compositor

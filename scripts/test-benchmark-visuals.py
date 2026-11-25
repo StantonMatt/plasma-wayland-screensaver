@@ -58,6 +58,82 @@ class BenchmarkTests(unittest.TestCase):
         self.assertIn('VK_DRIVER_FILES', env)
         self.assertNotIn('nvidia', env['VK_DRIVER_FILES'])
 
+    def test_seed_arguments(self):
+        parser = bench.parser()
+        self.assertEqual(bench.benchmark_seeds(parser.parse_args([])), [7])
+        self.assertEqual(bench.benchmark_seeds(parser.parse_args(['--seed', '7', '--seed', '22'])), [7, 23])
+        self.assertEqual(bench.benchmark_seeds(parser.parse_args(['--seed', '0', '--seed', '1'])), [1])
+        self.assertEqual(bench.benchmark_seeds(parser.parse_args(['--random-seed'])), [None])
+        self.assertEqual(bench.depth_seed('18446744073709551615'), 2**64 - 1)
+        self.assertEqual(bench.depth_seed('0' * 5000 + '7'), 7)
+        for value in ('', '-1', '+7', ' 7', '7 ', '1.5', '0x7', '18446744073709551616', '9' * 5000):
+            with self.subTest(value=value[:30]), self.assertRaises(argparse.ArgumentTypeError):
+                bench.depth_seed(value)
+        with patch('sys.stderr', new=io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(['--seed', '7', '--random-seed'])
+
+    def test_seed_environment_and_acknowledgement(self):
+        original = dict(PVS_DEPTH_SEED='999', OTHER='keep')
+        self.assertEqual(bench.seed_environment(original, 23), dict(PVS_DEPTH_SEED='23', OTHER='keep'))
+        self.assertEqual(bench.seed_environment(original, None), dict(OTHER='keep'))
+        self.assertEqual(original['PVS_DEPTH_SEED'], '999')
+        bench.validate_seed(dict(seed=23), 'PVS depth seed override: 23\n')
+        bench.validate_seed(dict(seed=None), '')
+        for log in ('', 'PVS depth seed override: 231\n', 'PVS depth seed override: 7\n'):
+            with self.assertRaisesRegex(RuntimeError, 'not acknowledged'):
+                bench.validate_seed(dict(seed=23), log)
+
+    def result_fixture(self, entry, cpu):
+        return dict(entry, cpu_percent=cpu, rss_mib=dict(peak=100), gpu=dict(devices={}),
+                    windows={'1': dict(name='test', size=[100, 200], target_fps=60, refresh_hz=60,
+                        fps=60, interval_ms=dict(p50=16, p95=18, p99=20), stalls=0)})
+
+    def test_main_records_seeds_and_complete_abba_per_seed(self):
+        binary = self.root / 'binary'
+        binary.write_bytes(b'executable fixture')
+        binary.chmod(0o700)
+        for index, (options, seeds) in enumerate((([], [7]), (['--seed', '7', '--seed', '22'], [7, 23]),
+                                                 (['--random-seed'], [None]))):
+            root = self.root / str(index)
+            def session(job, directory, args):
+                for entry in job['entries']:
+                    Path(entry['directory']).mkdir()
+                    bench.write_json(Path(entry['directory']) / 'result.json', self.result_fixture(entry, 10))
+            with patch.object(bench, 'run_session', side_effect=session), patch('sys.stdout', new=io.StringIO()):
+                self.assertEqual(bench.main(['--binary', str(binary), '--candidate', str(binary), '--visuals', 'aurora',
+                    '--repeats', '2', '--output-dir', str(root), '--config', str(self.root / 'missing'), *options]), 0)
+            job = json.loads((root / 'job.json').read_text())
+            report = json.loads((root / 'summary.json').read_text())
+            self.assertEqual(job['seeds'], seeds)
+            self.assertEqual([s['seed'] for s in report['per_seed']], seeds)
+            self.assertEqual(len({e['directory'] for e in job['entries']}), 8 * len(seeds))
+            for seed in seeds:
+                for block in (1, 2):
+                    self.assertEqual([r['label'] for r in report['runs'] if r['seed'] == seed and r['block'] == block],
+                                     ['baseline', 'candidate', 'candidate', 'baseline'])
+
+    def test_per_seed_deltas_are_not_hidden_by_pooled_improvement(self):
+        entries = []
+        for seed, baseline, candidate in ((7, 10, 12), (23, 100, 80)):
+            for position, label in enumerate(('baseline', 'candidate', 'candidate', 'baseline')):
+                directory = self.root / f'{seed}-{position}'
+                directory.mkdir()
+                entry = dict(visual='aurora', seed=seed, block=1, position=position, label=label, directory=str(directory))
+                entries.append(entry)
+                bench.write_json(directory / 'result.json', self.result_fixture(entry, baseline if label == 'baseline' else candidate))
+        args = argparse.Namespace(repeats=1, max_cpu_regression=.1, max_frame_loss=None, max_p95_regression=None)
+        with patch('sys.stdout', new=io.StringIO()):
+            self.assertEqual(bench.summarize(dict(visuals=['aurora'], entries=entries, stall_ms=50), self.root, args), 1)
+        report = json.loads((self.root / 'summary.json').read_text())
+        pooled = report['visuals'][0]
+        self.assertAlmostEqual(pooled['candidate_baseline_ratios']['cpu_percent'], 92 / 110)
+        self.assertEqual(pooled['cpu_block_ratios'], [1.2, .8])
+        self.assertEqual(pooled['cpu_noise_cv_percent'], 0)
+        for group, delta in zip(report['per_seed'], (20, -20)):
+            self.assertAlmostEqual(group['visuals'][0]['candidate_baseline_percent_changes']['cpu_percent'], delta)
+        self.assertTrue(any('seed 7:' in f for f in report['failures']))
+        self.assertIn('| 7 | aurora | 1.2000 | 20.00 |', (self.root / 'summary.md').read_text())
+
     def test_changed_binary_is_rejected_before_launch(self):
         binary = self.root / 'binary'
         binary.write_bytes(b'changed')

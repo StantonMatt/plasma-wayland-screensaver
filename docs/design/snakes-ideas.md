@@ -348,7 +348,7 @@ Ranking is fun to watch per unit of cost and risk. Ticks are the 30 Hz simulatio
 ## 4. Readability, safety and Calm
 
 - **Clock.** Bubbles are never drawn inside the clock's rectangle (renderer only; the sim is unaffected). The shipped scrim covers everything else. Nightfall improves readability.
-- **Photosensitivity.** Nothing flashes above 3 Hz over more than a small area. The largest new flash is the Whirlpool burst glow: 5 base radii, alpha 0.6 or less, 0.47 s. The contest pulse is 1.1 Hz, and the frozen shiver is a 0.05-head-unit offset, not a brightness change.
+- **Flash appearance.** Judge flashes on their appearance and liveliness; luminance checks are optional diagnostics. The largest new flash is the Whirlpool burst glow: 5 base radii, alpha 0.6 or less, 0.47 s. The contest pulse is 1.1 Hz, and the frozen shiver is a 0.05-head-unit offset, not a brightness change.
 - **Density caps.** Bubbles 3, contest arcs 6, orphans 2, meteors 24, vortex 1, effect quads 8 (unchanged).
 - **Calm (reduced motion), in one rule.** Shader time freezes (no spin, shimmer, shiver, wriggle, streak or jitter), discrete events play 40% shorter, and information stays visible: moods, the ripening ring, the drop-in target, contest arcs and the night dimming.
 - **Mono and Pastel.** New accents follow the spec's rule (88% toward grey on Mono, 30% toward white on Pastel). Mood colours (angry orange, scared white, frozen ice) fall back to white-greys on Mono, so shape carries the meaning.

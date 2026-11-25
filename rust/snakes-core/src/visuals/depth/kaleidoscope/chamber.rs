@@ -1,6 +1,6 @@
 //! Rounded convex cores. A bead has one support point, a capsule two, a shard
 //! three to six. Contacts use both face axes and the closest rounded features.
-use super::{range, Pcg32};
+use super::{Pcg32, range};
 use std::{
     f64::consts::{PI, TAU},
     ops::{Add, Mul, Neg, Sub},
@@ -94,14 +94,6 @@ pub(super) struct Body {
     touched: bool,
 }
 impl Body {
-    fn limit_surface_speed(&mut self, limit: f64) {
-        let speed = self.vel.norm2().sqrt() + self.spin.abs() * self.cut.reach;
-        if speed > limit {
-            let k = limit / speed;
-            self.vel = self.vel * k;
-            self.spin *= k;
-        }
-    }
     pub fn contains_optical(&self, point: V) -> bool {
         let p = point - self.pos;
         if self.cut.sides == 1 {
@@ -374,11 +366,7 @@ impl Chamber {
                     } else {
                         0.85
                     };
-                    if draw < beads {
-                        1
-                    } else {
-                        4
-                    }
+                    if draw < beads { 1 } else { 4 }
                 }
                 2 => {
                     if draw < 0.10 {
@@ -483,16 +471,16 @@ impl Chamber {
         }
     }
     pub fn step(&mut self, angle: f64) {
-        self.step_limited(angle, None);
+        self.step_refined(angle, false);
     }
-    pub fn step_limited(&mut self, angle: f64, limit: Option<f64>) {
-        if limit.is_some() && !self.refined {
+    pub fn step_refined(&mut self, angle: f64, refined: bool) {
+        if refined && !self.refined {
             self.asleep = false;
             for b in &mut self.bodies {
                 b.quiet = 0;
             }
         }
-        self.refined = limit.is_some();
+        self.refined = refined;
         if (angle - self.sleep_angle).abs() > 0.038 {
             self.sleep_angle = angle;
             self.stable_steps = 0;
@@ -518,30 +506,29 @@ impl Chamber {
             b.touched = false;
             b.vel = (b.vel + gravity) * 0.997;
             b.spin = (b.spin * 0.989).clamp(-7., 7.);
-            if let Some(limit) = limit {
-                b.limit_surface_speed(limit);
-            }
             b.pos = b.pos + b.vel * DT;
             b.angle += b.spin * DT;
             b.orient();
             b.wall();
         }
-        if limit.is_some() {
+        if refined {
             for b in &mut self.bodies {
                 b.prepare_own_extrema();
             }
         }
-        for _ in 0..if limit.is_some() { 4 } else { 1 } {
+        // Freely falling glass needs one more contact pass than the former
+        // speed-limited heap, especially while a twist overlaps a pour.
+        for _ in 0..if refined { 5 } else { 1 } {
             let (back, front) = self.bodies.split_at_mut(self.split);
             for layer in [back, front] {
                 for j in 1..layer.len() {
                     let (earlier, rest) = layer.split_at_mut(j);
                     for a in earlier {
-                        collide(a, &mut rest[0], limit.is_some());
+                        collide(a, &mut rest[0], refined);
                     }
                 }
             }
-            if limit.is_some() {
+            if refined {
                 for b in &mut self.bodies {
                     b.wall();
                 }
@@ -557,9 +544,6 @@ impl Chamber {
                 // otherwise carry invisible downward energy during a Hold.
                 let travel = (b.pos - b.before) * (1. / DT);
                 b.vel = b.vel * 0.40 + travel * 0.60;
-            }
-            if let Some(limit) = limit {
-                b.limit_surface_speed(limit);
             }
             supported &= b.touched;
             energy += b.vel.norm2() + (b.spin * b.cut.reach).powi(2);
@@ -594,7 +578,7 @@ impl Chamber {
 }
 
 // Integral of a trapezoidal velocity profile: continuous starts and stops.
-// The reference rate is a maximum, not an average over a slow quintic chase.
+#[cfg(test)]
 pub(super) fn transfer_speed(time: f64, speed: f64, distance: f64) -> f64 {
     const RAMP: f64 = 0.25;
     let duration = distance / speed + RAMP;
@@ -718,11 +702,13 @@ mod tests {
         for _ in 0..240 {
             chamber.step(1.1);
         }
-        assert!(chamber
-            .bodies
-            .iter()
-            .zip(centers)
-            .any(|(p, c)| (p.pos - c).norm2() > 0.01));
+        assert!(
+            chamber
+                .bodies
+                .iter()
+                .zip(centers)
+                .any(|(p, c)| (p.pos - c).norm2() > 0.01)
+        );
     }
 }
 

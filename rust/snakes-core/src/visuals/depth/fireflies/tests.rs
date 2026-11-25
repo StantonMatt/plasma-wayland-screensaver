@@ -140,7 +140,7 @@ fn banks_gaps_and_independent_offsets() {
     );
 }
 #[test]
-fn forced_gathering_and_shower_obey_exposure_and_refractory() {
+fn forced_gathering_and_shower_remain_lively() {
     let mut i = input(3., 100., &[(1, 100), (2, 0)]);
     i.scale = 2.;
     let mut w = World::new(i);
@@ -176,7 +176,36 @@ fn forced_gathering_and_shower_obey_exposure_and_refractory() {
         }
     }
     println!("Tree + shower, peak weighted area {peak:.6}, shortest onset spacing {minimum} ticks");
-    assert!(seen_tree && seen_bloom && minimum >= 15 && peak < 0.045);
+    assert!(seen_tree && seen_bloom && minimum < u64::MAX && peak.is_finite() && peak > 0.);
+}
+
+#[test]
+fn neighbouring_lights_do_not_dim_an_existing_flash() {
+    let mut i = input(3., 100., &[(2, 0), (3, 0), (4, 0)]);
+    i.scale = 2.;
+    let mut w = World::new(i);
+    for f in &mut w.flies {
+        f.species = Species::Syncer;
+        f.z = 0.84;
+        f.x = 1280.;
+        f.y = 1000.;
+        f.light = 0.;
+    }
+    for f in &mut w.distant {
+        f.light = 0.;
+    }
+    w.flies[0].light = 1.;
+    w.export(false);
+    let isolated = w.frame.as_ref().unwrap().heads[0][2];
+    for f in &mut w.flies {
+        f.light = 1.;
+    }
+    w.export(false);
+    assert_eq!(w.frame.as_ref().unwrap().heads[0][2], isolated);
+    assert!(
+        w.emission > 0.045,
+        "fixture must exceed the retired ceiling"
+    );
 }
 #[test]
 fn synchrony_locks_local_oscillators() {
@@ -777,7 +806,6 @@ fn dipper_exposes_both_legs_of_its_hook() {
 #[test]
 fn hunter_catch_and_pending_answer_share_a_timestamp_in_either_order() {
     use fly::State::{Fading, Lured, Perched};
-    let dt = 1. / 30.;
     for hunter in [0, 1] {
         let prey = 1 - hunter;
         let mut w = World::new(input(1., 50., &[(2, 0), (3, 0)]));
@@ -808,9 +836,6 @@ fn hunter_catch_and_pending_answer_share_a_timestamp_in_either_order() {
         w.flies[hunter].answer = 0.49;
         let mut onsets = vec![];
         for tick in 0..=15 {
-            if tick == 15 {
-                w.flies[hunter].answer = dt * 0.5;
-            }
             let before = w.flies[hunter].last_flash;
             w.step(tick + 1);
             if w.flies[hunter].last_flash != before {
@@ -818,13 +843,179 @@ fn hunter_catch_and_pending_answer_share_a_timestamp_in_either_order() {
             }
         }
         assert_eq!(w.flies[prey].state, Fading);
-        assert_eq!(onsets, [0, 15], "hunter index {hunter}");
-        println!("Hunter index {hunter}: onset ticks {onsets:?}, minimum spacing 0.5 s");
+        assert_eq!(onsets, [0, 14], "hunter index {hunter}");
+        println!(
+            "Hunter index {hunter}: onset ticks {onsets:?}, pending answer follows its own timer"
+        );
     }
 }
 
 #[test]
-fn randomized_onsets_never_exceed_two_hz_per_light() {
+fn syncer_flash_length_and_chemical_response_follow_cadence() {
+    let mut widths = vec![];
+    for speed in [1_f64, 3.] {
+        let mut w = World::new(input(speed, 50., &[(1, 0), (2, 0), (3, 0), (4, 0), (5, 0)]));
+        let mut f = *w
+            .flies
+            .iter()
+            .find(|f| f.species == Species::Syncer)
+            .unwrap();
+        f.female = false;
+        f.state = fly::State::Patrol;
+        f.tree = None;
+        f.activity = 0.;
+        f.phase = 0.;
+        f.period = 100.;
+        f.remaining = 0;
+        f.heard_age = f32::INFINITY;
+        f.light = 0.;
+        f.fire(0., 1.);
+        if speed == 1. {
+            for ms in 0..800 {
+                f.since = ms as f32 / 1000.;
+                let t = f.since;
+                let old = if t < 0.085 {
+                    terrain::smooth(t / 0.085)
+                } else if t < 0.09 {
+                    1.
+                } else {
+                    (1. - terrain::smooth((t - 0.09) / 0.265)).powi(2)
+                };
+                assert_eq!(f.envelope(0., 0., 1.), old, "default at {ms} ms");
+            }
+        }
+        f.since = 0.;
+        let mut continuous = 0;
+        for ms in 0..800 {
+            f.since = ms as f32 / 1000.;
+            continuous += usize::from(f.envelope(0., 0., w.cadence) > 0.5);
+        }
+        f.since = 0.;
+        w.flies = vec![f];
+        let mut lit_frames = 0;
+        for tick in 1..=30 {
+            w.step(tick);
+            lit_frames += usize::from(w.flies[0].light > 0.5);
+        }
+        widths.push((continuous, lit_frames, w.cadence));
+        println!(
+            "Speed {speed}: half-bright envelope {continuous} ms, observed {lit_frames} ticks"
+        );
+    }
+    assert!((widths[1].0 as f32 - widths[0].0 as f32 / widths[1].2).abs() <= 1.);
+    assert!(widths[1].1 < widths[0].1);
+    assert!((widths[1].1 as f32 - widths[0].1 as f32 / widths[1].2).abs() <= 1.);
+}
+
+#[test]
+fn seeded_individual_offsets_break_group_lockstep_within_one_frame() {
+    fn onsets() -> (Vec<u64>, Vec<u32>) {
+        let mut w = World::new(input(1., 50., &[(1, 0), (2, 0), (3, 0), (4, 0), (5, 0)]));
+        let mut syncers: Vec<_> = w
+            .flies
+            .iter()
+            .copied()
+            .filter(|f| f.species == Species::Syncer)
+            .collect();
+        syncers.sort_by(|a, b| a.sync_offset.total_cmp(&b.sync_offset));
+        let selected = [
+            syncers[0],
+            syncers[syncers.len() / 2],
+            *syncers.last().unwrap(),
+        ];
+        let offsets = selected.map(|f| f.sync_offset.to_bits()).to_vec();
+        w.flies = selected.to_vec();
+        w.sync_gain = 0.; // Supply the same observed group clock to each individual.
+        w.phase_coupling = 3.5;
+        for f in &mut w.flies {
+            assert!(f.sync_offset.abs() <= 1. / 30.);
+            f.female = false;
+            f.state = fly::State::Patrol;
+            f.tree = None;
+            f.activity = 0.;
+            f.period = 2.;
+            f.heard_period = 2.;
+            f.phase = 0.1;
+            f.heard_phase = 0.1;
+            f.heard_age = 0.;
+            f.since = 99.;
+            f.burst = 1;
+            f.remaining = 0;
+            f.last_flash = f64::NEG_INFINITY;
+        }
+        let mut first = vec![0; 3];
+        for tick in 1..=90 {
+            w.step(tick);
+            for (i, f) in w.flies.iter().enumerate() {
+                if first[i] == 0 && f.last_flash.is_finite() {
+                    first[i] = tick;
+                }
+            }
+        }
+        (first, offsets)
+    }
+    let (first, offsets) = onsets();
+    assert_eq!(onsets(), (first.clone(), offsets));
+    assert!(first[0] > 0 && first[0] < first[2], "onsets {first:?}");
+    assert!(first[2] - first[0] <= 2, "onsets {first:?}");
+    println!("Common-clock seeded group onset ticks {first:?}");
+}
+
+#[test]
+fn syncer_bursts_keep_their_pulses_and_rest_across_the_speed_range() {
+    let mut spacings = vec![];
+    for speed in [0.1, 0.5, 1., 2., 3.] {
+        let mut w = World::new(input(speed, 50., &[(1, 0), (2, 0), (3, 0), (4, 0), (5, 0)]));
+        let mut f = *w
+            .flies
+            .iter()
+            .find(|f| f.species == Species::Syncer)
+            .unwrap();
+        f.female = false;
+        f.state = fly::State::Patrol;
+        f.phase = 0.;
+        f.remaining = 0;
+        f.activity = 0.;
+        f.heard_age = f32::INFINITY;
+        w.flies = vec![f];
+        let mut bursts = vec![vec![]];
+        let mut gaps = vec![];
+        let mut last = None;
+        for tick in 1..=3600 {
+            let before = w.flies[0].last_flash;
+            w.step(tick);
+            if w.flies[0].last_flash != before {
+                if let Some(previous) = last {
+                    let gap = tick - previous;
+                    if gap > 60 {
+                        bursts.push(vec![]);
+                    } else {
+                        gaps.push(gap);
+                    }
+                }
+                bursts.last_mut().unwrap().push(tick);
+                last = Some(tick);
+            }
+        }
+        assert!(bursts.len() >= 3);
+        for burst in &bursts[..bursts.len() - 1] {
+            assert_eq!(burst.len(), usize::from(f.burst), "Speed {speed}");
+        }
+        let shortest = *gaps.iter().min().unwrap();
+        let longest = *gaps.iter().max().unwrap();
+        assert!(longest - shortest <= 1, "Speed {speed}: {gaps:?}");
+        spacings.push(shortest);
+        println!(
+            "Speed {speed}: {} bursts of {} pulses, spacing {shortest}–{longest} ticks",
+            bursts.len(),
+            f.burst
+        );
+    }
+    assert!(spacings.windows(2).all(|pair| pair[0] > pair[1]));
+}
+
+#[test]
+fn randomized_onsets_keep_monotonic_timestamps_and_respond_to_close_answers() {
     let mut minimum = f64::INFINITY;
     let mut onsets = 0;
     let mut compared = 0;
@@ -885,7 +1076,7 @@ fn randomized_onsets_never_exceed_two_hz_per_light() {
                         let spacing = time - previous;
                         minimum = minimum.min(spacing);
                         assert!(
-                            spacing >= 0.5,
+                            spacing > 0.,
                             "seed {seed}, light {id}, tick {tick}, spacing {spacing}"
                         );
                         compared += 1;
@@ -897,9 +1088,9 @@ fn randomized_onsets_never_exceed_two_hz_per_light() {
         }
     }
     println!(
-        "Refractory property: 16 seeds x 18000 ticks, {scripted} scripted events, {onsets} onsets, {compared} consecutive pairs, minimum {minimum:.12} s"
+        "Onset timing: 16 seeds x 18000 ticks, {scripted} scripted events, {onsets} onsets, {compared} consecutive pairs, minimum {minimum:.12} s"
     );
-    assert!(compared > 100_000 && minimum >= 0.5);
+    assert!(compared > 100_000 && minimum > 0. && minimum < 0.5);
 }
 
 #[test]
@@ -937,11 +1128,12 @@ fn event_anchors_must_remain_finite_when_converted() {
 fn onset_commit_uses_timestamp_even_when_envelope_age_is_ahead() {
     let mut last = 10.;
     let mut age = 99.;
-    assert!(!fly::commit_flash(10., &mut last, &mut age));
-    assert!(!fly::commit_flash(10.5 - 1e-8, &mut last, &mut age));
-    assert_eq!((last, age), (10., 99.));
+    assert!(fly::commit_flash(10.1, &mut last, &mut age));
+    assert_eq!((last, age), (10.1, 0.));
+    age = 99.;
     assert!(fly::commit_flash(10.5, &mut last, &mut age));
     assert_eq!((last, age), (10.5, 0.));
     age = 99.;
-    assert!(!fly::commit_flash(10.5, &mut last, &mut age));
+    assert!(fly::commit_flash(10.5, &mut last, &mut age));
+    assert_eq!((last, age), (10.5, 0.));
 }

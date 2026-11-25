@@ -7,6 +7,7 @@ layout(binding = 1) uniform sampler2D records;
 layout(location = 0) out vec2 local;
 layout(location = 1) flat out vec4 ink;
 layout(location = 2) flat out vec4 lighting;
+layout(location = 3) out vec2 worldPoint;
 void main()
 {
     int i = int(slot.x);
@@ -15,6 +16,7 @@ void main()
         local = vec2(0.);
         ink = vec4(0.);
         lighting = vec4(0.);
+        worldPoint = vec2(0.);
         gl_Position = vec4(2., 2., 2., 1.);
         return;
     }
@@ -26,15 +28,17 @@ void main()
         // Bolt-local coordinates in pixels, tangent first. Padding covers the
         // Gaussian beyond both ends of the segment and across cell boundaries.
         vec2 tangent = (path.zw - path.xy) / ink.y;
-        float pad = 3.5 * 0.35 * ink.x;
+        float pad = 4. * 0.55 * ink.x;
         local = mix(vec2(-pad), vec2(ink.y + pad, pad), vertex.xy / ub.viewport.zw);
-        vec2 world = path.xy + tangent * local.x + vec2(-tangent.y, tangent.x) * local.y;
-        gl_Position = ub.qt_Matrix * vec4(world - ub.viewport.xy, 0., 1.);
+        worldPoint = path.xy + tangent * local.x + vec2(-tangent.y, tangent.x) * local.y;
+        gl_Position = ub.qt_Matrix * vec4(worldPoint - ub.viewport.xy, 0., 1.);
         return;
     }
     vec2 pos = mix(path.xy, path.zw, ub.light.z) - ub.viewport.xy;
     local = (vertex.xy / ub.viewport.zw - 0.5) * vec2(4.4, 5.2) - vec2(0.0, 0.43);
     if (lighting.y == 2.)
         local = (vertex.xy / ub.viewport.zw - 0.5) * vec2(8.0);
-    gl_Position = ub.qt_Matrix * vec4(pos + local * ink.xy, 0., 1.);
+    vec2 position = pos + local * ink.xy;
+    worldPoint = position + ub.viewport.xy;
+    gl_Position = ub.qt_Matrix * vec4(position, 0., 1.);
 }

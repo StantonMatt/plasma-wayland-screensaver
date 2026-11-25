@@ -72,8 +72,8 @@ private:
     QHash<QScreen*, LivingVisualItem*> m_depthItems;
     QByteArray m_depthLayoutKey;
     qint64 m_depthEpochNs = 0;
-    // New per activation so each living world starts from a fresh composition;
-    // kept while hotplug or layout changes recreate worlds within one activation.
+    // Random per activation unless PVS_DEPTH_SEED explicitly fixes a benchmark
+    // world; kept while hotplug/layout changes recreate worlds in that activation.
     quint64 m_depthSeed = 1;
 #ifdef PVS_ENABLE_VISUAL_CAPTURE
     bool m_captureFixture = false;

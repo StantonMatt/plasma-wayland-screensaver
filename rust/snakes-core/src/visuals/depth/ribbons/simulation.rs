@@ -6,11 +6,8 @@ use super::{
         layout::{Rect, Vec2},
         rng::Pcg32,
     },
-    water::{
-        GUST_FORCE_PIXELS_PER_SECOND, Kind, Lanes, MAELSTROM_MOTOR_PIXELS_PER_SECOND, Neighbours,
-        Weather,
-    },
-    world::WorldInput,
+    water::{Kind, Lanes, Neighbours, Weather},
+    world::{MonitorMode, WorldInput},
 };
 
 #[derive(Clone, Copy)]
@@ -55,6 +52,8 @@ pub(super) struct Sea {
     bonds: Vec<Bond>,
     directions: [Vec2; 40],
     partners: [Option<(Vec2, f64)>; 40],
+    gust_carry: [f64; 40],
+    gust_course: [f64; 40],
     rng: Pcg32,
     spawn_after: f64,
     knot_wait: Vec<f64>,
@@ -90,6 +89,8 @@ impl Sea {
             bonds: Vec::with_capacity(20),
             directions: [Vec2::default(); 40],
             partners: [None; 40],
+            gust_carry: [1.; 40],
+            gust_course: [0.; 40],
             rng,
             spawn_after: 8.,
             knot_wait: vec![0.; input.layout.outputs.len()],
@@ -325,6 +326,16 @@ impl Sea {
     }
 
     #[cfg(test)]
+    pub fn gust_banking(&self, index: usize) -> bool {
+        self.gust_carry[index] < 1.
+    }
+
+    #[cfg(test)]
+    pub fn gust_saved_course(&self, index: usize) -> Option<f64> {
+        self.gust_banking(index).then_some(self.gust_course[index])
+    }
+
+    #[cfg(test)]
     pub fn braid_midpoints(&self) -> impl Iterator<Item = (Vec2, Vec2)> + '_ {
         self.bonds
             .iter()
@@ -341,6 +352,7 @@ impl Sea {
     ) {
         self.step += 1;
         let layout = &input.layout;
+        let independent = input.mode == MonitorMode::Independent;
         self.flow.advance(layout, dt);
         let start_event = self.weather.active.is_none()
             || self.weather.script.first().is_some_and(|e| e.at_ns <= ns);
@@ -456,6 +468,26 @@ impl Sea {
         for wait in &mut self.knot_wait {
             *wait -= wall_dt;
         }
+        let gust_event = self.weather.active.filter(|m| m.kind == Kind::Gust);
+        if start_event && gust_event.is_some() {
+            for (i, r) in self.agents.iter_mut().enumerate() {
+                if self.gust_carry[i] < 1. {
+                    r.course_sign = self.gust_course[i];
+                    if independent {
+                        r.leaving = false;
+                    }
+                }
+            }
+            self.gust_carry.fill(1.);
+        }
+        // Smoothly shoulder the force at 450 world pixels per wall second.
+        // Leave the separate 500 motor allowance and geometric turn bounds intact.
+        let gust_force = if gust_event.is_some() {
+            let wind = 395. * input.speed;
+            450. * (wind / 450.).tanh() / wind.max(0.01)
+        } else {
+            1.
+        };
         let mut jumped = [false; 40];
         for (i, did_jump) in jumped.iter_mut().enumerate().take(self.agents.len()) {
             if !self.agents[i].alive {
@@ -463,6 +495,48 @@ impl Sea {
             }
             let r = &mut self.agents[i];
             let pos = r.head();
+            if gust_event.is_some() {
+                let right = layout.bounds.x + layout.bounds.width;
+                if self.gust_carry[i] < 1. || pos.x > right - 1200. {
+                    if self.gust_carry[i] == 1. {
+                        self.gust_course[i] = r.course_sign;
+                    }
+                    // Bank before the shore. Stay sheltered for this event so
+                    // the returning swimmer is not blown straight back out.
+                    self.gust_carry[i] = (self.gust_carry[i] - wall_dt / 0.8).max(0.);
+                    r.course_sign = -1.;
+                    let goal_x = if independent {
+                        // Leave turning room at both shores of a small output.
+                        let margin = (layout.bounds.width * 0.5).min(600.);
+                        (right - 2400.).clamp(layout.bounds.x + margin, right - margin)
+                    } else {
+                        right - 2400.
+                    };
+                    r.goal = p(goal_x, r.lane);
+                    r.course_for = 4.;
+                }
+            } else {
+                if self.gust_carry[i] < 1. {
+                    // Banking is temporary. Calm flow resumes its tide-facing
+                    // heading, so restore the matching departure direction too;
+                    // otherwise offscreen heads keep occupying population slots.
+                    r.course_sign = self.gust_course[i];
+                    if independent {
+                        r.leaving = false;
+                    }
+                    r.goal = p(pos.x + 800. * r.course_sign, r.lane);
+                    r.course_for = 4.;
+                }
+                self.gust_carry[i] = 1.;
+            }
+            let gust_drive = gust_event.map(|front| GustDrive {
+                front,
+                left: layout.bounds.x,
+                right: layout.bounds.x + layout.bounds.width,
+                carry: smooth(self.gust_carry[i]),
+                force: gust_force,
+                world_rate: input.speed,
+            });
             let water = self.flow.sample(pos);
             r.knot_for = (r.knot_for - wall_dt).max(0.);
             if r.knot_for > 0. && !layout.outputs[r.knot_panel].rect.contains(pos) {
@@ -503,7 +577,9 @@ impl Sea {
                 -boundary.normal * (smooth(1. + boundary.distance / margin) * 150.)
             };
             r.course_for -= dt;
-            if r.course_for <= 0. || (r.goal - pos).length() < 70. {
+            if !(independent && self.gust_carry[i] < 1.)
+                && (r.course_for <= 0. || (r.goal - pos).length() < 70.)
+            {
                 r.goal = Self::goal(&mut self.rng, r.home, pos, r.lane, r.course_sign);
                 r.course_for = range(&mut self.rng, 4., 10.);
             }
@@ -544,13 +620,13 @@ impl Sea {
             if let Some(m) = self.weather.active {
                 match m.kind {
                     Kind::Gust => {
-                        gust = m.gust(pos, layout.bounds.x);
+                        gust = gust_drive.unwrap().weight(pos);
                         // A gust carries both up- and down-current swimmers. Its
                         // translation is applied to the whole scarf in swim().
                         desired = desired * (1. - gust) + p(r.course_sign * 90., 0.) * gust;
                         // Turn the existing swimming drive downwind without
                         // spending any extra translation or changing its length.
-                        let angle = turn(desired, p(1., 0.)) * m.gust_steering();
+                        let angle = turn(desired, p(1., 0.)) * m.gust_steering() * gust;
                         let (sn, cs) = angle.sin_cos();
                         desired = desired * cs + desired.perpendicular() * sn;
                     }
@@ -571,6 +647,20 @@ impl Sea {
                     }
                 }
             }
+            if gust_event.is_some() && self.gust_carry[i] < 1. {
+                // The bank must also overcome schooling/crossing avoidance;
+                // otherwise a crowded group can keep steering out to sea even
+                // after the wind has faded. Use the existing turn/radius budget.
+                let bank = 1. - smooth(self.gust_carry[i]);
+                // A sheltered Independent swimmer turns back at its interior
+                // goal instead of continuing west through the opposite shore.
+                let across = if independent {
+                    (r.goal.x - pos.x).clamp(-180., 180.)
+                } else {
+                    -180.
+                };
+                desired = desired * (1. - bank) + p(across, lane_steer + wall.y) * bank;
+            }
             let orbital_phase = self
                 .weather
                 .active
@@ -586,14 +676,8 @@ impl Sea {
                 desired,
                 curl,
                 gust,
-                gust_force_limit: GUST_FORCE_PIXELS_PER_SECOND / input.speed.max(0.01),
-                maelstrom_motor_limit: MAELSTROM_MOTOR_PIXELS_PER_SECOND / input.speed.max(0.01),
                 launch,
-                gust_front: self
-                    .weather
-                    .active
-                    .filter(|m| m.kind == Kind::Gust)
-                    .map(|m| (m, layout.bounds.x)),
+                gust_front: gust_drive,
                 turbulence: params.turbulence,
                 still,
                 smooth_twist: self.still_relaxation > 0.,
@@ -750,7 +834,9 @@ impl Sea {
                 if let Some(i) = vacancy {
                     self.bonds.retain(|b| b.a != i && b.b != i);
                     self.agents[i] = incoming;
+                    self.gust_carry[i] = 1.;
                 } else {
+                    self.gust_carry[self.agents.len()] = 1.;
                     self.agents.push(incoming);
                 }
             }

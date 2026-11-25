@@ -21,10 +21,8 @@ layout(location=6) flat out vec4 accent;
 layout(location=7) flat out float deviceScale;
 layout(location=8) out vec3 headGeometry;
 layout(location=9) flat out float shoulderGain;
-layout(location=10) out vec3 glowFromTip;
 layout(std140,binding=0) uniform Scene {
     mat4 matrix; vec4 info; vec4 silks[72]; vec4 shoulders[80];
-    vec4 glowTipsLower[80]; vec4 glowTipsUpper[80];
 } ub;
 // Curvature is a scalar packed in the normal length. Interpolating the
 // packed vectors would let the more curved tick pull the direction sideways.
@@ -124,10 +122,6 @@ void main() {
     vec2 tip = ahead ? pointB.xy : capA.z==0. ? pointA.xy
         : mix(pointA.xy+ta*capA.z,pointB.xy+tb*capB.z,t);
     headGeometry=vec3(world-tip,outer);
-    // A shared origin keeps the optical fade continuous across body spans.
-    // Positions, widths, support and the material face remain unchanged.
-    vec4 glowTip=mix(ub.glowTipsLower[tag>>5u],ub.glowTipsUpper[tag>>5u],ub.info.z);
-    glowFromTip=vec3(world-glowTip.xy,glowTip.z);
     shape=vec4(side*outer,rad,silk.y,silk.z);
     surface=vec4(haloWidth,silk.w*ub.info.y,cap.z,ahead ? -1. : 0.);
     moteColor=vec3(cap.x,capMix,cap.w);
