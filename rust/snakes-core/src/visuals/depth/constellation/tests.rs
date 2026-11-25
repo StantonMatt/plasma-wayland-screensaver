@@ -1279,7 +1279,85 @@ fn advected_centres_avoid_their_previous_sites() {
 }
 
 #[test]
-fn death_fade_retracts_live_ink_before_the_core_disappears() {
+fn nova_ink_fades_as_one_continuous_stroke_and_replacements_fade_in() {
+    use crate::visuals::depth::ffi::View;
+    let sky = ConstellationWorld::new(input(19));
+    let mut frame = render::Frame::new(sky.art.clone());
+    frame.stars = sky.stars.clone();
+    frame.life = false;
+    for s in &mut frame.stars {
+        s.alive = false;
+    }
+    let mut edge = *sky.graph.edges.iter().find(|e| e.live()).unwrap();
+    frame.stars[edge.a].p = pt(100., 100.);
+    frame.stars[edge.b].p = pt(300., 150.);
+    edge.cut_at = [frame.stars[edge.a].p, frame.stars[edge.b].p];
+    edge.cut_born = [frame.stars[edge.a].born, frame.stars[edge.b].born];
+    edge.end = 10.;
+    edge.wave = f32::INFINITY;
+    edge.soft = true;
+    frame.edges = vec![edge];
+    let view = |time: f32| View {
+        output_id: 1,
+        layout_generation: 1,
+        timeline_ns: (f64::from(time) * 1e9).round() as i64,
+        viewport: input(19).layout.bounds,
+        uniform_scale: 1.,
+        offset_x: 0.,
+        offset_y: 0.,
+        dpr: 1.,
+    };
+    let ink = |lower: &render::Frame, upper: &render::Frame, time: f32| {
+        let mut out = vec![render::Primitive::default(); 4096];
+        let n = render::draw(lower, upper, &view(time), 0., false, &mut out);
+        out[..n]
+            .iter()
+            .filter(|r| matches!(r.shape[1], 0. | 9.))
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let full = ink(&frame, &frame, 10.);
+    let half = ink(&frame, &frame, 10.675);
+    assert_eq!((full.len(), half.len()), (1, 1));
+    assert_eq!(full[0].ends, half[0].ends);
+    assert_eq!(full[0].shape, half[0].shape);
+    assert!((half[0].rgba[3] / full[0].rgba[3] - 0.5).abs() < 0.001);
+    assert_eq!(ink(&frame, &frame, 11.35).len(), 0);
+    let mut recycled = frame.clone();
+    recycled.edges[0].end = 10.5;
+    recycled.stars[edge.a].alive = true;
+    recycled.stars[edge.a].born = 10.;
+    recycled.stars[edge.a].p = pt(1200., 20.);
+    let pending = ink(&recycled, &recycled, 10.25);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        pending[0].ends, full[0].ends,
+        "ink cannot follow the recycled star slot"
+    );
+    let mut lower = frame.clone();
+    lower.edges[0].end = f32::INFINITY;
+    lower.edges[0].soft = false;
+    let interpolated = ink(&lower, &frame, 10.675);
+    assert_eq!(interpolated.len(), 1);
+    assert!((interpolated[0].rgba[3] - half[0].rgba[3]).abs() < 0.001);
+    frame.edges[0].end = f32::INFINITY;
+    frame.edges[0].born = 20.;
+    assert_eq!(ink(&frame, &frame, 20.).len(), 0);
+    let half_in = ink(&frame, &frame, 20.675);
+    let full_in = ink(&frame, &frame, 21.35);
+    assert_eq!((half_in.len(), full_in.len()), (1, 1));
+    assert_eq!(half_in[0].shape[1], 0.);
+    assert_eq!(half_in[0].ends, full_in[0].ends);
+    assert!((half_in[0].rgba[3] / full_in[0].rgba[3] - 0.5).abs() < 0.001);
+    // A young replacement cut during its fade-in cannot jump to full opacity.
+    frame.edges[0].end = 20.675;
+    let interrupted = ink(&frame, &frame, 20.675);
+    assert_eq!(interrupted.len(), 1);
+    assert!((interrupted[0].rgba[3] - half_in[0].rgba[3]).abs() < 0.001);
+}
+
+#[test]
+fn death_fade_dissolves_live_ink_before_the_core_disappears() {
     let mut sky = ConstellationWorld::new(input(19));
     let old = *sky.graph.edges.iter().find(|e| e.live()).unwrap();
     sky.next_nova = 1000.;
@@ -1298,8 +1376,138 @@ fn death_fade_retracts_live_ink_before_the_core_disappears() {
     for tick in 2..=60 {
         sky.step(tick);
     }
+    assert!(sky.graph.edges.iter().any(|e| e.a == old.a && e.b == old.b));
+    for tick in 61..=90 {
+        sky.step(tick);
+    }
     assert!(sky.stars[old.a].alive);
     assert!(!sky.graph.edges.iter().any(|e| e.a == old.a || e.b == old.a));
+}
+
+#[test]
+fn retiring_ink_follows_matching_live_endpoints_throughout_the_fade() {
+    use crate::visuals::depth::ffi::View;
+    let sky = ConstellationWorld::new(input(19));
+    let mut frame = render::Frame::new(sky.art.clone());
+    frame.stars = sky.stars.clone();
+    frame.life = false;
+    for star in &mut frame.stars {
+        star.alive = false;
+    }
+    let mut edge = *sky.graph.edges.iter().find(|e| e.live()).unwrap();
+    edge.born = 0.;
+    edge.end = 10.;
+    edge.wave = f32::INFINITY;
+    frame.stars[edge.a].p = pt(100., 100.);
+    frame.stars[edge.b].p = pt(300., 150.);
+    frame.stars[edge.b].alive = true;
+    frame.stars[edge.b].mag = 2.;
+    edge.cut_at = [frame.stars[edge.a].p, frame.stars[edge.b].p];
+    edge.cut_born = [frame.stars[edge.a].born, frame.stars[edge.b].born];
+    let mut maximum_gap = 0_f32;
+    for soft in [true, false] {
+        edge.soft = soft;
+        frame.edges = vec![edge];
+        for age in [0.1, 0.5, 0.9, 1.2] {
+            let time = 10. + age;
+            frame.stars[edge.b].p = edge.cut_at[1] + pt(20. * age, -8. * age);
+            let mut next = frame.clone();
+            next.stars[edge.b].p += pt(20., -8.) / 60.;
+            for blend in [0., 0.5, 1.] {
+                let mut out = vec![render::Primitive::default(); 4096];
+                let view = View {
+                    output_id: 1,
+                    layout_generation: 1,
+                    timeline_ns: (f64::from(time) * 1e9).round() as i64,
+                    viewport: input(19).layout.bounds,
+                    uniform_scale: 1.,
+                    offset_x: 0.,
+                    offset_y: 0.,
+                    dpr: 1.,
+                };
+                let n = render::draw(&frame, &next, &view, blend, false, &mut out);
+                let lines: Vec<_> = out[..n].iter().filter(|r| r.shape[1] == 0.).collect();
+                assert_eq!(lines.len(), 1, "a retiring stroke stays whole");
+                assert_eq!(lines[0].shape[3], 0., "no dashed or retracting marker");
+                let star = frame.stars[edge.b].p.mix(next.stars[edge.b].p, blend);
+                let core = out[..n]
+                    .iter()
+                    .find(|r| {
+                        r.shape[1] == 1. && r.shape[2] == 0. && pt(r.ends[0], r.ends[1]) == star
+                    })
+                    .unwrap();
+                let expected = star - (star - edge.cut_at[0]).unit() * (core.shape[0] + 3.);
+                let gap = (pt(lines[0].ends[2], lines[0].ends[3]) - expected).len();
+                maximum_gap = maximum_gap.max(gap);
+                assert!(gap < 1., "soft={soft}, age={age}, blend={blend}, gap={gap}");
+            }
+        }
+    }
+    println!("Retiring endpoint maximum excess gap {maximum_gap:.6} native pixels");
+}
+
+#[test]
+fn retiring_opacity_is_identical_across_output_viewports() {
+    use crate::visuals::depth::ffi::View;
+    let sky = ConstellationWorld::new(input(19));
+    let mut frame = render::Frame::new(sky.art.clone());
+    frame.stars = sky.stars.clone();
+    frame.life = false;
+    for star in &mut frame.stars {
+        star.alive = false;
+    }
+    for (node, position) in [
+        (0, pt(100., 100.)),
+        (1, pt(800., 100.)),
+        (2, pt(700., 50.)),
+        (3, pt(700., 150.)),
+    ] {
+        frame.stars[node].p = position;
+    }
+    let mut edge = sky.graph.edges[0];
+    edge.a = 0;
+    edge.b = 1;
+    edge.born = 0.;
+    edge.end = 10.;
+    edge.wave = f32::INFINITY;
+    edge.soft = false;
+    edge.cut_at = [frame.stars[0].p, frame.stars[1].p];
+    edge.cut_born = [frame.stars[0].born, frame.stars[1].born];
+    let mut other = edge;
+    other.a = 2;
+    other.b = 3;
+    other.end = f32::INFINITY;
+    frame.edges = vec![edge, other];
+    let mut alpha = vec![];
+    for (x, width) in [(0., 400.), (400., 500.)] {
+        let view = View {
+            output_id: 1,
+            layout_generation: 1,
+            timeline_ns: 10_500_000_000,
+            viewport: Rect {
+                x,
+                y: 0.,
+                width,
+                height: 250.,
+            },
+            uniform_scale: 1.,
+            offset_x: 0.,
+            offset_y: 0.,
+            dpr: 1.,
+        };
+        let mut out = vec![render::Primitive::default(); 4096];
+        let n = render::draw(&frame, &frame, &view, 0., false, &mut out);
+        let retiring = out[..n]
+            .iter()
+            .find(|r| r.shape[1] == 0. && (r.ends[1] - r.ends[3]).abs() < 0.001)
+            .unwrap();
+        alpha.push(retiring.rgba[3]);
+    }
+    assert!(
+        alpha.iter().all(|&a| a <= 0.001),
+        "crossing ink must be hidden on both outputs: {alpha:?}"
+    );
+    assert!((alpha[0] - alpha[1]).abs() < 0.000001);
 }
 
 #[test]

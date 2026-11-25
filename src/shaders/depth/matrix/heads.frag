@@ -5,34 +5,51 @@
 layout(location = 0) in vec2 local;
 layout(location = 1) flat in vec4 ink;
 layout(location = 2) flat in vec4 lighting;
+layout(location = 3) in vec2 worldPoint;
 layout(location = 0) out vec4 fragColor;
-// Integral of a unit Gaussian from the segment start to the sample.
-// Adjacent segments share their end light without a bright disc at every join.
-float erfApprox(float x)
-{
-    float a = abs(x);
-    float t = 1. / (1. + 0.3275911 * a);
-    float poly = (((((1.061405429*t - 1.453152027)*t) + 1.421413741)*t - 0.284496736)*t + 0.254829592)*t;
-    return sign(x) * (1. - poly * exp(-a*a));
-}
-float segmentWeight(float sigma)
-{
-    vec2 end = vec2(local.x, local.x - ink.y) / (1.41421356 * sigma);
-    return 0.5 * (erfApprox(end.x) - erfApprox(end.y));
-}
 void main()
 {
     if (lighting.y == 3.)
     {
         float age = (ub.section.x - lighting.z) / 30.;
-        float energy = lighting.x * step(0., age) * exp2(-max(0., age - 0.15)) * (1. - smoothstep(5., 6.4, age));
-        float sigma = 0.35 * ink.x;
-        float halo = 0.35 * exp(-0.5 * pow(local.y / sigma, 2.)) * segmentWeight(sigma);
-        float core = (1. - smoothstep(1.25, 2.85, abs(local.y))) * segmentWeight(1.35);
-        vec3 color = mix(inkColor(0, energy, false), highlight(0), smoothstep(0.35, 0.85, energy));
-        // Allocate peak light before summing segments. Per-quad clipping
-        // would brighten shared endpoints when two half kernels meet.
-        fragColor = vec4(color * (0.65 * core + halo) * energy * ub.light.w, 0.);
+        bool branch = lighting.w > 0.;
+        float energy = lighting.x * step(ink.z, ub.strike.w);
+        if (branch) {
+            // Branches conduct the main stroke, never a return stroke or
+            // the stylised trunk afterimage. Geometry is already cached.
+            float mainAge = ub.strike.w - 0.120;
+            energy *= step(0., mainAge) * (1. - step(ub.returns.x, ub.strike.w))
+                * 4.6 * exp(-max(0., mainAge - 0.020) / 0.055);
+        } else {
+            energy *= exp2(-max(0., age - 0.15)) * (1. - smoothstep(5., 6.4, age)) * ub.strike.z;
+        }
+        float taper = branch ? mix(1., lighting.w - 1., clamp(local.x / ink.y, 0., 1.)) : 1.;
+        energy *= taper;
+        float width = max(0.001, ink.w * taper);
+        float sigma = max(0.15, 0.44 * ink.x * taper);
+        float along = clamp(local.x, 0., ink.y);
+        float distance = length(vec2(local.x - along, local.y));
+        float halo = 0.85 * (1. - exp(-0.20 * exp(-0.5 * pow(distance / sigma, 2.)) * energy / 0.85));
+        float core = 1. - smoothstep(1.25 * width, 2.85 * width, distance);
+        vec3 haloColor = mix(vec3(0.32, 0.65, 1.), vec3(0.10, 0.80, 1.), smoothstep(20., 40., distance));
+        vec3 haloLight = haloColor * halo;
+        // Weak light over Midnight's violet substrate otherwise reads purple.
+        // Add only the missing green/blue radiance at that fringe; already
+        // blue-white light retains the Gaussian profile and stroke weight.
+        vec3 sky = mix(ub.sky_top.rgb, ub.background.rgb,
+            clamp(worldPoint.y / max(1., ub.strike.y), 0., 1.))
+            + lightningTint() * localLightning(worldPoint);
+        float fringe = smoothstep(0., 0.002, halo) * min(1., energy / 0.5);
+        vec3 total = sky + haloLight;
+        float green = max(0., total.r + 0.3667 * (total.b - total.r) - total.g);
+        haloLight.b = max(haloLight.b, 0.025 * fringe * smoothstep(0., 0.004, green));
+        total = sky + haloLight;
+        haloLight.b += fringe * max(0., total.r + (total.g - total.r) / 0.52 - total.b);
+        total = sky + haloLight;
+        haloLight.g += fringe * max(0., total.r + 0.3667 * (total.b - total.r) - total.g);
+        // MAX combines only this private emission layer. Its zero-alpha
+        // display adds the soft blue-white channel onto the existing scene.
+        fragColor = vec4((vec3(0.75, 0.86, 1.) * 0.65 * core * energy + haloLight) * ub.light.w, 0.);
         return;
     }
     int tint = int(ink.w);
@@ -67,9 +84,12 @@ void main()
         gain *= 0.45 * min(1., ub.weather.z / 0.60);
     }
     float emission = core * gain;
+    float flash = localLightning(worldPoint);
+    hot = litInk(hot, flash);
+    body = litInk(body, flash);
     vec4 stroke = vec4(hot * emission, min(1., emission));
     if (layer != 1. || droplet || int(ub.light.x) == 2)
-        stroke = pigmentedInk(hot, emission, smoothstep(0.03, 0.65, core) * smoothstep(0., 0.3, lighting.x));
+        stroke = pigmentedInk(hot, emission, smoothstep(0.03, 0.65, core) * smoothstep(0., 0.3, lighting.x), flash);
     stroke.rgb += body * ((halo + 0.17 * streak) * gain);
     fragColor = stroke * ub.light.w;
 }

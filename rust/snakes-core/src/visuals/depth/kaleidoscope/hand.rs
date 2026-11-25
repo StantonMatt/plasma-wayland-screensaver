@@ -93,20 +93,20 @@ impl Hand {
         let pace = speed.min(1.) + (speed - 1.).max(0.) * 0.25;
         self.duration = self.duration.max(seconds * pace);
     }
+    pub fn twist_peak_delay(&self, speed: f64) -> Option<f64> {
+        (self.mood == Mood::Twist).then(|| (0.8 * self.duration - self.age) / speed.min(1.30))
+    }
     #[cfg(test)]
     pub fn step(&mut self, dt: f64, speed: f64, rng: &mut Pcg32) {
-        self.step_limited(dt, speed, rng, f64::INFINITY);
+        self.step_with_drive(dt, speed, rng, false);
     }
-    pub fn step_limited(&mut self, dt: f64, speed: f64, rng: &mut Pcg32, limit: f64) {
-        let mut pace = match self.mood {
+    pub fn step_with_drive(&mut self, dt: f64, speed: f64, rng: &mut Pcg32, broad_drive: bool) {
+        let pace = match self.mood {
             // Extra speed above the physical cap only shortens pauses.
             Mood::Hold => speed.min(1.) + (speed - 1.).max(0.) * 0.25,
             Mood::Twist => speed.min(1.30),
             _ => speed.min(super::PHYSICAL_SPEED_LIMIT),
         };
-        if self.mood == Mood::Twist && self.travel.abs() > 1e-12 {
-            pace = pace.min(limit * self.duration / (1.875 * self.travel.abs()));
-        }
         self.age += dt * pace;
         if self.age >= self.duration {
             let draw = rng.unit();
@@ -126,7 +126,7 @@ impl Hand {
         let u = self.age / self.duration;
         let fraction = match self.mood {
             Mood::Hold => 0.,
-            Mood::Twist if limit.is_finite() => event_turn(u),
+            Mood::Twist if broad_drive => event_turn(u),
             Mood::Twist => smooth(u),
             Mood::Rock => {
                 (self.age * std::f64::consts::TAU * 0.4).sin()
@@ -153,7 +153,7 @@ impl Hand {
 mod event_drive_regression {
     use super::*;
     #[test]
-    fn protected_twist_spreads_drive_without_stretching_the_turn() {
+    fn broad_twist_spreads_drive_without_stretching_the_turn() {
         let mut rng = Pcg32::new(7, 5);
         let mut hand = Hand::new(&mut rng, 0.4);
         hand.angle = 0.;
@@ -166,7 +166,7 @@ mod event_drive_regression {
         let mut ticks = 0;
         while hand.mood == Mood::Twist && ticks < 2000 {
             let old = hand.angle;
-            hand.step_limited(1. / 120., 3., &mut rng, 0.9);
+            hand.step_with_drive(1. / 120., 3., &mut rng, true);
             peak = peak.max((hand.angle - old).abs() * 120.);
             ticks += 1;
         }
@@ -176,10 +176,10 @@ mod event_drive_regression {
             hand.angle
         );
         assert!(
-            peak <= 0.600001,
-            "keep band-passing angular speed below the former 0.9 peak: {peak}"
+            peak <= 2.44 * 1.30 / (5.4 * 0.8) + 1e-6,
+            "keep the eased velocity plateau: {peak}"
         );
-        let expected = 2.44 * 1.875 / 0.9;
+        let expected = 5.4 / 1.30;
         assert!(
             (ticks as f64 / 120. - expected).abs() <= 1. / 120. + 1e-10,
             "do not stretch the turn"

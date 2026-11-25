@@ -267,7 +267,18 @@ pub(super) fn draw(
         }
     }
     let first_ink = g.count;
-    let mut retracting = false;
+    let mut retiring = false;
+    let margin = g.margin;
+    if frame
+        .edges
+        .iter()
+        .chain(&next.edges)
+        .any(|e| !e.live() && t - e.end < super::graph::DISSOLVE_SECONDS)
+    {
+        // Opacity belongs to the whole atlas, including ink beyond this output.
+        // Keep that small ink set for conflict checks; GPU clipping still applies.
+        g.margin = f32::INFINITY;
+    }
     for (edge_id, e) in frame.edges.iter().enumerate() {
         if e.end <= 0. {
             continue;
@@ -283,7 +294,14 @@ pub(super) fn draw(
         let [a, b] = if e.live() {
             [at(e.a), at(e.b)]
         } else {
-            e.cut_at
+            [0, 1].map(|slot| {
+                let node = [e.a, e.b][slot];
+                if frame.stars[node].alive && frame.stars[node].born == e.cut_born[slot] {
+                    at(node)
+                } else {
+                    e.cut_at[slot]
+                }
+            })
         };
         let dir = (b - a).unit();
         let ga = radius(frame.stars[e.a], art) + 3.;
@@ -304,8 +322,7 @@ pub(super) fn draw(
         let wave = t - e.wave;
         let ink_luma = 0.2126 * hue[0] + 0.7152 * hue[1] + 0.0722 * hue[2];
         let alpha = base_alpha.min(0.49 / (1.43 * ink_luma.max(0.01)))
-            * (1. + 0.43 * smooth((wave - 0.25) / 1.5))
-            * (1. - 0.9 * visitor_glare(frame, t, a, b));
+            * (1. + 0.43 * smooth((wave - 0.25) / 1.5));
         let alpha = if e.live() {
             alpha
                 * stellar_light(frame.stars[e.a], t, frame.life).min(stellar_light(
@@ -317,38 +334,40 @@ pub(super) fn draw(
             alpha
         };
         // A cut in the upper frame also constrains this interpolated sample.
-        // Keep the attached ends drifting until the cut, but route the ink
-        // through the usual retract clipping before it can overlap live ink.
-        let cut_next = e.live()
-            && next
-                .edges
-                .iter()
-                .any(|next| !next.live() && next.a == e.a && next.b == e.b && next.born == e.born);
-        if !e.live() || cut_next {
-            let u = smooth((t - e.end) / 0.8);
-            let m = a.mix(b, 0.5);
-            let first = g.count;
+        // The fade keeps its full width and follows every surviving endpoint.
+        let cut_next = e
+            .live()
+            .then(|| {
+                next.edges.iter().find(|next| {
+                    !next.live() && next.a == e.a && next.b == e.b && next.born == e.born
+                })
+            })
+            .flatten();
+        if let Some(cut) = if e.live() { cut_next } else { Some(e) } {
+            let fade = 1. - smooth((t - cut.end) / super::graph::DISSOLVE_SECONDS);
+            let at_cut = if cut.soft {
+                smooth((t.min(cut.end) - cut.born) / super::graph::DISSOLVE_SECONDS)
+            } else {
+                1.
+            };
+            let before = g.count;
+            g.emit(LINE, a, b, width, hue, alpha * at_cut * fade);
+            if g.count > before
+                && let Some(record) = g.out.get_mut(before)
+            {
+                record.shape[3] = -((edge_id + 1) as f32);
+                retiring = true;
+            }
+        } else if e.soft && t - e.born < super::graph::DISSOLVE_SECONDS {
+            // A replacement appears as complete, continuous ink.
             g.emit(
                 LINE,
                 a,
-                m.mix(a, u),
-                width * (1. - u),
-                hue,
-                alpha * (1. - u),
-            );
-            g.emit(
-                LINE,
                 b,
-                m.mix(b, u),
-                width * (1. - u),
+                width,
                 hue,
-                alpha * (1. - u),
+                alpha * smooth((t - e.born) / super::graph::DISSOLVE_SECONDS),
             );
-            retracting |= g.count > first;
-            let end = g.count.min(g.out.len());
-            for record in g.out.get_mut(first..end).into_iter().flatten() {
-                record.shape[3] = -((edge_id + 1) as f32);
-            }
         } else {
             let trace = 1. - (1. - ((t - e.born) / 1.2).clamp(0., 1.)).powi(3);
             let tip = a.mix(b, trace);
@@ -372,7 +391,7 @@ pub(super) fn draw(
                     end,
                     5.,
                     mix(hue, [1.; 3], 0.30),
-                    (0.85 - alpha).max(0.20) * (1. - visitor_glare(frame, t, a, b)),
+                    (0.85 - alpha).max(0.20),
                 );
                 if g.count > before
                     && let Some(record) = g.out.get_mut(before)
@@ -382,6 +401,7 @@ pub(super) fn draw(
             }
         }
     }
+    g.margin = margin;
     for pair in &frame.binaries {
         let (a, b) = (at(pair.a), at(pair.b));
         let center = a.mix(b, 0.5);
@@ -396,8 +416,8 @@ pub(super) fn draw(
         }
         g.dot(HALO | ADD, center, 10., art.lines, 0.12 * light);
     }
-    if retracting {
-        clip_retractions(&mut g, first_ink, frame, &at, t);
+    if retiring {
+        fade_conflicting_ink(&mut g, first_ink, frame, &at, t);
     }
     for (i, &s) in frame
         .stars
@@ -415,10 +435,9 @@ pub(super) fn draw(
     }
     g.count
 }
-// A retracting stroke stays where it was inked while live stars and lines
-// keep drifting. Clip each half from its attached end against the presented
-// geometry. Live ink has priority, followed by older retracting strokes.
-fn clip_retractions(
+// Keep retiring strokes whole. If drifting ink approaches another stroke or
+// an unrelated star, lose opacity before it can form a false atlas junction.
+fn fade_conflicting_ink(
     g: &mut Batch<'_>,
     first: usize,
     frame: &Frame,
@@ -426,132 +445,110 @@ fn clip_retractions(
     time: f32,
 ) {
     let end = g.count.min(g.out.len());
+    let cross = |a: Point, b: Point| a.x * b.y - a.y * b.x;
+    let distance = |p: Point, a: Point, b: Point| {
+        let d = b - a;
+        (p - a - d * ((p - a).dot(d) / d.len2().max(0.001)).clamp(0., 1.)).len()
+    };
     for i in first..end {
-        let rec = g.out[i];
-        if rec.shape[3] >= 0. {
+        let record = g.out[i];
+        if record.shape[3] >= 0. {
             continue;
         }
-        let edge = frame.edges[(-rec.shape[3]) as usize - 1];
-        let start = pt(rec.ends[0], rec.ends[1]);
-        let delta = pt(rec.ends[2], rec.ends[3]) - start;
-        let length = delta.len();
-        let dir = delta / length.max(0.001);
-        let cross = |a: Point, b: Point| a.x * b.y - a.y * b.x;
-        let mut visible = length;
+        let edge = frame.edges[(-record.shape[3]) as usize - 1];
+        let a = pt(record.ends[0], record.ends[1]);
+        let b = pt(record.ends[2], record.ends[3]);
+        let d = b - a;
+        let length = d.len().max(0.001);
+        let direction = d / length;
+        let lo = pt(a.x.min(b.x), a.y.min(b.y));
+        let hi = pt(a.x.max(b.x), a.y.max(b.y));
+        let outside = |p: Point, q: Point, clearance: f32| {
+            p.x.min(q.x) > hi.x + clearance
+                || p.x.max(q.x) < lo.x - clearance
+                || p.y.min(q.y) > hi.y + clearance
+                || p.y.max(q.y) < lo.y - clearance
+        };
+        let mut visibility = 1_f32;
+        // Live ink wins, then older retiring ink (already processed here).
         for other in &g.out[first..end] {
-            if other.shape[3] < 0. || other.rgba[3] <= 0. || !matches!(other.shape[1], 0. | 9.) {
+            if other.shape[3] < 0. || other.rgba[3] <= 0.001 || !matches!(other.shape[1], 0. | 9.) {
                 continue;
             }
             let p = pt(other.ends[0], other.ends[1]);
             let q = pt(other.ends[2], other.ends[3]);
-            let v = q - p;
-            let denominator = cross(dir, v);
-            let projected = dir.dot(v);
-            if denominator * denominator < 0.0669873 * v.len2() && projected.abs() > 0.001 {
-                let x = dir.dot(p - start);
-                let y = x + projected;
-                let a = x.min(y).max(0.);
-                let b = x.max(y).min(visible);
-                if b > a {
-                    let offset = cross(dir, p - start);
-                    let d0 = offset + denominator * ((a - x) / projected);
-                    let d1 = offset + denominator * ((b - x) / projected);
-                    let gap = 40. * g.scale;
-                    if d0.abs() < gap {
-                        visible = (a - 1.5 * g.scale).max(0.);
-                    } else if d0 * d1 < 0. || d1.abs() < gap {
-                        let entry = a + (b - a) * (d0.signum() * gap - d0) / (d1 - d0);
-                        visible = (entry - 1.5 * g.scale).max(0.);
-                    }
-                }
-            }
-            // A nearby apparent node gets the same opening angle as a live
-            // chart junction, even when the retiring half used another star.
-            for (base, axis) in [(p, v), (q, v * (-1.))] {
-                if (start - base).len2() < (20. * g.scale).powi(2)
-                    && dir.dot(axis) > 0.
-                    && dir.dot(axis).powi(2) > 0.6710101 * axis.len2()
-                {
-                    visible = 0.;
-                }
-            }
-            if denominator.abs() < 0.0001 {
+            // Beyond the widest clearance ramp, neither stroke can dim the other.
+            if outside(p, q, 52. * g.scale) {
                 continue;
             }
-            let along = cross(p - start, v) / denominator;
-            let across = cross(p - start, dir) / denominator;
-            if along >= 0. && along <= visible && (0. ..=1.).contains(&across) {
-                visible = (along - (1.5 * g.scale)).max(0.);
+            let v = q - p;
+            let determinant = cross(d, v);
+            let delta = p - a;
+            let crossing = if determinant.abs() > 0.0001 {
+                (0. ..=1.).contains(&(cross(delta, v) / determinant))
+                    && (0. ..=1.).contains(&(cross(delta, d) / determinant))
+            } else {
+                false
+            };
+            let separation = if crossing {
+                0.
+            } else {
+                distance(a, p, q)
+                    .min(distance(b, p, q))
+                    .min(distance(p, a, b))
+                    .min(distance(q, a, b))
+            };
+            visibility = visibility.min(smooth((separation - 1.5 * g.scale) / (2. * g.scale)));
+            let projected = direction.dot(v);
+            if determinant * determinant < 0.0669873 * d.len2() * v.len2()
+                && projected.abs() > 0.001
+            {
+                let start = direction.dot(delta);
+                let stop = start + projected;
+                let lo = start.min(stop).max(0.);
+                let hi = start.max(stop).min(length);
+                if hi > lo {
+                    let offset = cross(direction, delta);
+                    let slope = cross(direction, v) / projected;
+                    let near = offset + (lo - start) * slope;
+                    let far = offset + (hi - start) * slope;
+                    let clearance = if near * far <= 0. {
+                        0.
+                    } else {
+                        near.abs().min(far.abs())
+                    };
+                    visibility =
+                        visibility.min(smooth((clearance - 40. * g.scale) / (12. * g.scale)));
+                }
+            }
+            if visibility == 0. {
+                break;
             }
         }
-        for (j, s) in frame.stars.iter().enumerate() {
-            if j == edge.a
-                || j == edge.b
-                || !s.alive
-                || s.mag >= 4.5
-                || stellar_light(*s, time, frame.life) < 0.6
+        for (node, star) in frame.stars.iter().enumerate() {
+            if visibility == 0. {
+                break;
+            }
+            if node == edge.a
+                || node == edge.b
+                || !star.alive
+                || star.mag >= 4.5
+                || stellar_light(*star, time, frame.life) < 0.6
             {
                 continue;
             }
-            let p = (at(j) - g.origin) * g.scale + g.offset - start;
-            let along = p.dot(dir);
-            let clearance = (radius(*s, &frame.art) + 3.) * g.scale;
-            if along < -clearance || along > visible + clearance {
+            let center = (at(node) - g.origin) * g.scale + g.offset;
+            let clearance = (radius(*star, &frame.art) + 3.) * g.scale;
+            if outside(center, center, clearance + 6. * g.scale) {
                 continue;
             }
-            let perpendicular = cross(dir, p);
-            let chord = clearance * clearance - perpendicular * perpendicular;
-            if chord > 0. {
-                let half = chord.sqrt();
-                if along + half >= 0. {
-                    visible = visible.min((along - half).max(0.));
-                }
-            }
+            visibility = visibility.min(smooth(
+                (distance(center, a, b) - clearance) / (6. * g.scale),
+            ));
         }
-        let tip = start + dir * visible;
-        let record = &mut g.out[i];
-        record.ends[2] = tip.x;
-        record.ends[3] = tip.y;
-        record.shape[3] = 0.;
-        if visible < 0.5 * g.scale {
-            record.rgba[3] = 0.;
-        }
+        g.out[i].rgba[3] *= visibility;
+        g.out[i].shape[3] = 0.;
     }
-}
-// The burst raises the local background around the giant. Reduce the
-// contrast of chart ink and neighbouring stars there until the shock has
-// passed, so their motion cannot flash through the brilliant core.
-fn visitor_glare(frame: &Frame, time: f32, a: Point, b: Point) -> f32 {
-    let mut glare = 0f32;
-    for e in &frame.events {
-        let age = time - e.start;
-        let center = match e.kind {
-            Kind::Nova if (2. ..9.).contains(&age) => e.p,
-            Kind::Comet if (0. ..e.duration).contains(&age) => e.position(time),
-            _ => continue,
-        };
-        let delta = b - a;
-        let along = ((center - a).dot(delta) / delta.len2().max(0.01)).clamp(0., 1.);
-        let distance = (center - a - delta * along).len();
-        if e.kind == Kind::Comet {
-            // A passing coma briefly washes out the ink and small points
-            // behind it. The head, endpoint and ion tail then give a pixel
-            // one continuous exposure as they pass.
-            let life = smooth(age / 2.) * smooth((e.duration - age) / 2.);
-            glare = glare.max(life * smooth((150. - distance) / 80.));
-            continue;
-        }
-        let near = smooth((90. - distance) / 54.);
-        glare = glare.max(near * smooth((age - 2.) / 2.) * smooth((7. - age) / 2.));
-        // Wash out fine detail as the moving front passes. A shocked star
-        // changes direction, so its core must settle before it regains contrast.
-        if age > 3.8 && distance < 345. {
-            let arrival = 4. + 3. * (1. - (1. - (distance / 320.).min(1.)).sqrt());
-            let since = age - arrival;
-            glare = glare.max(smooth((since + 0.45) / 0.4) * smooth((1.7 - since) / 0.85));
-        }
-    }
-    glare
 }
 fn stellar_light(s: Star, t: f32, life: bool) -> f32 {
     if life {
@@ -606,11 +603,6 @@ fn paint_star(g: &mut Batch<'_>, i: usize, s: Star, p: Point, frame: &Frame, t: 
         g.dot(HALO | ADD, p, 10. + 18. * gain, c, 0.5 * gain);
     }
     let life = stellar_light(s, t, frame.life);
-    let life = if s.nova {
-        life
-    } else {
-        life * (1. - 0.91 * visitor_glare(frame, t, p, p))
-    };
     let flare = 1. + 0.35 * smooth((t - s.flare + 0.06) / 0.06) * smooth((s.flare + 0.4 - t) / 0.4);
     if s.linked {
         let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];

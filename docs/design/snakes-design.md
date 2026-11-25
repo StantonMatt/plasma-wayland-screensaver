@@ -10,7 +10,7 @@ All decisions below are final recommendations, not options.
 
 1. **Performance first.** The new look must cost no more CPU than today's renderer. It should cost less, because geometry shrinks about 4x (section 7). Every element has a stated budget.
 2. **What you see is what kills you.** Visual body width, taper and head size match collision geometry. There is no decorative wiggle that differs from the simulated path.
-3. **Ambient first.** No full-screen flashes and no camera shake. Effects are bounded in time and in size relative to the snake. Peak brightness is capped so the clock stays readable.
+3. **Ambient first.** Judge flashes on their appearance; no camera shake. Effects are bounded in time and in size relative to the snake. Peak brightness is capped so the clock stays readable.
 4. **Shape before colour.** Power-ups, food types and states are told apart by shape, because colour shifts across the six palettes. Mono must work.
 5. **Show intent.** Eyes show where the snake wants to go and what it is doing (calm, hunting, trapped). Boost, kills and pickups send light along the body. This is what makes the AI read as smart and aggressive.
 

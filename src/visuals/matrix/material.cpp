@@ -145,6 +145,8 @@ RainMaterial::RainMaterial(bool headBatch) : heads(headBatch) {
   setFlag(RequiresFullMatrix);
   setFlag(NoBatching);
 }
+QShader RainMaterial::vertexShader(bool heads) { return shaders(heads).vert; }
+QShader RainMaterial::fragmentShader(bool heads) { return shaders(heads).frag; }
 QSGMaterialType *RainMaterial::type() const {
   static QSGMaterialType types[2];
   return &types[heads];
@@ -168,6 +170,7 @@ bool RainMaterial::supported(QQuickWindow *window, QSize atlas) {
   const int limit = rhi->resourceLimit(QRhi::TextureSizeMax);
   if (limit < std::max({4096, atlas.width(), atlas.height()}) ||
       !rhi->isTextureFormatSupported(QRhiTexture::R8) ||
+      !rhi->isTextureFormatSupported(QRhiTexture::RGBA16F) ||
       !rhi->isTextureFormatSupported(QRhiTexture::RGBA32F))
     return false;
   auto *target = static_cast<QRhiRenderTarget *>(
@@ -181,7 +184,8 @@ bool RainMaterial::supported(QQuickWindow *window, QSize atlas) {
   if (!target || !target->renderPassDescriptor())
     return false;
   std::unique_ptr<QRhiBuffer> buf(
-      rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 256));
+      rhi->newBuffer(QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer,
+                     64 + sizeof(vd_rain_uniforms)));
   std::unique_ptr<QRhiTexture> sdf(rhi->newTexture(QRhiTexture::R8, {16, 16}));
   std::unique_ptr<QRhiSampler> sampler(rhi->newSampler(
       QRhiSampler::Nearest, QRhiSampler::Nearest, QRhiSampler::None,

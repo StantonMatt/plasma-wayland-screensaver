@@ -31,6 +31,7 @@ GENERAL_KEYS = set(DEFAULTS) | set(('BackgroundStyle BallCollisions BallCount Ba
     'ClockMovement ClockSpeed CoverPanels IdleMinutes ReducedMotion ShowClock SnakeAggression SnakeDeadlyWalls '
     'SnakeIntelligence SnakeLengthLimit SnakePowerUps SnakeSelfCollisions SnakeStorePowerUps SnakeWorldEvents').split())
 SIZES = [(2560, 1440), (3440, 1440), (1920, 1080)]
+DEFAULT_SEED = 7
 SCRATCH = Path.home() / '.cache/agent-scratch/plasma-wayland-screensaver/visual-bench'
 
 
@@ -257,6 +258,19 @@ def configure_outputs(environment, directory):
         x += width
 
 
+def seed_environment(environment, seed):
+    env = dict(environment)
+    env.pop('PVS_DEPTH_SEED', None)
+    if seed is not None:
+        env['PVS_DEPTH_SEED'] = str(seed)
+    return env
+
+
+def validate_seed(entry, log):
+    if entry['seed'] is not None and f"PVS depth seed override: {entry['seed']}" not in log.splitlines():
+        raise RuntimeError('Fixed depth seed was not acknowledged; rebuild with PVS_DEPTH_SEED support or use --random-seed')
+
+
 def measure(job, entry, environment, compositor):
     if hashlib.sha256(Path(entry['binary']).read_bytes()).hexdigest() != job['binaries'][entry['label']]['sha256']:
         raise RuntimeError(f"Binary changed during benchmark: {entry['binary']}")
@@ -266,7 +280,7 @@ def measure(job, entry, environment, compositor):
     config.mkdir()
     (config / 'plasma-visual-screensaverrc').write_text(config_text(job['source_config'], entry['visual'], job['overrides']))
     duration, warmup = job['duration'], job['warmup']
-    env = dict(environment, XDG_CONFIG_HOME=str(config), XDG_CONFIG_DIRS=str(config),
+    env = dict(seed_environment(environment, entry['seed']), XDG_CONFIG_HOME=str(config), XDG_CONFIG_DIRS=str(config),
                PVS_FRAME_TRACE=str(directory / 'frames.csv'),
                # Allow time for graceful trace flush after the external window.
                PVS_FRAME_TRACE_DURATION_MS=str(math.ceil((warmup + duration + 2) * 1000)), QSG_INFO='1')
@@ -318,6 +332,7 @@ def measure(job, entry, environment, compositor):
             writer.writeheader()
             writer.writerows(samples)
         log = (directory / 'app.log').read_text()
+        validate_seed(entry, log)
         if job['graphics_api'] and f"PVS graphics backend: {job['graphics_api']}\n" not in log:
             raise RuntimeError('Requested graphics backend was not selected; inspect app.log')
         if job['target'] == 'virtual':
@@ -384,7 +399,7 @@ def worker(job_path):
             if job['real_outputs'] < 1:
                 raise RuntimeError('No active real outputs')
         for index, entry in enumerate(job['entries'], 1):
-            print(f"[{index}/{len(job['entries'])}] {entry['visual']} {entry['label']} block {entry['block']}", flush=True)
+            print(f"[{index}/{len(job['entries'])}] {entry['visual']} {entry['label']} seed {entry['seed']} block {entry['block']}", flush=True)
             measure(job, entry, environment, compositor)
     finally:
         with cleanup_signals():
@@ -639,8 +654,7 @@ def validate_output_identity(runs):
             raise RuntimeError('Output identity, geometry or pacing settings changed between runs; cannot compare')
 
 
-def summarize(job, root, args):
-    runs = [json.loads((Path(e['directory']) / 'result.json').read_text()) for e in job['entries']]
+def summary_rows(job, runs, args):
     rows, failures = [], []
     for visual in job['visuals']:
         validate_output_identity([run for run in runs if run['visual'] == visual])
@@ -656,21 +670,27 @@ def summarize(job, root, args):
             a, b = row['labels']['baseline'], row['labels']['candidate']
             row['candidate_baseline_ratios'] = {key: ratio(b['metrics'][key]['mean'] if b['metrics'][key] else None,
                 a['metrics'][key]['mean'] if a['metrics'][key] else None) for key in a['metrics']}
+            row['candidate_baseline_percent_changes'] = {key: 100 * (value - 1) if value is not None else None
+                for key, value in row['candidate_baseline_ratios'].items()}
             row['output_ratios'] = {window: {key: ratio(b['outputs'][window][key]['mean'] if b['outputs'][window][key] else None,
                 a['outputs'][window][key]['mean'] if a['outputs'][window][key] else None) for key in a['outputs'][window]}
                 for window in a['outputs']}
             block_ratios = []
-            for block in range(1, args.repeats + 1):
-                grouped = {label: [r['cpu_percent'] for r in runs if r['visual'] == visual and r['block'] == block and r['label'] == label]
-                           for label in ('baseline', 'candidate')}
-                value = ratio(statistics.mean(grouped['candidate']), statistics.mean(grouped['baseline']))
-                if value is not None:
-                    block_ratios.append(value)
+            for seed in dict.fromkeys(r.get('seed') for r in runs):
+                for block in range(1, args.repeats + 1):
+                    grouped = {label: [r['cpu_percent'] for r in runs if r['visual'] == visual
+                        and r.get('seed') == seed and r['block'] == block and r['label'] == label]
+                        for label in ('baseline', 'candidate')}
+                    value = ratio(statistics.mean(grouped['candidate']), statistics.mean(grouped['baseline']))
+                    if value is not None:
+                        block_ratios.append(value)
             row['cpu_block_ratios'] = block_ratios
             row['cpu_block_ratio_distribution'] = distribution(block_ratios)
-            # Pooled within-label coefficient of variation is a noise estimate,
-            # not a confidence interval or a significance claim.
-            cvs = [r['metrics']['cpu_percent']['cv_percent'] for r in (a, b)]
+            # Estimate repeat noise within each label AND seed, excluding the
+            # deliberate workload variation between different seeded worlds.
+            cvs = [distribution([r['cpu_percent'] for r in runs if r['visual'] == visual
+                and r.get('seed') == seed and r['label'] == label])['cv_percent']
+                for seed in dict.fromkeys(r.get('seed') for r in runs) for label in ('baseline', 'candidate')]
             row['cpu_noise_cv_percent'] = math.sqrt(statistics.mean(c * c for c in cvs)) if all(c is not None for c in cvs) else None
             for key, threshold, lower in [('cpu_percent', args.max_cpu_regression, False),
                                            ('min_output_fps', args.max_frame_loss, True),
@@ -690,19 +710,32 @@ def summarize(job, root, args):
         rows.append(row)
     rank_label = 'baseline'
     rows.sort(key=lambda r: r['labels'][rank_label]['metrics']['cpu_percent']['mean'], reverse=True)
-    report = dict(schema_version=1, invocation=job, ranked_by='baseline mean process CPU, descending',
+    return rows, failures
+
+
+def summarize(job, root, args):
+    runs = [json.loads((Path(e['directory']) / 'result.json').read_text()) for e in job['entries']]
+    rows, failures = summary_rows(job, runs, args)
+    per_seed = []
+    for seed in dict.fromkeys(r.get('seed') for r in runs):
+        seed_rows, seed_failures = summary_rows(job, [r for r in runs if r.get('seed') == seed], args)
+        per_seed.append(dict(seed=seed, visuals=seed_rows, failures=seed_failures))
+        failures.extend(f'seed {seed}: {failure}' for failure in seed_failures)
+    report = dict(schema_version=2, invocation=job, per_seed=per_seed, ranked_by='baseline mean process CPU, descending',
         visuals=rows, runs=runs, failures=failures, caveats=[
             'CPU 100% equals one core; compositor CPU is excluded. RSS peak is sampled every 250ms; trace buffers count toward RSS.',
             'Qt frameSwapped measures submission, not physical scanout or GPU duration. FPS uses the entire external measurement window, including stalls.',
             f'Stall means an inter-submission interval > {job["stall_ms"]:g}ms; static outputs can legitimately submit no frames.',
             'Virtual software rendering ranks a CPU raster workload; it does not predict hardware GPU cost. Virtual hardware is still not physical scanout.',
             'NVIDIA samples describe all system GPU activity; software runs do not attribute that activity to the benchmark.',
-            'CV is observed repeat variation, not a confidence interval. Random animation/snake state, clocks, load, temperatures and power states cause noise.',
+            'CV is observed repeat variation, not a confidence interval. Depth seeds are fixed unless --random-seed is used; legacy animation/snake state, clocks, load, temperatures and power states still cause noise.',
             'Settings and config SHA are recorded. ShowClock and snake/ball settings are inherited unless overridden. None includes the inherited clock.',
             'Runs restart the animation; use longer windows for mature snake ecosystems and compare the same target, driver and settings.'])
     write_json(root / 'summary.json', report)
-    text = ['| Visual | CPU % | CPU CV % | RSS MiB | FPS min | p95 worst ms | Stalls | GPU % | GPU W | C/B CPU | Noise CV % |',
-            '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
+    seed_names = ', '.join(str(group['seed']) if group['seed'] is not None else 'random' for group in per_seed)
+    text = [f'Depth seeds: {seed_names}.', '',
+            '| Visual | CPU % | CPU CV % | RSS MiB | FPS min | p95 worst ms | Stalls | GPU % | GPU W | C/B CPU | CPU delta % | Noise CV % |',
+            '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
     def fmt(value, digits=2):
         return f'{value:.{digits}f}' if value is not None else '—'
     for row in rows:
@@ -715,15 +748,34 @@ def summarize(job, root, args):
                 fmt(mean('rss_peak_mib')), fmt(mean('min_output_fps')), fmt(mean('worst_p95_ms')), fmt(mean('stalls'), 1),
                 fmt(mean('gpu_utilization_percent')), fmt(mean('gpu_power_w')),
                 fmt(row.get('candidate_baseline_ratios', {}).get('cpu_percent'), 4) if label == 'candidate' else '—',
+                fmt(row.get('candidate_baseline_percent_changes', {}).get('cpu_percent')) if label == 'candidate' else '—',
                 fmt(row.get('cpu_noise_cv_percent')) if label == 'candidate' else '—']
             text.append('| ' + ' | '.join(values) + ' |')
-    text += ['', 'Ranked by baseline process CPU (highest cost first). FPS is minimum across outputs; full per-output p50/p95/p99 and C/B ratios are in JSON.',
+    if len(per_seed) > 1 and any('candidate_baseline_ratios' in row for row in rows):
+        text += ['', '| Seed | Visual | C/B CPU | CPU delta % |', '|---|---|---:|---:|']
+        for group in per_seed:
+            for row in group['visuals']:
+                value = row['candidate_baseline_ratios']['cpu_percent']
+                text.append(f"| {group['seed']} | {row['visual']} | {fmt(value, 4)} | {fmt(100 * (value - 1) if value is not None else None)} |")
+    text += ['', 'The first table pools all seeds; per-seed metrics and C/B ratios are also in JSON.',
+             'Ranked by baseline process CPU (highest cost first). FPS is minimum across outputs; full per-output p50/p95/p99 and C/B ratios are in JSON.',
              'GPU metrics are system-wide; software virtual runs do not measure application GPU cost.', '',
              ('Gate: FAIL\n' + '\n'.join(failures)) if failures else ('Gate: PASS' if any(t is not None for t in (args.max_cpu_regression, args.max_frame_loss, args.max_p95_regression)) else 'Report only; no regression thresholds requested.'), '']
     markdown = '\n'.join(text)
     (root / 'summary.md').write_text(markdown)
     print('\n' + markdown + f'Artifacts: {root}', flush=True)
     return 1 if failures else 0
+
+
+def depth_seed(value):
+    digits = value.lstrip('0') or '0'
+    if not re.fullmatch(r'[0-9]+', value) or len(digits) > 20 or int(digits) > 2**64 - 1:
+        raise argparse.ArgumentTypeError('seed must be a decimal unsigned 64-bit integer')
+    return int(digits) | 1
+
+
+def benchmark_seeds(args):
+    return [None] if args.random_seed else list(dict.fromkeys(args.seed or [DEFAULT_SEED]))
 
 
 def parser():
@@ -733,9 +785,12 @@ trails 100, ocean palette, 60 FPS, seamless monitors. Snake/ball/clock settings
 come from the source rc [General]. Each run copies the rc into a private config
 and sets both General and per-visual animation profiles; the source is never edited.
 
-Single binary: one run per visual per repeat. A/B: --binary is baseline,
---candidate is candidate; each repeat is an ABBA block per visual (four runs).
-CPU ratios use means; noise is pooled within-label CPU CV. JSON includes each
+Single binary: one run per visual, seed and repeat. Depth seed defaults to 7;
+repeat --seed for multiple worlds, or use --random-seed to opt out. Even seeds
+are normalized with | 1. Fixed seeds require PVS_DEPTH_SEED-aware binaries.
+A/B: --binary is baseline, --candidate is candidate; each repeat is an ABBA
+block per visual and seed (four runs).
+CPU ratios use means; noise is pooled within-seed/label CPU CV. JSON includes each
 run, per-output FPS/p50/p95/p99/stalls, GPU devices, settings and binary hashes.
 Ranked Markdown + JSON are written under --output-dir. Nonzero exit on invalid
 traces, failed previews, input/cancellation, or an explicitly requested gate.
@@ -770,7 +825,10 @@ Examples (run heavy finite benchmarks through ~/.local/bin/heavy):
     p.add_argument('--visuals', nargs='+', choices=VISUALS, default=list(VISUALS), help='selected visuals (default all 11)')
     p.add_argument('--duration', type=float, default=60, help='measured seconds per run, AFTER warmup (default 60)')
     p.add_argument('--warmup', type=float, default=10, help='unmeasured seconds per run (default 10)')
-    p.add_argument('--repeats', type=int, default=1, help='single runs or full ABBA blocks per visual (default 1)')
+    p.add_argument('--repeats', type=int, default=1, help='single runs or full ABBA blocks per visual and seed (default 1)')
+    seeds = p.add_mutually_exclusive_group()
+    seeds.add_argument('--seed', type=depth_seed, action='append', metavar='U64', help='fixed depth seed (default 7); repeat for several worlds; normalized with | 1')
+    seeds.add_argument('--random-seed', action='store_true', help='random depth worlds each activation (explicit opt-out of fixed seeds)')
     p.add_argument('--set', dest='settings', action='append', default=[], metavar='KEY=VALUE', help='override a General key; repeatable (animation profiles updated too)')
     p.add_argument('--config', type=Path, default=Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'plasma-visual-screensaverrc', help='source rc to copy (default user rc; missing file uses application defaults)')
     p.add_argument('--output-dir', type=Path, help='new, nonexisting artifact directory (default timestamped on-disk agent scratch)')
@@ -821,17 +879,18 @@ def main(argv=None):
     root.mkdir(parents=True, mode=0o700, exist_ok=False)
     source = args.config.read_text() if args.config.exists() else ''
     job = dict(root=str(root), target=args.target, virtual_renderer=args.virtual_renderer,
-        duration=args.duration, warmup=args.warmup, visuals=list(dict.fromkeys(args.visuals)), repeats=args.repeats,
+        seeds=benchmark_seeds(args), duration=args.duration, warmup=args.warmup, visuals=list(dict.fromkeys(args.visuals)), repeats=args.repeats,
         source_config=source, source_config_path=str(args.config.resolve()), source_config_sha256=hashlib.sha256(source.encode()).hexdigest(),
         overrides=overrides, default_settings=DEFAULTS, graphics_api=args.graphics_api, stall_ms=args.stall_ms,
         argv=sys.argv[1:], host=dict(uname=list(os.uname()), cpu_count=os.cpu_count()),
         binaries={label: dict(path=str(binary), sha256=hashlib.sha256(binary.read_bytes()).hexdigest()) for label, binary in binaries.items()}, entries=[])
     for visual in job['visuals']:
-        for block in range(1, args.repeats + 1):
-            labels = ['baseline', 'candidate', 'candidate', 'baseline'] if args.candidate else ['baseline']
-            for position, label in enumerate(labels, 1):
-                job['entries'].append(dict(visual=visual, block=block, position=position, label=label,
-                    binary=str(binaries[label]), directory=str(root / f'{visual}-{block}-{position}-{label}')))
+        for seed in job['seeds']:
+            for block in range(1, args.repeats + 1):
+                labels = ['baseline', 'candidate', 'candidate', 'baseline'] if args.candidate else ['baseline']
+                for position, label in enumerate(labels, 1):
+                    job['entries'].append(dict(visual=visual, seed=seed, block=block, position=position, label=label,
+                        binary=str(binaries[label]), directory=str(root / f'{visual}-seed-{seed}-{block}-{position}-{label}')))
     write_json(root / 'job.json', job)
     print(f'Artifacts: {root}\nTarget {args.target}; {len(job["entries"])} runs, each {args.warmup:g}s warm + {args.duration:g}s measured.', flush=True)
     try:

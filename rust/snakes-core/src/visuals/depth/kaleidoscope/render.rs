@@ -150,6 +150,7 @@ pub(super) struct Frame {
     speed: f64,
     swap_queue_delay: f32,
     swap_start: f64,
+    swap_refill_age: f64,
     refill_guide: Option<super::GuidePath>,
 }
 impl Frame {
@@ -169,12 +170,14 @@ impl Frame {
             speed: 1.,
             swap_queue_delay: 0.,
             swap_start: -1e6,
+            swap_refill_age: 4.,
             refill_guide: None,
         }
     }
     pub(super) fn update(&mut self, w: &Kaleidoscope) {
         self.cell.clone_from(&w.cell);
         self.swap_queue_delay = w.swap_queue_delay as f32;
+        self.swap_refill_age = w.swap_refill_age;
         self.swap_start = if w.magnified_mandala() {
             w.moments.start[2]
         } else {
@@ -185,7 +188,8 @@ impl Frame {
         self.angle = w.hand.angle;
         self.light_angle = w.light_angle();
         self.cloud = w.moments.cloud();
-        self.aperture = w.moments.aperture();
+        let phase = w.swap_phase();
+        self.aperture = w.swap_aperture();
         self.speed = w.input.speed.min(super::PHYSICAL_SPEED_LIMIT);
         let q = w.moments.glint_point;
         let glint_age = w.moments.age(super::GLINT);
@@ -249,7 +253,7 @@ impl Frame {
                 ),
             ]);
         }
-        let dust = (w.moments.dust() * self.aperture) as f32;
+        let mut dust = (w.moments.dust() * self.aperture) as f32;
         self.mote = [0.; 4];
         if dust == 0. {
             self.poses[w.chamber.bodies.len()] = Pose::default();
@@ -258,6 +262,9 @@ impl Frame {
         let age = w.moments.age(super::DUST);
         let radius = 0.58 + 0.23 * (age * 0.20).sin();
         let side = 0.50 + 0.32 * (age * 0.37).sin();
+        if w.magnified_mandala() && (0.0..7.0).contains(&phase) {
+            dust *= w.glass_key_at(w.eye_sample_point(radius, side)) as f32;
+        }
         self.mote = [radius as f32, side as f32, dust, 0.];
         let p = w.viewed_point(radius, side);
         self.poses[w.chamber.bodies.len()] = Pose([p.0 as f32, p.1 as f32, 0., dust]);
@@ -290,7 +297,15 @@ impl Frame {
         } else {
             self.swap_start
         };
-        let swap_age = presented - swap_start;
+        let mut swap_age = presented - swap_start;
+        let refill = if presented >= b.swap_start {
+            b.swap_refill_age
+        } else {
+            self.swap_refill_age
+        };
+        if swap_age >= refill - 0.75 {
+            swap_age += 4. - refill;
+        }
         if (0.0..8.).contains(&swap_age) {
             lens.motion[2] = (-1. - swap_age) as f32;
         }

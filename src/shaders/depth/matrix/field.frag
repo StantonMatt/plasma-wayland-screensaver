@@ -45,8 +45,15 @@ void main()
     ivec2 p = ivec2(floor(grid)) - ivec2(ub.grid.zw);
     ivec2 texel = ivec2(2 * p.y, p.x);
     ivec4 ink = ivec4(texelFetch(cells, texel + ivec2(1, 0), 0) * 255.0 + 0.5);
-    float flash = ub.section.w == 1.0 ? ub.weather.y : 0.0;
-    vec4 fieldLight = vec4(ub.colors[0].rgb * flash, flash);
+    bool middle = ub.section.w == 1.;
+    float flash = middle ? localLightning(world) : 0.;
+    vec4 fieldLight = vec4(0.);
+    if (flash > 0.)
+    {
+        float grain = lightningGrain(world) * min(1., flash / 0.02);
+        // Add radiance without washing out the existing sky gradient.
+        fieldLight.rgb = max(vec3(0.), lightningTint() * flash + vec3(grain));
+    }
     if (ink.a == 0 || (ink.b & 128) != 0)
     {
         fragColor = fieldLight * ub.light.w;
@@ -59,7 +66,10 @@ void main()
     float halfLife = bolt ? 1.0 : ((ink.b & 64) != 0 ? 1.25 : ub.section.y * (lantern ? 3.0 : ((ink.b & 32) != 0 ? 0.83 : 1.0)));
     const float cooling[4] = float[4](1., 0.75, 0.5, 0.375);
     halfLife *= cooling[ink.g >> 6];
+    // Hold the discharge while its 120 ms path finishes drawing.
     float energy = float(ink.a) / 255. * exp2(-(bolt ? max(0., age - 0.15) : age) / halfLife);
+    if (bolt && age <= ub.strike.w + 0.001)
+        energy *= ub.strike.z;
     float band = min(1., abs(world.y - ub.weather.x) / (5.6 * ub.grid.y));
     float sweep = band < 1. ? (0.10/31.) * float((ink.g >> 1) & 31) * exp(-age / 100.) * (1. + cos(3.14159265 * band)) : 0.;
     float glow = max(energy, sweep);
@@ -76,6 +86,9 @@ void main()
         fragColor = fieldLight * ub.light.w;
         return;
     }
+    // Invisible far/near ink needs neither the spatial exponential nor grain.
+    if (!middle)
+        flash = localLightning(world);
     vec2 uv = fract(grid);
     ivec2 dialect = alphabet(id);
     uint seed = hashCell(uint(floor(grid.x)) * 3517u + uint(floor(grid.y)) * 107u + uint(id) * 5557u);
@@ -103,13 +116,17 @@ void main()
     vec3 color = inkColor(tint, glow, lantern);
     if (ub.section.w == 0.)
         color = distantInk(tint);
+    color = litInk(color, flash);
     float strength = 0.91 * pow(glow, 0.81);
+    // Pastel keeps a milky body instead of cooling to a thin, dark line.
     if (int(ub.light.x) == 5)
         strength = max(strength, 0.77 * smoothstep(0.15, 0.5, glow));
+    // Ease deposited ink in behind a moving head. The lightning-lit field
+    // (bit 64) responds immediately to the discharge.
     float attack = (ink.b & 64) != 0 ? 1. : smoothstep(0., 0.07, age);
-    float alpha = coverage * strength * attack * ub.section.z;
+    float alpha = min(1., coverage * strength * attack * ub.section.z);
     vec4 stroke = vec4(color * alpha, alpha);
     if (ub.section.w != 1. || int(ub.light.x) == 2)
-        stroke = pigmentedInk(color, alpha, smoothstep(0.03, 0.65, coverage) * smoothstep(0.02, 0.35, glow) * attack);
+        stroke = pigmentedInk(color, alpha, smoothstep(0.03, 0.65, coverage) * smoothstep(0.02, 0.35, glow) * attack, flash);
     fragColor = (stroke + fieldLight * (1. - stroke.a)) * ub.light.w;
 }

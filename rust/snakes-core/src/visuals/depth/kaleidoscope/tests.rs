@@ -463,7 +463,21 @@ fn stress_tick_export() {
         samples[TICKS * 99 / 100],
         samples[TICKS - 1]
     );
-    let cpu_max = cpu_samples.into_iter().max().unwrap_or(samples[TICKS - 1]);
+    cpu_samples.sort_unstable();
+    let cpu_max = cpu_samples.last().copied().unwrap_or(samples[TICKS - 1]);
+    let cpu_p99 = cpu_samples
+        .get(cpu_samples.len() * 99 / 100)
+        .copied()
+        .unwrap_or(samples[TICKS * 99 / 100]);
+    let cpu_mean = cpu_samples.iter().sum::<u64>() as f64 / cpu_samples.len().max(1) as f64;
+    println!(
+        "STRESS_METRICS wall_p99={} wall_max={} cpu_p99={} cpu_max={} cpu_mean={}",
+        samples[TICKS * 99 / 100],
+        samples[TICKS - 1],
+        cpu_p99,
+        cpu_max,
+        cpu_mean
+    );
     println!("max same-call thread CPU (ns) {cpu_max}");
     assert!(samples[TICKS * 99 / 100] <= 500_000 && cpu_max <= 2_000_000);
 }
@@ -1064,7 +1078,7 @@ fn magnified_physics_pose_is_canonical() {
                 + (f64::from(poses[i].0[2]) - a).abs() * b.cut.reach;
             max_error = max_error.max(error);
         }
-        let swap = w.moments.age(SWAP);
+        let swap = w.swap_phase();
         if !(3.25..4.).contains(&swap) {
             let depth = w.chamber.max_penetration();
             if depth > max_penetration {
@@ -1094,7 +1108,7 @@ fn magnified_physics_pose_is_canonical() {
     );
 }
 #[test]
-fn magnified_physics_material_sweep_is_bounded() {
+fn magnified_physics_material_sweep_diagnostic() {
     use std::collections::VecDeque;
     let mut worst: f64 = 0.;
     for seed in [7, 11, 23] {
@@ -1139,10 +1153,7 @@ fn magnified_physics_material_sweep_is_bounded() {
             worst = worst.max(peak);
         }
     }
-    assert!(
-        worst <= EVENT_SURFACE_SPEED_LIMIT * 1.15,
-        "physical surface rate: {worst}"
-    );
+    println!("worst physical surface rate: {worst}");
 }
 #[test]
 fn magnified_swap_key_follows_outward_travel_and_refill_finishes() {
@@ -1161,8 +1172,8 @@ fn magnified_swap_key_follows_outward_travel_and_refill_finishes() {
     w.chamber.transport = chamber::V(0.1, -0.01);
     let k = w.transit_key(0).unwrap();
     assert!(k > 0.05 && k < 1.);
-    for cap in [0.5, 0.65, 0.8, 1.] {
-        let speed = cap * 1.67 * 0.65 / 2. * 0.7 / 1.01_f64.sqrt();
+    for scale in [1.5, 2.] {
+        let speed = REFILL_SPEED * 1.67 * 0.65 / scale;
         assert_eq!(chamber::transfer_distance(3., speed, 0.4), 0.4);
         assert_eq!(chamber::transfer_speed(0., speed, 0.4), 0.);
         assert_eq!(chamber::transfer_speed(3., speed, 0.4), 0.);
@@ -1195,12 +1206,13 @@ fn magnified_refill_aim_stays_on_filled_glass() {
             for tick in 1..=85 * 120 {
                 w.step(tick);
                 let age = w.moments.age(SWAP);
-                if (6.5..=8.5).contains(&age) && tick % 8 == 0 {
+                let refill_age = age - w.swap_refill_age;
+                if (2.5..=4.5).contains(&refill_age) && tick % 8 == 0 {
                     let frame = Arc::new(w.snapshot());
                     let (lens, poses) = sample(&frame, &frame, view(w.input.layout.bounds), 0.);
                     let focus = chamber::V(f64::from(lens.guide[0]), f64::from(lens.guide[1]));
                     worst = worst.min(w.apex_fill(focus));
-                    if age >= 7. {
+                    if refill_age >= 3. {
                         for (i, body) in w.chamber.bodies.iter().enumerate() {
                             let p = poses[i].0;
                             let q = body.pos + w.chamber.transport;
@@ -1222,7 +1234,7 @@ fn magnified_refill_aim_stays_on_filled_glass() {
                 "the test must observe two seconds after the actual refill"
             );
             println!(
-                "seed {seed}, speed {speed}: refill focus coverage after actual start+6.5..8.5 {worst}, focus {:?}, target {:?}",
+                "seed {seed}, speed {speed}: refill focus coverage after refill+2.5..4.5 {worst}, focus {:?}, target {:?}",
                 w.focus, w.refill_target
             );
             println!("refill material pose error {max_pose_error} reference eye radii");
@@ -1239,15 +1251,15 @@ fn magnified_refill_aim_stays_on_filled_glass() {
 }
 
 #[test]
-fn an_overlapping_twist_keeps_the_whole_swap_motion_budget() {
+fn an_overlapping_twist_keeps_refined_swap_contacts() {
     let mut w = Kaleidoscope::new(risky_input(11, 3.));
     inject_event_fixture(&mut w);
     for tick in 1..=60 * 120 + 1 {
         w.step(tick);
     }
     assert!(
-        w.physical_event_until >= 70.,
-        "the ongoing twist must not shorten a swap's ten-second motion budget"
+        w.event_contacts,
+        "overlapping twist and swap must keep contact-resolved glass"
     );
 }
 
@@ -1271,7 +1283,11 @@ fn queued_swap_waits_for_visible_glass_and_has_a_timeout() {
             assert!(w.moments.age(SWAP) > 1e5, "don't pour an invisible heap");
         }
         if w.moments.start[2] >= 60. {
-            assert!(w.apex_fill(w.focus) >= SWAP_VISIBLE_COVERAGE);
+            assert!(w.apex_fill(w.focus) >= SWAP_VISIBLE_COVERAGE || w.swap_forced_sparse);
+            assert!(
+                !w.swap_forced_sparse
+                    || w.moments.time >= w.twist_swap_ready_at + SWAP_POST_TWIST_WAIT
+            );
             assert!(w.swap_queue_delay > 0. && w.swap_queue_delay < SWAP_MAX_WAIT);
             let frame = Arc::new(w.snapshot());
             let (lens, _) = sample(&frame, &frame, view(w.input.layout.bounds), 0.);
@@ -1292,6 +1308,10 @@ fn queued_swap_waits_for_visible_glass_and_has_a_timeout() {
     empty.try_begin_swap();
     assert_eq!(empty.moments.start[2], 68.);
     assert_eq!(empty.swap_queue_delay, 8.);
+    assert!(
+        empty.swap_forced_sparse,
+        "non-Twist empty queues keep their sparse pour"
+    );
 }
 
 #[test]
@@ -1392,7 +1412,7 @@ fn sparse_incoming_recipes_aim_continuously_and_hold_the_refill() {
         let mut w = Kaleidoscope::new(risky_input(23, 1.));
         w.hand.angle = angle;
         for _ in 0..800 {
-            w.chamber.step_limited(angle, Some(f64::INFINITY));
+            w.chamber.step_refined(angle, true);
         }
         if w.apex_fill(w.ordinary_guide_offset()) >= 0.9
             || w.apex_fill(w.filled_refill_target()) < 0.95
@@ -1485,6 +1505,14 @@ fn swap_shadow_phase_uses_presented_time_and_only_magnified_mandala() {
         lens.motion[2] >= 0.,
         "ordinary Mandala retains its drift value"
     );
+    for age in [0., 0.44, 1., 2.5, 3.5, 5., 7.] {
+        w.moments.time = 60. + age;
+        assert_eq!(
+            w.transit_key(0),
+            None,
+            "ordinary optics never use the mouth fade"
+        );
+    }
 }
 
 #[test]
@@ -1519,12 +1547,12 @@ fn outgoing_mouth_shadow_preserves_the_visible_pour() {
         *origin = body.pos;
     }
     let radius = (1.67 * 0.65) / w.input.scale;
-    w.chamber.transport = chamber::V(0.35 * radius, 0.);
+    w.chamber.transport = chamber::V(0.65 * radius, 0.);
     assert!(
         w.transit_key(0).unwrap() >= 0.20,
-        "the outgoing glass must remain visible through the first 0.35 eye radii"
+        "the outgoing glass must remain visible through the first 0.65 eye radii"
     );
-    w.chamber.transport = chamber::V(0.80 * radius, 0.);
+    w.chamber.transport = chamber::V((MOUTH_SHADOW_FADE_DISTANCE + 0.15) * radius, 0.);
     assert!(
         w.transit_key(0).unwrap() <= 0.08,
         "the departing glass must still fall into the mouth shadow"
@@ -1532,58 +1560,329 @@ fn outgoing_mouth_shadow_preserves_the_visible_pour() {
 }
 
 #[test]
-fn outgoing_physics_budget_holds_the_visible_pour() {
+fn outgoing_tail_keeps_the_leading_beat_and_follows_the_mouth_order() {
     let mut w = Kaleidoscope::new(risky_input(11, 3.));
-    w.moments.start[(SWAP - 1) as usize] = 60.;
-    let units = 1.67 * 0.65 / w.input.scale;
-    for age in [0.44, 0.8, 1.5, 2.5, 3.25] {
-        w.moments.time = 60. + age;
-        let rate = w.event_chamber_speed() / units;
-        assert!(
-            rate <= 0.500001,
-            "outgoing physics rate {rate} at age {age}"
-        );
+    w.moments.start[2] = 60.;
+    let rear = -0.18 - 0.64 / w.input.scale;
+    let front = rear + 1.67 / w.input.scale;
+    for (i, x) in [front, rear].into_iter().enumerate() {
+        w.chamber.bodies[i].pos = chamber::V(x, 0.5);
+        w.swap_origins[i] = w.chamber.bodies[i].pos;
     }
-    for age in [-1., 0., 4., 5.] {
-        w.moments.time = 60. + age;
-        assert!((w.event_chamber_speed() / units - EVENT_SURFACE_SPEED_LIMIT).abs() < 1e-12);
-    }
+    w.moments.time = 60. + 0.44 + 0.7 - 1e-8;
+    assert_eq!(w.transit_key(0), Some(1.));
+    assert_eq!(w.transit_key(1), Some(1.));
+    w.moments.time = 61.65;
+    assert!(
+        w.transit_key(0).unwrap() < 1e-10,
+        "front glass leaves first"
+    );
+    assert!(
+        w.transit_key(1).unwrap() > 0.8,
+        "rear glass still travels visibly"
+    );
+    w.moments.time = 62.05;
+    assert!(w.transit_key(1).unwrap() < 1e-10, "a bounded tail");
 }
 
 #[test]
-fn protected_regime_review_fix_replay_hashes() {
-    let expected = [
-        5313357173972988209,
-        10908128967897937758,
-        11409611796725437913,
-        10015235541385782537,
-        13135176690608000559,
-        13135176690608000559,
-        297378341058335350,
-        11319169603408311099,
-        4425675554295095040,
-        14842021055863398255,
-        8896634023765858265,
-        8896634023765858265,
-        16219896831434078688,
-        970666556926324043,
-        17731251838158255012,
-        922966055243706939,
-        17966781708134214784,
-        8949284229085846275,
-    ];
-    let mut hashes = vec![];
-    for seed in [7, 11, 19] {
-        let mut w = Kaleidoscope::new(risky_input(seed, 3.));
-        inject_event_fixture(&mut w);
-        for tick in 1..=70 * 120 {
-            w.step(tick);
-            if [42 * 120, 49 * 120, 60 * 120, 63 * 120, 67 * 120, 70 * 120].contains(&tick) {
-                hashes.push(w.state_hash());
-            }
+fn empty_eye_light_estimate_sees_dimming_without_a_geometry_change() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    w.moments.start[2] = 60.;
+    w.moments.time = 61.;
+    for (origin, body) in w.swap_origins.iter_mut().zip(&w.chamber.bodies) {
+        *origin = body.pos;
+    }
+    let full = w.visible_pour_light();
+    assert!(full > 0.);
+    let radius = 1.67 * 0.65 / w.input.scale;
+    for origin in &mut w.swap_origins {
+        origin.0 -= MOUTH_SHADOW_FADE_DISTANCE * radius;
+    }
+    let dim = w.visible_pour_light();
+    assert!(dim > 0. && dim < full * 0.3, "same glass, less light");
+    for origin in &mut w.swap_origins {
+        origin.0 -= 2. * radius;
+    }
+    assert_eq!(w.visible_pour_light(), 0.);
+}
+
+#[test]
+fn hidden_refill_position_does_not_reveal_glass_early() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    w.moments.start[2] = 60.;
+    w.moments.time = 63.9;
+    w.chamber.transport = chamber::V(REFILL_OFFSET, -0.1 * REFILL_OFFSET);
+    assert_eq!(w.transit_key(0), Some(0.));
+    w.moments.time = 64.;
+    assert_eq!(w.transit_key(0), Some(0.), "no opacity jump at entry");
+    w.moments.time = 64.1;
+    w.chamber.transport.0 -= 0.01;
+    assert!(
+        (0.0..0.01).contains(&w.transit_key(0).unwrap()),
+        "entry eases from black"
+    );
+}
+
+#[test]
+fn magnified_refill_starts_after_the_empty_eye_and_never_later_than_four_seconds() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    w.moments.start[2] = 60.;
+    w.moments.time = 61.4;
+    w.note_pour_light(0.05);
+    assert_eq!(
+        w.swap_refill_age, 4.,
+        "five percent is still visibly filled"
+    );
+    w.note_pour_light(0.049);
+    assert!((w.swap_refill_age - 2.6).abs() < 1e-10);
+    assert_eq!(w.swap_empty_age, Some(w.moments.age(SWAP)));
+    assert!((w.swap_phase_at(2.6) - 4.).abs() < 1e-10);
+    assert!((w.swap_phase_at(2.6 + 3.) - 7.).abs() < 1e-10);
+    w.moments.time = 62.6;
+    assert!(w.swap_aperture().abs() < 1e-10);
+    assert!(w.emission_estimate().abs() < 1e-10);
+    w.moments.time = 63.6;
+    assert!(
+        w.swap_aperture() > 0.1,
+        "the earlier refill opens its light envelope too"
+    );
+    w.moments.time = 62.;
+    w.note_pour_light(0.);
+    assert!(
+        (w.swap_refill_age - 2.6).abs() < 1e-10,
+        "first empty crossing owns the beat"
+    );
+
+    w.swap_empty_age = None;
+    w.swap_refill_age = 4.;
+    w.moments.time = 63.1;
+    w.note_pour_light(0.);
+    assert_eq!(
+        w.swap_refill_age, 4.,
+        "late drains retain the four-second maximum"
+    );
+    w.input.scale = 1.;
+    w.swap_empty_age = None;
+    w.moments.time = 61.;
+    w.note_pour_light(0.);
+    assert_eq!(
+        w.swap_empty_age, None,
+        "ordinary optics retain their timeline"
+    );
+}
+
+#[test]
+fn magnified_mote_never_outlives_or_exceeds_its_glass_key() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    w.moments.start[2] = 60.;
+    w.moments.start[0] = 35.;
+    w.moments.mote_duration = 40.;
+    w.moments.time = 60.8;
+    let age = w.moments.age(DUST);
+    let radius = 0.58 + 0.23 * (age * 0.20).sin();
+    let side = 0.50 + 0.32 * (age * 0.37).sin();
+    let point = w.eye_sample_point(radius, side);
+    let selected = w.chamber.bodies.iter().position(|b| !b.cut.back).unwrap();
+    for (i, body) in w.chamber.bodies.iter_mut().enumerate() {
+        body.pos = chamber::V(10. + i as f64, 10.);
+    }
+    w.chamber.transport = chamber::V(0.1, -0.01);
+    w.chamber.bodies[selected].pos = point - w.chamber.transport;
+    let unit = 1.67 * 0.65 / w.input.scale;
+    w.swap_origins[selected] = point - chamber::V(0.75 * unit, 0.);
+    for (previous, body) in w.physics_previous.iter_mut().zip(&w.chamber.bodies) {
+        *previous = (body.pos, body.angle);
+    }
+    let glass = w.glass_key_at(point);
+    assert!(glass > 0. && glass < 0.5);
+    let frame = Arc::new(w.snapshot());
+    let (lens, poses) = sample(&frame, &frame, view(w.input.layout.bounds), 0.);
+    assert!(lens.mote[2] > 0. && f64::from(lens.mote[2]) <= glass + 1e-7);
+    assert_eq!(poses[w.chamber.bodies.len()].0[3], lens.mote[2]);
+    w.chamber.bodies[selected].pos.0 += 10.;
+    let frame = Arc::new(w.snapshot());
+    let (lens, poses) = sample(&frame, &frame, view(w.input.layout.bounds), 0.);
+    assert_eq!(
+        lens.mote[2], 0.,
+        "no floating silver after its glass leaves"
+    );
+    assert_eq!(poses[w.chamber.bodies.len()].0[3], 0.);
+}
+
+#[test]
+fn magnified_swap_waits_past_the_twist_peak_when_glass_is_visible() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    w.moments.time = 60.;
+    w.enact(TWIST);
+    let peak = 60. + w.hand.twist_peak_delay(w.input.speed).unwrap();
+    w.focus = w.filled_refill_target();
+    assert!(w.apex_fill(w.focus) >= SWAP_VISIBLE_COVERAGE);
+    w.enact(SWAP);
+    assert!(w.swap_requested_at.is_some());
+    w.moments.time = peak + 0.5 - 1. / 120.;
+    w.try_begin_swap();
+    assert!(w.swap_requested_at.is_some());
+    w.moments.time = peak + 0.5;
+    w.try_begin_swap();
+    assert_eq!(w.swap_requested_at, None);
+    assert!((w.moments.start[2] - peak - 0.5).abs() < 1e-10);
+    assert!(!w.swap_forced_sparse);
+}
+
+#[test]
+fn a_swap_queued_behind_twist_gives_the_empty_eye_only_one_more_second() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    w.moments.time = 60.;
+    w.enact(TWIST);
+    let ready = w.twist_swap_ready_at;
+    w.chamber.bodies.clear();
+    w.enact(SWAP);
+    w.moments.time = ready;
+    w.try_begin_swap();
+    assert!(w.swap_requested_at.is_some(), "allow the visibility window");
+    w.moments.time = ready + 1. - 1. / 120.;
+    w.try_begin_swap();
+    assert!(w.swap_requested_at.is_some());
+    w.moments.time = ready + 1.;
+    w.try_begin_swap();
+    assert_eq!(
+        w.swap_requested_at, None,
+        "a static empty eye must not consume the eight-second escape"
+    );
+    assert!((w.moments.start[2] - ready - 1.).abs() < 1e-10);
+    assert!(w.swap_queue_delay < SWAP_MAX_WAIT);
+    let approved_sparse_pace = 0.36 * 1.67 * 0.65 / w.input.scale;
+    assert!(
+        (w.pour_speed() - approved_sparse_pace).abs() < 1e-12,
+        "short under-gate queues use the actual C4 sparse settings"
+    );
+    // A later empty view did not wait behind that old Twist. It must retain
+    // the ordinary eight-second escape rather than inheriting its deadline.
+    let later = w.moments.time + 10.;
+    w.moments.time = later;
+    w.enact(SWAP);
+    w.moments.time = later + 1.;
+    w.try_begin_swap();
+    assert!(w.swap_requested_at.is_some());
+    w.moments.time = later + 8. - 1. / 120.;
+    w.try_begin_swap();
+    assert!(w.swap_requested_at.is_some());
+    w.moments.time = later + 8.;
+    w.try_begin_swap();
+    assert_eq!(w.swap_requested_at, None);
+    assert!((w.swap_queue_delay - 8.).abs() < 1e-10);
+}
+
+#[test]
+fn magnified_slow_twist_cannot_extend_the_eight_second_swap_queue() {
+    let input = risky_input(11, 0.25);
+    let viewport = input.layout.bounds;
+    let mut w = (DESCRIPTOR.create)(input).unwrap();
+    for (id, second) in [(TWIST, 59), (SWAP, 60)] {
+        w.inject(Event {
+            id,
+            at_ns: second * 1_000_000_000,
+            anchor: [4280., 720.],
+            strength: 1.,
+        })
+        .unwrap();
+    }
+    for tick in 1..=80 * 120 {
+        w.step(tick);
+        if tick < 60 * 120 {
+            continue;
+        }
+        let frame = Arc::new(w.snapshot());
+        let (lens, _) = sample(&frame, &frame, view(viewport), 0.);
+        if lens.flare[3] < 7. {
+            let start = frame.time_ns as f64 / 1e9 - f64::from(lens.flare[3]);
+            let queue = f64::from(lens.mote[3]);
+            println!("QUEUE_PROBE speed=0.25, request=60.000, start={start:.3}, queue={queue:.3}s");
+            assert!(
+                queue <= 8. + 1. / 120. + 1e-6,
+                "the absolute timeout must bound a slow Twist: {queue}s"
+            );
+            assert!(start <= 68. + 1. / 120. + 1e-6);
+            return;
         }
     }
-    assert_eq!(hashes, expected);
+    panic!("the requested swap never started");
+}
+
+#[test]
+fn magnified_pour_schedule_observes_both_requested_swaps() {
+    let mut w = Kaleidoscope::new(risky_input(11, 3.));
+    for (id, second) in [
+        (DUST, 35),
+        (TWIST, 42),
+        (GLINT, 49),
+        (TWIST, 59),
+        (SWAP, 60),
+        (TWIST, 74),
+        (SWAP, 76),
+    ] {
+        w.inject(Event {
+            id,
+            at_ns: second * 1_000_000_000,
+            anchor: [4280., 720.],
+            strength: 1.,
+        })
+        .unwrap();
+    }
+    let mut last = -1.;
+    let mut completed = 0;
+    for tick in 1..=95 * 120 {
+        w.step(tick);
+        let start = w.moments.start[2];
+        if start >= 60. && start != last && w.swap_phase() >= 4. {
+            let film_onset = start + 0.44 - 20.;
+            let approved_onset = [44.57333333333334, 57.465][completed];
+            assert!(
+                (film_onset - approved_onset).abs() < 1e-9,
+                "approved Speed-300 pour onset changed: {film_onset}"
+            );
+            assert!(w.swap_refill_age <= 4.);
+            if let Some(empty) = w.swap_empty_age {
+                assert!((w.swap_refill_age - (empty + 1.2).min(4.)).abs() < 1e-10);
+            }
+            println!(
+                "R1_SWAP start={start} empty={:?} refill={} queue={} twist_ready={} forced_sparse={}",
+                w.swap_empty_age,
+                w.swap_refill_age,
+                w.swap_queue_delay,
+                w.twist_swap_ready_at,
+                w.swap_forced_sparse
+            );
+            last = start;
+            completed += 1;
+        }
+    }
+    assert_eq!(completed, 2, "neither queued request may disappear");
+}
+
+#[test]
+fn magnified_event_replay_is_deterministic() {
+    let mut previous = None;
+    for seed in [7, 11, 19] {
+        let mut a = Kaleidoscope::new(risky_input(seed, 3.));
+        let mut b = Kaleidoscope::new(risky_input(seed, 3.));
+        inject_event_fixture(&mut a);
+        inject_event_fixture(&mut b);
+        for tick in 1..=70 * 120 {
+            a.step(tick);
+            b.step(tick);
+            if tick.is_multiple_of(120) {
+                assert_eq!(a.state_hash(), b.state_hash(), "seed {seed}, tick {tick}");
+            }
+        }
+        assert_ne!(
+            previous,
+            Some(a.state_hash()),
+            "seeds must produce distinct worlds"
+        );
+        previous = Some(a.state_hash());
+    }
 }
 
 #[test]

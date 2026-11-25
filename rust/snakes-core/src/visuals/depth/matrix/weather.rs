@@ -72,6 +72,7 @@ pub struct Weather {
     serial: u64,
     next: [f32; 6],
     pub moments: [Moment; 6],
+    pub rhythm: super::lightning::Rhythm,
     pub counts: [u32; 6],
     pub wind: f32,
     phase: f32,
@@ -93,6 +94,7 @@ impl Weather {
             serial: 0,
             next: [0.; 6],
             moments: [Moment::default(); 6],
+            rhythm: Default::default(),
             counts: [0; 6],
             wind: 0.,
             phase: 0.,
@@ -140,8 +142,7 @@ impl Weather {
     fn begin(&mut self, i: usize, t: f32, x: f32, p: &Params, forced: bool) {
         if (p.weather == 0 && matches!(i, DOWNPOUR | LIGHTNING | LULL))
             || (i == GUST && p.wind == 0.)
-            || (i == LIGHTNING
-                && (!p.lightning || (!forced && self.era != 3) || self.moments[i].age(t) < 10.))
+            || (i == LIGHTNING && (!p.lightning || (!forced && self.era != 3)))
         {
             return;
         }
@@ -165,6 +166,9 @@ impl Weather {
             x,
             key,
         };
+        if i == LIGHTNING {
+            self.rhythm = super::lightning::Rhythm::for_desk(key, x, self.width);
+        }
         self.counts[i] += 1;
         if i == LULL {
             self.last_lull_drop = false;

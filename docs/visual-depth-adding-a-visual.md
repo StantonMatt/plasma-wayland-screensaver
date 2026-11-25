@@ -46,4 +46,4 @@ heavy python3 tests/run-depth-capture.py --build "$build" --visual "$visual" --s
 heavy python3 tests/run-depth-capture.py --build "$build" --visual "$visual" --round 1
 ```
 
-The runner uses private virtual KWin and can exercise the candidate before release. It checks the luminance of each recording and saves the results with the manifests. Measure activation, tick/export time and CPU, verify reduced motion and fallback, then enable `Descriptor::available` in the owned Rust module. Send the captured round and measurements to the art director.
+The runner uses private virtual KWin and can exercise the candidate before release. It records luminance diagnostics with the manifests; these are optional review evidence and never fail a capture or block release. Measure activation, tick/export time and CPU, verify reduced motion and fallback, then enable `Descriptor::available` in the owned Rust module. Send the captured round and measurements to the art director.

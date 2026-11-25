@@ -6,9 +6,8 @@ use super::common::{
 };
 use super::world::Event;
 
-pub(super) const EVENT_ONSET_WALL_SECONDS: f64 = 1.25;
-pub(super) const GUST_FORCE_PIXELS_PER_SECOND: f64 = 150.;
-pub(super) const MAELSTROM_MOTOR_PIXELS_PER_SECOND: f64 = 350.;
+// Release easing coordinates the Maelstrom head and tail.
+const RELEASE_WALL_SECONDS: f64 = 1.25;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum Kind {
@@ -27,11 +26,11 @@ pub(super) struct Moment {
     event_pace: f64,
 }
 impl Moment {
-    fn onset_span(self, nominal: f64) -> f64 {
-        nominal.max(EVENT_ONSET_WALL_SECONDS * self.event_pace)
+    fn release_span(self, nominal: f64) -> f64 {
+        nominal.max(RELEASE_WALL_SECONDS * self.event_pace)
     }
     pub fn weight(self) -> f64 {
-        smooth(self.age / self.onset_span(5.))
+        smooth(self.age / 5.)
             * smooth((self.duration - self.age) / 6.)
             * self.strength
             * (1. - self.release_weight())
@@ -41,16 +40,16 @@ impl Moment {
             return 0.;
         }
         let lag = self.age - (pos.x - left) / 1200.;
-        let rise = self.onset_span(0.75);
-        // Preserve the full-strength hold and fall while slowing the front's
-        // arrival in wall time, including on accelerated event clocks.
-        smooth(lag / rise) * smooth((rise + 5.25 - lag) / 3.) * self.strength
+        // Spread the travelling front slightly so dense silk keeps its bends
+        // while picking up speed. Leave the peak carry and release unchanged.
+        let rise = 0.8;
+        smooth(lag / rise) * smooth((6. - lag) / 3.) * self.strength
     }
     pub fn gust_steering(self) -> f64 {
         if self.kind != Kind::Gust {
             return 0.;
         }
-        let span = self.onset_span(0.75);
+        let span = 0.75;
         smooth(self.age / span) * smooth((self.duration - self.age) / span) * self.strength
     }
     pub fn orbit_radius(self, layer: usize) -> f64 {
@@ -68,7 +67,7 @@ impl Moment {
         }
     }
     pub fn unwinding(self) -> f64 {
-        let span = self.onset_span(2.);
+        let span = self.release_span(2.);
         // Establish tail tension before the head's launch ramp. A bounded
         // body needs preparation time instead of an instantaneous projection.
         smooth((4.5 + span - (self.duration - self.age)) / span)
@@ -77,7 +76,7 @@ impl Moment {
         if self.kind != Kind::Maelstrom {
             return 0.;
         }
-        let span = (EVENT_ONSET_WALL_SECONDS * self.event_pace).max(1e-6);
+        let span = (RELEASE_WALL_SECONDS * self.event_pace).max(1e-6);
         // Finish handing orbital force and facing back to free silk before
         // the captured flag changes, instead of dropping them in one tick.
         smooth((span + 2.5 - (self.duration - self.age)) / span)
@@ -187,9 +186,7 @@ impl Weather {
             let (kind, duration, next) = match i {
                 0 => (
                     Kind::Gust,
-                    layout.bounds.width / 1200.
-                        + 0.75_f64.max(EVENT_ONSET_WALL_SECONDS * event_pace)
-                        + 5.25,
+                    layout.bounds.width / 1200. + 6.,
                     range(rng, 180., 360.),
                 ),
                 1 => (

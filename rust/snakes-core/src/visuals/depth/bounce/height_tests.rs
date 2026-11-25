@@ -577,12 +577,15 @@ fn crowd_limit_preserves_vertical_launch_energy() {
     assert_eq!(b.v, v(200., -1200.));
     b.floating = true;
     b.limit_motion(3168., V::default());
-    assert!((b.v.len() - 200.).abs() < 1e-9);
+    assert_eq!(b.v, v(200., -1200.));
     b.floating = false;
     b.high_arc = false;
     b.v = v(500., -1200.);
     b.limit_motion(3168., v(0., 1.));
-    assert!((b.v.len() - 200.).abs() < 1e-9);
+    assert_eq!(b.v, v(500., -1200.));
+    b.v = v(5000., -12000.);
+    b.limit_motion(3168., v(0., 1.));
+    assert!((b.v.len() - 3168.).abs() < 1e-9);
 }
 
 #[test]
@@ -726,9 +729,9 @@ fn upward_gravity_spends_charge_at_ceiling_contacts() {
 }
 
 #[test]
-fn crowded_profile_uses_the_measured_pace_for_each_seed() {
+fn crowded_profile_preserves_a_brisk_monotonic_clock() {
     for seed in [7, 19, 31] {
-        for (speed, expected) in [(1., 0.6), (2., 0.8), (3., CROWDED_PACE_AT_300)] {
+        for (speed, expected) in [(1., 0.6), (2., 0.8), (3., 1.)] {
             let mut config = profile_input("G", seed, 12);
             config.speed = speed;
             assert_eq!(BounceWorld::new(config).pace, expected);
@@ -898,7 +901,7 @@ fn art_contact_interrupted_loft_retains_charge_for_retry() {
 }
 
 #[test]
-fn art_actual_fitted_bodies_control_pace() {
+fn actual_fitted_bodies_control_pace() {
     for seed in [7, 19, 31] {
         for scale in [1., 1.5, 2.] {
             let mut config = profile_input("G", seed, 12);
@@ -909,11 +912,7 @@ fn art_actual_fitted_bodies_control_pace() {
         let mut spanning = profile_input("default", seed, 12);
         spanning.scale = 2.;
         spanning.speed = 3.;
-        assert_eq!(
-            BounceWorld::new(spanning).pace,
-            OUTPUT_SWEEP_PACE_AT_300,
-            "spanning seed={seed}"
-        );
+        assert_eq!(BounceWorld::new(spanning).pace, 1., "spanning seed={seed}");
     }
     let default = BounceWorld::new(profile_input("default", 7, 12));
     assert_eq!(default.pace, 1., "approved default Spanning clock");
@@ -972,7 +971,7 @@ fn spanning_profile_height_short() {
 }
 
 #[test]
-fn subnormal_sweep_budget_preserves_a_useful_speed_slider() {
+fn crowded_pace_ceiling_preserves_a_useful_speed_slider() {
     for cap in [0.6, 0.8, 0.9, 1., 1.8, 3.] {
         let mut prior = 0.;
         for percent in 1..=300 {
@@ -1036,7 +1035,7 @@ fn spanning_dense_acceptance_matrix() {
 }
 
 #[test]
-fn fitted_spanning_cast_uses_the_calibrated_monotonic_clock() {
+fn fitted_spanning_cast_has_a_monotonic_clock() {
     for seed in [7, 19, 31] {
         let mut prior = 0.;
         for percent in 1..=300 {
@@ -1048,10 +1047,10 @@ fn fitted_spanning_cast_uses_the_calibrated_monotonic_clock() {
             if percent == 100 {
                 assert_eq!(w.pace, 0.6);
             } else if percent == 200 {
-                assert!((w.pace - (0.6 + OUTPUT_SWEEP_PACE_AT_300) / 2.).abs() < 1e-12);
+                assert!((w.pace - (0.6 + 1.) / 2.).abs() < 1e-12);
             }
         }
-        assert_eq!(prior, OUTPUT_SWEEP_PACE_AT_300);
+        assert_eq!(prior, 1.);
     }
 }
 
@@ -1087,6 +1086,159 @@ fn spanning_fast_clock_is_continuous_across_fitted_casts() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn fitted_spanning_cast_does_not_double_substeps_from_area_roundoff() {
+    for seed in 1..=64 {
+        let w = BounceWorld::new(profile_input("SPAN", seed, 12));
+        assert_eq!(w.pace, 1., "seed={seed}");
+        assert_eq!(w.substeps, 1, "seed={seed}");
+    }
+}
+
+#[test]
+fn owner_high_arcs_keep_lateral_travel_and_leave_side_walls() {
+    #[derive(Default)]
+    struct Samples {
+        sideways: f64,
+        vertical: f64,
+        speeds: Vec<f64>,
+        mostly_vertical: usize,
+        moving: usize,
+        wall_ticks: Vec<Vec<u32>>,
+        longest_wall_ticks: u32,
+    }
+    let mut config = profile_input("SPAN", 7, 12);
+    config.trails = 1.;
+    config.parameters.push(super::super::schema::Value {
+        id: 6,
+        kind: 1,
+        payload: 0,
+    });
+    let mut w = BounceWorld::new(config);
+    assert_eq!(w.pace, 1., "Preserve the approved owner clock");
+    let mut prior: Vec<_> = w.balls.iter().map(|b| b.p).collect();
+    let mut samples = [Samples::default(), Samples::default()];
+    for sample in &mut samples {
+        sample.wall_ticks = w
+            .balls
+            .iter()
+            .map(|b| vec![0; w.rooms[b.room].walls.len()])
+            .collect();
+    }
+    for tick in 1..=120 * 1860 {
+        w.step(tick);
+        if tick % 2 != 0 {
+            continue;
+        }
+        let window = if (120 * 600..120 * 660).contains(&tick) {
+            Some(0)
+        } else if (120 * 1800..120 * 1860).contains(&tick) {
+            Some(1)
+        } else {
+            None
+        };
+        for (i, b) in w.balls.iter().enumerate() {
+            if let Some(window) = window {
+                let sample = &mut samples[window];
+                let delta = b.p - prior[i];
+                sample.sideways += delta.x.abs();
+                sample.vertical += delta.y.abs();
+                if delta.len() * 60. > 30. {
+                    sample.speeds.push(delta.x.abs() * 60.);
+                    sample.moving += 1;
+                    sample.mostly_vertical += usize::from(delta.x.abs() < 0.15 * delta.y.abs());
+                }
+                for (wall_index, wall) in w.rooms[b.room].walls.iter().enumerate() {
+                    let ticks = &mut sample.wall_ticks[i][wall_index];
+                    if wall.inward.x.abs() > 0.5 && (b.p - wall.nearest(b.p)).len() <= 2. * b.r {
+                        *ticks += 1;
+                        sample.longest_wall_ticks = sample.longest_wall_ticks.max(*ticks);
+                    } else {
+                        *ticks = 0;
+                    }
+                }
+            }
+            prior[i] = b.p;
+        }
+    }
+    let mut results = Vec::new();
+    for (window, mut sample) in samples.into_iter().enumerate() {
+        sample.speeds.sort_by(f64::total_cmp);
+        let ratio = sample.sideways / sample.vertical;
+        let median = sample.speeds[sample.speeds.len() / 2];
+        let vertical = sample.mostly_vertical as f64 / sample.moving as f64;
+        let wall_seconds = f64::from(sample.longest_wall_ticks) / 60.;
+        println!(
+            "LATERAL_OWNER start={} ratio={ratio:.6} median_vx={median:.3} mostly_vertical={vertical:.6} longest_side_wall_seconds={wall_seconds:.3}",
+            if window == 0 { 600 } else { 1800 }
+        );
+        results.push((window, ratio, median, vertical, wall_seconds));
+    }
+    for (window, ratio, median, vertical, wall_seconds) in results {
+        assert!(ratio >= 0.36, "window={window}: sideways/vertical={ratio}");
+        assert!(
+            median >= 100.,
+            "window={window}: median sideways speed={median}"
+        );
+        assert!(
+            median <= 170.,
+            "window={window}: sideways drift became too fast: {median}"
+        );
+        assert!(
+            vertical <= 0.42,
+            "window={window}: mostly vertical fraction={vertical}"
+        );
+        assert!(
+            wall_seconds <= 10.5,
+            "window={window}: side-wall residence={wall_seconds}s"
+        );
+    }
+}
+
+#[test]
+fn high_arc_contact_launches_leave_walls_without_changing_vertical_draws() {
+    for right_wall in [false, true] {
+        let mut w = BounceWorld::new(profile_input("SPAN", 7, 12));
+        let r = w.balls[0].r;
+        w.balls[0].p = v(if right_wall { 7920. - 1.1 * r } else { 1.1 * r }, 800.);
+        w.balls[0].v = V::default();
+        w.balls[0].spin = 0.;
+        w.update_flow_limits();
+        let gravity = v(0., w.base_g);
+        let height = 600.;
+        let mut expected_rng = Pcg32::new(19, 31);
+        let vertical_speed =
+            (2. * gravity.len() * height * between(&mut expected_rng, 1.10, 1.30)).sqrt();
+        let _ = between(&mut expected_rng, -0.12, 0.12);
+        let expected_spin = between(&mut expected_rng, -1.2, 1.2);
+        let mut rng = Pcg32::new(19, 31);
+        let ball = &mut w.balls[0];
+        ball.hop(gravity, height, &mut rng);
+        assert_eq!(
+            -ball.v.y, vertical_speed,
+            "Keep the approved vertical launch"
+        );
+        assert_eq!(ball.spin, expected_spin, "Keep the approved spin draw");
+        assert_eq!(
+            rng.unit(),
+            expected_rng.unit(),
+            "Do not consume extra random draws"
+        );
+        assert_eq!(ball.v.x.is_sign_negative(), right_wall);
+        let ratio = ball.v.x.abs() / vertical_speed;
+        assert!(
+            (0.2000..=0.2200).contains(&ratio),
+            "lateral launch ratio={ratio}"
+        );
+        let launched_vx = ball.v.x;
+        ball.v.y = 0.;
+        ball.flow_limit = 1.;
+        ball.limit_motion(3168., v(0., 1.));
+        assert_eq!(ball.v.x, launched_vx, "Retain sideways travel at the apex");
+        assert_eq!(ball.v.y, 0., "Never add vertical energy in free flight");
     }
 }
 

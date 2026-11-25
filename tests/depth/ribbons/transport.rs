@@ -66,8 +66,6 @@ fn natural_still_cannot_whip_strand_306_node_65() {
             desired: p(117.62776739659193, 52.374905707086995),
             curl: -0.008232492317599824,
             gust: 0.,
-            gust_force_limit: f64::INFINITY,
-            maelstrom_motor_limit: f64::INFINITY,
             launch: 0.,
             gust_front: None,
             turbulence: 0.4,
@@ -160,8 +158,6 @@ fn released_head_keeps_radius_after_timer_ends() {
                 desired: p(0., 1000.),
                 curl: 0.,
                 gust: 0.,
-                gust_force_limit: f64::INFINITY,
-                maelstrom_motor_limit: f64::INFINITY,
                 launch: 0.,
                 gust_front: None,
                 turbulence: 0.4,
@@ -215,7 +211,7 @@ fn straight_release_fixture() -> Ribbon {
     r.pressure.fill(p(0., 0.));
     r
 }
-fn turn_release(r: &mut Ribbon, limit: f64) {
+fn turn_release(r: &mut Ribbon) {
     let bounds = Rect {
         x: 0.,
         y: 0.,
@@ -238,8 +234,6 @@ fn turn_release(r: &mut Ribbon, limit: f64) {
             desired: p(0., 1000.),
             curl: 0.,
             gust: 0.,
-            gust_force_limit: f64::INFINITY,
-            maelstrom_motor_limit: limit,
             launch: 1.,
             gust_front: None,
             turbulence: 0.4,
@@ -257,37 +251,29 @@ fn turn_release(r: &mut Ribbon, limit: f64) {
     );
 }
 #[test]
-fn capped_maelstrom_head_turn_fits_the_tail_motion_budget() {
-    let mut r = straight_release_fixture();
-    let before = r.nodes;
-    let velocity = r.previous_velocity;
-    let lever = before[..r.count]
-        .iter()
-        .map(|n| (n.pos - before[0].pos).length())
-        .fold(0_f64, f64::max);
-    turn_release(&mut r, 350. / 3.);
-    let head_step = r.head() - before[0].pos;
-    let angle = turn(velocity, head_step).abs();
-    let turn_step = 2. * lever * (0.5 * angle).sin();
-    println!(
-        "Capped Maelstrom turn: lever={lever:.6},headStep={:.9},rigidTurnStep={turn_step:.9},turnReserve={:.9}",
-        head_step.length(),
-        2. * head_step.length()
-    );
-    assert!(
-        turn_step <= 2. * head_step.length() + 1e-8,
-        "head asks the extended tail to exceed its turn drive"
-    );
-}
-#[test]
-fn uncapped_maelstrom_retains_the_default_pose() {
-    let mut budgeted = straight_release_fixture();
-    let mut reference = straight_release_fixture();
-    turn_release(&mut budgeted, 350.);
-    turn_release(&mut reference, f64::INFINITY);
-    assert_eq!(budgeted.speed.to_bits(), reference.speed.to_bits());
-    for (a, b) in budgeted.nodes[..budgeted.count].iter().zip(reference.nodes) {
-        assert_eq!(a.pos.x.to_bits(), b.pos.x.to_bits());
-        assert_eq!(a.pos.y.to_bits(), b.pos.y.to_bits());
+fn maelstrom_head_turn_fits_the_tail_motion_budget_without_a_motor_cap() {
+    for speed in [116., 230., 315.] {
+        let mut r = straight_release_fixture();
+        r.speed = speed;
+        r.previous_velocity = p(speed, 0.);
+        let before = r.nodes;
+        let velocity = r.previous_velocity;
+        let lever = before[..r.count]
+            .iter()
+            .map(|n| (n.pos - before[0].pos).length())
+            .fold(0_f64, f64::max);
+        turn_release(&mut r);
+        let head_step = r.head() - before[0].pos;
+        let angle = turn(velocity, head_step).abs();
+        let turn_step = 2. * lever * (0.5 * angle).sin();
+        println!(
+            "Maelstrom turn: lever={lever:.6},headStep={:.9},rigidTurnStep={turn_step:.9},turnReserve={:.9}",
+            head_step.length(),
+            2. * head_step.length()
+        );
+        assert!(
+            turn_step <= 2. * head_step.length() + 1e-8,
+            "head asks the extended tail to exceed its turn drive"
+        );
     }
 }

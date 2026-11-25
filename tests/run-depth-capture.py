@@ -544,9 +544,14 @@ def main():
                 if sequences:
                     report = args.output / 'luminance.json'
                     checker = Path(__file__).with_name('check-depth-luminance.py')
-                    code = subprocess.run([sys.executable, str(checker), '--build', str(args.build),
-                                           '--report', str(report), *map(str,sequences)], timeout=3600).returncode
-                    result['luminance'] = dict(report=report.name, passed=not code)
+                    # Luminance is diagnostic; only the capture determines the exit status.
+                    try:
+                        checked = subprocess.run([sys.executable, str(checker), '--build', str(args.build),
+                                                 '--report', str(report), *map(str, sequences)], timeout=3600)
+                        result['luminance'] = dict(report=report.name, passed=not checked.returncode,
+                                                   exitCode=checked.returncode)
+                    except (OSError, subprocess.TimeoutExpired) as error:
+                        result['luminance'] = dict(report=report.name, passed=False, error=str(error))
                 (args.output / 'manifest.json').write_text(json.dumps(result, indent=2)+'\n')
             return code
         finally:

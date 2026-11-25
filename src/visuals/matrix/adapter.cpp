@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "alphabet.h"
+#include "bolts.h"
 #include "livingvisualitem.h"
 #include "material.h"
 #include "matrixmaterial.h"
@@ -12,6 +13,7 @@
 #include <array>
 #include <bit>
 #include <cstring>
+#include <span>
 
 namespace
 {
@@ -50,7 +52,6 @@ public:
 class HeadsNode final : public QSGGeometryNode
 {
     VisualDataTexture m_texture;
-    std::vector<vd_rain_head> m_heads;
     std::array<QByteArray, 2> m_uploads;
     int m_uploadSlot = 0;
     size_t m_capacity = 0, m_count = 0;
@@ -59,7 +60,6 @@ class HeadsNode final : public QSGGeometryNode
 
 public:
     explicit HeadsNode(QSGTexture* atlas)
-        : m_heads(256)
     {
         setGeometry(new QSGGeometry(QSGGeometry::defaultAttributes_TexturedPoint2D(), 0));
         geometry()->setDrawingMode(QSGGeometry::DrawTriangles);
@@ -71,29 +71,24 @@ public:
         setMaterial(m);
         setFlag(OwnsMaterial);
     }
-    void sync(const VisualSampleLease& lease, const vd_rain_still* still, uint64_t revision, const vd_rain_uniforms& u)
+    void sync(std::span<const vd_rain_head> heads, uint64_t revision, const vd_rain_uniforms& u)
     {
         auto* m = static_cast<RainMaterial*>(material());
         m->uniforms = u;
         if (revision != m_revision)
         {
             m_revision = revision;
-            auto n = visuals_rain_heads(lease.get(), still, m_heads.data(), m_heads.size());
-            if (n > m_heads.size())
-            {
-                m_heads.resize(n);
-                visuals_rain_heads(lease.get(), still, m_heads.data(), n);
-            }
+            const auto n = heads.size();
             const QSizeF size(u.viewport[2], u.viewport[3]);
             const auto capacity = std::max(m_capacity, std::bit_ceil(std::max(size_t(1), n)));
-            if (capacity != m_capacity || size != m_size)
+            if (capacity != m_capacity || size != m_size || (m_count == 0) != (n == 0))
             {
                 m_capacity = capacity;
                 m_size = size;
-                geometry()->allocate(int(capacity * 6));
+                geometry()->allocate(n ? int(capacity * 6) : 0);
                 constexpr int corners[][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 }, { 0, 1 }, { 1, 0 }, { 1, 1 } };
                 auto* vertices = geometry()->vertexDataAsTexturedPoint2D();
-                for (size_t i = 0; i < capacity; ++i)
+                for (size_t i = 0; n && i < capacity; ++i)
                     for (const auto& c : corners)
                         (vertices++)->set(float(size.width()) * c[0], float(size.height()) * c[1], float(i), 0.f);
                 geometry()->markVertexDataDirty();
@@ -103,7 +98,8 @@ public:
             auto& bytes = m_uploads[m_uploadSlot];
             m_uploadSlot = 1 - m_uploadSlot;
             bytes.resize(qsizetype(std::max(size_t(1), n) * sizeof(vd_rain_head)));
-            std::memcpy(bytes.data(), m_heads.data(), size_t(bytes.size()));
+            if (n)
+                std::memcpy(bytes.data(), heads.data(), n * sizeof(vd_rain_head));
             m_texture.setData(bytes, { 3, int(capacity) }, { 3, int(std::max(size_t(1), n)) });
         }
         m->uniforms.grid[3] = float(m_count);
@@ -115,12 +111,18 @@ class FieldGroup final : public QSGOpacityNode
 {
     std::array<FieldNode*, 3> m_fields {};
     HeadsNode* m_heads;
+    RainBolts* m_bolts;
+    std::vector<vd_rain_head> m_records = std::vector<vd_rain_head>(256);
+    uint64_t m_revision = UINT64_MAX;
+    size_t m_headCount = 0, m_recordCount = 0;
 
 public:
-    explicit FieldGroup(QSGTexture* atlas)
+    explicit FieldGroup(QQuickWindow* window, QSGTexture* atlas)
         : m_heads(new HeadsNode(atlas))
+        , m_bolts(new RainBolts(window, atlas))
     {
         appendChildNode(m_heads);
+        appendChildNode(m_bolts);
     }
     void sync(QSGTexture* atlas, const VisualSampleLease& lease, const vd_rain_still* still, uint64_t revision)
     {
@@ -135,8 +137,24 @@ public:
                 insertChildNodeBefore(m_fields[i], m_heads);
             }
             m_fields[i]->sync(view);
-            if (i == 1)
-                m_heads->sync(lease, still, revision, view.uniforms);
+            if (i == 1) {
+                if (m_revision != revision) {
+                    m_revision = revision;
+                    m_recordCount = visuals_rain_heads(lease.get(), still, m_records.data(), m_records.size());
+                    if (m_recordCount > m_records.size()) {
+                        m_records.resize(m_recordCount);
+                        visuals_rain_heads(lease.get(), still, m_records.data(), m_recordCount);
+                    }
+                    // Rust appends cached bolt channels after the rain heads.
+                    // Share one export and preserve rain compositing order.
+                    m_headCount = m_recordCount;
+                    while (m_headCount && m_records[m_headCount - 1].light[1] == 3.f)
+                        --m_headCount;
+                }
+                const std::span<const vd_rain_head> records(m_records.data(), m_recordCount);
+                m_heads->sync(records.first(m_headCount), revision, view.uniforms);
+                m_bolts->sync(records.subspan(m_headCount), revision, view.uniforms);
+            }
         }
     }
 };
@@ -147,11 +165,17 @@ struct RainNode final : QSGNode
     FieldGroup *current, *incoming = nullptr;
     using Still = std::unique_ptr<vd_rain_still, decltype(&visuals_rain_release_still)>;
     Still picture { nullptr, visuals_rain_release_still }, next { nullptr, visuals_rain_release_still };
-    explicit RainNode(const QImage& image)
+    explicit RainNode(QQuickWindow* window, const QImage& image)
         : atlas(image)
-        , current(new FieldGroup(&atlas))
+        , current(new FieldGroup(window, &atlas))
     {
         appendChildNode(current);
+    }
+    ~RainNode() override
+    {
+        // Private bolt bindings must be gone before their atlas member.
+        delete current;
+        delete incoming;
     }
 };
 
@@ -186,7 +210,7 @@ protected:
                 Q_EMIT gpuUnavailable();
                 return nullptr;
             }
-            root = new RainNode(atlas);
+            root = new RainNode(window(), atlas);
             root->layout = info.generations.layout;
             qInfo("Visuals Matrix: living phosphor field, paged SDF atlas and GPU heads");
         }
@@ -213,7 +237,7 @@ protected:
             root->next.reset(visuals_rain_still(lease.get(), epoch));
             if (root->incoming)
                 delete root->incoming;
-            root->incoming = new FieldGroup(&root->atlas);
+            root->incoming = new FieldGroup(window(), &root->atlas);
             root->appendChildNode(root->incoming);
             root->incoming->sync(&root->atlas, lease, root->next.get(), epoch);
             root->epoch = epoch;

@@ -1,8 +1,5 @@
 use super::{arena::*, common::rng::Pcg32};
-use std::{
-    collections::VecDeque,
-    f64::consts::{PI, TAU},
-};
+use std::f64::consts::{PI, TAU};
 
 pub(super) const KNOTS: usize = 32;
 pub(super) fn between(rng: &mut Pcg32, lo: f64, hi: f64) -> f64 {
@@ -151,45 +148,6 @@ pub(super) struct Spill {
     pub point: V,
     pub strength: f64,
 }
-/// Bright contacts in one physical field can share a single attack. Leave a
-/// quiet interval before lighting that region again, even if the next impact
-/// belongs to a different ball. The physics and narrow contact marks continue.
-pub(super) struct ImpactField {
-    pub extent: V,
-    pulses: VecDeque<(f64, V, f64)>,
-}
-impl ImpactField {
-    pub fn new(room: &Room) -> Self {
-        let extent = room.outputs.iter().fold(V::default(), |largest, output| {
-            v(
-                largest.x.max(output.width * 341. / 1024.),
-                largest.y.max(output.height / 3.),
-            )
-        });
-        Self {
-            extent,
-            pulses: VecDeque::new(),
-        }
-    }
-    pub fn admit(&mut self, time: f64, p: V, r: f64) -> bool {
-        while self
-            .pulses
-            .front()
-            .is_some_and(|pulse| time - pulse.0 >= 0.60)
-        {
-            self.pulses.pop_front();
-        }
-        if self.pulses.iter().any(|&(last, center, radius)| {
-            time - last > 1. / 30.
-                && (p.x - center.x).abs() <= self.extent.x + r + radius
-                && (p.y - center.y).abs() <= self.extent.y + r + radius
-        }) {
-            return false;
-        }
-        self.pulses.push_back((time, p, r));
-        true
-    }
-}
 #[derive(Clone)]
 pub(super) struct Ball {
     pub room: usize,
@@ -214,6 +172,9 @@ pub(super) struct Ball {
     pub near_ball: bool,
     pub contact: bool,
     pub flow_limit: f64,
+    pub launch_direction: f64,
+    pub near_side_wall: bool,
+    pub lateral_launch_budget: f64,
     pub high_arc: bool,
     pub below_mid_time: f64,
     pub loft_due: bool,
@@ -227,7 +188,6 @@ pub(super) struct Ball {
     pub pending_light: f64,
     pub heavy: bool,
     pub landed: bool,
-    refractory: f64,
     pub impact: Option<Spill>,
     pub supported: bool,
     pub floating: bool,
@@ -273,6 +233,9 @@ impl Ball {
             near_ball: false,
             contact: false,
             flow_limit: f64::INFINITY,
+            launch_direction: 0.,
+            near_side_wall: false,
+            lateral_launch_budget: 0.,
             high_arc: false,
             below_mid_time: 0.,
             loft_due: false,
@@ -286,7 +249,6 @@ impl Ball {
             pending_light: 0.,
             heavy: false,
             landed: false,
-            refractory: 0.,
             impact: None,
             supported: false,
             floating: false,
@@ -311,12 +273,12 @@ impl Ball {
             // bounce. A norm clamp here was cutting tall launches back down
             // to a few percent of the room height on every integration step.
             let velocity = self.v.limit(cap);
-            self.v = v(
-                velocity.x.clamp(-self.flow_limit, self.flow_limit),
-                velocity.y,
-            );
+            // Retain the launch allowance through the apex. Tying it to the
+            // current vertical speed erases sideways travel on every ascent.
+            let lateral_limit = self.flow_limit.max(self.lateral_launch_budget);
+            self.v = v(velocity.x.clamp(-lateral_limit, lateral_limit), velocity.y);
         } else {
-            self.v = self.v.limit(cap.min(self.flow_limit));
+            self.v = self.v.limit(cap);
         }
     }
     pub fn set_material(&mut self, material: Material) {
@@ -349,20 +311,17 @@ impl Ball {
         self.knot_impulse = self.knot_impulse.max(amount);
         self.pending_light = self.pending_light.max(amount);
     }
-    pub fn emit_contact_light(&mut self, field: &mut ImpactField, time: f64) {
+    pub fn emit_contact_light(&mut self) {
         let amount = std::mem::take(&mut self.pending_light);
-        if amount > 0. && self.refractory <= 0. && field.admit(time, self.p, self.r) {
+        if amount > 0. {
             self.start_impact_light(amount);
         }
     }
     pub fn start_impact_light(&mut self, amount: f64) {
-        if self.refractory <= 0. {
-            self.body_from = self.body_light();
-            self.light = self.light.max(amount);
-            self.flash = amount;
-            self.flash_age = 0.;
-            self.refractory = 0.44;
-        }
+        self.body_from = self.body_light();
+        self.light = self.light.max(amount);
+        self.flash = amount;
+        self.flash_age = 0.;
     }
     pub fn wall_impulse(&mut self, n: V, wall: Wall, elasticity: f64, height: f64) {
         self.contact = true;
@@ -418,7 +377,6 @@ impl Ball {
         }
     }
     pub fn relax_light(&mut self, wall_dt: f64, decay: Relaxation) {
-        self.refractory -= wall_dt;
         if self.sleeping {
             let charge = (self.charge / self.period).min(1.);
             self.phase += TAU * wall_dt * (0.5 + 1.5 * charge);
@@ -458,6 +416,7 @@ impl Ball {
     }
     pub fn hop(&mut self, g: V, height: f64, rng: &mut Pcg32) {
         let gravity = g.len();
+        self.lateral_launch_budget = 0.;
         #[cfg(test)]
         {
             self.hop_serial += 1;
@@ -491,7 +450,22 @@ impl Ball {
             };
             let speed = (2. * gravity * height.max(self.r) * between(rng, low, high)).sqrt();
             let side = if self.high_arc { 0.12 } else { 0.37 };
-            self.v = up * speed + up.perp() * between(rng, -side, side) * speed;
+            let lateral = between(rng, -side, side);
+            let lateral =
+                if self.high_arc && (self.near_side_wall || self.flow_limit < 0.4000 * speed) {
+                    let direction = if self.launch_direction == 0. {
+                        lateral.signum()
+                    } else {
+                        self.launch_direction * up.perp().x.signum()
+                    };
+                    direction * (0.2000 + 0.02 * lateral.abs() / side)
+                } else {
+                    lateral
+                };
+            if self.high_arc {
+                self.lateral_launch_budget = lateral.abs() * speed;
+            }
+            self.v = up * speed + up.perp() * lateral * speed;
             self.axis = up;
         } else {
             let angle = between(rng, 0., TAU);

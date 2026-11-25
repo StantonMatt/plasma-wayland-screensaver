@@ -135,7 +135,7 @@ fn mirrored_columns_share_spawn_history_away_from_local_floor() {
     }
 }
 #[test]
-fn forced_bolts_obey_switches_and_refractory() {
+fn forced_bolts_obey_switches_without_rationing_strikes() {
     let mut i = input(7, true);
     for light in [false, true] {
         i.parameters = vec![Value {
@@ -150,7 +150,7 @@ fn forced_bolts_obey_switches_and_refractory() {
         for t in 1..=100 {
             w.step(t);
         }
-        assert_eq!(w.weather.counts[LIGHTNING], light as u32);
+        assert_eq!(w.weather.counts[LIGHTNING], if light { 6 } else { 0 });
         let l = &w.layers[1];
         assert_eq!(l.cells.iter().any(|c| c.style & 16 != 0), light);
     }

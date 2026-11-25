@@ -6,10 +6,13 @@ pub struct Edge {
     pub born: f32,
     pub end: f32,
     pub cut_at: [Point; 2],
+    pub cut_born: [f32; 2],
     pub wave: f32,
     pub reverse: bool,
     pub figure: usize,
+    pub soft: bool,
 }
+pub(super) const DISSOLVE_SECONDS: f32 = 1.35;
 impl Edge {
     pub fn live(&self) -> bool {
         self.end == f32::INFINITY
@@ -55,6 +58,7 @@ pub struct Graph {
     index: Grid,
     degree: Vec<u8>,
     last: Vec<f32>,
+    shock_until: Vec<f32>,
     parent: Vec<usize>,
     members: Vec<u16>,
     adjacency: Vec<[usize; 5]>,
@@ -85,6 +89,7 @@ impl Graph {
             index: Grid::new(b, reach * 1.35),
             degree: vec![0; n],
             last: vec![-1000.; n],
+            shock_until: vec![f32::NEG_INFINITY; n],
             parent: (0..n).collect(),
             members: vec![1; n],
             adjacency: vec![[0; 5]; n],
@@ -277,9 +282,36 @@ impl Graph {
         if e.live() {
             e.end = t;
             e.cut_at = [stars[e.a].p, stars[e.b].p];
+            e.cut_born = [stars[e.a].born, stars[e.b].born];
             self.last[e.a] = t;
             self.last[e.b] = t;
             self.changes += 1
+        }
+    }
+    // Detach ink at the blast, leaving each complete stroke visible until
+    // the expanding front reaches it. Birth identities protect dead endpoints.
+    pub fn shock(&mut self, center: Point, start: f32, time: f32, stars: &[Star]) {
+        for edge in &mut self.edges {
+            if !edge.live() {
+                continue;
+            }
+            let (a, b) = (stars[edge.a].p, stars[edge.b].p);
+            let d = b - a;
+            let along = ((center - a).dot(d) / d.len2().max(0.001)).clamp(0., 1.);
+            let distance = (a + d * along - center).len();
+            if distance > 320. {
+                continue;
+            }
+            let arrival = start + 4. + 3. * (1. - (1. - distance / 320.).sqrt());
+            edge.end = arrival.max(time);
+            edge.cut_at = [a, b];
+            edge.cut_born = [stars[edge.a].born, stars[edge.b].born];
+            edge.soft = true;
+            for node in [edge.a, edge.b] {
+                self.last[node] = edge.end + DISSOLVE_SECONDS;
+                self.shock_until[node] = edge.end + 12.;
+            }
+            self.changes += 1;
         }
     }
     // Capture cue: open one outer stroke of a settled chart. Extension
@@ -317,7 +349,18 @@ impl Graph {
         if self.cap == 0 {
             return;
         }
-        self.edges.retain(|e| time - e.end < 0.8);
+        for e in &mut self.edges {
+            if !e.live() {
+                // Retiring ink follows surviving stars throughout the fade.
+                // Keep the last matching position when a star dies or is reused.
+                for (slot, node) in [e.a, e.b].into_iter().enumerate() {
+                    if s[node].alive && s[node].born == e.cut_born[slot] {
+                        e.cut_at[slot] = s[node].p;
+                    }
+                }
+            }
+        }
+        self.edges.retain(|e| time - e.end < DISSOLVE_SECONDS);
         // Motion can split one mature figure into two. When the atlas is
         // full, let the smaller fragments unwind before drawing fresh ink.
         let budget = (5.6 * self.area).round().max(1.) as usize;
@@ -365,8 +408,9 @@ impl Graph {
                 continue;
             }
             let length = (s[e.a].p - s[e.b].p).len2();
-            if !s[e.a].linkable()
-                || !s[e.b].linkable()
+            let keeps_ink = |star: &Star| star.linkable() || (star.alive && star.nova);
+            if !keeps_ink(&s[e.a])
+                || !keeps_ink(&s[e.b])
                 || length > (self.reach * 1.3).powi(2)
                 || length < 1024. * self.scale
                 || !self.fits_figure(e.a, e.b)
@@ -471,10 +515,12 @@ impl Graph {
             b,
             born: time,
             cut_at: [Point::default(); 2],
+            cut_born: [0.; 2],
             end: f32::INFINITY,
             wave: f32::INFINITY,
             reverse: false,
             figure: a.min(b),
+            soft: time < self.shock_until[a] || time < self.shock_until[b],
         });
         self.last[a] = time;
         self.last[b] = time;
@@ -672,11 +718,65 @@ mod geometry_tests {
             born,
             end: f32::INFINITY,
             cut_at: [Point::default(); 2],
+            cut_born: [0.; 2],
             wave: f32::INFINITY,
             reverse: false,
             figure: a,
+            soft: false,
         }
     }
+    #[test]
+    fn nova_reaches_each_stroke_before_its_full_length_fade_and_recovery() {
+        let (mut graph, mut stars, grid) = fixture(&[
+            (100., 20.),
+            (150., 20.),
+            (200., 20.),
+            (250., 20.),
+            (350., 20.),
+            (400., 20.),
+        ]);
+        graph.edges = vec![edge(0, 1, -10.), edge(2, 3, -10.), edge(4, 5, -10.)];
+        graph.shock(pt(0., 20.), 100., 104., &stars);
+        let near = graph.edges[0];
+        let far = graph.edges[1];
+        assert!(near.soft && far.soft && near.end < far.end);
+        for (e, distance) in [(near, 100.), (far, 200.)] {
+            assert!((super::super::events::shock_radius(e.end - 100.) - distance).abs() < 0.001);
+            assert_eq!(e.cut_at, [stars[e.a].p, stars[e.b].p]);
+        }
+        assert!(graph.edges[2].live() && !graph.edges[2].soft);
+        // The lifecycle may reuse the nova's array slot in this very tick.
+        let original = near.cut_at[0];
+        stars[near.a].born = 104.;
+        stars[near.a].p = pt(450., 450.);
+        graph.credit = -100.;
+        graph.update(&stars, &grid, 104.1, 1. / 60., 1., false);
+        assert_eq!(graph.edges[0].cut_at[0], original);
+        graph.update(&stars, &grid, near.end + 1., 1. / 60., 1., false);
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|e| e.a == near.a && e.end == near.end)
+        );
+        graph.update(
+            &stars,
+            &grid,
+            near.end + DISSOLVE_SECONDS + 0.01,
+            1. / 60.,
+            1.,
+            false,
+        );
+        assert!(
+            !graph
+                .edges
+                .iter()
+                .any(|e| e.a == near.a && e.end == near.end)
+        );
+        graph.trace(0, 1, far.end + 2., &stars);
+        assert!(graph.edges.last().unwrap().soft, "replacement must fade in");
+    }
+
     #[test]
     fn merged_nodes_railways_crossings_and_angle_boundaries() {
         let (a, b) = (pt(40., 60.), pt(180., 60.));

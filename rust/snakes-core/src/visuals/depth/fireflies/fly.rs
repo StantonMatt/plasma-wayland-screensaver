@@ -129,6 +129,7 @@ pub struct Fly {
     pub tree_delay: f32,
     pub tree_gain: f32,
     pub jitter: f32,
+    pub sync_offset: f32,
     pub heard_phase: f32,
     pub heard_age: f32,
     pub heard_period: f32,
@@ -190,9 +191,7 @@ impl Fly {
         let burst = 5 + (rng.next_u32() % 3) as u8;
         let period = match species {
             Dipper => between(rng, 4.7, 6.3) / cadence,
-            Syncer => {
-                between(rng, 6.4, 7.9) / cadence + (burst - 1) as f32 * (0.5 / cadence).max(0.5)
-            }
+            Syncer => between(rng, 6.4, 7.9) / cadence + (burst - 1) as f32 * (0.5 / cadence),
             Ghost => between(rng, 8., 12.),
             Hunter => between(rng, 4., 7.) / cadence,
         };
@@ -238,6 +237,12 @@ impl Fly {
             tree_delay: 0.,
             tree_gain: 1.,
             jitter: between(rng, 0., TAU) + id as f32 * 0.01,
+            // Stable timing without consuming the ecological RNG stream.
+            sync_offset: (((super::hash64(stroke_key ^ 0x7469_6d69_6e67) & 0xffff) as f32
+                / 65535.)
+                * 2.
+                - 1.)
+                / 30.,
             heard_phase: 0.,
             heard_age: f32::INFINITY,
             heard_period: period,
@@ -246,7 +251,6 @@ impl Fly {
         }
     }
     pub fn fire(&mut self, now: f64, strength: f32) -> bool {
-        // Every source, including scripted answers, post-rain and hunters, shares this refractory.
         if (self.species == Ghost && self.tree.is_none())
             || !commit_flash(now, &mut self.last_flash, &mut self.since)
         {
@@ -259,7 +263,7 @@ impl Fly {
         self.pulse = strength;
         true
     }
-    pub fn envelope(&self, wet_attack: f32, afterglow: f32) -> f32 {
+    pub fn envelope(&self, wet_attack: f32, afterglow: f32, cadence: f32) -> f32 {
         if self.species == Ghost {
             return 0.40 + 0.06 * (TAU * self.phase).sin();
         }
@@ -280,7 +284,13 @@ impl Fly {
         };
         let attack = attack + wet_attack;
         let hold = hold + wet_attack;
-        let t = self.since;
+        // Keep a Syncer's pulse-to-gap ratio as its burst cadence changes.
+        let t = self.since
+            * if self.species == Syncer && self.tree.is_none() {
+                cadence
+            } else {
+                1.
+            };
         let chem = if t < attack {
             smooth(t / attack)
         } else if t < hold {
@@ -296,9 +306,6 @@ impl Fly {
 
 /// Commit all flashing lights against the same simulation time, never a loop-local age.
 pub(super) fn commit_flash(now: f64, last: &mut f64, since: &mut f32) -> bool {
-    if now - *last < 0.5 {
-        return false;
-    }
     *last = now;
     *since = 0.;
     true

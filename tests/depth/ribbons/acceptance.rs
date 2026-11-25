@@ -652,7 +652,10 @@ fn real_maelstrom_release_keeps_radius_through_recovery() {
                     if elapsed == 240 {
                         distances.push((r.id, (r.head() - origin).length()));
                     }
-                    if !(60..=450).contains(&elapsed) || elapsed % 15 != 0 {
+                    // At full Speed the released scarf leaves a single output
+                    // quickly. Sample the same recovery window at 10 Hz so it
+                    // retains coverage without requiring slower translation.
+                    if !(60..=450).contains(&elapsed) || elapsed % 3 != 0 {
                         continue;
                     }
                     let body = visible_body(r);
@@ -692,11 +695,11 @@ fn real_maelstrom_release_keeps_radius_through_recovery() {
             }
 
             let released = tracked.values().filter(|(r, _)| r.is_some()).count();
-            assert!(released >= 3 && samples > 20 && !distances.is_empty());
             println!(
                 "REAL_RELEASE spanning{span} seed{seed}: captured={},released={released},visibleSamples={samples},closedVisible={closed},maxWholeTurn={max_turn:.6},maxVisibleTurn={max_visible_turn:.6},pathRadii={radii:?},headDistancesAt8={distances:?},worst={worst:?}",
                 tracked.len()
             );
+            assert!(released >= 3 && samples > 20 && !distances.is_empty());
             assert!(
                 closed == 0
                     && max_turn <= 270.

@@ -279,6 +279,7 @@ void DepthCaptureTest::productScene()
     QJsonArray frames;
     QMap<QString, qint64> kaleidoscopeSwapStarts;
     QMap<QString, double> kaleidoscopeQueueDelays;
+    QMap<QString, qint64> kaleidoscopeRefillStarts;
     int index = 0;
     int fallbackBrightPixels = 0;
     for (qint64 ns : times) {
@@ -301,8 +302,16 @@ void DepthCaptureTest::productScene()
                     && (!kaleidoscopeSwapStarts.contains(screen->name()) || age < 1.)) {
                     const auto estimate = timeFor(screen, ns) - qRound64(age * 1e9);
                     const auto tick = qRound64(estimate * (120. / 1e9));
+                    if (kaleidoscopeSwapStarts.value(screen->name(), -1) != tick * 1000000000LL / 120)
+                        kaleidoscopeRefillStarts.remove(screen->name());
                     kaleidoscopeSwapStarts[screen->name()] = tick * 1000000000LL / 120;
                     kaleidoscopeQueueDelays[screen->name()] = lens.mote[3];
+                }
+                const double phase = -1. - lens.motion[2];
+                if (phase >= 4. && phase < 7.) {
+                    const auto estimate = timeFor(screen, ns) - qRound64((phase - 4.) * 1e9);
+                    const auto tick = qRound64(estimate * (120. / 1e9));
+                    kaleidoscopeRefillStarts[screen->name()] = tick * 1000000000LL / 120;
                 }
             }
         }
@@ -404,7 +413,7 @@ void DepthCaptureTest::productScene()
         swaps.append(QJsonObject {{"output"_L1,it.key()},
             {"swapStartNs"_L1,QString::number(it.value())},
             {"pourOnsetNs"_L1,QString::number(it.value()+440000000)},
-            {"refillStartNs"_L1,QString::number(it.value()+4000000000LL)},
+            {"refillStartNs"_L1,QString::number(kaleidoscopeRefillStarts.value(it.key(),it.value()+4000000000LL))},
             {"queueDelaySeconds"_L1,kaleidoscopeQueueDelays.value(it.key())}});
     }
     if (!swaps.isEmpty()) manifest["kaleidoscopeSwaps"_L1] = swaps;

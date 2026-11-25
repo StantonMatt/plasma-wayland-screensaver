@@ -183,18 +183,9 @@ impl World {
         } else {
             1_f32
         };
-        let mut gain = 1_f32;
-        for (i, o) in self.meadow.outputs.iter().enumerate() {
-            let estimate = emissions[i] / o.area() as f32;
-            // Reserve output-level headroom for overspill, trails and blades.
-            let floor = self.exposures[i].iter().copied().fold(1., f32::min);
-            let allowed = (floor + 0.04).min(0.045);
-            gain = gain.min(allowed / estimate.max(0.000_001));
-        }
         self.emission = 0.;
         for (i, o) in self.meadow.outputs.iter().enumerate() {
-            let e = gain * emissions[i] / o.area() as f32;
-            self.exposures[i][self.iteration as usize % 11] = e;
+            let e = emissions[i] / o.area() as f32;
             self.emission = self.emission.max(e);
         }
         for r in &mut heads {
@@ -203,11 +194,11 @@ impl World {
             } else {
                 hush
             };
-            r[2] *= gain * presence;
+            r[2] *= presence;
         }
         for g in &mut grass {
             for v in &mut g[..3] {
-                *v *= gain * hush;
+                *v *= hush;
             }
         }
         let heads: Arc<[Texel]> = heads.into();

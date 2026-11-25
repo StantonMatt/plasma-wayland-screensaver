@@ -59,14 +59,22 @@ fn range(r: &mut Pcg32, a: f64, b: f64) -> f64 {
     a + (b - a) * r.unit()
 }
 const PHYSICAL_SPEED_LIMIT: f64 = 1.5;
-const EVENT_SURFACE_SPEED_LIMIT: f64 = 0.50;
+// Pour travel is composed independently of the freely tumbling glass.
+// Let the coloured exit read as glass travelling across the mouth.
+const POUR_SPEED: f64 = 0.45;
+// Keep the approved incoming glass pace; only the departing pour is slower.
+const REFILL_SPEED: f64 = 0.65;
+// Prepare incoming glass closer to the mouth while it is still unlit. The
+// visible refill keeps its pace, without spending its dark beat on empty travel.
+const REFILL_OFFSET: f64 = 0.28;
 // A 0.25 encoded mouth shadow, expressed in linear light.
 const MOUTH_SHADOW_FLOOR: f64 = 0.05087608817155679;
-// Keep the coloured leading glass visible for a full pour. At the protected
-// transfer rate, the old 0.35R fade hid it in under one second.
-const MOUTH_SHADOW_FADE_DISTANCE: f64 = 0.65;
+// Free internal motion crosses the mouth quickly. Keep the coloured glass
+// visible over 1.25 reference radii before it reaches quarter light.
+const MOUTH_SHADOW_FADE_DISTANCE: f64 = 1.25;
 const SWAP_VISIBLE_COVERAGE: f64 = 0.75;
 const SWAP_MAX_WAIT: f64 = 8.;
+const SWAP_POST_TWIST_WAIT: f64 = 1.;
 const DUST: u32 = 1;
 const CLOUD: u32 = 2;
 const SWAP: u32 = 3;
@@ -208,7 +216,12 @@ struct Kaleidoscope {
     swap_shadow_started: bool,
     swap_requested_at: Option<f64>,
     swap_queue_delay: f64,
-    physical_event_until: f64,
+    swap_behind_twist: bool,
+    swap_forced_sparse: bool,
+    swap_empty_age: Option<f64>,
+    swap_reference_light: f64,
+    swap_refill_age: f64,
+    twist_swap_ready_at: f64,
     event_contacts: bool,
     refill_target: Option<chamber::V>,
     input: WorldInput,
@@ -263,7 +276,12 @@ impl Kaleidoscope {
             swap_shadow_started: false,
             swap_requested_at: None,
             swap_queue_delay: 0.,
-            physical_event_until: 0.,
+            swap_behind_twist: false,
+            swap_forced_sparse: false,
+            swap_empty_age: None,
+            swap_reference_light: 0.,
+            swap_refill_age: 4.,
+            twist_swap_ready_at: -1e6,
             event_contacts: false,
             refill_target: None,
             physics_previous,
@@ -285,16 +303,50 @@ impl Kaleidoscope {
     fn magnified_mandala(&self) -> bool {
         self.params.mirrors == "mandala" && self.params.points >= 12 && self.input.scale >= 1.5
     }
-    fn event_surface_speed(&self) -> f64 {
-        EVENT_SURFACE_SPEED_LIMIT
-    }
     // One reference radius includes the first echo's radial compression.
-    fn event_chamber_speed(&self) -> f64 {
-        self.event_surface_speed() * 1.67 * 0.65 / self.input.scale
+    fn pour_speed(&self) -> f64 {
+        // A forced sparse view has less glass crossing the eye. Give that
+        // shorter composition a little more time to leave the mouth.
+        let sparse = if self.swap_forced_sparse { 0.8 } else { 1. };
+        POUR_SPEED * sparse * 1.67 * 0.65 / self.input.scale
     }
-    fn begin_physical_event(&mut self, duration: f64) {
-        self.physical_event_until = self.physical_event_until.max(self.moments.time + duration);
+    fn refine_event_contacts(&mut self) {
         self.event_contacts = true;
+    }
+    fn note_twist_peak(&mut self) {
+        if let Some(delay) = self.hand.twist_peak_delay(self.input.speed) {
+            self.twist_swap_ready_at = self.moments.time + delay + 0.5;
+        }
+    }
+    // Keep the existing three-second incoming motion and optical envelope.
+    // Only its start moves; the recipe handoff remains hidden 0.75 s earlier.
+    fn swap_phase_at(&self, age: f64) -> f64 {
+        if self.magnified_mandala() && age >= self.swap_refill_age - 0.75 {
+            age + 4. - self.swap_refill_age
+        } else {
+            age
+        }
+    }
+    fn swap_phase(&self) -> f64 {
+        self.swap_phase_at(self.moments.age(SWAP))
+    }
+    fn swap_aperture(&self) -> f64 {
+        if self.swap_refill_age == 4. {
+            return self.moments.aperture();
+        }
+        let phase = self.swap_phase();
+        1. - smooth(phase / 2.5) + smooth((phase - 4.) / 3.)
+    }
+    fn note_pour_light(&mut self, fraction: f64) {
+        let age = self.moments.age(SWAP);
+        if self.magnified_mandala()
+            && self.swap_empty_age.is_none()
+            && (0.44..3.25).contains(&age)
+            && fraction < 0.05
+        {
+            self.swap_empty_age = Some(age);
+            self.swap_refill_age = (age + 1.2).min(4.);
+        }
     }
     // A requested pour is invisible during a breath's empty view. Wait for
     // the physical heap to cover the apex, without changing the eyepiece or
@@ -303,20 +355,37 @@ impl Kaleidoscope {
         let Some(requested) = self.swap_requested_at else {
             return;
         };
-        if self.moments.time - requested < SWAP_MAX_WAIT
-            && self.apex_fill(self.focus) < SWAP_VISIBLE_COVERAGE
-        {
+        let timeout = requested + SWAP_MAX_WAIT;
+        if self.moments.time < timeout && self.moments.time < self.twist_swap_ready_at {
+            self.swap_behind_twist = true;
             return;
         }
+        // A slumped eye cannot fill itself after its Twist has settled. Only
+        // queues held behind that Twist use the shorter visibility deadline.
+        // The existing 0.44 s leading turn follows this gate unchanged.
+        let deadline = if self.swap_behind_twist {
+            (self.twist_swap_ready_at + SWAP_POST_TWIST_WAIT).min(timeout)
+        } else {
+            timeout
+        };
+        let sparse = self.apex_fill(self.focus) < SWAP_VISIBLE_COVERAGE;
+        if sparse && self.moments.time < deadline {
+            return;
+        }
+        self.swap_forced_sparse = sparse;
         self.swap_queue_delay = self.moments.time - requested;
         self.swap_requested_at = None;
+        self.swap_behind_twist = false;
         self.refill_guide_phase = RefillGuide::Unchecked;
         self.swap_shadow_started = false;
-        self.begin_physical_event(10.);
+        self.swap_empty_age = None;
+        self.swap_reference_light = 0.;
+        self.swap_refill_age = 4.;
+        self.refine_event_contacts();
         self.moments.start[(SWAP - 1) as usize] = self.moments.time;
     }
     fn transit_key(&self, index: usize) -> Option<f64> {
-        let age = self.moments.age(SWAP);
+        let age = self.swap_phase();
         if !self.magnified_mandala() || !(0.0..7.0).contains(&age) {
             return None;
         }
@@ -327,16 +396,25 @@ impl Kaleidoscope {
             let p = self.chamber.bodies[index].pos + self.chamber.transport;
             let delta = p - self.swap_origins[index];
             let travel = delta.0.max(0.) * self.input.scale / (1.67 * 0.65);
+            // The final shadow follows the glass through the mouth, rather
+            // than extinguishing the whole heap together. Preserve the first
+            // 0.7 s after the 0.44 s leading turn; the front leaves first.
+            let mouth_start = -0.18 - 0.64 / self.input.scale;
+            let front = ((self.swap_origins[index].0 - mouth_start) * self.input.scale / 1.67)
+                .clamp(0., 1.);
+            let tail = ((age + 0.4 * front - 1.54) / 0.51).clamp(0., 1.);
+            let tail = 1. - tail * tail * (3. - 2. * tail);
             // The leading edge leaves lit. The mouth then absorbs the same
             // linear fraction of every colour channel, rather than whitening it.
             Some(
                 (1. - (1. - MOUTH_SHADOW_FLOOR) * smooth(travel / MOUTH_SHADOW_FADE_DISTANCE))
-                    * (1. - smooth((travel - MOUTH_SHADOW_FADE_DISTANCE - 0.10) / 0.85)),
+                    * (1. - smooth((travel - MOUTH_SHADOW_FADE_DISTANCE - 0.10) / 0.85))
+                    * tail,
             )
         } else if age < 4. {
             Some(0.)
         } else {
-            let returned = (0.40 - self.chamber.transport.0).max(0.);
+            let returned = (REFILL_OFFSET - self.chamber.transport.0).max(0.);
             Some(smooth(returned * self.input.scale / (1.67 * 0.65 * 0.35)))
         }
     }
@@ -390,9 +468,12 @@ impl Kaleidoscope {
             }
             TWIST => {
                 if self.magnified_mandala() {
-                    self.begin_physical_event(3.);
+                    self.refine_event_contacts();
                 }
                 self.hand.begin(Mood::Twist, &mut self.rng);
+                if self.magnified_mandala() {
+                    self.note_twist_peak();
+                }
                 return;
             }
             HOLD => {
@@ -421,6 +502,71 @@ impl Kaleidoscope {
     }
     fn light_angle(&self) -> f64 {
         -2.2 + self.moments.time * TAU / 1200. - self.hand.angle
+    }
+    fn eye_sample_point(&self, radius: f64, side: f64) -> chamber::V {
+        let point =
+            self.viewed_point(radius, side) + self.focus * (1. - smooth((radius - 0.25) / 0.28));
+        let fold = |v: f64, lo: f64, hi: f64| {
+            lo + (hi - lo) * (1. - (((v - lo) / (hi - lo)).rem_euclid(2.) - 1.).abs())
+        };
+        chamber::V(fold(point.0, -0.98, 0.98), fold(point.1, -0.11, 1.02))
+    }
+    fn glass_key_at(&self, point: chamber::V) -> f64 {
+        let point = point - self.chamber.transport;
+        self.chamber
+            .bodies
+            .iter()
+            .enumerate()
+            .fold(0_f64, |key, (i, body)| {
+                if body.contains_optical(point) {
+                    key.max(
+                        self.transit_key(i).unwrap_or(1.) * if body.cut.back { 0.15 } else { 1. },
+                    )
+                } else {
+                    key
+                }
+            })
+    }
+    // Equal-area light samples, relative to this pour's own pre-pour level.
+    // Counting even very dim glass as fully lit delayed the empty-eye trigger.
+    // Reuse the guide's 15 Hz cadence; no framebuffer readback is needed.
+    fn visible_pour_light(&self) -> f64 {
+        let keys: [f64; chamber::MAX] = std::array::from_fn(|i| {
+            if i >= self.chamber.bodies.len() {
+                return 0.;
+            }
+            let body = &self.chamber.bodies[i];
+            let key = self.transit_key(i).unwrap_or(1.);
+            let encoded = if key <= 0.0031308 {
+                key * 12.92
+            } else {
+                1.055 * key.powf(1. / 2.4) - 0.055
+            };
+            let tint = crate::visuals::palette::color(self.input.palette, body.cut.hue);
+            let luma = f64::from(0.2126 * tint[0] + 0.7152 * tint[1] + 0.0722 * tint[2]);
+            encoded * luma * if body.cut.back { 0.15 } else { 1. }
+        });
+        let mut light = 0.;
+        for ring in 0..8 {
+            let radius = ((ring as f64 + 0.5) / 8.).sqrt();
+            for petal in 0..4 {
+                let point = self.eye_sample_point(radius, (petal as f64 + 0.5) / 4.)
+                    - self.chamber.transport;
+                light += self
+                    .chamber
+                    .bodies
+                    .iter()
+                    .zip(&keys)
+                    .fold(0_f64, |key, (body, value)| {
+                        if body.contains_optical(point) {
+                            key.max(*value)
+                        } else {
+                            key
+                        }
+                    });
+            }
+        }
+        light / 32.
     }
     fn apex_fill(&self, offset: chamber::V) -> f64 {
         let fold = |v: f64, lo: f64, hi: f64| {
@@ -507,7 +653,7 @@ impl Kaleidoscope {
         if self.input.scale <= 1. || self.params.mirrors != "mandala" {
             return;
         }
-        let age = self.moments.age(SWAP);
+        let age = self.swap_phase();
         // Most recipes refill with the physical Hold and the ordinary guide.
         // After the hidden settling beat, reserve a smooth aim only when the
         // ordinary guide's destination would leave the core less than 90% full.
@@ -598,15 +744,14 @@ impl LivingWorld for Kaleidoscope {
             return;
         }
         self.moments.time = tick as f64 / 120.;
-        let hand_limit = if self.magnified_mandala() {
-            self.event_surface_speed() * 0.9
-        } else {
-            f64::INFINITY
-        };
+        let magnified = self.magnified_mandala();
         self.hand
-            .step_limited(1. / 120., self.input.speed, &mut self.rng, hand_limit);
+            .step_with_drive(1. / 120., self.input.speed, &mut self.rng, magnified);
+        if magnified {
+            self.note_twist_peak();
+        }
         if self.magnified_mandala() && self.hand.mood == Mood::Twist {
-            self.begin_physical_event(3.);
+            self.refine_event_contacts();
         }
         for i in 0..4 {
             if self.moments.time >= self.moments.due[i] {
@@ -628,7 +773,7 @@ impl LivingWorld for Kaleidoscope {
             self.enact(id);
         }
         self.try_begin_swap();
-        let swap = self.moments.age(SWAP);
+        let swap = self.swap_phase();
         if (3.25..7.).contains(&swap) && self.cell.revision != self.moments.start[2].to_bits() {
             self.recipe = (self.recipe + 1 + self.rng.bounded(4).unwrap()) % 5;
             self.chamber = Chamber::new(
@@ -661,34 +806,22 @@ impl LivingWorld for Kaleidoscope {
         let tip = if protected && swap >= 3.25 {
             0.
         } else {
-            smooth(swap / 1.5) * smooth((6. - swap) / 2.)
+            let rise = if protected { 2.5 } else { 1.5 };
+            smooth(swap / rise) * smooth((6. - swap) / 2.)
         };
         let physical_pace = self.input.speed.min(PHYSICAL_SPEED_LIMIT);
-        let chamber_speed = self.event_chamber_speed();
-        let transfer_speed = chamber_speed * 0.7 / 1.01_f64.sqrt();
-        let moving_transfer = if protected && (0.44..3.25).contains(&swap) {
-            chamber::transfer_speed(swap - 0.44, transfer_speed, 10.)
-        } else if protected && (4.0..7.0).contains(&swap) {
-            chamber::transfer_speed(swap - 4., transfer_speed, 0.40)
-        } else {
-            0.
-        };
-        let limit = if protected && self.moments.time < self.physical_event_until {
-            Some((chamber_speed - moving_transfer * 1.01_f64.sqrt()).max(0.) / physical_pace)
-        } else if protected && self.event_contacts {
-            Some(f64::INFINITY)
-        } else {
-            None
-        };
+        let transfer_speed = self.pour_speed();
+        let refined = protected && self.event_contacts;
         // One rigid transfer belongs to the physical chamber. Contacts remain
         // in its co-moving coordinates; pieces never independently chase poses.
         self.chamber.transport = if protected {
             let distance = if (0.44..3.25).contains(&swap) {
                 chamber::transfer_distance(swap - 0.44, transfer_speed, 10.)
             } else if (3.25..4.).contains(&swap) {
-                0.40
+                REFILL_OFFSET
             } else if (4.0..7.0).contains(&swap) {
-                0.40 - chamber::transfer_distance(swap - 4., transfer_speed, 0.40)
+                let refill_speed = REFILL_SPEED * 1.67 * 0.65 / self.input.scale;
+                REFILL_OFFSET - chamber::transfer_distance(swap - 4., refill_speed, REFILL_OFFSET)
             } else {
                 0.
             };
@@ -702,8 +835,7 @@ impl LivingWorld for Kaleidoscope {
             // Keep the refined solver here too: one-pass preparation can
             // leave the selected refill target moving after the dark beat.
             for _ in 0..8 {
-                self.chamber
-                    .step_limited(self.hand.angle, Some(f64::INFINITY));
+                self.chamber.step_refined(self.hand.angle, true);
             }
         }
         self.fraction += physical_pace;
@@ -712,13 +844,26 @@ impl LivingWorld for Kaleidoscope {
                 *pose = (body.pos, body.angle);
             }
             self.chamber
-                .step_limited(self.hand.angle + tip * 1.8, limit);
+                .step_refined(self.hand.angle + tip * 1.8, refined);
         }
         self.fraction = self.fraction.fract();
         if tick.is_multiple_of(8) {
             self.focus_previous = self.focus;
             self.guide_magnified_eye();
             self.focus_velocity = self.focus - self.focus_previous;
+            if protected && self.swap_empty_age.is_none() && (0.0..3.25).contains(&swap) {
+                let light = self.visible_pour_light();
+                if swap <= 0.24 {
+                    self.swap_reference_light = light;
+                } else if swap >= 0.44 {
+                    let fraction = if self.swap_reference_light > 1e-6 {
+                        light / self.swap_reference_light
+                    } else {
+                        0.
+                    };
+                    self.note_pour_light(fraction);
+                }
+            }
         }
     }
     fn snapshot(&self) -> Snapshot {
@@ -747,7 +892,7 @@ impl LivingWorld for Kaleidoscope {
         }
     }
     fn emission_estimate(&self) -> f64 {
-        0.04 * self.moments.aperture() * (1. - 0.35 * self.moments.cloud())
+        0.04 * self.swap_aperture() * (1. - 0.35 * self.moments.cloud())
     }
     fn inject(&mut self, e: Event) -> Result<(), &'static str> {
         if !(DUST..=HOLD).contains(&e.id)

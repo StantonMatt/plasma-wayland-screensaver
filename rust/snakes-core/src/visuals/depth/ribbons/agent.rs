@@ -86,14 +86,26 @@ pub(super) struct Spawn {
     pub direction: f64,
     pub population: usize,
 }
+#[derive(Clone, Copy)]
+pub(super) struct GustDrive {
+    pub front: super::water::Moment,
+    pub left: f64,
+    pub right: f64,
+    pub carry: f64,
+    pub force: f64,
+    pub world_rate: f64,
+}
+impl GustDrive {
+    pub fn weight(self, pos: Vec2) -> f64 {
+        self.front.gust(pos, self.left) * smooth((self.right - pos.x) / 1200.) * self.carry
+    }
+}
 pub(super) struct Steering {
     pub desired: Vec2,
     pub curl: f64,
     pub gust: f64,
-    pub gust_force_limit: f64,
-    pub maelstrom_motor_limit: f64,
     pub launch: f64,
-    pub gust_front: Option<(super::water::Moment, f64)>,
+    pub gust_front: Option<GustDrive>,
     pub turbulence: f64,
     pub still: f64,
     pub smooth_twist: bool,
@@ -298,8 +310,6 @@ impl Ribbon {
             mut desired,
             curl,
             gust,
-            gust_force_limit,
-            maelstrom_motor_limit,
             launch,
             gust_front,
             turbulence,
@@ -353,6 +363,8 @@ impl Ribbon {
             38. * rate,
             if departing || launch > 0. {
                 230. + 85. * launch
+            } else if gust > 0. {
+                500.
             } else {
                 230.
             },
@@ -361,14 +373,6 @@ impl Ribbon {
             target_speed.max(240. * smooth(self.release_age / 8.))
         } else if launch > 0. {
             target_speed.max(240. * launch)
-        } else {
-            target_speed
-        };
-        // Orbital bands share the ordinary screen-space motion band. The
-        // launch floor spends this motor budget too, with the same damped
-        // acceleration; free flow keeps the configured Speed response.
-        let target_speed = if orbit.is_some() || departing || launch > 0. {
-            target_speed.min(maelstrom_motor_limit)
         } else {
             target_speed
         };
@@ -388,7 +392,7 @@ impl Ribbon {
         } else {
             (self.speed / radius).min(0.88)
         };
-        if unwind > 0. && gust_front.is_none() && maelstrom_motor_limit < 315. {
+        if unwind > 0. && gust_front.is_none() {
             // Turning an extended scarf spends part of its existing motion
             // budget: head translation plus at most two head steps of rigid
             // rotation fits transport_body's three-head-step allowance.
@@ -419,16 +423,23 @@ impl Ribbon {
         let (s, c) = delta.sin_cos();
         self.heading = self.heading * c + self.heading.perpendicular() * s;
         let wind_layer = [0.72, 0.90, 1.0][self.layer];
-        let wind_push = p(395., -10.) * wind_layer;
-        let gust_limit = gust_force_limit * wind_layer;
-        // Limit the added drive in wall-space before applying the travelling
-        // envelope, retaining its full onset and release instead of clipping it.
-        let head_wind = if gust > 0. {
-            wind_push.limited(gust_limit) * gust
-        } else {
-            wind_push * gust
-        };
+        // A soft motion shoulder keeps the brisk Gust readable at high Speed.
+        // force is precomputed in wall-time units, once per world step.
+        let wind_push = p(395., -10.) * (wind_layer * gust_front.map_or(1., |g| g.force));
+        let head_wind = wind_push * gust;
         let mut velocity = self.heading * self.speed + head_wind;
+        if let Some(front) = gust_front {
+            // A Gust can inherit a strong motor or a preceding eddy's launch.
+            // Shoulder the complete carry smoothly, rather than limiting only
+            // its wind term. Keep the 500 motor allowance and all turn budgets.
+            let speed = velocity.length() * front.world_rate;
+            let excess = (speed - 800.).max(0.);
+            if excess > 0. {
+                let carried = 800. + 100. * excess / (100. + excess);
+                let weight = front.front.gust_steering();
+                velocity = velocity * (1. - weight + weight * carried / speed);
+            }
+        }
         // Far strands share the resultant-velocity and body radius budget
         // in normal flow too; a heading-only cap undershoots while accelerating.
         let bounded_radius = (spanning || self.layer == 0) && orbit.is_none() && !departing;
@@ -467,7 +478,7 @@ impl Ribbon {
         let flat = (phase / std::f64::consts::PI).round() * std::f64::consts::PI;
         let turn_weight = (angle.abs() * twist * 0.76).clamp(0., 0.91);
         let target = desired_phase + (edge - desired_phase) * turn_weight;
-        let target = target + (flat - target) * gust.max(still);
+        let target = target + (flat - target) * (0.35 * gust).max(still);
         let error = (target - phase + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI;
         self.tilt += (5.5 * error - 2.85 * self.tilt) * dt;
         self.nodes[0].phase = if twist == 0. {
@@ -502,18 +513,11 @@ impl Ribbon {
             let a = self.velocities[i / 8];
             let b = self.velocities[(i / 8 + 1).min(16)];
             let current = a + (b - a) * ((i % 8) as f64 / 8.);
-            let gust = gust_front.map_or(0., |(front, left)| front.gust(node.pos, left));
+            let gust = gust_front.map_or(0., |front| front.weight(node.pos));
             let wind = current * (1. - gust);
             let mut v = wind * ((0.15 + 0.45 * u) * (1. - 0.92 * still));
             let pull = (head_y - node.pos.y).clamp(-135., 135.);
-            if gust > 0. {
-                // Translation and vertical alignment spend one shared force
-                // budget; the body must not receive an uncapped lateral kick.
-                v += (wind_push + p(0., pull)).limited(gust_limit) * gust;
-            } else {
-                v += wind_push * gust;
-                v.y += pull * gust;
-            }
+            v += (wind_push + p(0., 0.25 * pull)) * gust;
             let k = i / 8;
             v += (self.pressure[k]
                 + (self.pressure[(k + 1).min(16)] - self.pressure[k]) * ((i % 8) as f64 / 8.))
@@ -647,12 +651,6 @@ impl Ribbon {
                 let guide = (-outward.perpendicular() + outward * correction).unit();
                 let weight = orbit_weight * 0.19 * (1. - unwind);
                 axis = (axis * (1. - weight) + guide * weight).unit();
-            }
-            if let Some((front, left)) = gust_front {
-                let local = front.gust(prev, left);
-                let target = p(-1., 0.);
-                let weight = 0.62 * local;
-                axis = (axis * (1. - weight) + target * weight).unit();
             }
             if open_lane {
                 let back = p(-self.course_sign, 0.);
